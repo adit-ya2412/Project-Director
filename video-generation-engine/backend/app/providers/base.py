@@ -12,7 +12,44 @@ and LLMProvider are added in M5-M8 as their phases land.
 """
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, TypeVar
+
+from pydantic import BaseModel
+
+ResponseModelT = TypeVar("ResponseModelT", bound=BaseModel)
+
+
+@dataclass(frozen=True)
+class StructuredCompletion:
+    """A validated structured response plus everything the caller needs
+    to persist an `llm_call` audit row (implementation guide, Phase M5
+    advice: "record every LLM exchange"). `parsed` is already validated
+    against the caller's Pydantic model - callers never see raw JSON."""
+
+    parsed: BaseModel
+    model: str
+    request: dict
+    response: dict
+    input_tokens: int | None
+    output_tokens: int | None
+
+
+class PlanningLLMProvider(Protocol):
+    """The one interface every planning agent (Director, Scene/Shot/Asset
+    Planner) depends on - never a concrete OpenAI/Anthropic SDK type
+    (ADR-003). Swapping the planning LLM is a new class behind this
+    Protocol, not a change to any planner."""
+
+    name: str
+
+    async def structured_complete(
+        self,
+        *,
+        system_prompt: str,
+        user_content: str,
+        response_model: type[ResponseModelT],
+        seed: int | None = None,
+    ) -> StructuredCompletion: ...
 
 
 @dataclass(frozen=True)

@@ -1,19 +1,42 @@
 """Step 1: script -> Timeline.
 
-Stand-in for Director -> Scene Planner -> Shot Planner -> Asset Planner
-(M5): the fake planner fills everything in one shot, but it goes through
-`TimelineService.append_version` exactly like a real planner will, so
-this step doesn't change shape when M5 lands - only its innards do.
+DRY_RUN=true (default): `FakeTimelinePlanner` fills the whole Timeline in
+one shot via one `append_version` call - unchanged since M4, so the
+walking skeleton keeps working with zero API keys.
+
+DRY_RUN=false (M5): the real Director -> Scene Planner -> Shot Planner ->
+Asset Planner chain runs, each stage its own `append_version` call with
+its own `owns` set. Each stage is individually resumable via the active
+Timeline's own state (no separate progress flag) - a crash after the
+Scene Planner but before the Shot Planner resumes by re-checking what the
+Timeline already has, exactly like the workflow engine's step-level
+resumability (M4), one level deeper.
 """
 
 from app.core.config import settings
 from app.core.errors import TransientError
+from app.planners.asset.planner import AssetPlanner
+from app.planners.director.planner import DirectorPlanner
+from app.planners.scene.planner import ScenePlanner
+from app.planners.shot.planner import ShotPlanner
 from app.providers.fakes.llm import FakeTimelinePlanner
-from app.schemas.timeline import ProducedBy
+from app.providers.openai_provider import OpenAIPlanningProvider
+from app.repositories.llm_call_repository import LlmCallRepository
+from app.schemas.timeline import ProducedBy, Timeline
+from app.timeline.duration import compute_timeline_duration
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
 
 _FAKE_PLANNER_OWNS = frozenset({"metadata", "creative_context", "music_plan", "scenes"})
+
+
+def _is_fully_planned(timeline: Timeline) -> bool:
+    if not timeline.scenes:
+        return False
+    shots = timeline.all_shots()
+    if not shots:
+        return False
+    return all(shot.asset_plan is not None for shot in shots)
 
 
 class GenerateTimelineStep:
@@ -23,10 +46,10 @@ class GenerateTimelineStep:
 
     async def is_satisfied(self, ctx: RunContext) -> bool:
         active = await ctx.timeline_service.get_active(ctx.project_id)
-        # An empty v1 (create_initial, before append_version has run) does
+        # An empty v1 (create_initial, before any planner has run) does
         # NOT satisfy this step - a crash between the two calls must not
         # look like "already done" on resume.
-        return active is not None and len(active.scenes) > 0
+        return active is not None and _is_fully_planned(active)
 
     async def run(self, ctx: RunContext) -> StepResult:
         project = await ctx.repo.get(ctx.project_id)
@@ -34,15 +57,21 @@ class GenerateTimelineStep:
             return StepResult(outcome="failed", error="project has no script uploaded")
 
         try:
-            fixture = await FakeTimelinePlanner().plan(
-                project_id=ctx.project_id, script=project.script
-            )
+            if await ctx.timeline_service.get_active(ctx.project_id) is None:
+                await ctx.timeline_service.create_initial(ctx.project_id, project.script)
+
+            if settings.dry_run:
+                await self._run_fake(ctx, script=project.script)
+            else:
+                await self._run_real(ctx, script=project.script)
         except TransientError as exc:
             return StepResult(outcome="retry", error=str(exc))
         except Exception as exc:  # noqa: BLE001 - provider call boundary
             return StepResult(outcome="failed", error=str(exc))
 
-        violations = fixture.validate_constraints(
+        timeline = await ctx.timeline_service.get_active(ctx.project_id)
+        assert timeline is not None
+        violations = timeline.validate_constraints(
             max_video_duration_s=settings.max_video_duration_s,
             max_shots_per_project=settings.max_shots_per_project,
             min_shot_duration_s=settings.min_shot_duration_s,
@@ -53,16 +82,109 @@ class GenerateTimelineStep:
             return StepResult(
                 outcome="failed", error=f"timeline violates creative constraints: {violations}"
             )
+        return StepResult(outcome="ok")
 
-        # Idempotent across retries/resumes: v1 may already exist from a
-        # prior attempt that crashed before append_version ran.
-        if await ctx.timeline_service.get_active(ctx.project_id) is None:
-            await ctx.timeline_service.create_initial(ctx.project_id, project.script)
+    async def _run_fake(self, ctx: RunContext, *, script: str) -> None:
+        timeline = await ctx.timeline_service.get_active(ctx.project_id)
+        assert timeline is not None
+        if timeline.scenes:
+            return  # already filled by a prior attempt
 
+        fixture = await FakeTimelinePlanner().plan(project_id=ctx.project_id, script=script)
         await ctx.timeline_service.append_version(
             ctx.project_id,
             produced_by=ProducedBy.SHOT_PLANNER,
             transform=lambda _base: fixture,
             owns=_FAKE_PLANNER_OWNS,
         )
-        return StepResult(outcome="ok")
+
+    async def _run_real(self, ctx: RunContext, *, script: str) -> None:
+        provider = OpenAIPlanningProvider()
+        llm_call_repo = LlmCallRepository(ctx.session)
+
+        timeline = await ctx.timeline_service.get_active(ctx.project_id)
+        assert timeline is not None
+
+        if not timeline.creative_context.tone or timeline.music_plan is None:
+            creative_context, music_plan = await DirectorPlanner(provider, llm_call_repo).plan(
+                project_id=ctx.project_id, script=script
+            )
+
+            def _apply_director(base: Timeline) -> Timeline:
+                base.creative_context = creative_context
+                base.music_plan = music_plan
+                return base
+
+            await ctx.timeline_service.append_version(
+                ctx.project_id,
+                produced_by=ProducedBy.DIRECTOR,
+                transform=_apply_director,
+                owns=frozenset({"creative_context", "music_plan"}),
+            )
+            timeline = await ctx.timeline_service.get_active(ctx.project_id)
+            assert timeline is not None
+
+        if not timeline.scenes:
+            scenes = await ScenePlanner(provider, llm_call_repo).plan(
+                project_id=ctx.project_id,
+                script=script,
+                creative_context=timeline.creative_context,
+                max_scenes=settings.max_scenes,
+                max_video_duration_s=settings.max_video_duration_s,
+            )
+
+            def _apply_scenes(base: Timeline) -> Timeline:
+                base.scenes = scenes
+                return base
+
+            await ctx.timeline_service.append_version(
+                ctx.project_id,
+                produced_by=ProducedBy.SCENE_PLANNER,
+                transform=_apply_scenes,
+                owns=frozenset({"scenes"}),
+            )
+            timeline = await ctx.timeline_service.get_active(ctx.project_id)
+            assert timeline is not None
+
+        if any(not scene.shots for scene in timeline.scenes):
+            planned_scenes = await ShotPlanner(provider, llm_call_repo).plan(
+                project_id=ctx.project_id,
+                scenes=timeline.scenes,
+                creative_context=timeline.creative_context,
+                min_shot_duration_s=settings.min_shot_duration_s,
+                max_shot_duration_s=settings.max_shot_duration_s,
+                max_shots_per_project=settings.max_shots_per_project,
+            )
+            total_duration_s = compute_timeline_duration(
+                [shot for scene in planned_scenes for shot in scene.shots]
+            )
+
+            def _apply_shots(base: Timeline) -> Timeline:
+                base.scenes = planned_scenes
+                base.metadata.total_duration_s = total_duration_s
+                return base
+
+            await ctx.timeline_service.append_version(
+                ctx.project_id,
+                produced_by=ProducedBy.SHOT_PLANNER,
+                transform=_apply_shots,
+                owns=frozenset({"scenes", "metadata"}),
+            )
+            timeline = await ctx.timeline_service.get_active(ctx.project_id)
+            assert timeline is not None
+
+        if any(shot.asset_plan is None for shot in timeline.all_shots()):
+            planned_scenes = await AssetPlanner(provider, llm_call_repo).plan(
+                project_id=ctx.project_id, scenes=timeline.scenes
+            )
+
+            def _apply_assets(base: Timeline) -> Timeline:
+                base.scenes = planned_scenes
+                return base
+
+            await ctx.timeline_service.append_version(
+                ctx.project_id,
+                produced_by=ProducedBy.ASSET_PLANNER,
+                transform=_apply_assets,
+                owns=frozenset({"scenes"}),
+            )

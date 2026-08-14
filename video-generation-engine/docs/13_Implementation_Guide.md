@@ -870,10 +870,69 @@ Director → Scene Planner → Shot Planner → Asset Planner. Each one, end to 
 
 ## Done when
 
-- [ ] A real script produces a coherent Timeline that a human reads and recognises as a sensible plan
-- [ ] Every planner is additive-only and passes the `append_version` assertion
-- [ ] Golden-file tests cover all four planners
-- [ ] Fakes still work — `DRY_RUN=true` still produces an MP4
+- [x] A real script produces a coherent Timeline that a human reads and recognises as a sensible plan
+- [x] Every planner is additive-only and passes the `append_version` assertion
+- [x] Golden-file tests cover all four planners
+- [x] Fakes still work — `DRY_RUN=true` still produces an MP4
+
+## Implementation notes (2026-08-14)
+
+Built as designed above, with one refinement to the four-way split once the
+Timeline IR's shape was actually worked through: **Director** owns only
+`creative_context` + `music_plan` (the whole-script creative vision);
+**Scene Planner** owns `scenes` as narrative structure only (title, summary,
+emotion, narrative_purpose, narration_text, duration_s — shots left empty);
+**Shot Planner** fills `shots` per scene (one LLM call per scene, so the
+narration-span/duration-sum constraints stay scoped to something the model
+can reason about) and stamps `metadata.total_duration_s` via the same
+`compute_timeline_duration()` the renderer will use (D5); **Asset Planner**
+fills `asset_plan` per shot, batched one call per scene. Each stage is its
+own `append_version` call — v1 (empty, `create_initial`) through v5.
+
+- **`app/providers/base.py`** gained `PlanningLLMProvider` (Protocol) +
+  `StructuredCompletion` (the audit-ready return shape) — every planner
+  depends on this, never on the OpenAI SDK. `app/providers/openai_provider.py`
+  is the only file that imports `openai`; it maps SDK exceptions to
+  `TransientError`/`PermanentError` at the boundary (ADR-003).
+- **`app/prompts/{agent}/v1.md`** — plain-text prompt files, loaded by
+  `app/prompts/loader.py`. Each is the Creative Philosophy's principles
+  translated into that agent's specific job.
+- **API-facing schemas are deliberately separate from the Timeline IR**
+  (`app/planners/{agent}/schemas.py`) and every field is required, with no
+  defaults and no `min_length`/`max_length` constraints — OpenAI's
+  structured-output strict mode only supports a narrow JSON-Schema subset
+  (no `minItems`, and every property must be in `required`, which a
+  pydantic field with a default is not). Quantity/shape checks
+  (D7 caps, narration-span coverage, ladder ordering) live in each
+  planner's own `validate()` callback instead, run by the shared
+  `app/planners/repair.py` — call once, and on a violation, retry exactly
+  once with the violation fed back into the prompt, then fail permanently
+  (`settings.planner_max_repair_attempts`, default 1). Every attempt, repaired
+  or not, is recorded as its own `llm_call` row.
+- **Resumability goes one level deeper than M4.** `GenerateTimelineStep`
+  checks the active Timeline's own content before each stage (empty
+  `creative_context`/`music_plan` → run Director; empty `scenes` → run
+  Scene Planner; any scene with no `shots` → run Shot Planner; any shot
+  with no `asset_plan` → run Asset Planner) rather than tracking a
+  separate progress flag — a crash between stages resumes at exactly the
+  next one, proven in `tests/integration/test_generate_timeline_real.py`
+  by killing a run after v3 (Scene Planner) and confirming a fresh run
+  only re-invokes Shot + Asset Planner (Director/Scene Planner's
+  `llm_call` rows don't double). **Known scope boundary:** this
+  resumability is per-*stage*, not per-*scene* — a crash mid-Shot-Planner
+  loop (scene 3 of 5 done) re-plans every scene in that stage on retry,
+  since the stage only checkpoints once via one `append_version` after
+  every scene succeeds.
+- **`DRY_RUN=true` is unchanged**: `FakeTimelinePlanner` still fills the
+  whole Timeline in one `append_version` call, gated on `settings.dry_run`
+  inside `GenerateTimelineStep`. Real and fake paths share the same
+  `is_satisfied`/constraint-validation code after the branch.
+- 16 new tests (12 golden-file unit tests with a queued fake provider — no
+  network — across all four planners, covering the happy path, the
+  repair-then-succeed path, and the fail-after-one-repair path; 2
+  integration tests proving the full real chain end-to-end and the
+  crash-resume property above), all green; 34/34 tests total; ruff/black/mypy
+  clean across 97 source files.
 
 ---
 
@@ -1262,10 +1321,17 @@ M4 Workflow Engine  ████████████ complete 2026-08-14 —
                                  real ShotBinding/Asset/GeneratedClip read-write, per-shot
                                  failure isolation, resumability proven across two engine
                                  instances; 18/18 tests green
-Code                ███████░░░ M0 + M2 + M3 + M4 — no real planners or providers yet
-                                 (M5-M8); resolve_assets/render still route through fakes
-Next                M5 · AI Planners (real Director/Scene/Shot/Asset Planner chain over
-                                 OpenAI — the key is already in .env)
+M5 AI Planners      ████████████ complete 2026-08-14 — real Director/Scene/Shot/Asset
+                                 Planner chain over OpenAI structured output, one
+                                 append_version per stage (v2..v5), stage-level
+                                 resumability proven via simulated mid-chain crash;
+                                 DRY_RUN=true path unchanged; 34/34 tests green
+Code                ████████░░ M0 + M2 + M3 + M4 + M5 — no real asset search or media
+                                 generation yet (M6-M8); resolve_assets/render still
+                                 route through fakes
+Next                M6 · Asset Pipeline (real search — Wikimedia/Pexels/local — rungs
+                                 1-4 of the ladder; ELEVENLABS_API_KEY is already in .env
+                                 too, ahead of when M7 needs it)
 ```
 
 ---

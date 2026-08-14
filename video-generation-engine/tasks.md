@@ -11,8 +11,8 @@
 - [x] Backend Foundation
 - [ ] Database (Postgres + Alembic done; Redis not yet wired into app code)
 - [ ] Domain Models (Project/Script/Timeline done; Asset/Render/Workflow are schema-only)
-- [ ] Workflow Engine
-- [ ] AI Agents
+- [x] Workflow Engine
+- [x] AI Agents
 - [ ] Asset Pipeline
 - [ ] Rendering
 - [ ] API
@@ -79,10 +79,10 @@ TASK-000 Freeze Documentation v1.0
 
 # Sprint 5 — AI Planning
 
-- [ ] TASK-028 Director Agent
-- [ ] TASK-029 Scene Planner
-- [ ] TASK-030 Shot Planner
-- [ ] TASK-031 Asset Planner
+- [x] TASK-028 Director Agent (`app/planners/director/` — creative_context + music_plan over OpenAI)
+- [x] TASK-029 Scene Planner (`app/planners/scene/` — narrative structure, verbatim script coverage)
+- [x] TASK-030 Shot Planner (`app/planners/shot/` — shots per scene, narration-span coverage)
+- [x] TASK-031 Asset Planner (`app/planners/asset/` — ladder-ordered asset_plan per shot)
 
 ---
 
@@ -107,7 +107,7 @@ TASK-000 Freeze Documentation v1.0
 
 # Sprint 8 — AI Providers
 
-- [ ] TASK-041 OpenAI Provider (planning LLM only)
+- [x] TASK-041 OpenAI Provider (planning LLM only — `app/providers/openai_provider.py`)
 - [ ] TASK-042 fal.ai client + model bake-off (see Implementation Guide, M7 Step 0)
 - [ ] TASK-043 Image Provider (fal, rung 6)
 - [ ] TASK-044 Video Provider (fal, rung 5 — submit/poll/resume)
