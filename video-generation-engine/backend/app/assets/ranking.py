@@ -11,12 +11,11 @@ ranked as two separate options).
 
 from dataclasses import dataclass
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.providers.base import AssetCandidate
 
 logger = get_logger(__name__)
-
-_TARGET_AREA = 1080 * 1920
 
 _LICENCE_SCORES = {
     "public_domain": 1.0,
@@ -44,7 +43,8 @@ class RankedCandidate:
 def _quality_score(candidate: AssetCandidate) -> float:
     if candidate.width is None or candidate.height is None:
         return 0.5
-    return min(1.0, (candidate.width * candidate.height) / _TARGET_AREA)
+    target_area = settings.render_width * settings.render_height
+    return min(1.0, (candidate.width * candidate.height) / target_area)
 
 
 def _period_match_score(candidate: AssetCandidate, historical_period: str) -> float:

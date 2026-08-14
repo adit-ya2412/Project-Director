@@ -102,8 +102,8 @@ class Settings(BaseSettings):
     # --- Rendering ---
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
-    render_width: int = 1080
-    render_height: int = 1920
+    render_width: int = 720
+    render_height: int = 1280
     render_fps: int = 30
     render_pixel_format: str = "yuv420p"
     draft_width: int = 480
