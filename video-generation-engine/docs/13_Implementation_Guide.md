@@ -407,7 +407,7 @@ Canonical JSON document, one per version, stored in `timeline_version.document` 
 - **`schema_version` is checked on every load.** An unknown version fails loudly rather than silently mis-parsing.
 - **IDs are stable across versions.** `sh_01_01` in v2 is the same shot in v5. Partial regeneration depends on this — if the Shot Planner regenerates IDs, every resolved asset orphans.
 - **No media, no paths, no URLs.** See [I2](#i2--the-timeline-contains-decisions-never-media).
-- **Durations derive from narration, never from invention** (D1). A shot's `duration_s` must cover the words spoken over its `narration_span`. The Shot Planner proposes; TTS word timings are authoritative, and `append_version` reconciles the two.
+- **Durations derive from narration, never from invention** (D1). A shot's `duration_s` must cover the words spoken over its `narration_span`. The Shot Planner proposes; TTS timings are authoritative, and `append_version` reconciles the two. Those timings are character-level, and `narration_span` is a character-offset pair — so the reconciliation is an index lookup, not an alignment problem ([M8](#phase-m8--renderer)).
 - **Hard limits are validated, not just prompted** (D7): `total_duration_s` ≤ 90, total shots ≤ 40, scenes ≤ 12, and 1.5 ≤ `duration_s` ≤ 8.0 per shot. A planner that violates these fails validation and gets one repair attempt.
 - **Transitions overlap** (D5). A 0.4s dissolve between two 3.0s shots yields 5.6s of video, not 6.0s. One function owns this arithmetic and both the planner and the renderer call it.
 
@@ -880,7 +880,7 @@ Director → Scene Planner → Shot Planner → Asset Planner. Each one, end to 
 - **Prompts live in `app/prompts/` as versioned files, never as string literals in Python.** Record `prompt_version` on every `llm_call` row. When output quality shifts, you need to know which prompt produced which timeline.
 - **Force structured output.** Use the provider's JSON-schema/structured-output mode with your Pydantic model. On validation failure, allow exactly *one* repair round-trip (feed the error back), then fail permanently. Unbounded repair loops burn money silently.
 - **Constrain the output space hard.** Max scenes, max shots per scene, min/max shot duration, enum-only camera moves and transitions. An unconstrained planner will emit forty-two 0.4-second shots and the renderer will produce a strobe.
-- **Total duration must be derived from narration, not invented.** A shot's duration has to cover the words spoken over it. Per **D1** the source is ElevenLabs word timestamps, and narration is the master clock — the Shot Planner proposes durations, TTS timings correct them. Build the Shot Planner against that from the start.
+- **Total duration must be derived from narration, not invented.** A shot's duration has to cover the words spoken over it. Per **D1** the source is ElevenLabs' timestamps (character-level — see [M8](#phase-m8--renderer)), and narration is the master clock — the Shot Planner proposes durations, TTS timings correct them. Build the Shot Planner against that from the start.
 - **Enforce the D7 caps in the prompt *and* in validation.** 90s, ≤40 shots, ≤12 scenes, 1.5–8.0s per shot. Prompt-only constraints are suggestions; validation makes them real.
 - **The Director produces the `music_plan`** (D6) alongside the emotional arc — same call, since mood and tempo fall straight out of the narrative progression it is already reasoning about. No separate Music Planner agent in v1.
 - **Low temperature, and pass a seed where the provider supports it.** Planning is not where you want creativity variance; the creativity is in the prompt.
@@ -1251,11 +1251,47 @@ project's row lives in — see [12_Testing_Strategy.md](12_Testing_Strategy.md)
 — so running `pytest` mid-session will need the project's DB row
 re-seeded; the render file itself survives on disk regardless.)
 
+## What ElevenLabs actually returns — checked, not assumed (2026-08-15)
+
+**The timestamps are character-level, not word-level.** `POST /v1/text-to-speech/{voice_id}/with-timestamps` returns JSON containing `audio_base64` plus an `alignment` object of three parallel arrays: `characters`, `character_start_times_seconds`, `character_end_times_seconds`. Every "word-level timings" phrasing in D1/D2 and in the M5 advice above was wrong about the *mechanism*. The decision itself — TTS from the script, narration is the master clock, no forced-alignment step — stands unchanged.
+
+This is **better** than what those sections assumed, and it makes the master clock simpler rather than harder. `Shot.narration_span` is already a `[start, end)` **character-offset pair** into its scene's `narration_text`, so a shot's true spoken duration is a direct index lookup — `character_end_times_seconds[end - 1] - character_start_times_seconds[start]` — with no word-splitting heuristic in between, and therefore nowhere for a word-boundary bug to hide. Build against the character arrays directly; derive words only if something later genuinely needs them.
+
+**Use `alignment`, never `normalized_alignment`.** The normalized variant is aligned to ElevenLabs' normalized text ("Dr." → "Doctor", "1943" → "nineteen forty-three"), whose character indices no longer correspond to the script the Shot Planner indexed its spans against. Silently using it would desynchronise every shot whose narration contains a number or an abbreviation — which, on a historical documentary script, is most of them.
+
+## Build order
+
+Same rule as M5: one piece end to end, verified against the real API, before starting the next.
+
+1. **`NarrationProvider` + ElevenLabs + persistence.** The Protocol in `providers/base.py` (it is named in that file's docstring but does not exist yet), `providers/elevenlabs.py` as the only file that touches the endpoint, a `narration` table (segment ↔ scene, audio path, `alignment` JSONB, voice/model/character count), and storage at `{project}/narration/{content_hash}.mp3` per D3. Cache on `hash(text + voice_id + model + output_format)` — a re-render must never re-pay for identical audio, the same discipline as `generated_clip.prompt_hash`.
+2. **The master clock.** `app/timeline/narration_fit.py`: given a scene's alignment plus its shots' `narration_span`s, compute each shot's real spoken duration and reconcile. This writes a **new Timeline version** (`produced_by=narration`, `owns={"scenes", "metadata"}`) rather than mutating in place or fixing it up inside the renderer — corrected durations are a decision, so they belong in the IR (I1), and `append_version` is the only legal writer (I3).
+3. **Mux narration into the render.** Leave the existing silent visual path exactly as it is; assemble one continuous narration track (hook + scenes in order) and mux it in a single final pass. Do **not** thread audio through the per-run `xfade` graph — that recreates precisely the progressive drift D5 exists to prevent.
+4. **Music.** `MusicProvider` + Pixabay, the chosen track recorded somewhere durable (see open decisions), then the deterministic ducking mix: bed at `MUSIC_BED_GAIN_DB`, ducked to `MUSIC_DUCK_GAIN_DB` across every interval where narration is speaking — computed from the alignment arrays as a static volume envelope, never a live sidechain compressor (I5).
+5. **Ken Burns.** `camera.movement`/`direction`/`intensity` → `zoompan`/`crop` expressions. Purely a renderer concern; no planner changes (canon 3.1).
+6. **Determinism + draft mode.** Populate `render.fingerprint` — the column already exists and nothing writes it yet — and skip-if-unchanged; plus the 480p draft path.
+
+## Multi-language (Hindi first) and the hook
+
+Both are wanted for the first real M8 run, and neither is only a prompt change:
+
+- **Language.** `Timeline.metadata.language` already exists and is carried through every version, but it is currently written once from `settings.default_language` and then never read by anything. M8 makes it real: the Director and Scene Planner must be *told* the target language and write `narration_text` in it directly, and `eleven_multilingual_v2` (already the configured default) covers Hindi through the same timestamped endpoint. **Plan in the target language; do not translate afterwards** — a translated line rarely takes the same time to speak as the original, so post-hoc translation reintroduces exactly the timing drift D1 exists to eliminate. Needs: a per-project language input (API + `Project`), that language threaded into the Director/Scene Planner user content, and a real `ELEVENLABS_VOICE_ID` (currently blank — pick it by listening; it is not a spec decision).
+- **The hook.** A short opening line that earns the first three seconds. If the script already opens with one, nothing to do; if it doesn't, the Scene Planner should be able to write one. It **cannot** live in `narration_text`: `ScenePlanner._make_validator` hard-rejects any output whose concatenated `narration_text` is not verbatim-identical to the submitted script, and that check is load-bearing — it is what keeps narration traceable to its source. So the hook becomes a **new top-level `Timeline.hook: str | None`**, outside the verbatim check, with its own TTS segment spoken before scene 1, no `narration_span`, and no owning scene. Needs: the schema field, a Scene Planner prompt + output-schema change, and step 3 above prepending its audio.
+
+## Open decisions for M8
+
+None of these are settled. Answer them before or during the build, and record the answer here.
+
+- **Per-scene TTS, or one request for the whole script?** Per-scene matches the data model (`narration_span` offsets are per-scene, so alignment indices line up with zero arithmetic), makes the cache per-scene (edit one scene, re-synthesise one scene), and keeps the per-scene shape every other planner already uses. Cost is identical either way — billing is per character. The real tradeoff is prosody: separately synthesised scenes will not flow into one another the way a single continuous read does. **Recommendation: per-scene**, then listen to a real render before deciding whether the seams matter.
+- **What wins when real narration breaks a D7 cap?** Narration is the master clock (D1), so a shot must stretch to cover its words — but that can push a shot past `MAX_SHOT_DURATION_S`, or the whole video past the 90s `MAX_VIDEO_DURATION_S`. Truncating audio is not an option; it cuts words off mid-sentence. **Recommendation:** let per-shot duration exceed its cap (the cap is a planning heuristic; the narration is real), but treat exceeding total `MAX_VIDEO_DURATION_S` as an explicit, loud failure that tells the user to shorten the script — never a silent trim.
+- **Narration runs after approval (I6), so approved durations are not final.** TTS costs money, so it cannot run before the gate — which means the timeline the user approves carries planner-estimated durations while the rendered video carries narration-corrected ones. That is defensible (approval is of the creative plan, not of millisecond timings), but it should be a deliberate choice rather than an accident, and the approval UI should eventually say so.
+- **Where does the chosen music track live?** D6 puts music *selection* in the Timeline as a creative decision, but `music_plan` currently carries only `mood`/`tempo`/`energy_arc`/`search_terms`/`licence_requirements` — no chosen track. Either the selected track becomes a Timeline field (another `append_version`) or a `music` table row referenced by the render. The former is more consistent with D6 and I1; decide before building step 4.
+- **Does TTS count against the budget cap?** `check_budget` currently sums `generated_clip.cost_cents` only. ElevenLabs bills per character, so a long script is a real — if small — cost. Folding narration into the same cap keeps that one number meaningful.
+
 ## Advice
 
 - **Normalise every input before composition.** Scale, pad, and set `fps`, `pix_fmt=yuv420p`, and `setsar=1` on every clip *individually* before concatenating. Mixed SAR/fps/resolution inputs are the number-one cause of FFmpeg concat failures and of silently mangled output.
 - **Narration audio is the master clock** (D1). Everything else is fitted to it. If the plan says 3.0s but the narration for that span is 3.4s, the shot stretches. Apply this in exactly one place.
-- **Music is mixed, never chosen, here** (D6). The Renderer receives a selected track and does the mix: narration at full level, music bedded at `MUSIC_BED_GAIN_DB`, ducked to `MUSIC_DUCK_GAIN_DB` while narration is speaking. Use the word timings you already have to drive the ducking envelope rather than a live sidechain compressor — it is deterministic, and [I5](#i5--rendering-is-a-pure-function) requires that. Fade the bed in and out at the video boundaries.
+- **Music is mixed, never chosen, here** (D6). The Renderer receives a selected track and does the mix: narration at full level, music bedded at `MUSIC_BED_GAIN_DB`, ducked to `MUSIC_DUCK_GAIN_DB` while narration is speaking. Use the timings you already have to drive the ducking envelope rather than a live sidechain compressor — it is deterministic, and [I5](#i5--rendering-is-a-pure-function) requires that. Fade the bed in and out at the video boundaries.
 - **Fingerprint the render inputs.** `sha256(canonical_timeline_json + sorted asset content hashes + narration hash + music track hash + render settings + ffmpeg version)`. Same fingerprint → skip and return the existing file. This is how you *prove* [I5](#i5--rendering-is-a-pure-function) rather than hope for it.
 - **Purge non-determinism from the render path**: no `datetime.now()` in filenames or metadata, no unordered set/dict iteration when building the filter graph, no locale-dependent number formatting, and pass `-fflags +bitexact` where appropriate. Pin the FFmpeg version in Docker and record it in the fingerprint.
 - **Always render a fast draft first.** 480p, no captions. Iteration at 8 seconds beats iteration at 4 minutes, and most defects (wrong asset, wrong order, bad pacing) are visible at any resolution.
@@ -1272,6 +1308,11 @@ re-seeded; the render file itself survives on disk regardless.)
 - [ ] Music beds under narration and ducks cleanly; no clipping, no bed audible over the voice
 - [ ] Draft and final modes both work
 - [ ] Mixed inputs (archival JPEG + stock 4K MP4 + generated clip + generated PNG) compose cleanly
+- [ ] A Hindi script produces natural-sounding Hindi narration, with every shot still synced to its own `narration_span`
+- [ ] The hook, when the Scene Planner writes one, is spoken before scene 1 and is not double-counted in any scene's timing
+- [ ] Shot durations in the rendered video match the real narration, not the planner's estimates — verified by probing the output, not by trusting the arithmetic
+
+**Deliberately out of scope for this iteration:** burned captions. `BURN_CAPTIONS=false`; the ASS generation path is not built. D2 still stands for whenever it is — captions come from script text plus these same alignment timings, never from transcribing our own audio.
 
 ---
 
@@ -1411,8 +1452,8 @@ These were genuine gaps in `00`–`12`. **All eight are now decided** (2026-08-1
 
 | ID | Question | Decision | Affects |
 |---|---|---|---|
-| **D1** | Where does narration audio come from, and how are word timings obtained? | **TTS from the script, narration is the master clock.** ElevenLabs' timestamped endpoint returns word-level timings with the audio — no forced-alignment step, no alignment error. Shot durations, audio sync and captions all derive from these timings. | M5, M8 |
-| **D2** | Captions from script text or from transcribing the narration? | **Script text + TTS word timings.** Transcribing our own generated audio would only re-introduce error and non-determinism. Follows directly from D1. | M8 |
+| **D1** | Where does narration audio come from, and how are timings obtained? | **TTS from the script, narration is the master clock.** ElevenLabs' timestamped endpoint returns timings with the audio — no forced-alignment step, no alignment error. Shot durations, audio sync and captions all derive from these timings. *(Corrected 2026-08-15: those timings are **character-level**, not word-level as originally written here. The decision is unchanged; the mechanism is simpler than assumed, since `Shot.narration_span` is already a character-offset pair — see [M8](#phase-m8--renderer).)* | M5, M8 |
+| **D2** | Captions from script text or from transcribing the narration? | **Script text + TTS timings.** Transcribing our own generated audio would only re-introduce error and non-determinism. Follows directly from D1. | M8 |
 | **D3** | Storage layout and retention. | `storage/{project_id}/{assets,clips,narration,music,renders}/{content_hash}.{ext}`. Content-hash filenames only — never provider-supplied names. Draft renders purged after 7 days (`DRAFT_RETENTION_DAYS`); finals kept. | M2 |
 | **D4** | Which concrete providers ship in v1? | See the [provider roster](#211-provider-roster-v1) below. | M5–M8 |
 | **D5** | Does a transition overlap adjacent shots or extend the timeline? | **Overlap.** Forced by D1 — extending the timeline per dissolve would drift video away from the narration clock cumulatively across the video. Planner duration arithmetic must match; implemented in exactly one function. | M5, M8 |
@@ -1429,7 +1470,7 @@ Exactly one concrete provider per protocol. [ADR-003](adr/ADR-003-Provider-Abstr
 | `LLMProvider` | **OpenAI** | — | All four planning agents. Must use structured / JSON-schema output — the IR is validated against Pydantic on every call. A cheaper model handles mechanical passes. |
 | `ImageProvider` | **fal.ai** | 6 | Model chosen by bake-off (see below). FLUX-family models are the starting candidates for photoreal archival stills. |
 | `VideoProvider` | **fal.ai** | 5 | Model chosen by bake-off. Uniform queue API across every hosted model, which is what the M4/M7 submit → persist-handle → poll → resume machinery is written against. |
-| `NarrationProvider` | **ElevenLabs** | — | Timestamped endpoint is **required**, not optional — D1 depends on the word timings. |
+| `NarrationProvider` | **ElevenLabs** | — | The `/with-timestamps` endpoint is **required**, not optional — D1 depends on the timings (character-level; see [M8](#phase-m8--renderer)). |
 | `AssetProvider` | **Wikimedia Commons** | 2 | No key. A descriptive User-Agent with real contact details is required by their terms. |
 | `AssetProvider` | **Pexels** | 4 | Stock imagery and footage. |
 | `MusicProvider` | **Pixabay Music** | — | See the caveat below. |
@@ -1619,12 +1660,19 @@ Code                ████████████ M0 + M2 + M3 + M4 + M5 
                                  real end-to-end paid run — renderer (M8) is still the
                                  M0 slideshow renderer: no real narration, no audio
                                  mixing, no captions yet
-Next                M8 · Renderer (ElevenLabs narration - the master clock, D1 - real
-                                 audio mixing/ducking, burned captions; key already
-                                 in .env). Reuse project 58f0a5e6-008d-468e-862a-e365e463878e
-                                 (real timeline, real resolved assets, real render) as the
-                                 M8 test project rather than creating a fresh one — the
-                                 planning/search work is already done and paid for.
+Next                M8 · Renderer — build order, open decisions and scope are written
+                                 up in the M8 section (2026-08-15). Six steps: narration
+                                 provider → master clock → mux → music/ducking → Ken
+                                 Burns → determinism+draft. Also in scope this iteration:
+                                 Hindi narration (plan in-language, never translate after)
+                                 and an optional Timeline.hook. Captions explicitly OUT
+                                 of scope this pass. Verified up front that ElevenLabs'
+                                 timestamps are CHARACTER-level, not word-level as D1
+                                 originally claimed — which makes the master clock a
+                                 direct index lookup against narration_span. Reuse
+                                 project 58f0a5e6-008d-468e-862a-e365e463878e rather
+                                 than creating a fresh one; its planning and asset
+                                 work is already done and paid for.
 ```
 
 ---
