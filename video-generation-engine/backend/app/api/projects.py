@@ -11,9 +11,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from app.api.deps import get_repo
+from app.api.deps import get_repo, get_timeline_service
 from app.repositories.project_repository import ProjectRepository
 from app.schemas.project import Project, ProjectStatus
+from app.timeline.service import TimelineService
 from app.workflow.pipeline import run_pipeline
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -75,13 +76,17 @@ async def get_script(project_id: str, repo: ProjectRepository = Depends(get_repo
 
 
 @router.post("/{project_id}/render", response_model=Project)
-async def render_project(project_id: str, repo: ProjectRepository = Depends(get_repo)) -> Project:
+async def render_project(
+    project_id: str,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+) -> Project:
     """Runs the full M0 pipeline synchronously (fake plan -> fake resolve
     -> render). M4 replaces this with an async, resumable workflow run."""
     project = await _get_project_or_404(project_id, repo)
     if not project.script:
         raise HTTPException(status_code=400, detail="upload a script before rendering")
-    return await run_pipeline(project, repo)
+    return await run_pipeline(project, repo, timeline_service)
 
 
 @router.get("/{project_id}/status")

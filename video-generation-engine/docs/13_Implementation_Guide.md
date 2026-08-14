@@ -705,10 +705,45 @@ class TimelineService:
 
 ## Done when
 
-- [ ] Every planner-shaped mutation goes through `append_version`
-- [ ] A test proves that mutating a returned Timeline does not affect the stored one
-- [ ] `diff(v1, v2)` produces readable scene/shot-level changes
-- [ ] Approval sets status and pins `active_timeline_version`
+- [x] Every planner-shaped mutation goes through `append_version`
+- [x] A test proves that mutating a returned Timeline does not affect the stored one
+- [x] `diff(v1, v2)` produces readable scene/shot-level changes
+- [x] Approval sets status and pins `active_timeline_version`
+
+**Status: M3 complete** (2026-08-14). `app/timeline/service.py` implements
+the full API: `create_initial` (empty v1, before any planner runs),
+`append_version` (deep copy → transform → JSON round-trip validation →
+additive-only check → persist as version+1), `approve`, `diff`, and
+`rollback_to` (appends a copy, never deletes). `app/timeline/additive.py`
+is the additive-only enforcement — a caller declares `owns: frozenset[str]`
+(dotted field paths it may change freely); every other previously-populated
+field must come out unchanged or the write is rejected with `PermanentError`.
+`app/timeline/diff.py` is a pure, DB-free `compute_diff` producing
+scene/shot-level `FieldChange` lists.
+
+`PostgresProjectRepository` no longer writes `timeline_version` at all —
+it only reads the latest row (via `TimelineVersionRepository`) to embed
+into a returned `Project`. `TimelineService` is the sole writer, enforced
+structurally rather than by convention. The M0 pipeline's fake planner now
+goes through `create_initial` + one `append_version` call (`owns={"metadata",
+"creative_context", "music_plan", "scenes"}`, since the fixture fills
+everything a real Director/Scene/Shot/Asset Planner chain would across four
+calls) — proving the discipline works end to end before a single real
+planner exists.
+
+14/14 tests pass: the 4 e2e tests unchanged, plus 9 new integration tests in
+`tests/integration/test_timeline_service.py` covering deep-copy isolation,
+additive-only rejection *and* the ownership-declared success path, diff
+output, approve pinning `active_timeline_version`, and rollback preserving
+full history (v2 and v3 both still readable after rolling back to v2).
+
+Not yet built: real planners (M5) will exercise `append_version` with
+genuinely different `owns` sets per stage (Director owns `scenes` at the
+skeleton level; Shot Planner owns `scenes[].shots`; etc.) — M3 proves the
+mechanism, M5 proves it under real multi-stage ownership boundaries. No
+import-linter contract yet enforcing "only `TimelineService` writes
+`timeline_version`" — currently a comment-level rule, worth automating
+before more code gets a chance to violate it.
 
 ---
 
@@ -1166,10 +1201,13 @@ M1 Foundation       ███████████░ venv, deps, ruff/black/
 M2 Persistence      ████████████ complete 2026-08-14 — 11-table schema, Alembic migration
                                  applied, PostgresProjectRepository, e2e test runs against
                                  real Postgres, restart-survival proven
-Code                █████░░░░░░ M0 skeleton + M2 persistence — no Timeline versioning
-                                 discipline (M3), no workflow engine (M4), no real planners
-                                 or providers yet (M5-M8)
-Next                M3 · Timeline Service (append_version discipline) → M4 · Workflow Engine
+M3 Timeline Service ████████████ complete 2026-08-14 — append_version is the sole writer,
+                                 additive-only enforcement, diff, approve, rollback_to;
+                                 14/14 tests green (4 e2e + 9 new + health)
+Code                ██████░░░░░ M0 + M2 + M3 — no workflow engine yet (M4), no real
+                                 planners or providers yet (M5-M8)
+Next                M4 · Workflow Engine (explicit steps, retries, resumability, the
+                                 human-approval gate) — build this before M5's planners
 ```
 
 ---

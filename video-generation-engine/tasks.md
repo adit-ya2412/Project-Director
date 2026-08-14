@@ -70,10 +70,10 @@ TASK-000 Freeze Documentation v1.0
 
 # Sprint 4 — Core Services
 
-- [ ] TASK-024 Project Service
-- [ ] TASK-025 Timeline Service
-- [ ] TASK-026 Asset Service
-- [ ] TASK-027 Render Service
+- [x] TASK-024 Project Service (`PostgresProjectRepository` — read/update Project + Script; Timeline is read-only here)
+- [x] TASK-025 Timeline Service (`app/timeline/service.py` — append_version, additive-only, diff, approve, rollback_to)
+- [ ] TASK-026 Asset Service (lands with M6)
+- [ ] TASK-027 Render Service (lands with M8)
 
 ---
 

@@ -5,6 +5,12 @@ unit-test double (Testing Strategy: unit tests never touch external
 services). `PostgresProjectRepository` (M2) is the real implementation -
 callers depend on the `ProjectRepository` protocol, never on either
 concrete class.
+
+`PostgresProjectRepository` only ever *reads* `timeline_version` (via
+`TimelineVersionRepository`) - it never writes one. `TimelineService`
+(app/timeline/service.py) is the only writer, per Invariant I3. If you
+find yourself adding a `timeline_version` insert here, that belongs in
+`TimelineService.append_version` instead.
 """
 
 import asyncio
@@ -18,6 +24,7 @@ from app.core.clock import utcnow
 from app.models.project import ProjectModel
 from app.models.script import ScriptModel
 from app.models.timeline_version import TimelineVersionModel
+from app.repositories.timeline_repository import TimelineVersionRepository
 from app.schemas.project import Project, ProjectStatus
 from app.schemas.timeline import Timeline
 
@@ -56,18 +63,11 @@ class InMemoryProjectRepository:
 
 
 class PostgresProjectRepository:
-    """Real persistence for Project + (embedded) Script + Timeline.
-
-    Script and Timeline get their own tables (matching the full data
-    model) but M2 does not yet enforce the M3 versioning discipline
-    (`append_version` as the sole writer, immutability). This repository
-    appends a new row only when the incoming content actually differs
-    from what is already stored, and always treats the highest version
-    number as current - a real `TimelineService` replaces this in M3.
-    """
+    """Real persistence for Project + Script + (read-only) Timeline."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+        self._timeline_repo = TimelineVersionRepository(session)
 
     async def create(self, name: str) -> Project:
         model = ProjectModel(name=name, status=ProjectStatus.CREATED.value)
@@ -87,10 +87,15 @@ class PostgresProjectRepository:
         if model is None:
             return None
         script = await self._latest_script(model.id)
-        timeline_row = await self._latest_timeline_version(model.id)
+        timeline_row = await self._timeline_repo.get_latest(model.id)
         return self._to_schema(model, script=script, timeline_row=timeline_row)
 
     async def update(self, project: Project) -> Project:
+        """Updates status/error/video_path, and appends a new script
+        version if the content changed. Does NOT write the Timeline -
+        that goes through `TimelineService` only. The returned Project
+        always reflects the current DB state, not just an echo of what
+        the caller passed in."""
         model = await self._session.get(ProjectModel, uuid.UUID(project.id))
         if model is None:
             raise ValueError(f"project {project.id} does not exist")
@@ -102,21 +107,19 @@ class PostgresProjectRepository:
         if project.script is not None:
             await self._append_script_if_changed(model.id, project.script)
 
-        if project.timeline is not None:
-            await self._append_timeline_if_changed(model, project.timeline)
-
         await self._session.commit()
         await self._session.refresh(model)
 
-        project.updated_at = model.updated_at
-        return project
+        script = await self._latest_script(model.id)
+        timeline_row = await self._timeline_repo.get_latest(model.id)
+        return self._to_schema(model, script=script, timeline_row=timeline_row)
 
     async def list_all(self) -> list[Project]:
         result = await self._session.execute(select(ProjectModel))
         projects = []
         for model in result.scalars().all():
             script = await self._latest_script(model.id)
-            timeline_row = await self._latest_timeline_version(model.id)
+            timeline_row = await self._timeline_repo.get_latest(model.id)
             projects.append(self._to_schema(model, script=script, timeline_row=timeline_row))
         return projects
 
@@ -131,38 +134,12 @@ class PostgresProjectRepository:
         )
         return result.scalar_one_or_none()
 
-    async def _latest_timeline_version(self, project_id: uuid.UUID) -> TimelineVersionModel | None:
-        result = await self._session.execute(
-            select(TimelineVersionModel)
-            .where(TimelineVersionModel.project_id == project_id)
-            .order_by(TimelineVersionModel.version.desc())
-            .limit(1)
-        )
-        return result.scalar_one_or_none()
-
     async def _append_script_if_changed(self, project_id: uuid.UUID, content: str) -> None:
         existing = await self._latest_script(project_id)
         if existing is not None and existing.content == content:
             return
         next_version = (existing.version + 1) if existing else 1
         self._session.add(ScriptModel(project_id=project_id, content=content, version=next_version))
-
-    async def _append_timeline_if_changed(self, model: ProjectModel, timeline: Timeline) -> None:
-        document = timeline.model_dump(mode="json")
-        existing = await self._latest_timeline_version(model.id)
-        if existing is not None and existing.document == document:
-            return
-        self._session.add(
-            TimelineVersionModel(
-                project_id=model.id,
-                version=timeline.version,
-                parent_version=timeline.parent_version,
-                produced_by=timeline.produced_by.value,
-                status=timeline.status.value,
-                document=document,
-            )
-        )
-        model.active_timeline_version = timeline.version
 
     @staticmethod
     def _to_schema(

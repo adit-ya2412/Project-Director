@@ -8,6 +8,12 @@ renderer before either planners or a state machine exist.
 
 Every provider used here is a fake (Invariant: providers/ firewall). No
 network calls, no API keys, no spend.
+
+Timeline generation goes through `TimelineService.append_version` (M3),
+even though the "planner" here is a fake that returns a fixture in one
+shot. This is deliberate: it proves the versioning discipline end to end
+before a single real planner exists, so M5 has a proven seam to plug
+into rather than an untested one.
 """
 
 from pathlib import Path
@@ -22,7 +28,8 @@ from app.providers.fakes.llm import FakeTimelinePlanner
 from app.renderer.slideshow import RenderSettings, render_timeline
 from app.repositories.project_repository import ProjectRepository
 from app.schemas.project import Project, ProjectStatus
-from app.schemas.timeline import AssetStrategy, Shot
+from app.schemas.timeline import AssetStrategy, ProducedBy, Shot, Timeline
+from app.timeline.service import TimelineService
 
 logger = get_logger(__name__)
 
@@ -32,6 +39,12 @@ _SEARCH_STRATEGIES = {
     AssetStrategy.PUBLIC_DOMAIN,
     AssetStrategy.STOCK_SEARCH,
 }
+
+# The fake planner fills in everything in one shot (there is no separate
+# Director / Scene Planner / Shot Planner / Asset Planner yet - that's
+# M5). It therefore declares ownership of every content field on the
+# still-empty timeline `create_initial` produced.
+_FAKE_PLANNER_OWNS = frozenset({"metadata", "creative_context", "music_plan", "scenes"})
 
 
 async def _resolve_shot_image(
@@ -70,7 +83,36 @@ async def _resolve_shot_image(
     return result.content
 
 
-async def run_pipeline(project: Project, repo: ProjectRepository) -> Project:
+async def _plan_timeline(project: Project, timeline_service: TimelineService) -> Timeline:
+    """Stand-in for Director -> Scene Planner -> Shot Planner -> Asset
+    Planner (M5): loads the fixture, validates it, then persists it
+    through the same append_version discipline a real planner will use."""
+    assert project.script is not None  # guarded by the caller
+
+    fixture = await FakeTimelinePlanner().plan(project_id=project.id, script=project.script)
+
+    violations = fixture.validate_constraints(
+        max_video_duration_s=settings.max_video_duration_s,
+        max_shots_per_project=settings.max_shots_per_project,
+        min_shot_duration_s=settings.min_shot_duration_s,
+        max_shot_duration_s=settings.max_shot_duration_s,
+        max_scenes=settings.max_scenes,
+    )
+    if violations:
+        raise EngineError(f"timeline violates creative constraints: {violations}")
+
+    await timeline_service.create_initial(project.id, project.script)
+    return await timeline_service.append_version(
+        project.id,
+        produced_by=ProducedBy.SHOT_PLANNER,
+        transform=lambda _base: fixture,
+        owns=_FAKE_PLANNER_OWNS,
+    )
+
+
+async def run_pipeline(
+    project: Project, repo: ProjectRepository, timeline_service: TimelineService
+) -> Project:
     """Run script -> Timeline -> images -> MP4 for one project, updating
     its status as it goes. Never raises — failures are recorded on the
     Project and returned (Principle 10, fail gracefully)."""
@@ -84,20 +126,7 @@ async def run_pipeline(project: Project, repo: ProjectRepository) -> Project:
         if not project.script:
             raise EngineError("project has no script uploaded")
 
-        timeline = await FakeTimelinePlanner().plan(project_id=project.id, script=project.script)
-
-        violations = timeline.validate_constraints(
-            max_video_duration_s=settings.max_video_duration_s,
-            max_shots_per_project=settings.max_shots_per_project,
-            min_shot_duration_s=settings.min_shot_duration_s,
-            max_shot_duration_s=settings.max_shot_duration_s,
-            max_scenes=settings.max_scenes,
-        )
-        if violations:
-            raise EngineError(f"timeline violates creative constraints: {violations}")
-
-        project.timeline = timeline
-        await repo.update(project)
+        timeline = await _plan_timeline(project, timeline_service)
 
         project_dir = settings.storage_root / project.id
         work_dir = project_dir / "work"
@@ -137,5 +166,4 @@ async def run_pipeline(project: Project, repo: ProjectRepository) -> Project:
         project.error = str(exc)
         logger.error("pipeline.failed", extra={"project_id": project.id, "error": str(exc)})
 
-    await repo.update(project)
-    return project
+    return await repo.update(project)
