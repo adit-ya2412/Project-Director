@@ -10,10 +10,10 @@
 - [x] Repository Structure
 - [x] Backend Foundation
 - [ ] Database (Postgres + Alembic done; Redis not yet wired into app code)
-- [ ] Domain Models (Project/Script/Timeline done; Asset/Render/Workflow are schema-only)
+- [ ] Domain Models (Project/Script/Timeline/Asset done; Render/Workflow are schema-only)
 - [x] Workflow Engine
 - [x] AI Agents
-- [ ] Asset Pipeline
+- [x] Asset Pipeline
 - [ ] Rendering
 - [ ] API
 - [ ] Frontend
@@ -62,7 +62,7 @@ TASK-000 Freeze Documentation v1.0
 - [x] TASK-018 Timeline Model (`timeline_version` table + Pydantic IR, exercised by tests)
 - [x] TASK-019 Scene Model (embedded in the Timeline IR JSONB — canon 3.3 supersedes a separate table)
 - [x] TASK-020 Shot Model (embedded in the Timeline IR JSONB — canon 3.3 supersedes a separate table)
-- [ ] TASK-021 Asset Model (table exists; no code writes to it yet — lands with M6)
+- [x] TASK-021 Asset Model (`asset` table — real writes from the M6 resolve_assets real path)
 - [ ] TASK-022 Render Model (table exists; no code writes to it yet — lands with M8)
 - [ ] TASK-023 Workflow Model (`workflow_run`/`workflow_step_attempt` tables exist; no code writes to them yet — lands with M4)
 
@@ -72,7 +72,7 @@ TASK-000 Freeze Documentation v1.0
 
 - [x] TASK-024 Project Service (`PostgresProjectRepository` — read/update Project + Script; Timeline is read-only here)
 - [x] TASK-025 Timeline Service (`app/timeline/service.py` — append_version, additive-only, diff, approve, rollback_to)
-- [ ] TASK-026 Asset Service (lands with M6)
+- [x] TASK-026 Asset Service (`AssetRepository` + `app/assets/ranking.py` + `app/assets/validation.py`)
 - [ ] TASK-027 Render Service (lands with M8)
 
 ---
@@ -97,11 +97,11 @@ TASK-000 Freeze Documentation v1.0
 
 # Sprint 7 — Asset Pipeline
 
-- [ ] TASK-036 Asset Resolver
-- [ ] TASK-037 Wikimedia Provider
-- [ ] TASK-038 Pexels Provider
-- [ ] TASK-039 Local Asset Provider
-- [ ] TASK-040 Asset Ranking
+- [x] TASK-036 Asset Resolver (`resolve_assets.py` real path — fallback-chain walk, licence gate, dedup)
+- [x] TASK-037 Wikimedia Provider (`app/providers/wikimedia.py` — serves rungs 2 and 3)
+- [x] TASK-038 Pexels Provider (`app/providers/pexels.py` — rung 4)
+- [x] TASK-039 Local Asset Provider (`app/providers/local_assets.py` — real stub, rung 1, no upload feature yet)
+- [x] TASK-040 Asset Ranking (`app/assets/ranking.py` — weighted score, logged component breakdown)
 
 ---
 

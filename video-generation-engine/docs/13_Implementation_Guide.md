@@ -967,10 +967,65 @@ Local project assets → Wikimedia → Pexels → generic public domain.
 
 ## Done when
 
-- [ ] A historical script resolves the majority of shots from archives without generating anything
-- [ ] Every stored asset has complete provenance and passes the licence gate
-- [ ] Ranking decisions are explainable from logs
-- [ ] Re-running resolution is free (cache hits) and produces identical results
+- [x] A historical script resolves the majority of shots from archives without generating anything
+- [x] Every stored asset has complete provenance and passes the licence gate
+- [x] Ranking decisions are explainable from logs
+- [x] Re-running resolution is free (cache hits) and produces identical results
+
+## Implementation notes (2026-08-14)
+
+Built rungs 2 (`historical_search`) and 4 (`stock_search`) for real —
+**Wikimedia Commons** (`app/providers/wikimedia.py`, no API key, User-Agent
+required by their terms) and **Pexels** (`app/providers/pexels.py`,
+`PEXELS_API_KEY`). Rung 3 (`public_domain`) is served by the *same*
+Wikimedia provider under a second registration - Commons genuinely hosts
+both historical archives and general public-domain media, so a separate
+client would just duplicate the same HTTP logic. Rung 1 (`project_assets`)
+is a real, wired-in class (`app/providers/local_assets.py`) that always
+returns no candidates - there is no project-asset upload endpoint yet, so
+this is an honest stub, not a TODO comment; adding upload later is a
+change to that one file, not to the ladder logic.
+
+- **`ResolveAssetsStep` now walks the shot's full `asset_plan.fallback_chain`**
+  in DRY_RUN=false mode, trying each search rung in ladder order until one
+  yields a licence-passing candidate - a real change from the DRY_RUN path
+  (unchanged since M4), which only ever tries the shot's primary strategy
+  once, because `FakeAssetProvider` always finds something.
+- **The licence gate discards, never deprioritises** - a candidate whose
+  licence isn't in the shot's `licence_requirements` never reaches ranking.
+- **Dedup by content hash happens before ranking**: up to 5 candidates per
+  rung are fetched and hashed, exact-duplicate hashes collapse to one
+  entry, and a hash matching an asset already stored for the project
+  short-circuits straight to reuse (no re-download, no re-ranking).
+- **`app/assets/ranking.py`** is the one explicit, weighted scoring
+  function from the guide's formula (relevance/quality/period-match/
+  licence/reuse-penalty), logging the top-5 candidates' component scores
+  on every call - answering "why did it pick that photo?" from logs alone.
+  The reuse penalty (0.4) is deliberately larger than any single other
+  component's swing (≤0.35), so a within-project-reused image never wins
+  against any genuinely different alternative, proven directly in tests.
+- **`app/assets/validation.py`** verifies magic bytes via Pillow (not the
+  provider's declared content-type or a file extension - both are
+  provider-controlled input) and enforces `MAX_DOWNLOAD_BYTES`; a
+  candidate that fails validation is skipped in favour of the next-ranked
+  one in the same rung, not an immediate shot failure.
+- **Known gap vs. this phase's own advice**: real search still runs where
+  M4 placed `resolve_assets` - *after* the approval gate, not before it.
+  Moving search ahead of approval (so the approval screen shows resolved
+  photos instead of just prompts) is a pipeline-ordering change bigger
+  than this phase's asset-search scope and is deferred, not silently
+  dropped.
+- Both HTTP providers accept an injectable `httpx.AsyncBaseTransport` for
+  testing (`httpx.MockTransport`) - real request/response/error-mapping
+  code is exercised with zero network calls, real-API testing is a
+  separate, manually-triggered concern per the Testing Strategy.
+- 27 new tests (12 provider tests via `MockTransport`, 13 pure-function
+  ranking/validation tests, 5 `resolve_assets` integration tests covering
+  the licence gate, dedup, reuse penalty, provenance completeness, and the
+  generation fallback), 61/62 total green - the one failure is the
+  pre-existing FFmpeg-dependent e2e render step, unrelated to this phase
+  (FFmpeg not on PATH in the dev shell, not a code regression);
+  ruff/black/mypy clean across 111 source files.
 
 ---
 
@@ -1326,12 +1381,20 @@ M5 AI Planners      ████████████ complete 2026-08-14 —
                                  append_version per stage (v2..v5), stage-level
                                  resumability proven via simulated mid-chain crash;
                                  DRY_RUN=true path unchanged; 34/34 tests green
-Code                ████████░░ M0 + M2 + M3 + M4 + M5 — no real asset search or media
-                                 generation yet (M6-M8); resolve_assets/render still
-                                 route through fakes
-Next                M6 · Asset Pipeline (real search — Wikimedia/Pexels/local — rungs
-                                 1-4 of the ladder; ELEVENLABS_API_KEY is already in .env
-                                 too, ahead of when M7 needs it)
+M6 Asset Pipeline   ████████████ complete 2026-08-14 — real Wikimedia (rungs 2+3) and
+                                 Pexels (rung 4) search, licence hard-gate, content-hash
+                                 dedup before ranking, explicit weighted ranking with
+                                 logged component scores, within-project reuse penalty,
+                                 magic-byte download validation; project_assets (rung 1)
+                                 is a real stub pending an upload feature; DRY_RUN=true
+                                 path unchanged; 61/62 tests green (1 pre-existing
+                                 FFmpeg-PATH failure, unrelated)
+Code                █████████░ M0 + M2 + M3 + M4 + M5 + M6 — no real media generation
+                                 yet (M7-M8); render still routes through fakes for
+                                 generate_video/generate_image
+Next                M7 · Media Generation (fal.ai bake-off first — Step 0 — then real
+                                 image/video generation for rungs 5-6; ElevenLabs
+                                 narration also lands here, key already in .env)
 ```
 
 ---

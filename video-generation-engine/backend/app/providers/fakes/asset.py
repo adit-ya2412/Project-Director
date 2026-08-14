@@ -40,7 +40,17 @@ class FakeAssetProvider:
     async def search(self, query: AssetQuery) -> list[AssetCandidate]:
         key = "|".join(query.search_terms) or query.shot_id
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
-        return [AssetCandidate(source_id=digest, score=0.9, licence="cc0")]
+        return [
+            AssetCandidate(
+                source_id=digest,
+                source_url=f"fake://asset/{digest}",
+                title=f"fake asset for {key}",
+                licence="cc0",
+                relevance=0.9,
+                width=1080,
+                height=1920,
+            )
+        ]
 
     async def fetch(self, candidate: AssetCandidate) -> AssetBytes:
         seed = int(candidate.source_id, 16) % 1000

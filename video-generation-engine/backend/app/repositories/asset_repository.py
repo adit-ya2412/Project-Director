@@ -24,6 +24,16 @@ class AssetRepository:
         )
         return result.scalar_one_or_none()
 
+    async def list_content_hashes_for_project(self, project_id: uuid.UUID) -> set[str]:
+        """Every asset already stored for this project - the reuse-penalty
+        input for ranking (implementation guide, Phase M6 advice: "penalise
+        reuse within a project... [Creative Philosophy] Principle 10 demands
+        visual variety")."""
+        result = await self._session.execute(
+            select(AssetModel.content_hash).where(AssetModel.project_id == project_id)
+        )
+        return set(result.scalars().all())
+
     async def insert(
         self,
         *,

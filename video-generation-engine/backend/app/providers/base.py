@@ -80,19 +80,33 @@ class AssetQuery:
     search_terms: list[str]
     preferred_type: str
     shot_id: str
+    historical_period: str = ""
 
 
 @dataclass(frozen=True)
 class AssetCandidate:
+    """Search-result metadata only — no bytes yet (M6). `relevance` is the
+    provider's own naive text-match confidence in [0, 1]; it is one input
+    into the final ranking score (app/assets/ranking.py), never the
+    selection score itself - quality, period match, licence, and reuse
+    all factor in too (implementation guide, Phase M6 advice: "make
+    ranking explicit and weighted, in one function")."""
+
     source_id: str
-    score: float
-    licence: str = "unknown"
+    source_url: str
+    title: str
+    licence: str
+    relevance: float = 0.5
+    author: str = ""
+    width: int | None = None
+    height: int | None = None
 
 
 @dataclass(frozen=True)
 class AssetBytes:
     content: bytes
     content_type: str = "image/png"
+    attribution: str = ""
 
 
 class AssetProvider(Protocol):
