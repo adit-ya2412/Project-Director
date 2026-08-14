@@ -11,7 +11,7 @@ state to manage here, just a lookup before the call and an insert after.
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.narration import NarrationModel
@@ -26,6 +26,18 @@ class NarrationRepository:
             select(NarrationModel).where(NarrationModel.content_hash == content_hash)
         )
         return result.scalar_one_or_none()
+
+    async def total_cost_cents_for_project(self, project_id: uuid.UUID) -> int:
+        """Mirrors `GeneratedClipRepository.total_cost_cents_for_project` -
+        narration spend counts against the same per-project budget cap
+        (M8 open decision: "does TTS count against the budget cap?" -
+        yes, see `app/assets/cost.total_project_spend_cents`)."""
+        result = await self._session.execute(
+            select(func.coalesce(func.sum(NarrationModel.cost_cents), 0)).where(
+                NarrationModel.project_id == project_id
+            )
+        )
+        return int(result.scalar_one())
 
     async def insert(
         self,

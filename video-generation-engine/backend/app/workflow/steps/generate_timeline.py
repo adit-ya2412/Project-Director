@@ -38,6 +38,16 @@ def _is_fully_planned(timeline: Timeline) -> bool:
         return False
     if any(shot.asset_plan is None for shot in shots):
         return False
+    if timeline.produced_by == ProducedBy.NARRATION:
+        # M8's NarrationStep runs after this one and may legitimately
+        # stretch a shot's reconciled duration past max_shot_duration_s -
+        # the cap is a planning heuristic, narration is real (M8 settled
+        # decision: "D7 caps vs. reality"). Without this check, the
+        # constraint re-validation below would fire against a version
+        # THIS step never produced, and a resume any time after narration
+        # has run would fail the whole pipeline over a cap this step was
+        # never responsible for enforcing in the first place.
+        return True
     # Structural completeness alone isn't enough: a timeline can be fully
     # populated (every scene has shots, every shot has an asset_plan) and
     # still violate a D7 constraint (e.g. duplicate shot ids across

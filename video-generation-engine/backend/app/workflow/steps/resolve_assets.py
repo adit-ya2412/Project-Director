@@ -24,7 +24,7 @@ processing continues with the rest, never aborting the whole step.
 import hashlib
 import uuid as uuid_module
 
-from app.assets.cost import check_budget
+from app.assets.cost import check_budget, total_project_spend_cents
 from app.assets.ranking import rank_candidates
 from app.assets.validation import validate_and_identify_image
 from app.core.config import settings
@@ -47,6 +47,7 @@ from app.providers.pexels import PexelsAssetProvider
 from app.providers.wikimedia import WikimediaAssetProvider
 from app.repositories.asset_repository import AssetRepository
 from app.repositories.generated_clip_repository import GeneratedClipRepository
+from app.repositories.narration_repository import NarrationRepository
 from app.repositories.shot_binding_repository import TERMINAL_STATES, ShotBindingRepository
 from app.schemas.timeline import AssetStrategy, CreativeContext, PreferredMediaType, Shot
 from app.workflow.context import RunContext
@@ -115,6 +116,7 @@ class ResolveAssetsStep:
         binding_repo = ShotBindingRepository(ctx.session)
         asset_repo = AssetRepository(ctx.session)
         clip_repo = GeneratedClipRepository(ctx.session)
+        narration_repo = NarrationRepository(ctx.session)
 
         project_dir = settings.storage_root / ctx.project_id
         (project_dir / "assets").mkdir(parents=True, exist_ok=True)
@@ -160,6 +162,7 @@ class ResolveAssetsStep:
                         video_provider=video_provider,
                         asset_repo=asset_repo,
                         clip_repo=clip_repo,
+                        narration_repo=narration_repo,
                         creative_context=timeline.creative_context,
                         already_used_hashes=already_used_hashes,
                     )
@@ -252,6 +255,7 @@ class ResolveAssetsStep:
         video_provider: VideoProvider,
         asset_repo: AssetRepository,
         clip_repo: GeneratedClipRepository,
+        narration_repo: NarrationRepository,
         creative_context: CreativeContext,
         already_used_hashes: set[str],
     ) -> str | None:
@@ -362,6 +366,7 @@ class ResolveAssetsStep:
                 image_provider=image_provider,
                 video_provider=video_provider,
                 clip_repo=clip_repo,
+                narration_repo=narration_repo,
                 creative_context=creative_context,
             )
         else:
@@ -372,6 +377,7 @@ class ResolveAssetsStep:
                 project_dir=project_dir,
                 image_provider=image_provider,
                 clip_repo=clip_repo,
+                narration_repo=narration_repo,
                 creative_context=creative_context,
             )
         return None
@@ -423,6 +429,7 @@ class ResolveAssetsStep:
         project_dir,
         image_provider: ImageProvider,
         clip_repo: GeneratedClipRepository,
+        narration_repo: NarrationRepository,
         creative_context: CreativeContext,
     ) -> None:
         prompt = _styled_prompt(shot, creative_context)
@@ -435,7 +442,9 @@ class ResolveAssetsStep:
             binding.rung = AssetStrategy.GENERATE_IMAGE.value
             return
 
-        already_spent = await clip_repo.total_cost_cents_for_project(project_uuid)
+        already_spent = await total_project_spend_cents(
+            clip_repo=clip_repo, narration_repo=narration_repo, project_id=project_uuid
+        )
         check_budget(
             already_spent_cents=already_spent,
             additional_cents=settings.fal_image_cost_cents_estimate,
@@ -478,6 +487,7 @@ class ResolveAssetsStep:
         image_provider: ImageProvider,
         video_provider: VideoProvider,
         clip_repo: GeneratedClipRepository,
+        narration_repo: NarrationRepository,
         creative_context: CreativeContext,
     ) -> None:
         prompt = _styled_prompt(shot, creative_context)
@@ -525,7 +535,9 @@ class ResolveAssetsStep:
         estimated_cents = (
             settings.fal_image_cost_cents_estimate + settings.fal_video_cost_cents_estimate
         )
-        already_spent = await clip_repo.total_cost_cents_for_project(project_uuid)
+        already_spent = await total_project_spend_cents(
+            clip_repo=clip_repo, narration_repo=narration_repo, project_id=project_uuid
+        )
         check_budget(already_spent_cents=already_spent, additional_cents=estimated_cents)
 
         keyframe = await image_provider.generate(

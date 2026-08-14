@@ -35,6 +35,7 @@ class ProducedBy(StrEnum):
     SCENE_PLANNER = "scene_planner"
     SHOT_PLANNER = "shot_planner"
     ASSET_PLANNER = "asset_planner"
+    NARRATION = "narration"
     HUMAN = "human"
 
 

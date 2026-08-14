@@ -87,7 +87,7 @@ def test_script_to_video_end_to_end(client, tmp_path):
     timeline = Timeline.model_validate(awaiting["timeline"])
     assert len(timeline.all_shots()) == 6
     assert timeline.status == "draft"
-    expected_duration = compute_timeline_duration(timeline.all_shots())
+    planned_duration = compute_timeline_duration(timeline.all_shots())
 
     progress_resp = client.get(f"/api/v1/projects/{project_id}/progress")
     assert progress_resp.status_code == 200
@@ -110,6 +110,18 @@ def test_script_to_video_end_to_end(client, tmp_path):
     rendered = approve_resp.json()
     assert rendered["status"] == "completed", rendered.get("error")
     assert rendered["timeline"]["status"] == "approved"
+
+    # Narration is the master clock (D1): NarrationStep reconciled every
+    # shot's duration against the real (here, faked) spoken timings and
+    # appended a new version, so the FINAL timeline - not the one approved
+    # a moment ago - is what the renderer worked from. The rendered file is
+    # checked against that below; the planner's pre-narration estimate is
+    # expected to differ, and asserting they differ is what proves the
+    # master clock actually took effect rather than silently no-op'ing.
+    final_timeline = Timeline.model_validate(rendered["timeline"])
+    assert final_timeline.produced_by == "narration"
+    expected_duration = compute_timeline_duration(final_timeline.all_shots())
+    assert abs(expected_duration - planned_duration) > 0.01
 
     final_progress = client.get(f"/api/v1/projects/{project_id}/progress").json()
     assert final_progress["workflow_state"] == "completed"

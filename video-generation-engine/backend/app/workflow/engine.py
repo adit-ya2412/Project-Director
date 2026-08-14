@@ -22,14 +22,24 @@ from app.workflow.step import StepResult, WorkflowStep
 from app.workflow.steps.await_approval import AwaitApprovalStep
 from app.workflow.steps.complete import CompleteStep
 from app.workflow.steps.generate_timeline import GenerateTimelineStep
+from app.workflow.steps.narration import NarrationStep
 from app.workflow.steps.render import RenderStep
 from app.workflow.steps.resolve_assets import ResolveAssetsStep
 
 logger = get_logger(__name__)
 
+# NarrationStep sits between AwaitApproval and ResolveAssets, not after
+# them: it costs money (I6 forbids it before approval), and it appends a
+# NEW Timeline version with reconciled durations (M8) - ShotBinding rows
+# are keyed by (project_id, timeline_version, shot_id), so if narration
+# ran AFTER ResolveAssets, its new version would orphan every binding at
+# the old version, forcing a full re-resolve (and re-pay) of every shot.
+# Running it here means ResolveAssets and Render always bind against the
+# FINAL, narration-corrected version.
 DEFAULT_PIPELINE: list[WorkflowStep] = [
     GenerateTimelineStep(),
     AwaitApprovalStep(),
+    NarrationStep(),
     ResolveAssetsStep(),
     RenderStep(),
     CompleteStep(),
