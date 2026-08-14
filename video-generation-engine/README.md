@@ -74,8 +74,11 @@ tests/
 
 # Documentation
 
+> **Start here:** [`docs/13_Implementation_Guide.md`](docs/13_Implementation_Guide.md) — the living build plan. It resolves contradictions between the frozen documents, defines the core contracts, and gives phase-by-phase strategy and advice. Any human or agent joining the project should read it before anything else.
+
 | Document | Description |
 |-----------|-------------|
+| 13_Implementation_Guide.md | **Living** — invariants, canon, contracts, phased build plan |
 | 00_Creative_Philosophy.md | Creative rules followed by every AI agent |
 | 01_BRD.md | Business Requirements Document |
 | 02_PRD.md | Product Requirements Document |
@@ -266,8 +269,9 @@ into the final rendered video.
 
 ## AI
 
-- OpenAI
-- Gemini
+- OpenAI — planning agents
+- fal.ai — image and video generation
+- ElevenLabs — narration
 - Provider abstraction layer
 
 ---

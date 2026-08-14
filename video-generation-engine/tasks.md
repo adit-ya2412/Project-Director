@@ -101,11 +101,11 @@ TASK-000 Freeze Documentation v1.0
 
 # Sprint 8 — AI Providers
 
-- [ ] TASK-041 OpenAI Provider
-- [ ] TASK-042 Gemini Provider
-- [ ] TASK-043 Image Provider
-- [ ] TASK-044 Video Provider
-- [ ] TASK-045 Narration Provider
+- [ ] TASK-041 OpenAI Provider (planning LLM only)
+- [ ] TASK-042 fal.ai client + model bake-off (see Implementation Guide, M7 Step 0)
+- [ ] TASK-043 Image Provider (fal, rung 6)
+- [ ] TASK-044 Video Provider (fal, rung 5 — submit/poll/resume)
+- [ ] TASK-045 Narration Provider (ElevenLabs, word timings required)
 
 ---
 
