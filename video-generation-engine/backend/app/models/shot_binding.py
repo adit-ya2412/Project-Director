@@ -10,7 +10,7 @@ re-run (M9).
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String
+from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -20,6 +20,15 @@ from app.db.base import Base
 
 class ShotBindingModel(Base):
     __tablename__ = "shot_binding"
+    __table_args__ = (
+        # One binding per shot per timeline version. A later version that
+        # changes a shot's content gets a fresh pending row rather than
+        # inheriting a possibly-stale resolved asset (simple first - see
+        # implementation guide M4 notes on why this isn't versionless).
+        UniqueConstraint(
+            "project_id", "timeline_version", "shot_id", name="uq_shot_binding_project_version_shot"
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id: Mapped[uuid.UUID] = mapped_column(

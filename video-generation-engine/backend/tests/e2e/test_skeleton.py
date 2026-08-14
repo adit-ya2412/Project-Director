@@ -1,9 +1,10 @@
-"""M0 walking-skeleton end-to-end test.
+"""Walking-skeleton end-to-end test.
 
-Proves the full path: create project -> upload script -> render -> download
-a real MP4 -- entirely on fakes, with zero API keys configured. This is the
-test referenced as M0's "done when" criterion in
-docs/13_Implementation_Guide.md.
+Proves the full path: create project -> upload script -> render (stops at
+AWAITING_APPROVAL, ADR-008) -> approve -> download a real MP4 -- entirely
+on fakes, with zero API keys configured. This is the test referenced as
+M0's "done when" criterion in docs/13_Implementation_Guide.md, extended
+in M4 for the real human-approval gate.
 """
 
 import subprocess
@@ -69,18 +70,51 @@ def test_script_to_video_end_to_end(client, tmp_path):
     assert script_resp.status_code == 200
     assert script_resp.json()["status"] == "script_uploaded"
 
-    # 3. Render (runs the whole fake pipeline synchronously in M0)
+    # 3. Render — the engine runs generate_timeline, then stops at the
+    # human approval gate (ADR-008). Nothing expensive has happened yet.
     render_resp = client.post(f"/api/v1/projects/{project_id}/render")
     assert render_resp.status_code == 200
-    rendered = render_resp.json()
-    assert rendered["status"] == "completed", rendered.get("error")
-    assert rendered["timeline"] is not None
+    awaiting = render_resp.json()
+    assert awaiting["error"] is None, awaiting.get("error")
+    assert awaiting["timeline"] is not None
 
-    timeline = Timeline.model_validate(rendered["timeline"])
+    timeline = Timeline.model_validate(awaiting["timeline"])
     assert len(timeline.all_shots()) == 6
+    assert timeline.status == "draft"
     expected_duration = compute_timeline_duration(timeline.all_shots())
 
-    # 4. Download the MP4
+    progress_resp = client.get(f"/api/v1/projects/{project_id}/progress")
+    assert progress_resp.status_code == 200
+    progress = progress_resp.json()
+    assert progress["workflow_state"] == "awaiting_approval"
+    assert progress["current_step"] == "await_approval"
+
+    timeline_resp = client.get(f"/api/v1/projects/{project_id}/timeline")
+    assert timeline_resp.status_code == 200
+    assert timeline_resp.json()["status"] == "draft"
+
+    # Rendering again while awaiting approval is a no-op resume, not a
+    # second pipeline run - it should land right back at the same gate.
+    render_again_resp = client.post(f"/api/v1/projects/{project_id}/render")
+    assert render_again_resp.json()["timeline"]["version"] == awaiting["timeline"]["version"]
+
+    # 4. Approve — resumes the same run: resolve_assets -> render -> complete.
+    approve_resp = client.post(f"/api/v1/projects/{project_id}/timeline/approve")
+    assert approve_resp.status_code == 200
+    rendered = approve_resp.json()
+    assert rendered["status"] == "completed", rendered.get("error")
+    assert rendered["timeline"]["status"] == "approved"
+
+    final_progress = client.get(f"/api/v1/projects/{project_id}/progress").json()
+    assert final_progress["workflow_state"] == "completed"
+    assert final_progress["completed_shots"] == final_progress["total_shots"] == 6
+    assert final_progress["progress"] == 1.0
+
+    # Approving twice is rejected cleanly.
+    second_approve = client.post(f"/api/v1/projects/{project_id}/timeline/approve")
+    assert second_approve.status_code == 400
+
+    # 5. Download the MP4
     video_resp = client.get(f"/api/v1/projects/{project_id}/video")
     assert video_resp.status_code == 200
     assert video_resp.headers["content-type"] == "video/mp4"
@@ -98,7 +132,7 @@ def test_script_to_video_end_to_end(client, tmp_path):
     actual_duration = float(probe["format"]["duration"])
     assert abs(actual_duration - expected_duration) < 0.5
 
-    # 5. Status endpoint agrees
+    # 6. Status endpoint agrees
     status_resp = client.get(f"/api/v1/projects/{project_id}/status")
     assert status_resp.json()["status"] == "completed"
 

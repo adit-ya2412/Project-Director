@@ -785,10 +785,63 @@ create_project → generate_timeline → plan_scenes → plan_shots → plan_ass
 
 ## Done when
 
-- [ ] Kill the process at any step; restart; the run resumes correctly and re-does nothing already done
-- [ ] A forced transient failure retries and succeeds
-- [ ] A forced permanent failure stops with a clear error and leaves state inspectable
-- [ ] `GET /projects/{id}/progress` reflects reality
+- [x] Kill the process at any step; restart; the run resumes correctly and re-does nothing already done
+- [x] A forced transient failure retries and succeeds
+- [x] A forced permanent failure stops with a clear error and leaves state inspectable
+- [x] `GET /projects/{id}/progress` reflects reality
+
+**Status: M4 complete** (2026-08-14). `app/workflow/engine.py` implements
+the `WorkflowEngine`: for each step in order, ask `is_satisfied()` first
+(skip if true), else run it with retry+backoff (`app/workflow/retry.py`,
+exponential with jitter), persisting a `workflow_step_attempt` row
+*before* every attempt starts. Four step outcomes, not three — `"awaiting_approval"`
+is a real state the run ends on, never an error (ADR-008): `AwaitApprovalStep`
+returns it whenever the active timeline isn't `APPROVED` yet, and a later
+`POST /timeline/approve` calls `TimelineService.approve` then starts a
+*new* engine invocation that resumes at the next unmet step.
+
+Five steps implement ADR-009's pipeline, collapsed to match what actually
+exists today (`app/workflow/steps/`): `generate_timeline` (M5's Director
+→ Asset Planner chain, still the M0 fake, now going through `append_version`
+inside the engine rather than a bespoke script), `await_approval`,
+`resolve_assets` (M6 search + M7 generation collapsed, but *real* `Asset`
+and `GeneratedClip` rows with both dedup caches wired — per-project
+`content_hash`, global `prompt_hash` — even though the provider underneath
+is still a fake), `render`, `complete`.
+
+Two schema bugs fixed before this could work correctly, found while
+wiring the real read/write paths for the first time:
+- `Asset.content_hash` had a **global** unique constraint — two different
+  projects downloading the same public-domain photo would collide.
+  Migration `6a4ee7c1aae3` rescoped it to `(project_id, content_hash)`.
+  `GeneratedClip.prompt_hash` staying globally unique is correct as-is —
+  identical generations *should* be reused across projects (ladder rung 0).
+- `ShotBinding` had no uniqueness constraint at all — the same migration
+  adds `(project_id, timeline_version, shot_id)`, which is what makes
+  `get_or_create_pending` safe to call repeatedly.
+
+Failure isolation is real, not aspirational: `ResolveAssetsStep` catches
+per-shot, marks that one `ShotBinding` `failed`, and keeps going — a
+`TransientError` leaves the binding `pending` (eligible for a later
+retry) rather than `failed`. `RenderStep` gives any shot without a
+resolved image a placeholder frame (`app/renderer/placeholder.py`) so
+one bad shot never blocks the render.
+
+18/18 tests pass: the e2e test now exercises the real two-phase
+render → awaiting_approval → approve → completed flow (plus a
+render-again-while-waiting no-op check, and a rejected double-approve),
+9 unchanged `TimelineService` tests, and 4 new `tests/integration/test_workflow_engine.py`
+tests — retry-then-succeed, exhaust-retries-then-fail, permanent-failure-is-inspectable,
+and the resumability proof: two genuinely separate `WorkflowEngine`
+instances (standing in for two OS processes) against the same project,
+where the second one's `is_satisfied()` correctly skips `generate_timeline`
+and the timeline stays at v2 instead of becoming v3.
+
+Not yet built: background/async execution (every run is still
+synchronous within one HTTP request — a task queue is a later
+refinement the step contract doesn't need to change for), and
+`resolve_assets`/`render` still route through fakes — M6/M7 swap the
+provider inside the same step shape.
 
 ---
 
@@ -1204,10 +1257,15 @@ M2 Persistence      ████████████ complete 2026-08-14 —
 M3 Timeline Service ████████████ complete 2026-08-14 — append_version is the sole writer,
                                  additive-only enforcement, diff, approve, rollback_to;
                                  14/14 tests green (4 e2e + 9 new + health)
-Code                ██████░░░░░ M0 + M2 + M3 — no workflow engine yet (M4), no real
-                                 planners or providers yet (M5-M8)
-Next                M4 · Workflow Engine (explicit steps, retries, resumability, the
-                                 human-approval gate) — build this before M5's planners
+M4 Workflow Engine  ████████████ complete 2026-08-14 — 5-step pipeline, retry+backoff,
+                                 real human-approval gate (render stops, approve resumes),
+                                 real ShotBinding/Asset/GeneratedClip read-write, per-shot
+                                 failure isolation, resumability proven across two engine
+                                 instances; 18/18 tests green
+Code                ███████░░░ M0 + M2 + M3 + M4 — no real planners or providers yet
+                                 (M5-M8); resolve_assets/render still route through fakes
+Next                M5 · AI Planners (real Director/Scene/Shot/Asset Planner chain over
+                                 OpenAI — the key is already in .env)
 ```
 
 ---

@@ -1,23 +1,33 @@
-"""Project, script, and render endpoints (docs/09_API_Specification.md).
+"""Project, script, render, and workflow endpoints (docs/09_API_Specification.md).
 
-M0 scope only: create project, upload script, render, download. Timeline
-review/approval, asset/generation endpoints, and workflow progress arrive
-with the phases that back them (M3-M4, M9).
+`POST /render` starts (or resumes) the workflow engine and returns
+whatever the pipeline reaches: `awaiting_approval`, `completed`, or
+`failed`. `POST /timeline/approve` approves the active timeline and
+resumes the same run - the human-in-the-loop gate (ADR-008) is a real
+stop between two separate HTTP calls, not a blocked coroutine.
 """
 
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_repo, get_timeline_service
+from app.api.deps import get_repo, get_timeline_service, get_workflow_engine
+from app.db.session import get_db
 from app.repositories.project_repository import ProjectRepository
+from app.repositories.shot_binding_repository import ShotBindingRepository
+from app.repositories.workflow_repository import WorkflowRunRepository
 from app.schemas.project import Project, ProjectStatus
+from app.schemas.timeline import Timeline, TimelineStatus
 from app.timeline.service import TimelineService
-from app.workflow.pipeline import run_pipeline
+from app.workflow.engine import WorkflowEngine
 
 router = APIRouter(prefix="/projects", tags=["projects"])
+
+_TERMINAL_SHOT_STATES = ("resolved", "generated")
 
 
 class CreateProjectRequest(BaseModel):
@@ -75,24 +85,96 @@ async def get_script(project_id: str, repo: ProjectRepository = Depends(get_repo
     return {"project_id": project.id, "content": project.script}
 
 
+@router.get("/{project_id}/timeline", response_model=Timeline)
+async def get_timeline(
+    project_id: str,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+) -> Timeline:
+    await _get_project_or_404(project_id, repo)
+    active = await timeline_service.get_active(project_id)
+    if active is None:
+        raise HTTPException(status_code=404, detail="no timeline generated yet")
+    return active
+
+
 @router.post("/{project_id}/render", response_model=Project)
 async def render_project(
     project_id: str,
     repo: ProjectRepository = Depends(get_repo),
-    timeline_service: TimelineService = Depends(get_timeline_service),
+    engine: WorkflowEngine = Depends(get_workflow_engine),
 ) -> Project:
-    """Runs the full M0 pipeline synchronously (fake plan -> fake resolve
-    -> render). M4 replaces this with an async, resumable workflow run."""
+    """Starts (or resumes) the workflow engine. Runs synchronously up to
+    whatever it reaches next - AWAITING_APPROVAL, COMPLETED, or FAILED.
+    A real task queue (background execution) is a later refinement; the
+    step contract underneath doesn't change when that lands."""
     project = await _get_project_or_404(project_id, repo)
     if not project.script:
         raise HTTPException(status_code=400, detail="upload a script before rendering")
-    return await run_pipeline(project, repo, timeline_service)
+    return await engine.run()
+
+
+@router.post("/{project_id}/timeline/approve", response_model=Project)
+async def approve_timeline(
+    project_id: str,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    engine: WorkflowEngine = Depends(get_workflow_engine),
+) -> Project:
+    await _get_project_or_404(project_id, repo)
+    active = await timeline_service.get_active(project_id)
+    if active is None:
+        raise HTTPException(status_code=400, detail="no timeline to approve yet")
+    if active.status == TimelineStatus.APPROVED:
+        raise HTTPException(status_code=400, detail="timeline is already approved")
+    await timeline_service.approve(project_id, active.version)
+    return await engine.run()
 
 
 @router.get("/{project_id}/status")
 async def get_status(project_id: str, repo: ProjectRepository = Depends(get_repo)) -> dict:
     project = await _get_project_or_404(project_id, repo)
     return {"project_id": project.id, "status": project.status, "error": project.error}
+
+
+@router.get("/{project_id}/progress")
+async def get_progress(
+    project_id: str,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """Progress is derived from shot_binding state, never stored as a
+    number - a stored percentage drifts the moment anything fails
+    (implementation guide, Phase M4 advice)."""
+    project = await _get_project_or_404(project_id, repo)
+    run_row = await WorkflowRunRepository(session).get_latest(uuid.UUID(project_id))
+
+    base = {
+        "project_id": project.id,
+        "status": project.status,
+        "workflow_state": run_row.state if run_row else None,
+        "current_step": run_row.current_step if run_row else None,
+    }
+
+    timeline = await timeline_service.get_active(project_id)
+    if timeline is None:
+        return {**base, "total_shots": 0, "completed_shots": 0, "failed_shots": 0, "progress": None}
+
+    bindings = await ShotBindingRepository(session).list_for_version(
+        uuid.UUID(project_id), timeline.version
+    )
+    total = len(timeline.all_shots())
+    completed = sum(1 for b in bindings if b.state in _TERMINAL_SHOT_STATES)
+    failed = sum(1 for b in bindings if b.state == "failed")
+
+    return {
+        **base,
+        "total_shots": total,
+        "completed_shots": completed,
+        "failed_shots": failed,
+        "progress": (completed / total) if total else None,
+    }
 
 
 @router.get("/{project_id}/video")

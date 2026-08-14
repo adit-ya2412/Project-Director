@@ -88,10 +88,10 @@ TASK-000 Freeze Documentation v1.0
 
 # Sprint 6 — Workflow Engine
 
-- [ ] TASK-032 Workflow Engine
-- [ ] TASK-033 Event System
-- [ ] TASK-034 Workflow State Machine
-- [ ] TASK-035 Retry Engine
+- [x] TASK-032 Workflow Engine (`app/workflow/engine.py` — 5-step pipeline, is_satisfied-gated resume)
+- [x] TASK-033 Event System (`DomainEventRepository`, append-only `domain_event` table)
+- [x] TASK-034 Workflow State Machine (`workflow_run`/`workflow_step_attempt`, states: running/awaiting_approval/completed/failed)
+- [x] TASK-035 Retry Engine (`app/workflow/retry.py` — exponential backoff + jitter)
 
 ---
 
@@ -127,12 +127,12 @@ TASK-000 Freeze Documentation v1.0
 
 # Sprint 10 — REST API
 
-- [ ] TASK-051 Projects API
-- [ ] TASK-052 Script API
-- [ ] TASK-053 Timeline API
-- [ ] TASK-054 Asset API
-- [ ] TASK-055 Workflow API
-- [ ] TASK-056 Render API
+- [x] TASK-051 Projects API (create/get/list/render)
+- [x] TASK-052 Script API (upload/get)
+- [x] TASK-053 Timeline API (get + approve)
+- [ ] TASK-054 Asset API (lands with M6)
+- [x] TASK-055 Workflow API (progress + status)
+- [ ] TASK-056 Render API (video download exists; dedicated render-control API lands with M8)
 
 ---
 
