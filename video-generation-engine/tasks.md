@@ -7,10 +7,10 @@
 # Overall Progress
 
 - [x] Documentation
-- [ ] Repository Structure
-- [ ] Backend Foundation
-- [ ] Database
-- [ ] Domain Models
+- [x] Repository Structure
+- [x] Backend Foundation
+- [ ] Database (Postgres + Alembic done; Redis not yet wired into app code)
+- [ ] Domain Models (Project/Script/Timeline done; Asset/Render/Workflow are schema-only)
 - [ ] Workflow Engine
 - [ ] AI Agents
 - [ ] Asset Pipeline
@@ -22,43 +22,49 @@
 ---
 
 TASK-000 Freeze Documentation v1.0
+
+> **Note (2026-08-14):** actual build order follows `docs/13_Implementation_Guide.md`'s
+> vertical slices (M0-M10), not this sprint list — see that doc's section 4.1 for why.
+> Checkboxes below are updated to reflect real progress regardless of which sprint a
+> task originally sat under.
+
 # Sprint 1 — Foundation
 
 ## Repository
 
-- [ ] TASK-001 Create backend structure
+- [x] TASK-001 Create backend structure
 - [ ] TASK-002 Create frontend structure
-- [ ] TASK-003 Setup FastAPI
-- [ ] TASK-004 Setup Docker
-- [ ] TASK-005 Setup docker-compose
-- [ ] TASK-006 Setup configuration management
-- [ ] TASK-007 Setup logging
-- [ ] TASK-008 Setup linting
-- [ ] TASK-009 Setup formatting
+- [x] TASK-003 Setup FastAPI
+- [x] TASK-004 Setup Docker
+- [x] TASK-005 Setup docker-compose (Postgres + Redis verified healthy 2026-08-14)
+- [x] TASK-006 Setup configuration management
+- [x] TASK-007 Setup logging
+- [x] TASK-008 Setup linting (ruff)
+- [x] TASK-009 Setup formatting (black)
 - [ ] TASK-010 Setup pre-commit hooks
 
 ---
 
 # Sprint 2 — Database
 
-- [ ] TASK-011 PostgreSQL
-- [ ] TASK-012 SQLAlchemy
-- [ ] TASK-013 Alembic
-- [ ] TASK-014 Redis
-- [ ] TASK-015 File Storage
+- [x] TASK-011 PostgreSQL (running via docker-compose, full schema applied)
+- [x] TASK-012 SQLAlchemy (async engine, 11 models)
+- [x] TASK-013 Alembic (initial migration generated + applied)
+- [ ] TASK-014 Redis (container running; no application code uses it yet)
+- [x] TASK-015 File Storage (local filesystem, `STORAGE_ROOT`-based)
 
 ---
 
 # Sprint 3 — Domain Models
 
-- [ ] TASK-016 Project Model
-- [ ] TASK-017 Script Model
-- [ ] TASK-018 Timeline Model
-- [ ] TASK-019 Scene Model
-- [ ] TASK-020 Shot Model
-- [ ] TASK-021 Asset Model
-- [ ] TASK-022 Render Model
-- [ ] TASK-023 Workflow Model
+- [x] TASK-016 Project Model (table + repository, exercised by tests)
+- [x] TASK-017 Script Model (table + repository, exercised by tests)
+- [x] TASK-018 Timeline Model (`timeline_version` table + Pydantic IR, exercised by tests)
+- [x] TASK-019 Scene Model (embedded in the Timeline IR JSONB — canon 3.3 supersedes a separate table)
+- [x] TASK-020 Shot Model (embedded in the Timeline IR JSONB — canon 3.3 supersedes a separate table)
+- [ ] TASK-021 Asset Model (table exists; no code writes to it yet — lands with M6)
+- [ ] TASK-022 Render Model (table exists; no code writes to it yet — lands with M8)
+- [ ] TASK-023 Workflow Model (`workflow_run`/`workflow_step_attempt` tables exist; no code writes to them yet — lands with M4)
 
 ---
 

@@ -8,7 +8,10 @@ requires-python = ">=3.12"
 line-length = 100
 target-version = "py312"
 src = ["backend/app", "backend/tests"]
-extend-exclude = [".venv", "storage"]
+# alembic/versions: generated migration files, one per revision. Alembic's
+# own template (not ours) controls their style - excluded so autogenerate
+# output never needs a manual lint-fix pass.
+extend-exclude = [".venv", "storage", "backend/alembic/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -22,7 +25,7 @@ known-first-party = ["app"]
 [tool.black]
 line-length = 100
 target-version = ["py312"]
-extend-exclude = "(\\.venv|storage)"
+extend-exclude = "(\\.venv|storage|backend/alembic/versions)"
 
 [tool.mypy]
 python_version = "3.12"
@@ -31,4 +34,4 @@ explicit_package_bases = true
 ignore_missing_imports = true
 warn_unused_ignores = true
 disallow_untyped_defs = false
-exclude = ["\\.venv", "storage", "tests/fixtures"]
+exclude = ["\\.venv", "storage", "tests/fixtures", "backend/alembic/versions"]

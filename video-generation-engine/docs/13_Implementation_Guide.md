@@ -546,10 +546,8 @@ to be 1080×1920 @ 30fps h264/yuv420p with duration within 2 frames of the
 value `app.timeline.duration.compute_timeline_duration` predicts. All 4
 tests green; `ruff` / `black` / `mypy` clean across `backend/app`.
 
-Not yet exercised: `docker compose up` (Docker Desktop's daemon wasn't
-running in this environment — the compose file validates cleanly via
-`docker compose config`, but actually starting Postgres/Redis/the backend
-container is unverified; confirm this once Docker Desktop is running).
+`docker compose up -d postgres redis` verified 2026-08-14: both containers
+report `(healthy)`, `pg_isready` and `redis-cli ping` both succeed.
 
 ---
 
@@ -635,9 +633,42 @@ Every provider maps its own SDK exceptions into these three at the provider boun
 
 ## Done when
 
-- [ ] Alembic migration chain from empty to full schema runs clean
-- [ ] M0's e2e test passes with the DB backend
-- [ ] Killing the process mid-run loses no committed state
+- [x] Alembic migration chain from empty to full schema runs clean
+- [x] M0's e2e test passes with the DB backend
+- [x] Killing the process mid-run loses no committed state
+
+**Status: M2 complete** (2026-08-14). All 11 tables created via one Alembic
+migration (`backend/alembic/versions/ec1b1fb9f37a_initial_schema.py`),
+applied to the `docker compose` Postgres. `PostgresProjectRepository`
+implements `ProjectRepository` for `project` + `script` + `timeline_version`
+(append-a-row-if-content-differs — the real M3 `append_version` discipline
+replaces this). `InMemoryProjectRepository` kept as the fast unit-test
+double. `tests/e2e/test_skeleton.py` now runs against real Postgres
+(`clean_database` fixture truncates all tables before each test); process
+restart proven directly (create in one `python` process, read back in a
+separate one — see commit history, not just the test suite).
+
+Two bugs found and fixed while building this, both worth knowing about:
+- `Settings.model_config.env_file=".env"` resolved against the **process
+  cwd**, not the repo root — silently found nothing (all defaults, no
+  error) whenever invoked from `backend/` (e.g. `alembic`, or a test
+  runner launched from there). Fixed to an absolute path from `__file__`.
+- All `datetime` columns were missing `timezone=True`. `app.core.clock.utcnow()`
+  is tz-aware UTC everywhere else in the app; a naive column would have
+  silently truncated that on every write. Fixed across all 10 model files
+  before the migration was applied — worth a second look if you add a
+  new timestamp column later.
+- Async engine uses `NullPool`: the sync `TestClient` (its own event-loop
+  thread) and pytest-asyncio fixtures (a fresh loop per test) both touch
+  the same global engine, and a pooled asyncpg connection is bound to
+  whichever loop first created it. `NullPool` sidesteps this entirely at
+  the cost of a fresh connection per checkout — revisit only once there's
+  load to justify real pooling (Principle 18).
+
+Not yet built: the M3 versioning discipline itself, `shot_binding` /
+`asset` / `generated_clip` / etc. are schema-only (no code writes to them
+yet — that lands with M6/M7), and there is still no `Script`/`Timeline`
+immutability enforcement beyond "append if different."
 
 ---
 
@@ -1118,6 +1149,8 @@ If you are an AI agent picking up work in this repository:
 | Pixabay Music | `PIXABAY_API_KEY` | M8 |
 
 None are needed before M5 — `DRY_RUN=true` runs the whole pipeline on fakes and still produces an MP4.
+As of 2026-08-14, `OPENAI_API_KEY` and `ELEVENLABS_API_KEY` are populated in
+`.env`; `FAL_KEY`, `PEXELS_API_KEY`, and `PIXABAY_API_KEY` are still blank.
 
 ## Current status
 
@@ -1126,12 +1159,17 @@ Documentation      ████████████ frozen at v1.0
 Canon + build plan ████████████ this document
 Decisions D1–D8    ████████████ closed 2026-08-14
 Env template       ████████████ .env.example ready for keys
-M0 Walking Skeleton ███████████ complete 2026-08-14 — real MP4, real FFmpeg, 4/4 tests green
-M1 Foundation       ████████░░░ venv, deps, ruff/black/mypy, Makefile, Docker configs done;
-                                 docker compose up unverified (daemon wasn't running);
-                                 pre-commit hooks not yet set up
-Code                ███░░░░░░░░ M0 skeleton only — no DB, no real planners, no real providers
-Next                M2 · Persistence and Domain (or finish M1: pre-commit, verify docker compose up)
+M0 Walking Skeleton ████████████ complete 2026-08-14 — real MP4, real FFmpeg, 4/4 tests green
+M1 Foundation       ███████████░ venv, deps, ruff/black/mypy, Makefile, Docker configs, docker
+                                 compose up verified (Postgres + Redis healthy); pre-commit
+                                 hooks not yet set up
+M2 Persistence      ████████████ complete 2026-08-14 — 11-table schema, Alembic migration
+                                 applied, PostgresProjectRepository, e2e test runs against
+                                 real Postgres, restart-survival proven
+Code                █████░░░░░░ M0 skeleton + M2 persistence — no Timeline versioning
+                                 discipline (M3), no workflow engine (M4), no real planners
+                                 or providers yet (M5-M8)
+Next                M3 · Timeline Service (append_version discipline) → M4 · Workflow Engine
 ```
 
 ---

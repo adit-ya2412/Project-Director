@@ -1,13 +1,18 @@
 """Request-scoped dependencies.
 
-M0 holds a single process-lifetime repository on `app.state`. M2 replaces
-this with a real DB session dependency behind the same `get_repo` seam.
+`get_repo` is the seam: swapping the backing store (M0's in-memory dict,
+M2's Postgres) never touches a route handler, because every handler
+depends on the `ProjectRepository` protocol via this function.
 """
 
-from fastapi import Request
+from typing import Annotated
 
-from app.repositories.project_repository import InMemoryProjectRepository
+from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.session import get_db
+from app.repositories.project_repository import PostgresProjectRepository
 
 
-def get_repo(request: Request) -> InMemoryProjectRepository:
-    return request.app.state.project_repo
+def get_repo(session: Annotated[AsyncSession, Depends(get_db)]) -> PostgresProjectRepository:
+    return PostgresProjectRepository(session)

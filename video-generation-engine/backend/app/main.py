@@ -9,7 +9,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.projects import router as projects_router
 from app.core.config import settings
 from app.core.logging import configure_logging, get_logger
-from app.repositories.project_repository import InMemoryProjectRepository
 
 configure_logging()
 logger = get_logger(__name__)
@@ -17,7 +16,8 @@ logger = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.project_repo = InMemoryProjectRepository()
+    # Repositories are constructed per-request via DI (app/api/deps.py) -
+    # nothing to hold on app.state.
     logger.info("app.startup", extra={"dry_run": settings.dry_run})
     yield
     logger.info("app.shutdown")

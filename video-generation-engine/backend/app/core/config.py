@@ -9,10 +9,18 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Repo root, not cwd: pydantic-settings resolves a relative `env_file`
+# against the process's current working directory, so ".env" silently
+# resolves to nothing (all defaults, no error) whenever this app is
+# invoked from anywhere but the repo root - e.g. `cd backend && alembic
+# ...`, or a test runner launched from backend/. An absolute path removes
+# the ambiguity entirely.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_REPO_ROOT / ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
