@@ -49,7 +49,25 @@ class WikimediaAssetProvider:
         self._transport = transport
 
     async def search(self, query: AssetQuery) -> list[AssetCandidate]:
-        search_text = " ".join(query.search_terms) or query.shot_id
+        # Each search_term is tried as its OWN request rather than joined
+        # into one string: Commons' search index matches short, title-like
+        # keyword phrases, and a single request built by concatenating
+        # every term together (or even one overly long term on its own)
+        # reliably returns zero results even for subjects that genuinely
+        # have real archival photos on Commons - verified empirically
+        # against the live API before this fix.
+        terms = query.search_terms or [query.shot_id]
+        seen_ids: set[str] = set()
+        candidates: list[AssetCandidate] = []
+        for term in terms:
+            for candidate in await self._search_one(term):
+                if candidate.source_id in seen_ids:
+                    continue
+                seen_ids.add(candidate.source_id)
+                candidates.append(candidate)
+        return candidates
+
+    async def _search_one(self, search_text: str) -> list[AssetCandidate]:
         params = {
             "action": "query",
             "generator": "search",

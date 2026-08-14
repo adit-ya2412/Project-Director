@@ -105,6 +105,26 @@ async def test_asset_plan_rejects_out_of_order_ladder(project_id, monkeypatch):
             await planner.plan(project_id=project_id, scenes=[scene])
 
 
+async def test_asset_plan_rejects_sentence_length_search_queries(project_id, monkeypatch):
+    """A search_query written as a descriptive sentence rather than a
+    short keyword phrase reliably returns zero results from real archive
+    search APIs (verified empirically against the live Wikimedia Commons
+    API) - this must be caught and repaired, not shipped."""
+    monkeypatch.setattr(settings, "planner_max_repair_attempts", 1)
+    scene = _scene_with_shots()
+    bad = _valid_output()
+    bad.asset_plans[0].search_queries = [
+        "Germany coal hydrogenation plant 1940 workers pipes pressure vessels"
+    ]
+
+    async with async_session_factory() as session:
+        provider = FakePlanningProvider(responses=[bad, bad])
+        planner = AssetPlanner(provider, LlmCallRepository(session))
+
+        with pytest.raises(PermanentError, match="too long"):
+            await planner.plan(project_id=project_id, scenes=[scene])
+
+
 async def test_asset_plan_rejects_missing_licence_requirements(project_id, monkeypatch):
     monkeypatch.setattr(settings, "planner_max_repair_attempts", 1)
     scene = _scene_with_shots()

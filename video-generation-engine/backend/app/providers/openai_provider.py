@@ -8,12 +8,13 @@ Structured output is forced via `response_format=<PydanticModel>`
 hoping - implementation guide, Phase M5 advice.
 """
 
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from openai import (
     APIConnectionError,
     APITimeoutError,
     AsyncOpenAI,
+    BadRequestError,
     InternalServerError,
     OpenAIError,
     RateLimitError,
@@ -22,7 +23,10 @@ from pydantic import BaseModel
 
 from app.core.config import settings
 from app.core.errors import PermanentError, TransientError
+from app.core.logging import get_logger
 from app.providers.base import StructuredCompletion
+
+logger = get_logger(__name__)
 
 ResponseModelT = TypeVar("ResponseModelT", bound=BaseModel)
 
@@ -37,6 +41,24 @@ class OpenAIPlanningProvider:
             api_key=settings.openai_api_key, organization=settings.openai_org_id
         )
 
+    async def _parse(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        response_model: type[ResponseModelT],
+        seed: int | None,
+        temperature: float | None,
+    ) -> Any:
+        kwargs: dict[str, Any] = {
+            "model": settings.openai_planning_model,
+            "seed": seed,
+            "messages": messages,
+            "response_format": response_model,
+        }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        return await self._client.chat.completions.parse(**kwargs)
+
     async def structured_complete(
         self,
         *,
@@ -50,13 +72,33 @@ class OpenAIPlanningProvider:
             {"role": "user", "content": user_content},
         ]
         try:
-            completion = await self._client.chat.completions.parse(
-                model=settings.openai_planning_model,
-                temperature=settings.openai_temperature,
-                seed=seed,
-                messages=messages,  # type: ignore[arg-type]
-                response_format=response_model,
-            )
+            try:
+                completion = await self._parse(
+                    messages=messages,  # type: ignore[arg-type]
+                    response_model=response_model,
+                    seed=seed,
+                    temperature=settings.openai_temperature,
+                )
+            except BadRequestError as exc:
+                # Reasoning-tier models (o-series, gpt-5.x) reject any
+                # temperature other than their fixed default and report it
+                # via this exact param/code pair - fall back to the
+                # model's default rather than hardcoding a model allowlist
+                # that will be stale the next time the configured model
+                # changes.
+                if exc.param == "temperature" and exc.code == "unsupported_value":
+                    logger.info(
+                        "openai.temperature_unsupported_falling_back_to_default",
+                        extra={"model": settings.openai_planning_model},
+                    )
+                    completion = await self._parse(
+                        messages=messages,  # type: ignore[arg-type]
+                        response_model=response_model,
+                        seed=seed,
+                        temperature=None,
+                    )
+                else:
+                    raise PermanentError(f"openai error: {exc}") from exc
         except _TRANSIENT_ERRORS as exc:
             raise TransientError(f"openai transient error: {exc}") from exc
         except OpenAIError as exc:

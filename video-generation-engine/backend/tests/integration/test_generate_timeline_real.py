@@ -107,12 +107,17 @@ def _scene_output() -> ScenePlannerOutput:
 
 
 def _shot_output(scene_id: str, narration_text: str, duration_s: float) -> ShotPlannerOutput:
+    # Raw ids deliberately do NOT encode scene_id - this mirrors the real
+    # model, which reuses the same simple pattern every scene since each
+    # call only ever sees one scene. ShotPlanner namespaces by scene_id
+    # afterwards, so the final persisted id is f"{scene_id}_sh_01" etc -
+    # see _asset_output below, which must match that final id.
     mid = len(narration_text) // 2
     half = duration_s / 2
     return ShotPlannerOutput(
         shots=[
             ShotPlanOutput(
-                id=f"{scene_id}_01",
+                id="sh_01",
                 order=0,
                 intent=ShotIntent.EXPLAIN,
                 intent_text="first half",
@@ -127,7 +132,7 @@ def _shot_output(scene_id: str, narration_text: str, duration_s: float) -> ShotP
                 prompt="archival photograph, first half",
             ),
             ShotPlanOutput(
-                id=f"{scene_id}_02",
+                id="sh_02",
                 order=1,
                 intent=ShotIntent.EXPLAIN,
                 intent_text="second half",
@@ -146,10 +151,12 @@ def _shot_output(scene_id: str, narration_text: str, duration_s: float) -> ShotP
 
 
 def _asset_output(scene_id: str) -> AssetPlannerOutput:
+    # Must match the shot ids ShotPlanner actually persists: scene_id,
+    # namespaced onto the raw "sh_01"/"sh_02" ids from _shot_output above.
     return AssetPlannerOutput(
         asset_plans=[
             AssetPlanShotOutput(
-                shot_id=f"{scene_id}_01",
+                shot_id=f"{scene_id}_sh_01",
                 strategy=AssetStrategy.HISTORICAL_SEARCH,
                 search_queries=["archival search term"],
                 preferred_type=PreferredMediaType.IMAGE,
@@ -157,7 +164,7 @@ def _asset_output(scene_id: str) -> AssetPlannerOutput:
                 licence_requirements=["public_domain"],
             ),
             AssetPlanShotOutput(
-                shot_id=f"{scene_id}_02",
+                shot_id=f"{scene_id}_sh_02",
                 strategy=AssetStrategy.PUBLIC_DOMAIN,
                 search_queries=["archival search term 2"],
                 preferred_type=PreferredMediaType.IMAGE,

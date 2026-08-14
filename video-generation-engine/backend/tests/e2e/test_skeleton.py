@@ -19,7 +19,13 @@ from app.timeline.duration import compute_timeline_duration
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
+    # Pinned to the fake-provider path regardless of the ambient .env's
+    # DRY_RUN value: this suite's entire premise (see module docstring) is
+    # "entirely on fakes, with zero API keys configured" - it must not
+    # silently make real, paid provider calls just because a developer's
+    # local .env has DRY_RUN=false for a live manual test.
+    monkeypatch.setattr(settings, "dry_run", True)
     with TestClient(app) as c:
         yield c
 

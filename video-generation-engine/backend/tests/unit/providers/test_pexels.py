@@ -53,6 +53,24 @@ async def test_search_parses_photos_and_always_uses_pexels_licence(monkeypatch):
     assert candidates[0].relevance > candidates[1].relevance
 
 
+async def test_search_tries_each_term_separately_and_dedupes(monkeypatch):
+    monkeypatch.setattr(settings, "pexels_api_key", "fake-key")
+    seen_queries = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_queries.append(request.url.params["query"])
+        return httpx.Response(200, json=_pexels_response())
+
+    provider = PexelsAssetProvider(transport=httpx.MockTransport(handler))
+    query = AssetQuery(
+        search_terms=["oil derrick 1930s", "coal refinery"], preferred_type="image", shot_id="sh_02"
+    )
+    candidates = await provider.search(query)
+
+    assert seen_queries == ["oil derrick 1930s", "coal refinery"]  # separate, never joined
+    assert len(candidates) == 2  # same photo ids from both calls deduped, not doubled
+
+
 async def test_search_without_api_key_raises_permanent_error(monkeypatch):
     monkeypatch.setattr(settings, "pexels_api_key", None)
     provider = PexelsAssetProvider()

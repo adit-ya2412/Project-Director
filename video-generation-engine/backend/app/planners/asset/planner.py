@@ -48,6 +48,20 @@ def _make_validator(scene: Scene):
         for p in plans:
             if p.shot_id not in expected_ids:
                 continue
+            for sq in p.search_queries:
+                # Real archive search engines (Wikimedia Commons, stock
+                # APIs) match short, title-like keyword phrases - a
+                # natural-language sentence reliably returns zero results
+                # even when it accurately describes real, findable
+                # archival material (verified empirically: a 9-word
+                # descriptive phrase found nothing on Commons for a
+                # subject that a 2-word keyword query found instantly).
+                if len(sq.split()) > 6:
+                    violations.append(
+                        f"shot {p.shot_id}: search query {sq!r} is too long "
+                        f"({len(sq.split())} words) - search queries must be short "
+                        "keyword phrases (max 6 words), not descriptive sentences"
+                    )
             if not p.fallback_chain:
                 violations.append(f"shot {p.shot_id}: fallback_chain must not be empty")
                 continue

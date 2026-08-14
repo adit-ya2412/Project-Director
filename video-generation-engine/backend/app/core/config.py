@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     # --- OpenAI: planning only (M5+) ---
     openai_api_key: str | None = None
     openai_org_id: str | None = None
-    openai_planning_model: str = "gpt-4o"
+    openai_planning_model: str = "gpt-5.6-terra"
     openai_planning_model_cheap: str = "gpt-4o-mini"
     openai_temperature: float = 0.3
     planner_max_repair_attempts: int = 1

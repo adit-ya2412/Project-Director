@@ -18,6 +18,7 @@ from app.schemas.timeline import Timeline
 class ProjectStatus(StrEnum):
     CREATED = "created"
     SCRIPT_UPLOADED = "script_uploaded"
+    AWAITING_APPROVAL = "awaiting_approval"
     RENDERING = "rendering"
     COMPLETED = "completed"
     FAILED = "failed"

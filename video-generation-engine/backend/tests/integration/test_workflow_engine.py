@@ -10,6 +10,7 @@ import uuid as uuid_module
 
 import pytest_asyncio
 
+from app.core.config import settings
 from app.db.session import async_session_factory
 from app.repositories.project_repository import PostgresProjectRepository
 from app.repositories.workflow_repository import WorkflowRunRepository
@@ -123,11 +124,19 @@ async def test_permanent_failure_stops_with_clear_error_and_is_inspectable(proje
     assert refetched.error == "this step can never succeed"
 
 
-async def test_resume_after_simulated_crash_does_not_redo_completed_steps(project_id):
+async def test_resume_after_simulated_crash_does_not_redo_completed_steps(project_id, monkeypatch):
     """Simulates killing the process right after generate_timeline commits:
     a brand-new WorkflowEngine (fresh session, standing in for a fresh
     process) must skip it via is_satisfied(), not re-run it - re-running
-    would call append_version again and bump the timeline to v3."""
+    would call append_version again and bump the timeline to v3.
+
+    Pinned to the fake planner path regardless of the ambient .env's
+    DRY_RUN value - this test is about engine-level resumability, not
+    about which planner chain fills the timeline, and must not silently
+    make real, paid OpenAI calls just because a developer's local .env
+    has DRY_RUN=false for a live manual test.
+    """
+    monkeypatch.setattr(settings, "dry_run", True)
     async with async_session_factory() as session:
         repo = PostgresProjectRepository(session)
         project = await repo.get(project_id)

@@ -46,12 +46,16 @@ def _scene(scene_id: str = "sc_01", duration_s: float = 4.0) -> Scene:
 
 
 def _valid_output_for(scene: Scene) -> ShotPlannerOutput:
+    # Raw ids deliberately do NOT encode the scene - this mirrors what the
+    # real model does (reuses the same simple pattern for every scene,
+    # since each call only ever sees one scene). Global uniqueness comes
+    # from ShotPlanner namespacing by scene_id, not from this id.
     mid = len(scene.narration_text) // 2
     half = scene.duration_s / 2
     return ShotPlannerOutput(
         shots=[
             ShotPlanOutput(
-                id=f"{scene.id}_01",
+                id="sh_01",
                 order=0,
                 intent=ShotIntent.EXPLAIN,
                 intent_text="Show the scale of coal extraction",
@@ -66,7 +70,7 @@ def _valid_output_for(scene: Scene) -> ShotPlannerOutput:
                 prompt="1930s coal mine, archival photograph",
             ),
             ShotPlanOutput(
-                id=f"{scene.id}_02",
+                id="sh_02",
                 order=1,
                 intent=ShotIntent.EXPLAIN,
                 intent_text="Connect coal to industry",
@@ -100,7 +104,7 @@ async def test_shot_plan_fills_shots_covering_the_full_narration(project_id):
         )
 
     shots = planned[0].shots
-    assert [s.id for s in shots] == ["sc_01_01", "sc_01_02"]
+    assert [s.id for s in shots] == ["sc_01_sh_01", "sc_01_sh_02"]
     assert shots[0].narration_span == (0, len(scene.narration_text) // 2)
     assert shots[-1].narration_span[1] == len(scene.narration_text)
     assert all(s.asset_plan is None for s in shots)
@@ -125,8 +129,14 @@ async def test_shot_plan_loops_once_per_scene(project_id):
         )
 
     assert len(provider.calls) == 2
-    assert [s.id for s in planned[0].shots] == ["sc_01_01", "sc_01_02"]
-    assert [s.id for s in planned[1].shots] == ["sc_02_01", "sc_02_02"]
+    # Both scenes' fake responses reuse the same raw ids ("sh_01", "sh_02")
+    # - exactly what the real model does, since each call is blind to the
+    # other scenes. Namespacing by scene_id must still keep them globally
+    # unique across scenes.
+    assert [s.id for s in planned[0].shots] == ["sc_01_sh_01", "sc_01_sh_02"]
+    assert [s.id for s in planned[1].shots] == ["sc_02_sh_01", "sc_02_sh_02"]
+    all_ids = [s.id for scene in planned for s in scene.shots]
+    assert len(all_ids) == len(set(all_ids))
 
 
 async def test_shot_plan_enforces_project_wide_shot_cap(project_id, monkeypatch):

@@ -76,6 +76,18 @@ class WorkflowEngine:
 
             if result.outcome == "awaiting_approval":
                 await self._workflow_repo.update_state(run_row, state="awaiting_approval")
+                project = await self._reload_project()
+                # Clear any stale FAILED status/error from an earlier run of
+                # this same project: without this, a project that failed
+                # once and then successfully retried past the failure point
+                # would keep reporting status="failed" with the old error
+                # forever, even though workflow_state (the source of truth
+                # in /progress) correctly shows awaiting_approval - anyone
+                # polling /status alone would be misled into thinking the
+                # retry never worked.
+                project.status = ProjectStatus.AWAITING_APPROVAL
+                project.error = None
+                await self._ctx.repo.update(project)
                 await self._events.emit(
                     project_uuid, "TimelineAwaitingApproval", {"step": step.name}
                 )

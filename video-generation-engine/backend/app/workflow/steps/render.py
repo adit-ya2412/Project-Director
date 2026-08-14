@@ -6,6 +6,7 @@ per-task failure isolation `ResolveAssetsStep` applies (Principle 10).
 """
 
 import uuid as uuid_module
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app.core.config import settings
@@ -29,7 +30,27 @@ class RenderStep:
         project = await ctx.repo.get(ctx.project_id)
         if project is None or not project.video_path:
             return False
-        return Path(project.video_path).exists()
+        video_path = Path(project.video_path)
+        if not video_path.exists():
+            return False
+
+        # A video file existing isn't enough: if resolve_assets re-resolved
+        # any shot (e.g. a fixed provider bug turned a placeholder into a
+        # real photo) after this file was rendered, the file is stale and
+        # must be redone - otherwise a retry silently ships the OLD render
+        # forever, even though every upstream shot binding improved.
+        timeline = await ctx.timeline_service.get_active(ctx.project_id)
+        if timeline is None:
+            return False
+        binding_repo = ShotBindingRepository(ctx.session)
+        bindings = await binding_repo.list_for_version(
+            uuid_module.UUID(ctx.project_id), timeline.version
+        )
+        if not bindings:
+            return True
+        latest_binding_update = max(b.updated_at for b in bindings)
+        video_mtime = datetime.fromtimestamp(video_path.stat().st_mtime, tz=UTC)
+        return video_mtime >= latest_binding_update
 
     async def run(self, ctx: RunContext) -> StepResult:
         timeline = await ctx.timeline_service.get_active(ctx.project_id)

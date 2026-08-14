@@ -36,7 +36,25 @@ def _is_fully_planned(timeline: Timeline) -> bool:
     shots = timeline.all_shots()
     if not shots:
         return False
-    return all(shot.asset_plan is not None for shot in shots)
+    if any(shot.asset_plan is None for shot in shots):
+        return False
+    # Structural completeness alone isn't enough: a timeline can be fully
+    # populated (every scene has shots, every shot has an asset_plan) and
+    # still violate a D7 constraint (e.g. duplicate shot ids across
+    # scenes). Without this check, is_satisfied() would return True for a
+    # timeline that already failed validate_constraints() once, so a
+    # retried run() call would skip straight past this step - engine.run()
+    # only calls step.run() when is_satisfied() is False - carrying the
+    # broken timeline forward into asset resolution instead of failing
+    # loudly again.
+    violations = timeline.validate_constraints(
+        max_video_duration_s=settings.max_video_duration_s,
+        max_shots_per_project=settings.max_shots_per_project,
+        min_shot_duration_s=settings.min_shot_duration_s,
+        max_shot_duration_s=settings.max_shot_duration_s,
+        max_scenes=settings.max_scenes,
+    )
+    return not violations
 
 
 class GenerateTimelineStep:

@@ -92,9 +92,17 @@ def _make_validator(scene: Scene, min_shot_duration_s: float, max_shot_duration_
     return _validate
 
 
-def _to_domain_shot(s: ShotPlanOutput) -> Shot:
+def _to_domain_shot(s: ShotPlanOutput, *, scene_id: str) -> Shot:
+    # Namespaced by scene_id, never s.id alone: the Shot Planner calls the
+    # model once per scene with no visibility into other scenes, and the
+    # model reliably reproduces the prompt's own example id verbatim (e.g.
+    # every scene's shots come back sh_01_01, sh_01_02, ...) rather than
+    # inferring it should vary the prefix per scene. scene_id is guaranteed
+    # unique (the Scene Planner plans every scene in one call and can see
+    # the whole list), so prefixing with it makes cross-scene collisions
+    # structurally impossible regardless of what the model returns.
     return Shot(
-        id=s.id,
+        id=f"{scene_id}_{s.id}",
         order=s.order,
         intent=s.intent,
         intent_text=s.intent_text,
@@ -153,7 +161,13 @@ class ShotPlanner:
                     f"after scene {scene.id} - {total_shots} shots planned so far"
                 )
             planned_scenes.append(
-                scene.model_copy(update={"shots": [_to_domain_shot(s) for s in output.shots]})
+                scene.model_copy(
+                    update={
+                        "shots": [
+                            _to_domain_shot(s, scene_id=scene.id) for s in output.shots
+                        ]
+                    }
+                )
             )
 
         return planned_scenes

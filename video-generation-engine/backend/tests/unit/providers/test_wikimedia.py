@@ -79,6 +79,32 @@ async def test_search_skips_pages_with_no_imageinfo():
     assert candidates == []
 
 
+async def test_search_tries_each_term_separately_and_dedupes():
+    """The Asset Planner emits several distinct short keyword phrases per
+    shot (never one concatenated sentence) - each must become its own
+    request, with results merged and deduped by pageid rather than joined
+    into one query string (verified live: a concatenated or overly long
+    query reliably returns zero results even when short keyword terms
+    find real archival photos)."""
+    seen_queries = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_queries.append(request.url.params["gsrsearch"])
+        if "Leuna Werke" in request.url.params["gsrsearch"]:
+            return httpx.Response(200, json=_commons_search_response())
+        return httpx.Response(200, json={"query": {"pages": []}})
+
+    provider = WikimediaAssetProvider(transport=httpx.MockTransport(handler))
+    query = AssetQuery(
+        search_terms=["Leuna Werke", "Fischer-Tropsch"], preferred_type="image", shot_id="sh_01"
+    )
+    candidates = await provider.search(query)
+
+    assert len(seen_queries) == 2  # one request per term, never joined
+    assert not any("Fischer-Tropsch Leuna Werke" in q for q in seen_queries)
+    assert len(candidates) == 2  # from the "Leuna Werke" term only
+
+
 async def test_search_maps_5xx_to_transient_error():
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, text="service unavailable")
