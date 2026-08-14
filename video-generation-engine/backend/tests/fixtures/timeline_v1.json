@@ -1,0 +1,190 @@
+{
+  "schema_version": "1.0",
+  "timeline_id": "00000000-0000-0000-0000-00000000a001",
+  "project_id": "00000000-0000-0000-0000-00000000f001",
+  "version": 1,
+  "parent_version": null,
+  "produced_by": "shot_planner",
+  "status": "approved",
+  "created_at": "2026-08-14T10:00:00+00:00",
+
+  "metadata": {
+    "language": "en",
+    "aspect_ratio": "9:16",
+    "resolution": [1080, 1920],
+    "fps": 30,
+    "total_duration_s": 15.8,
+    "voice_id": null
+  },
+
+  "creative_context": {
+    "tone": "sober documentary",
+    "visual_style": "1940s archival, desaturated",
+    "historical_period": "1936-1945",
+    "audience": "general",
+    "camera_language": "static and slow push; no whip pans",
+    "colour_palette": ["#2b2b28", "#8a7f6b", "#d9d2c5"],
+    "constraints": ["no swastika imagery", "no AI faces of real people"]
+  },
+
+  "music_plan": {
+    "mood": "sombre, restrained",
+    "tempo": "slow",
+    "energy_arc": "build",
+    "search_terms": ["documentary underscore", "sparse strings", "wartime"],
+    "licence_requirements": ["cc0", "pixabay"]
+  },
+
+  "scenes": [
+    {
+      "id": "sc_01",
+      "order": 0,
+      "title": "Germany's Industrial Economy",
+      "summary": "Establishes German coal wealth.",
+      "emotion": "curiosity",
+      "narrative_purpose": "setup",
+      "narration_text": "Germany possessed abundant coal, fueling its factories and its ambitions.",
+      "duration_s": 6.0,
+      "shots": [
+        {
+          "id": "sh_01_01",
+          "order": 0,
+          "intent": "explain",
+          "intent_text": "Show the scale of German coal extraction",
+          "narration_span": [0, 34],
+          "duration_s": 3.0,
+          "framing": "wide",
+          "camera": { "movement": "slow_zoom", "direction": "in", "intensity": 0.15 },
+          "transition_out": { "type": "dissolve", "duration_s": 0.4 },
+          "prompt": "1930s Ruhr valley coal mine, workers, overcast sky, archival photograph",
+          "asset_plan": {
+            "strategy": "historical_search",
+            "search_queries": ["Ruhr coal mine 1936", "German coal miners 1930s"],
+            "preferred_type": "image",
+            "fallback_chain": ["historical_search", "public_domain", "stock_search", "generate_image"],
+            "licence_requirements": ["public_domain", "cc0", "cc_by"]
+          }
+        },
+        {
+          "id": "sh_01_02",
+          "order": 1,
+          "intent": "explain",
+          "intent_text": "Connect coal to industrial output",
+          "narration_span": [35, 73],
+          "duration_s": 3.0,
+          "framing": "medium",
+          "camera": { "movement": "pan", "direction": "right", "intensity": 0.2 },
+          "transition_out": { "type": "cut", "duration_s": 0.0 },
+          "prompt": "1930s German steel factory interior, molten metal, archival photograph",
+          "asset_plan": {
+            "strategy": "historical_search",
+            "search_queries": ["German steel factory 1936", "Ruhr industrial region archival"],
+            "preferred_type": "image",
+            "fallback_chain": ["historical_search", "public_domain", "stock_search", "generate_image"],
+            "licence_requirements": ["public_domain", "cc0", "cc_by"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "sc_02",
+      "order": 1,
+      "title": "The Oil Deficit",
+      "summary": "Reveals Germany's dependence on imported oil.",
+      "emotion": "tension",
+      "narrative_purpose": "conflict",
+      "narration_text": "But it lacked one vital resource: oil, and that dependency would shape the war to come.",
+      "duration_s": 5.5,
+      "shots": [
+        {
+          "id": "sh_02_01",
+          "order": 0,
+          "intent": "reveal",
+          "intent_text": "Reveal the absence of domestic oil reserves",
+          "narration_span": [0, 44],
+          "duration_s": 3.0,
+          "framing": "wide",
+          "camera": { "movement": "pull_back", "direction": "out", "intensity": 0.2 },
+          "transition_out": { "type": "dissolve", "duration_s": 0.4 },
+          "prompt": "1930s map of Europe highlighting German territory, no oil fields marked, archival cartography",
+          "asset_plan": {
+            "strategy": "historical_search",
+            "search_queries": ["1930s Europe map oil fields", "German oil imports map 1938"],
+            "preferred_type": "image",
+            "fallback_chain": ["historical_search", "public_domain", "generate_image"],
+            "licence_requirements": ["public_domain", "cc0"]
+          }
+        },
+        {
+          "id": "sh_02_02",
+          "order": 1,
+          "intent": "contrast",
+          "intent_text": "Contrast with oil-rich rivals",
+          "narration_span": [45, 88],
+          "duration_s": 2.5,
+          "framing": "medium",
+          "camera": { "movement": "static", "direction": "none", "intensity": 0.0 },
+          "transition_out": { "type": "cut", "duration_s": 0.0 },
+          "prompt": "1930s oil derricks and tankers, industrial harbor, archival photograph",
+          "asset_plan": {
+            "strategy": "stock_search",
+            "search_queries": ["vintage oil derricks black and white", "1930s oil tanker harbor"],
+            "preferred_type": "image",
+            "fallback_chain": ["stock_search", "generate_image"],
+            "licence_requirements": ["cc0", "cc_by", "pexels_licence"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "sc_03",
+      "order": 2,
+      "title": "The Strategic Consequence",
+      "summary": "Draws the throughline from resource gap to strategic decisions.",
+      "emotion": "gravity",
+      "narrative_purpose": "resolution",
+      "narration_text": "That single gap in resources would drive strategic decisions with consequences the world still remembers.",
+      "duration_s": 5.5,
+      "shots": [
+        {
+          "id": "sh_03_01",
+          "order": 0,
+          "intent": "emphasize",
+          "intent_text": "Emphasize the weight of the strategic gap",
+          "narration_span": [0, 55],
+          "duration_s": 3.0,
+          "framing": "close",
+          "camera": { "movement": "slow_push", "direction": "in", "intensity": 0.18 },
+          "transition_out": { "type": "dissolve", "duration_s": 0.4 },
+          "prompt": "close-up of a worn 1930s strategic planning document on a wooden desk, archival photograph",
+          "asset_plan": {
+            "strategy": "historical_search",
+            "search_queries": ["German strategic planning document 1930s", "archival wehrmacht planning table"],
+            "preferred_type": "image",
+            "fallback_chain": ["historical_search", "public_domain", "generate_image"],
+            "licence_requirements": ["public_domain", "cc0"]
+          }
+        },
+        {
+          "id": "sh_03_02",
+          "order": 1,
+          "intent": "transition",
+          "intent_text": "Close the segment, hand off to the next chapter",
+          "narration_span": [56, 108],
+          "duration_s": 2.5,
+          "framing": "wide",
+          "camera": { "movement": "static", "direction": "none", "intensity": 0.0 },
+          "transition_out": { "type": "cut", "duration_s": 0.0 },
+          "prompt": "wide shot of an empty 1930s industrial skyline at dusk, archival photograph",
+          "asset_plan": {
+            "strategy": "historical_search",
+            "search_queries": ["Ruhr industrial skyline 1930s dusk"],
+            "preferred_type": "image",
+            "fallback_chain": ["historical_search", "public_domain", "stock_search", "generate_image"],
+            "licence_requirements": ["public_domain", "cc0", "cc_by"]
+          }
+        }
+      ]
+    }
+  ]
+}
