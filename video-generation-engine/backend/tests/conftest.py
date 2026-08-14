@@ -29,9 +29,7 @@ async def clean_database():
         # empty, and the TRUNCATE below becomes `TRUNCATE TABLE  RESTART
         # IDENTITY CASCADE` - a syntax error that surfaces as six confusing
         # setup errors rather than "you forgot to register the models".
-        raise RuntimeError(
-            "no tables registered on Base.metadata - app.models was not imported"
-        )
+        raise RuntimeError("no tables registered on Base.metadata - app.models was not imported")
     async with engine.begin() as conn:
         await conn.execute(text(f"TRUNCATE TABLE {', '.join(tables)} RESTART IDENTITY CASCADE"))
     yield

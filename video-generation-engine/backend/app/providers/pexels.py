@@ -41,6 +41,10 @@ class PexelsAssetProvider:
         return candidates
 
     async def _search_one(self, search_text: str) -> list[AssetCandidate]:
+        # `search()` already checked this is set before calling here; the
+        # assert just carries that guarantee across the method boundary
+        # for mypy (a `str | None` header value doesn't type-check).
+        assert settings.pexels_api_key is not None
         params = {"query": search_text, "per_page": str(_PER_PAGE)}
         try:
             async with httpx.AsyncClient(timeout=15.0, transport=self._transport) as client:

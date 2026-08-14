@@ -74,7 +74,7 @@ class OpenAIPlanningProvider:
         try:
             try:
                 completion = await self._parse(
-                    messages=messages,  # type: ignore[arg-type]
+                    messages=messages,
                     response_model=response_model,
                     seed=seed,
                     temperature=settings.openai_temperature,
@@ -92,7 +92,7 @@ class OpenAIPlanningProvider:
                         extra={"model": settings.openai_planning_model},
                     )
                     completion = await self._parse(
-                        messages=messages,  # type: ignore[arg-type]
+                        messages=messages,
                         response_model=response_model,
                         seed=seed,
                         temperature=None,

@@ -6,6 +6,7 @@ from app.models.asset import AssetModel
 from app.models.domain_event import DomainEventModel
 from app.models.generated_clip import GeneratedClipModel
 from app.models.llm_call import LlmCallModel
+from app.models.narration import NarrationModel
 from app.models.project import ProjectModel
 from app.models.render import RenderModel
 from app.models.script import ScriptModel
@@ -18,6 +19,7 @@ __all__ = [
     "DomainEventModel",
     "GeneratedClipModel",
     "LlmCallModel",
+    "NarrationModel",
     "ProjectModel",
     "RenderModel",
     "ScriptModel",

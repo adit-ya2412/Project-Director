@@ -153,3 +153,51 @@ class AssetProvider(Protocol):
 
     async def search(self, query: AssetQuery) -> list[AssetCandidate]: ...
     async def fetch(self, candidate: AssetCandidate) -> AssetBytes: ...
+
+
+@dataclass(frozen=True)
+class NarrationRequest:
+    """One scene's TTS request (M8, D1). Per-scene, not per-video (M8
+    settled decision): `Shot.narration_span` is a character-offset pair
+    into its own scene's `narration_text`, so synthesising one scene at a
+    time is what makes the returned alignment line up with it directly,
+    with no cross-scene offset arithmetic.
+
+    `voice_id`/`model`/`output_format` are explicit fields here rather
+    than baked into the provider instance (contrast `FalImageProvider`,
+    which reads its model id from settings) - together with `text` they
+    are exactly the four inputs the cache key hashes on
+    (`elevenlabs.compute_narration_content_hash`), and a per-project voice
+    (`Timeline.metadata.voice_id`) or language can vary the first three
+    independently of any global default.
+    """
+
+    text: str
+    voice_id: str
+    model: str
+    output_format: str
+    scene_id: str
+
+
+@dataclass(frozen=True)
+class NarrationResult:
+    """`alignment` is ElevenLabs' RAW, un-normalized character-level
+    timing object - three parallel arrays (`characters`,
+    `character_start_times_seconds`, `character_end_times_seconds`) whose
+    indices correspond 1:1 with the submitted `request.text`. See
+    `providers/elevenlabs.py` for why the *normalized* alignment the same
+    response also contains is never used. `character_count` is the billed
+    length of the submitted text - recorded so a later step can fold TTS
+    spend into the project budget cap the same way `generated_clip.
+    cost_cents` already does."""
+
+    content: bytes
+    alignment: dict
+    character_count: int
+    content_type: str = "audio/mpeg"
+
+
+class NarrationProvider(Protocol):
+    name: str
+
+    async def synthesize(self, request: NarrationRequest) -> NarrationResult: ...

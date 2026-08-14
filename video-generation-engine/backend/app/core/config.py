@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     elevenlabs_voice_id: str | None = None
     elevenlabs_model: str = "eleven_multilingual_v2"
     elevenlabs_output_format: str = "mp3_44100_128"
+    # Rough cost estimate in cents per character (pre-approval estimate and
+    # budget-cap check only - not billing, same spirit as the fal_*_cost_
+    # cents_estimate values above). ElevenLabs bills per character of input
+    # text; refine this after real usage.
+    elevenlabs_cost_cents_per_character: float = 0.018
 
     # --- Wikimedia (M6+) ---
     wikimedia_user_agent: str = "VideoGenerationEngine/0.1 (https://example.com; you@example.com)"

@@ -57,9 +57,7 @@ FIXTURE = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "m8_test_
 
 async def _download(url: str, expected_hash: str) -> bytes:
     async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-        response = await client.get(
-            url, headers={"User-Agent": settings.wikimedia_user_agent}
-        )
+        response = await client.get(url, headers={"User-Agent": settings.wikimedia_user_agent})
         response.raise_for_status()
     content = response.content
     actual = hashlib.sha256(content).hexdigest()
@@ -80,9 +78,7 @@ async def main(force: bool) -> None:
 
     async with async_session_factory() as session:
         exists = (
-            await session.execute(
-                text("SELECT 1 FROM project WHERE id = :pid"), {"pid": pid}
-            )
+            await session.execute(text("SELECT 1 FROM project WHERE id = :pid"), {"pid": pid})
         ).fetchone()
         if exists and not force:
             print(f"project {pid} already exists — nothing to do (use --force to recreate)")
@@ -117,9 +113,7 @@ async def main(force: bool) -> None:
             print(f"removed existing project {pid}")
 
         await session.execute(
-            text(
-                "INSERT INTO project (id, name, status) VALUES (:pid, :name, 'created')"
-            ),
+            text("INSERT INTO project (id, name, status) VALUES (:pid, :name, 'created')"),
             {"pid": pid, "name": fixture["name"]},
         )
         session.add(
@@ -192,8 +186,10 @@ async def main(force: bool) -> None:
         await session.commit()
 
     print(f"seeded project {pid}")
-    print(f"  timeline v{appended.version} (approved), {len(fixture['assets'])} assets "
-          f"({downloaded} re-downloaded), {len(fixture['bindings'])} bindings")
+    print(
+        f"  timeline v{appended.version} (approved), {len(fixture['assets'])} assets "
+        f"({downloaded} re-downloaded), {len(fixture['bindings'])} bindings"
+    )
 
 
 if __name__ == "__main__":

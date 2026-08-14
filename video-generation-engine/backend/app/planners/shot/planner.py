@@ -162,11 +162,7 @@ class ShotPlanner:
                 )
             planned_scenes.append(
                 scene.model_copy(
-                    update={
-                        "shots": [
-                            _to_domain_shot(s, scene_id=scene.id) for s in output.shots
-                        ]
-                    }
+                    update={"shots": [_to_domain_shot(s, scene_id=scene.id) for s in output.shots]}
                 )
             )
 
