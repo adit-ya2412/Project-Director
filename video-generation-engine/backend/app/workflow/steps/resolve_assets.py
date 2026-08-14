@@ -1,43 +1,54 @@
 """Step 3: resolve or generate media for every shot.
 
-DRY_RUN=true: unchanged since M4 - `FakeAssetProvider` always finds
-something on the shot's primary strategy, so the fallback chain is never
-actually exercised.
+DRY_RUN=true: unchanged since M4 - `FakeAssetProvider`/`FakeImageProvider`
+always find/produce something on the shot's primary strategy, so the
+fallback chain and the real generation path below are never exercised.
 
-DRY_RUN=false (M6): real search across the ladder's search rungs -
-`project_assets` (stub, no upload feature yet - always empty),
-`historical_search` + `public_domain` (Wikimedia Commons, one provider
-serves both), `stock_search` (Pexels) - walking the shot's full
-`asset_plan.fallback_chain` in order until a licence-passing candidate
-survives. Generation rungs (`generate_video`/`generate_image`) still
-route through the fake image provider regardless of DRY_RUN - M7 hasn't
-landed real media generation yet, so a real search miss falls through to
-the same fake DRY_RUN uses. Real search is image-only for now; a shot
-whose `preferred_type` is `video` still only gets real image candidates
-(no real video search provider exists yet).
+DRY_RUN=false: real search (M6, rungs 1-4) walks the shot's full
+`asset_plan.fallback_chain`; a miss on every search rung falls through to
+real generation (M7, rungs 5-6) via fal.ai. Image generation
+(`fal-ai/bytedance/seedream/v4/text-to-image` by default) is a bounded
+synchronous poll - Seedream is fast. Video generation
+(`fal-ai/kling-video/o3/standard/image-to-video` by default) is
+image-to-video: a keyframe is generated first via the same image
+provider, then fed into Kling, and the video job itself uses a real
+submit-once/poll-once-per-attempt pattern so an in-flight job survives a
+process restart rather than being resubmitted (implementation guide,
+Phase M7 advice).
 
-Per-shot failure isolation (Principle 10) is enforced here: one shot
-failing marks that binding `failed` and processing continues with the
-rest, never aborting the whole step.
+Per-shot failure isolation (Principle 10) is enforced throughout: one
+shot failing (or hitting the budget cap) marks that binding `failed` and
+processing continues with the rest, never aborting the whole step.
 """
 
 import hashlib
 import uuid as uuid_module
 
+from app.assets.cost import check_budget
 from app.assets.ranking import rank_candidates
 from app.assets.validation import validate_and_identify_image
 from app.core.config import settings
 from app.core.errors import PermanentError, TransientError
-from app.providers.base import AssetCandidate, AssetProvider, AssetQuery, ImageRequest
+from app.providers.base import (
+    AssetCandidate,
+    AssetProvider,
+    AssetQuery,
+    ImageProvider,
+    ImageRequest,
+    VideoProvider,
+    VideoRequest,
+)
 from app.providers.fakes.asset import FakeAssetProvider
 from app.providers.fakes.image import FakeImageProvider
+from app.providers.fal_image import FalImageProvider
+from app.providers.fal_video import FalVideoProvider
 from app.providers.local_assets import LocalProjectAssetProvider
 from app.providers.pexels import PexelsAssetProvider
 from app.providers.wikimedia import WikimediaAssetProvider
 from app.repositories.asset_repository import AssetRepository
 from app.repositories.generated_clip_repository import GeneratedClipRepository
 from app.repositories.shot_binding_repository import TERMINAL_STATES, ShotBindingRepository
-from app.schemas.timeline import AssetStrategy, CreativeContext, Shot
+from app.schemas.timeline import AssetStrategy, CreativeContext, PreferredMediaType, Shot
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
 
@@ -57,6 +68,21 @@ def _real_search_providers() -> dict[AssetStrategy, AssetProvider]:
         AssetStrategy.PUBLIC_DOMAIN: WikimediaAssetProvider(rung="public_domain"),
         AssetStrategy.STOCK_SEARCH: PexelsAssetProvider(),
     }
+
+
+def _project_seed(project_id: str) -> int:
+    """A fixed seed per project (implementation guide, Phase M7 advice:
+    "use a fixed seed per project... prefer stylistic consistency over
+    per-shot quality") - deterministic from the project id, so every
+    generated image/keyframe in a project shares a seed without needing
+    to persist one separately."""
+    return int(hashlib.sha256(project_id.encode("utf-8")).hexdigest()[:8], 16)
+
+
+def _styled_prompt(shot: Shot, creative_context: CreativeContext) -> str:
+    if creative_context.visual_style:
+        return f"{shot.prompt}, {creative_context.visual_style}"
+    return shot.prompt
 
 
 class ResolveAssetsStep:
@@ -90,13 +116,16 @@ class ResolveAssetsStep:
         asset_repo = AssetRepository(ctx.session)
         clip_repo = GeneratedClipRepository(ctx.session)
 
-        image_provider = FakeImageProvider()
         project_dir = settings.storage_root / ctx.project_id
         (project_dir / "assets").mkdir(parents=True, exist_ok=True)
         (project_dir / "clips").mkdir(parents=True, exist_ok=True)
 
         fake_asset_provider = FakeAssetProvider() if settings.dry_run else None
         search_providers = None if settings.dry_run else _real_search_providers()
+        image_provider: ImageProvider = (
+            FakeImageProvider() if settings.dry_run else FalImageProvider()
+        )
+        video_provider: VideoProvider | None = None if settings.dry_run else FalVideoProvider()
         already_used_hashes = await asset_repo.list_content_hashes_for_project(project_uuid)
 
         for shot in timeline.all_shots():
@@ -120,7 +149,7 @@ class ResolveAssetsStep:
                         clip_repo=clip_repo,
                     )
                 else:
-                    assert search_providers is not None
+                    assert search_providers is not None and video_provider is not None
                     used_hash = await self._resolve_one_real(
                         shot,
                         binding,
@@ -128,6 +157,7 @@ class ResolveAssetsStep:
                         project_dir=project_dir,
                         search_providers=search_providers,
                         image_provider=image_provider,
+                        video_provider=video_provider,
                         asset_repo=asset_repo,
                         clip_repo=clip_repo,
                         creative_context=timeline.creative_context,
@@ -160,7 +190,7 @@ class ResolveAssetsStep:
         project_uuid: uuid_module.UUID,
         project_dir,
         asset_provider: FakeAssetProvider,
-        image_provider: FakeImageProvider,
+        image_provider: ImageProvider,
         asset_repo: AssetRepository,
         clip_repo: GeneratedClipRepository,
     ) -> None:
@@ -201,7 +231,7 @@ class ResolveAssetsStep:
                 return
             # Fell through the search rung with nothing found - generate.
 
-        await self._generate(
+        await self._generate_fake(
             shot,
             binding,
             project_uuid=project_uuid,
@@ -218,7 +248,8 @@ class ResolveAssetsStep:
         project_uuid: uuid_module.UUID,
         project_dir,
         search_providers: dict[AssetStrategy, AssetProvider],
-        image_provider: FakeImageProvider,
+        image_provider: ImageProvider,
+        video_provider: VideoProvider,
         asset_repo: AssetRepository,
         clip_repo: GeneratedClipRepository,
         creative_context: CreativeContext,
@@ -321,24 +352,38 @@ class ResolveAssetsStep:
             # Every fetched candidate in this rung failed validation -
             # move on to the next strategy in the fallback chain.
 
-        await self._generate(
-            shot,
-            binding,
-            project_uuid=project_uuid,
-            project_dir=project_dir,
-            image_provider=image_provider,
-            clip_repo=clip_repo,
-        )
+        is_video = bool(asset_plan and asset_plan.preferred_type == PreferredMediaType.VIDEO)
+        if is_video:
+            await self._generate_video_real(
+                shot,
+                binding,
+                project_uuid=project_uuid,
+                project_dir=project_dir,
+                image_provider=image_provider,
+                video_provider=video_provider,
+                clip_repo=clip_repo,
+                creative_context=creative_context,
+            )
+        else:
+            await self._generate_image_real(
+                shot,
+                binding,
+                project_uuid=project_uuid,
+                project_dir=project_dir,
+                image_provider=image_provider,
+                clip_repo=clip_repo,
+                creative_context=creative_context,
+            )
         return None
 
-    async def _generate(
+    async def _generate_fake(
         self,
         shot: Shot,
         binding,
         *,
         project_uuid: uuid_module.UUID,
         project_dir,
-        image_provider: FakeImageProvider,
+        image_provider: ImageProvider,
         clip_repo: GeneratedClipRepository,
     ) -> None:
         result = await image_provider.generate(
@@ -368,3 +413,155 @@ class ResolveAssetsStep:
         binding.clip_id = clip.id
         binding.state = "generated"
         binding.rung = AssetStrategy.GENERATE_IMAGE.value
+
+    async def _generate_image_real(
+        self,
+        shot: Shot,
+        binding,
+        *,
+        project_uuid: uuid_module.UUID,
+        project_dir,
+        image_provider: ImageProvider,
+        clip_repo: GeneratedClipRepository,
+        creative_context: CreativeContext,
+    ) -> None:
+        prompt = _styled_prompt(shot, creative_context)
+        prompt_hash = hashlib.sha256(f"{prompt}|{settings.fal_image_model}".encode()).hexdigest()
+
+        cached = await clip_repo.get_by_prompt_hash(prompt_hash)
+        if cached is not None and cached.status == "completed":
+            binding.clip_id = cached.id
+            binding.state = "generated"
+            binding.rung = AssetStrategy.GENERATE_IMAGE.value
+            return
+
+        already_spent = await clip_repo.total_cost_cents_for_project(project_uuid)
+        check_budget(
+            already_spent_cents=already_spent,
+            additional_cents=settings.fal_image_cost_cents_estimate,
+        )
+
+        result = await image_provider.generate(
+            ImageRequest(
+                prompt=prompt,
+                width=settings.render_width,
+                height=settings.render_height,
+                shot_id=shot.id,
+                seed=_project_seed(str(project_uuid)),
+            )
+        )
+        ext, _width, _height = validate_and_identify_image(result.content)
+        path = project_dir / "clips" / f"{prompt_hash}.{ext}"
+        path.write_bytes(result.content)
+        clip = await clip_repo.insert(
+            project_id=project_uuid,
+            shot_id=shot.id,
+            provider=image_provider.name,
+            model_id=settings.fal_image_model,
+            prompt=prompt,
+            prompt_hash=prompt_hash,
+            duration_s=None,
+            local_path=str(path),
+            cost_cents=settings.fal_image_cost_cents_estimate,
+        )
+        binding.clip_id = clip.id
+        binding.state = "generated"
+        binding.rung = AssetStrategy.GENERATE_IMAGE.value
+
+    async def _generate_video_real(
+        self,
+        shot: Shot,
+        binding,
+        *,
+        project_uuid: uuid_module.UUID,
+        project_dir,
+        image_provider: ImageProvider,
+        video_provider: VideoProvider,
+        clip_repo: GeneratedClipRepository,
+        creative_context: CreativeContext,
+    ) -> None:
+        prompt = _styled_prompt(shot, creative_context)
+        prompt_hash = hashlib.sha256(f"{prompt}|{settings.fal_video_model}".encode()).hexdigest()
+
+        cached = await clip_repo.get_by_prompt_hash(prompt_hash)
+        if cached is not None and cached.status == "completed":
+            binding.clip_id = cached.id
+            binding.state = "generated"
+            binding.rung = AssetStrategy.GENERATE_VIDEO.value
+            return
+
+        # Resume path: an in-flight job for this shot already exists from
+        # a prior attempt/process - poll it, never resubmit (implementation
+        # guide, Phase M7 advice).
+        in_flight = await clip_repo.get_in_flight_for_shot(project_uuid, shot.id)
+        if in_flight is not None:
+            assert in_flight.job_id is not None
+            status = await video_provider.poll(in_flight.job_id)
+            if status.state == "in_progress":
+                return  # still going - binding stays "pending", a later run polls again
+            if status.state == "failed":
+                await clip_repo.mark_failed(
+                    in_flight, error=status.error or "video generation failed"
+                )
+                binding.state = "failed"
+                binding.last_error = status.error or "video generation failed"
+                return
+            assert status.content is not None
+            path = project_dir / "clips" / f"{prompt_hash}.mp4"
+            path.write_bytes(status.content)
+            await clip_repo.mark_completed(
+                in_flight,
+                local_path=str(path),
+                duration_s=shot.duration_s,
+                cost_cents=in_flight.cost_cents,
+            )
+            binding.clip_id = in_flight.id
+            binding.state = "generated"
+            binding.rung = AssetStrategy.GENERATE_VIDEO.value
+            return
+
+        # Fresh submission: a keyframe image first (bounded, synchronous),
+        # then the video job itself (submit-and-poll, resumable).
+        estimated_cents = (
+            settings.fal_image_cost_cents_estimate + settings.fal_video_cost_cents_estimate
+        )
+        already_spent = await clip_repo.total_cost_cents_for_project(project_uuid)
+        check_budget(already_spent_cents=already_spent, additional_cents=estimated_cents)
+
+        keyframe = await image_provider.generate(
+            ImageRequest(
+                prompt=prompt,
+                width=settings.render_width,
+                height=settings.render_height,
+                shot_id=shot.id,
+                seed=_project_seed(str(project_uuid)),
+            )
+        )
+        if keyframe.hosted_url is None:
+            raise PermanentError(
+                f"{image_provider.name} did not return a hosted URL required for "
+                "image-to-video generation"
+            )
+
+        job_id = await video_provider.submit(
+            VideoRequest(
+                prompt=prompt,
+                image_url=keyframe.hosted_url,
+                duration_s=shot.duration_s,
+                shot_id=shot.id,
+            )
+        )
+        # Persisted immediately, before anything else - if the process
+        # crashes right after this, the job is still findable on resume.
+        await clip_repo.insert_pending(
+            project_id=project_uuid,
+            shot_id=shot.id,
+            provider=video_provider.name,
+            model_id=settings.fal_video_model,
+            prompt=prompt,
+            prompt_hash=prompt_hash,
+            job_id=job_id,
+            estimated_cost_cents=estimated_cents,
+        )
+        # binding.state stays "pending" (non-terminal) - a later run of
+        # this step polls the job above rather than resubmitting it.

@@ -57,15 +57,26 @@ class Settings(BaseSettings):
     planner_max_repair_attempts: int = 1
 
     # --- fal.ai: image (rung 6) + video (rung 5) generation (M7+) ---
-    # Model ids intentionally default to empty: they are settled by the M7
-    # bake-off, not chosen up front. A provider must read them from here
-    # rather than hardcoding — swapping models is the reason media
-    # generation routes through an aggregator at all.
+    # Model ids are a config value, never hardcoded in a provider class —
+    # swapping models is the reason media generation routes through an
+    # aggregator at all. The defaults below are a direct pick, NOT the
+    # result of the guide's Step 0 bake-off — that comparison was
+    # deliberately skipped to avoid spending real money on a side-by-side
+    # that didn't happen. The video model is image-to-video, not
+    # text-to-video: every video generation chains through the image
+    # model first for a keyframe (see ResolveAssetsStep._generate_video_real).
+    # If a generation call 404s, the model id has moved; check
+    # https://fal.ai/models and update the single line below.
     fal_key: str | None = None
-    fal_image_model: str = ""
-    fal_video_model: str = ""
+    fal_image_model: str = "fal-ai/bytedance/seedream/v4/text-to-image"
+    fal_video_model: str = "fal-ai/kling-video/o3/standard/image-to-video"
     fal_poll_interval_seconds: int = 15
     fal_max_poll_minutes: int = 20
+    # Rough per-generation cost estimates in cents, used only for the
+    # pre-approval cost estimate and the budget-cap check — not billing.
+    # fal's actual per-model pricing varies; refine these after real usage.
+    fal_image_cost_cents_estimate: int = 4
+    fal_video_cost_cents_estimate: int = 50
 
     # --- ElevenLabs (M5+) ---
     elevenlabs_api_key: str | None = None

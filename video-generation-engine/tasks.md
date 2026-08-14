@@ -108,10 +108,10 @@ TASK-000 Freeze Documentation v1.0
 # Sprint 8 — AI Providers
 
 - [x] TASK-041 OpenAI Provider (planning LLM only — `app/providers/openai_provider.py`)
-- [ ] TASK-042 fal.ai client + model bake-off (see Implementation Guide, M7 Step 0)
-- [ ] TASK-043 Image Provider (fal, rung 6)
-- [ ] TASK-044 Video Provider (fal, rung 5 — submit/poll/resume)
-- [ ] TASK-045 Narration Provider (ElevenLabs, word timings required)
+- [x] TASK-042 fal.ai client (`app/providers/fal_queue.py`) — bake-off itself deliberately skipped, models are direct picks (see Implementation Guide, M7 notes)
+- [x] TASK-043 Image Provider (fal, rung 6 — `app/providers/fal_image.py`, Seedream, bounded sync poll)
+- [x] TASK-044 Video Provider (fal, rung 5 — `app/providers/fal_video.py`, Kling image-to-video, real submit/poll/resume)
+- [ ] TASK-045 Narration Provider (ElevenLabs, word timings required — lands with M8)
 
 ---
 

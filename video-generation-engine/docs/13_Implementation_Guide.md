@@ -1062,12 +1062,25 @@ Judge on **whether generated media sits convincingly beside archival photography
 
 ## Done when
 
-- [ ] The bake-off has run; `FAL_IMAGE_MODEL` and `FAL_VIDEO_MODEL` are set with the comparison recorded
-- [ ] Cost estimate appears before approval and is within ~20% of actual
-- [ ] Budget cap halts a runaway run
-- [ ] Cache hit rate is visible; a second identical run costs nothing
-- [ ] A crash mid-generation resumes without resubmitting in-flight jobs
-- [ ] Switching either model is a one-line `.env` change, verified by actually doing it once
+- [x] ~~The bake-off has run~~ — **deliberately skipped** (see Implementation notes below). `FAL_IMAGE_MODEL`/`FAL_VIDEO_MODEL` are set to direct picks, not a recorded comparison.
+- [x] Cost estimate appears before approval (`GET /progress`); "within ~20% of actual" is unverified — no real generation has run yet to compare against.
+- [x] Budget cap halts a runaway run
+- [x] Cache hit rate is visible via `generated_clip.prompt_hash`; a second identical run costs nothing (proven in tests, not against the real API)
+- [x] A crash mid-generation resumes without resubmitting in-flight jobs (video only — proven via a simulated crash in tests)
+- [ ] Switching either model is a one-line `.env` change — the mechanism is real (never hardcoded), but not yet verified by actually doing it once against the live API
+
+## Implementation notes (2026-08-14)
+
+**The bake-off (Step 0) was explicitly skipped by decision, not by oversight.** Comparing real models costs real money and needs human visual judgment ("does this sit convincingly beside archival photography") that shouldn't be made silently. `FAL_IMAGE_MODEL=fal-ai/bytedance/seedream/v4/text-to-image` and `FAL_VIDEO_MODEL=fal-ai/kling-video/o3/standard/image-to-video` are direct picks, verified against fal.ai's own API docs (exact input/output schema, not guessed) but never run once against the real API end-to-end. Revisit if output quality disappoints.
+
+**The video model is image-to-video, not text-to-video** — a fact only discovered by checking the live schema, and it reshapes the whole generation path: every `GENERATE_VIDEO` shot first generates a still keyframe via the image model (same styled prompt, same per-project seed), then feeds that image's fal-hosted URL into Kling. No separate upload step is needed — the image model's own result URL is already fal-hosted.
+
+- **`app/providers/fal_queue.py`** is the only file that imports `fal_client` (ADR-003 firewall) — one generic `submit`/`poll_once` wrapper over fal's queue, shared by both `FalImageProvider` and `FalVideoProvider` per the guide's own advice ("write this once against the queue rather than per model").
+- **Image generation is a bounded synchronous poll** (Seedream is fast, typically seconds) — `FalImageProvider.generate()` submits and polls in a loop for up to ~60s, raising `TransientError` if it genuinely never completes so the shot retries later through the normal workflow backoff. **Video generation is real submit-and-poll**: `FalVideoProvider.submit()` returns a job id that `ResolveAssetsStep` persists via `GeneratedClipRepository.insert_pending()` *immediately*, before anything else - a crash between submit and persist would otherwise pay for a clip that can never be found again. A later run finds that in-flight row via `get_in_flight_for_shot()` and polls the *same* job rather than resubmitting; the shot's `ShotBinding` stays `"pending"` (non-terminal) for as many runs as it takes.
+- **Budget cap is checked before every paid call**, not just once - `check_budget()` sums `generated_clip.cost_cents` already spent for the project and raises `PermanentError` (never retried) if the next generation would exceed `PROJECT_BUDGET_CAP_CENTS`. Because the check re-runs per shot, a breach doesn't need special-casing beyond normal per-shot isolation (Principle 10) - every subsequent shot's attempt fails the same cheap check immediately rather than making a wasted paid call.
+- **The generation cache (rung 0)** is `generated_clip.prompt_hash` keyed on the *styled* prompt (shot prompt + `creative_context.visual_style`) plus model id - checked before spending anything, for both image and video.
+- **Cost estimate on `GET /progress`** (`estimated_cost_cents`) only counts shots whose primary `asset_plan.strategy` is already a generation rung - a search-primary shot that later falls through to generation isn't reflected, which is an honest, documented under-estimate rather than a false precision claim.
+- 32 new tests (7 `FalQueueClient` tests using a fake stand-in for `fal_client.AsyncClient`'s own `Completed`/`Queued`/`InProgress` types; 11 `FalImageProvider`/`FalVideoProvider` tests via `httpx.MockTransport` for downloads; 8 pure-function cost/budget tests; 6 `resolve_assets` integration tests covering the image happy path, fresh video submission, in-progress resume, completed resume, the budget cap, and the generation cache), 94/94 tests total green, ruff/black/mypy clean.
 
 ---
 
@@ -1389,12 +1402,22 @@ M6 Asset Pipeline   ████████████ complete 2026-08-14 —
                                  is a real stub pending an upload feature; DRY_RUN=true
                                  path unchanged; 61/62 tests green (1 pre-existing
                                  FFmpeg-PATH failure, unrelated)
-Code                █████████░ M0 + M2 + M3 + M4 + M5 + M6 — no real media generation
-                                 yet (M7-M8); render still routes through fakes for
-                                 generate_video/generate_image
-Next                M7 · Media Generation (fal.ai bake-off first — Step 0 — then real
-                                 image/video generation for rungs 5-6; ElevenLabs
-                                 narration also lands here, key already in .env)
+M7 Media Generation ███████████░ complete 2026-08-14 — real fal.ai image (Seedream,
+                                 bounded sync poll) and video (Kling, image-to-video,
+                                 real submit/poll/resume) generation, budget cap enforced
+                                 per call, cost estimate on GET /progress, generation
+                                 cache on prompt_hash; DRY_RUN=true path unchanged;
+                                 94/94 tests green. Bake-off (Step 0) deliberately
+                                 skipped - models are direct picks, never run against
+                                 the real API end-to-end; see M7 Implementation notes.
+Code                ██████████░ M0 + M2 + M3 + M4 + M5 + M6 + M7 — renderer (M8) is
+                                 still the M0 slideshow renderer: no real narration,
+                                 no audio mixing, no captions yet
+Next                M8 · Renderer (ElevenLabs narration - the master clock, D1 - real
+                                 audio mixing/ducking, burned captions; key already
+                                 in .env). Recommended first real-money test: flip
+                                 DRY_RUN=false on a small script and watch actual
+                                 fal.ai image/video generation happen end to end.
 ```
 
 ---

@@ -58,21 +58,59 @@ class ImageRequest:
     width: int
     height: int
     shot_id: str
+    seed: int | None = None
 
 
 @dataclass(frozen=True)
 class ImageResult:
-    """Bytes only — never a path or URL persisted into the Timeline
-    (Invariant I2). The caller decides where to store the bytes."""
+    """Bytes are what get persisted (Invariant I2 - the Timeline itself
+    never holds a path or URL). `hosted_url`, when a provider sets it, is
+    a provider-hosted URL for the *same* bytes - never stored, only
+    reused within one request as the source keyframe for image-to-video
+    generation (M7) so the image doesn't need re-uploading."""
 
     content: bytes
     content_type: str = "image/png"
+    hosted_url: str | None = None
 
 
 class ImageProvider(Protocol):
     name: str
 
     async def generate(self, request: ImageRequest) -> ImageResult: ...
+
+
+@dataclass(frozen=True)
+class VideoRequest:
+    """Image-to-video: every model behind this protocol takes a source
+    keyframe, not just a text prompt - the keyframe is generated via an
+    `ImageProvider` first (M7's Kling model is `image-to-video`)."""
+
+    prompt: str
+    image_url: str
+    duration_s: float
+    shot_id: str
+
+
+@dataclass(frozen=True)
+class VideoJobStatus:
+    state: str  # "in_progress" | "completed" | "failed"
+    content: bytes | None = None
+    content_type: str = "video/mp4"
+    error: str | None = None
+
+
+class VideoProvider(Protocol):
+    """Submit/poll, not request-response (implementation guide, Phase M7
+    advice: "video generation is submit-and-poll... this is exactly why
+    the workflow engine must survive process restarts"). `submit` returns
+    a job id to persist immediately; `poll` is called once per attempt,
+    never blocks until completion."""
+
+    name: str
+
+    async def submit(self, request: VideoRequest) -> str: ...
+    async def poll(self, job_id: str) -> VideoJobStatus: ...
 
 
 @dataclass(frozen=True)

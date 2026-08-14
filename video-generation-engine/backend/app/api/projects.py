@@ -16,7 +16,9 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_repo, get_timeline_service, get_workflow_engine
+from app.assets.cost import estimate_project_cost_cents
 from app.db.session import get_db
+from app.repositories.generated_clip_repository import GeneratedClipRepository
 from app.repositories.project_repository import ProjectRepository
 from app.repositories.shot_binding_repository import ShotBindingRepository
 from app.repositories.workflow_repository import WorkflowRunRepository
@@ -159,7 +161,15 @@ async def get_progress(
 
     timeline = await timeline_service.get_active(project_id)
     if timeline is None:
-        return {**base, "total_shots": 0, "completed_shots": 0, "failed_shots": 0, "progress": None}
+        return {
+            **base,
+            "total_shots": 0,
+            "completed_shots": 0,
+            "failed_shots": 0,
+            "progress": None,
+            "estimated_cost_cents": 0,
+            "spent_cost_cents": 0,
+        }
 
     bindings = await ShotBindingRepository(session).list_for_version(
         uuid.UUID(project_id), timeline.version
@@ -168,12 +178,23 @@ async def get_progress(
     completed = sum(1 for b in bindings if b.state in _TERMINAL_SHOT_STATES)
     failed = sum(1 for b in bindings if b.state == "failed")
 
+    # Estimated before generation runs (implementation guide, Phase M7
+    # advice: "estimate cost before the approval gate and show it") -
+    # counts only shots already planned to generate; a search-primary shot
+    # that later falls through to generation is not reflected here.
+    estimated_cost_cents = estimate_project_cost_cents(timeline)
+    spent_cost_cents = await GeneratedClipRepository(session).total_cost_cents_for_project(
+        uuid.UUID(project_id)
+    )
+
     return {
         **base,
         "total_shots": total,
         "completed_shots": completed,
         "failed_shots": failed,
         "progress": (completed / total) if total else None,
+        "estimated_cost_cents": estimated_cost_cents,
+        "spent_cost_cents": spent_cost_cents,
     }
 
 

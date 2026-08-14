@@ -88,6 +88,19 @@ async def _seed_timeline(project_id: str, shots: list[Shot]) -> None:
         )
 
 
+class _FakeGenerationImageProvider:
+    """Stands in for FalImageProvider (M7) - these tests are about the
+    search/ladder path, not real generation; a real network call here
+    would 404 (no fal.ai account is wired into tests)."""
+
+    name = "fake_fal_image"
+
+    async def generate(self, request):
+        from app.providers.base import ImageResult
+
+        return ImageResult(content=_png_bytes((1, 2, 3)), content_type="image/png")
+
+
 class _FakeSearchProvider:
     def __init__(
         self,
@@ -118,6 +131,7 @@ def _patch_providers(monkeypatch, historical_provider) -> None:
         "_real_search_providers",
         lambda: {AssetStrategy.HISTORICAL_SEARCH: historical_provider},
     )
+    monkeypatch.setattr(resolve_assets_module, "FalImageProvider", _FakeGenerationImageProvider)
 
 
 async def _run_step(project_id: str) -> None:
