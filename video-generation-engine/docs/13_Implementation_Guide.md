@@ -843,6 +843,27 @@ refinement the step contract doesn't need to change for), and
 `resolve_assets`/`render` still route through fakes — M6/M7 swap the
 provider inside the same step shape.
 
+**Update (2026-08-15) — a second `is_satisfied()` staleness bug, found by
+the first real end-to-end test.** `RenderStep.is_satisfied()` only asked
+"does `project.video_path` point to a file that exists" — true the moment
+*any* render has ever completed, regardless of whether the shot bindings
+it was rendered from are still what they were. During the first live test,
+a bug in the asset-search providers (see M6 notes) got fixed and
+`resolve_assets` was re-run and genuinely re-resolved every shot from
+placeholders to real photos — but a subsequent `POST /render` call saw the
+old video file, considered `RenderStep` already satisfied, and skipped
+re-rendering entirely. The "fixed" project kept shipping the exact same
+all-placeholder video it had before the fix, silently. `is_satisfied()`
+now also compares the render file's mtime against
+`max(shot_binding.updated_at)` for the timeline's shot bindings, and
+requires the file to be newer. The general lesson (already learned once
+this session for `GenerateTimelineStep`, see M5 notes): a step contract
+based on "does *some* output exist" is not the same contract as "is this
+output still valid *given current upstream state*" — the second one is
+what resumability actually requires, and the gap only shows up when
+upstream state legitimately changes between two runs of the same project,
+which golden-file/mocked tests essentially never exercise.
+
 ---
 
 # Phase M5 — AI Planners
@@ -933,6 +954,53 @@ own `append_version` call — v1 (empty, `create_initial`) through v5.
   integration tests proving the full real chain end-to-end and the
   crash-resume property above), all green; 34/34 tests total; ruff/black/mypy
   clean across 97 source files.
+
+**Update (2026-08-15) — the first real, live, paid run of the full chain
+found three real bugs**, none of which any golden-file test could have
+caught (golden fixtures hand-craft the model's output; these bugs are all
+about what the *real* model actually does):
+
+1. **Cross-scene shot-id collisions.** The Shot Planner prompt's own
+   example (`sh_01_01`, `sh_01_02`, ...) doesn't vary the scene number, and
+   the model reproduced it literally for *every* scene — all five scenes
+   in the first live run came back with shots named `sh_01_01`,
+   `sh_01_02`, ... regardless of which scene it was. `Timeline.shot_ids()`
+   correctly caught the resulting cross-scene duplicates at the very end
+   of `GenerateTimelineStep.run()`, but only after all four planner stages
+   (Director + Scene + 5× Shot + 5× Asset — ~12 real, paid OpenAI calls)
+   had already completed. Fixed at the code layer rather than the prompt
+   layer, since a prompt fix alone can't *guarantee* the model won't
+   repeat this: `ShotPlanner` now namespaces every shot id by its scene's
+   own id (`f"{scene_id}_{s.id}"`) in `_to_domain_shot`, which is
+   structurally unique regardless of what the model returns, because
+   `scene_id` is guaranteed unique (the Scene Planner plans every scene in
+   one call and can see the whole list; the Shot Planner cannot).
+2. **A resumability gap this exposed**: `GenerateTimelineStep.is_satisfied()`
+   only checked structural completeness (every scene has shots, every
+   shot has an `asset_plan`), not that the timeline actually *passes*
+   `validate_constraints()`. A timeline that failed the constraint check
+   once would look "satisfied" on a bare retry and the engine would skip
+   `generate_timeline` entirely, carrying the broken timeline forward into
+   asset resolution rather than failing loudly again. Fixed: `_is_fully_planned`
+   now also runs `validate_constraints()`.
+3. **`gpt-5.6-terra` (see below) rejects any `temperature` other than its
+   fixed default (1.0)** with a 400 — `openai_provider.py` now tries the
+   configured `openai_temperature` first and, on that specific
+   `param=temperature, code=unsupported_value` error, retries once at the
+   model's default rather than hard-failing every planner call on a
+   reasoning-tier model. No model allowlist — this reacts to the error
+   OpenAI itself reports, so it keeps working if the model changes again.
+
+Separately, `openai_planning_model` moved from `gpt-4o` to `gpt-5.6-terra`
+— `gpt-4o` is still callable (not deprecated) but is no longer OpenAI's
+current tier; the newer model was chosen deliberately rather than staying
+on a known-working default. `tests/unit/planners/test_shot_planner.py`'s
+existing tests now assert the namespaced ids directly, including a
+same-raw-id-across-scenes case proving cross-scene ids stay unique even
+when the (simulated) model reuses the identical raw id in every scene —
+exactly the failure mode the real model hit. 93/93 tests total green
+after all of this session's fixes (3 net-new test functions — see M6
+notes for where they landed).
 
 ---
 
@@ -1027,6 +1095,55 @@ change to that one file, not to the ladder logic.
   (FFmpeg not on PATH in the dev shell, not a code regression);
   ruff/black/mypy clean across 111 source files.
 
+**Update (2026-08-15) — the first real, live, paid run resolved almost
+nothing from real archives** (12 of 13 shots on a WWII/apartheid-history
+script fell through to AI generation), which prompted a live investigation
+against the actual Wikimedia and Pexels APIs (not guessed) that found two
+separate, compounding bugs:
+
+1. **Search queries were too long to match anything, whether joined or
+   not.** `WikimediaAssetProvider.search()` and `PexelsAssetProvider.search()`
+   both did `" ".join(query.search_terms)`, concatenating the Asset
+   Planner's 3-4 distinct candidate queries per shot into one 30-40-word
+   mega-string. Splitting that concatenation alone turned out **not** to
+   fix it: tested live against the real Commons API, even a single
+   isolated 9-word sentence like *"Germany coal hydrogenation plant 1940
+   workers pipes pressure vessels"* returned **zero** results, while the
+   2-word keyword query *"coal hydrogenation"* returned five real, on-topic
+   archival photos — including one from 1946. The archival material
+   genuinely exists; the query *style* just never had a chance to find it.
+   Commons' (and, more forgivingly, Pexels') full-text search matches
+   short, title-like keyword phrases, not natural-language descriptions,
+   however accurate. Fixed at both the prompt layer
+   (`app/prompts/asset_planner/v1.md` now requires 2-5 word keyword
+   queries with worked good/bad examples) and the validation layer
+   (`AssetPlanner`'s validator now rejects any query over 6 words and
+   triggers the repair loop — prompt wording alone wasn't trusted after
+   the M5 shot-id lesson). The provider fix (each query tried as its own
+   request, results merged and deduped by id, never concatenated) landed
+   too, since a query that's short *and* joined with others just
+   recreates the same failure at a smaller scale.
+2. **A distinct, unrelated bug the query fix uncovered**: once queries
+   actually matched real files, every single *download* (not search) 403'd.
+   Tested live: the exact literal `WIKIMEDIA_USER_AGENT` placeholder from
+   `.env.example` (`VideoGenerationEngine/0.1 (https://example.com;
+   you@example.com)`) is blocklisted by Wikimedia's media CDN
+   (`upload.wikimedia.org`) specifically — a *different* request path from
+   the search API (`commons.wikimedia.org/w/api.php`), which tolerates it
+   fine, which is exactly why every search had been succeeding while every
+   fetch silently failed. A real contact value in `.env` resolved it
+   immediately (verified with a direct `curl` before touching any code).
+   This phase's own Advice section already said "set a real User-Agent,
+   Wikimedia will block you otherwise" — true, just not in the way anyone
+   expected before hitting it for real.
+
+Net effect on the same script, replayed with the corrected queries: 13/13
+shots resolved from real Wikimedia archives, 0 AI-generated, $0 spent (vs.
+12/13 AI-generated, $0.36 spent, before the fix). 3 new tests (one per
+provider proving separate-not-joined requests plus dedup; one on
+`AssetPlanner` proving a sentence-length query gets rejected and repaired).
+93/93 tests total green across the whole backend.
+
 ---
 
 # Phase M7 — Media Generation
@@ -1063,10 +1180,12 @@ Judge on **whether generated media sits convincingly beside archival photography
 ## Done when
 
 - [x] ~~The bake-off has run~~ — **deliberately skipped** (see Implementation notes below). `FAL_IMAGE_MODEL`/`FAL_VIDEO_MODEL` are set to direct picks, not a recorded comparison.
-- [x] Cost estimate appears before approval (`GET /progress`); "within ~20% of actual" is unverified — no real generation has run yet to compare against.
+- [x] Cost estimate appears before approval (`GET /progress`); exact estimate-vs-actual accuracy wasn't captured on the first real run (see 2026-08-15 note) — a real run did happen and cost tracking ($0.36, then $0.00) was correct, but "within ~20%" specifically remains unverified.
 - [x] Budget cap halts a runaway run
 - [x] Cache hit rate is visible via `generated_clip.prompt_hash`; a second identical run costs nothing (proven in tests, not against the real API)
 - [x] A crash mid-generation resumes without resubmitting in-flight jobs (video only — proven via a simulated crash in tests)
+- [x] Real fal.ai image generation proven against the live API (2026-08-15, first real run) — real Seedream calls, real cost, real images composited into a real render
+- [ ] Real fal.ai *video* generation (Kling) proven against the live API — the first real run resolved every generation-needing shot as an image; no shot in either live run so far actually needed `generate_video`
 - [ ] Switching either model is a one-line `.env` change — the mechanism is real (never hardcoded), but not yet verified by actually doing it once against the live API
 
 ## Implementation notes (2026-08-14)
@@ -1082,11 +1201,55 @@ Judge on **whether generated media sits convincingly beside archival photography
 - **Cost estimate on `GET /progress`** (`estimated_cost_cents`) only counts shots whose primary `asset_plan.strategy` is already a generation rung - a search-primary shot that later falls through to generation isn't reflected, which is an honest, documented under-estimate rather than a false precision claim.
 - 32 new tests (7 `FalQueueClient` tests using a fake stand-in for `fal_client.AsyncClient`'s own `Completed`/`Queued`/`InProgress` types; 11 `FalImageProvider`/`FalVideoProvider` tests via `httpx.MockTransport` for downloads; 8 pure-function cost/budget tests; 6 `resolve_assets` integration tests covering the image happy path, fresh video submission, in-progress resume, completed resume, the budget cap, and the generation cache), 94/94 tests total green, ruff/black/mypy clean.
 
+**Update (2026-08-15) — the first real, live, paid run end to end.**
+Everything built above was previously only proven against fakes/mocks;
+this is the first time real money moved through the whole system on a
+real script (WWII Fischer-Tropsch synthetic fuel / Sasol history,
+project `b06ea1f3-ef6a-4910-bde0-e32edbe42a95`, superseded by
+`58f0a5e6-008d-468e-862a-e365e463878e` after the M6 query fixes — see
+below). Real Director→Scene→Shot→Asset planning, real Wikimedia/Pexels
+search, real Seedream image generation for shots search couldn't fill,
+real FFmpeg render, real approval gate — all in one pass, total cost
+$0.36. `fal_image_cost_cents_estimate`/`fal_video_cost_cents_estimate`
+tracking and the budget cap machinery both worked correctly; no bugs
+found in this phase's own code. (The bugs the run *did* find — shot-id
+collisions, the resumability gaps, the OpenAI temperature rejection, the
+asset-search query and User-Agent bugs — all belong to M5/M6/M4; see
+their Implementation notes.)
+
+After the M6 query/User-Agent fixes landed, the same timeline was
+replayed (skipping the planner calls entirely — no new OpenAI cost — by
+seeding a fresh project directly via `TimelineService.append_version`
+with the existing scenes/shots/asset_plans, search_queries manually
+shortened to the new keyword style) on project `58f0a5e6-...`. Result:
+13/13 shots resolved from real Wikimedia archives, **zero** `generate_image`
+or `generate_video` calls needed, $0.00 spent. This is genuinely the
+better outcome for this script (real archival photography over
+AI-generated images, per the ladder's own "reuse before generate"
+principle) — it also means this phase's video-generation path (Kling,
+image-to-video) still has *not* been exercised against the real API in
+either live run; both `Done when` items above about video specifically
+and about switching models remain unverified for that reason, not because
+anything is suspected broken.
+
 ---
 
 # Phase M8 — Renderer
 
 > **Goal:** the deterministic, pure-function output stage. The real one.
+
+**Start here, not from a fresh project.** Project
+`58f0a5e6-008d-468e-862a-e365e463878e` already has a fully real, verified
+timeline (5 scenes, 13 shots, WWII Fischer-Tropsch/Sasol script) with
+every shot resolved to a real archival photo (see M6/M7's 2026-08-15
+notes) and a working slideshow render at
+`storage/58f0a5e6-008d-468e-862a-e365e463878e/renders/final.mp4`. Reusing
+it means M8 work starts directly on narration/audio/captions instead of
+re-paying for planning and re-resolving assets. (Caveat: the backend test
+suite's `clean_database` fixture truncates the same Postgres DB this
+project's row lives in — see [12_Testing_Strategy.md](12_Testing_Strategy.md)
+— so running `pytest` mid-session will need the project's DB row
+re-seeded; the render file itself survives on disk regardless.)
 
 ## Advice
 
@@ -1364,8 +1527,11 @@ If you are an AI agent picking up work in this repository:
 | Pixabay Music | `PIXABAY_API_KEY` | M8 |
 
 None are needed before M5 — `DRY_RUN=true` runs the whole pipeline on fakes and still produces an MP4.
-As of 2026-08-14, `OPENAI_API_KEY` and `ELEVENLABS_API_KEY` are populated in
-`.env`; `FAL_KEY`, `PEXELS_API_KEY`, and `PIXABAY_API_KEY` are still blank.
+As of 2026-08-15, `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, `FAL_KEY`, and
+`PEXELS_API_KEY` are populated in `.env` and proven working against the
+real APIs end-to-end (see the M5–M7 Implementation notes below);
+`PIXABAY_API_KEY` is populated but not yet exercised — that's M8's music
+rung.
 
 ## Current status
 
@@ -1389,35 +1555,76 @@ M4 Workflow Engine  ████████████ complete 2026-08-14 —
                                  real ShotBinding/Asset/GeneratedClip read-write, per-shot
                                  failure isolation, resumability proven across two engine
                                  instances; 18/18 tests green
-M5 AI Planners      ████████████ complete 2026-08-14 — real Director/Scene/Shot/Asset
-                                 Planner chain over OpenAI structured output, one
-                                 append_version per stage (v2..v5), stage-level
-                                 resumability proven via simulated mid-chain crash;
-                                 DRY_RUN=true path unchanged; 34/34 tests green
-M6 Asset Pipeline   ████████████ complete 2026-08-14 — real Wikimedia (rungs 2+3) and
-                                 Pexels (rung 4) search, licence hard-gate, content-hash
-                                 dedup before ranking, explicit weighted ranking with
-                                 logged component scores, within-project reuse penalty,
-                                 magic-byte download validation; project_assets (rung 1)
-                                 is a real stub pending an upload feature; DRY_RUN=true
-                                 path unchanged; 61/62 tests green (1 pre-existing
-                                 FFmpeg-PATH failure, unrelated)
-M7 Media Generation ███████████░ complete 2026-08-14 — real fal.ai image (Seedream,
-                                 bounded sync poll) and video (Kling, image-to-video,
-                                 real submit/poll/resume) generation, budget cap enforced
-                                 per call, cost estimate on GET /progress, generation
-                                 cache on prompt_hash; DRY_RUN=true path unchanged;
-                                 94/94 tests green. Bake-off (Step 0) deliberately
-                                 skipped - models are direct picks, never run against
-                                 the real API end-to-end; see M7 Implementation notes.
-Code                ██████████░ M0 + M2 + M3 + M4 + M5 + M6 + M7 — renderer (M8) is
-                                 still the M0 slideshow renderer: no real narration,
-                                 no audio mixing, no captions yet
+M5 AI Planners      ████████████ complete 2026-08-14, hardened 2026-08-15 — real
+                                 Director/Scene/Shot/Asset Planner chain over OpenAI
+                                 structured output, one append_version per stage (v2..v5).
+                                 First live paid run surfaced two real bugs, both fixed:
+                                 cross-scene shot-id collisions (Shot Planner ids now
+                                 namespaced by scene_id) and a resumability gap where a
+                                 constraint-violating timeline could silently pass on
+                                 retry (GenerateTimelineStep.is_satisfied now
+                                 re-validates constraints, not just structural
+                                 completeness). Planning model moved off gpt-4o to
+                                 gpt-5.6-terra; openai_provider.py now falls back to a
+                                 model's default temperature when a reasoning-tier model
+                                 rejects a custom value. 93/93 tests green.
+M6 Asset Pipeline   ████████████ complete 2026-08-14, hardened 2026-08-15 — real Wikimedia
+                                 (rungs 2+3) and Pexels (rung 4) search, licence hard-gate,
+                                 content-hash dedup before ranking, explicit weighted
+                                 ranking with logged component scores, within-project
+                                 reuse penalty, magic-byte download validation;
+                                 project_assets (rung 1) is a real stub pending an upload
+                                 feature. First live paid run surfaced two real bugs, both
+                                 fixed and verified against the live Wikimedia API: (1)
+                                 search queries were concatenated into one long string
+                                 per shot and, separately, the Asset Planner's own queries
+                                 were sentence-length — verified empirically that even a
+                                 single 9-word natural-language query returns zero
+                                 results from Commons where a 2-word keyword query finds
+                                 real archival photos; fixed via prompt + validator
+                                 (max 6 words/query) + providers trying each query
+                                 separately instead of joined. (2) the placeholder
+                                 WIKIMEDIA_USER_AGENT value was silently blocklisted by
+                                 Wikimedia's media CDN (upload.wikimedia.org) even though
+                                 the search API tolerated it — every search succeeded,
+                                 every download 403'd. A real contact value fixed it.
+                                 DRY_RUN=true path unchanged; 93/93 tests green.
+M7 Media Generation ████████████ complete 2026-08-14, verified live 2026-08-15 — real
+                                 fal.ai image (Seedream, bounded sync poll) and video
+                                 (Kling, image-to-video, real submit/poll/resume)
+                                 generation, budget cap enforced per call, cost estimate
+                                 on GET /progress, generation cache on prompt_hash.
+                                 First real paid end-to-end run (project b06ea1f3)
+                                 completed successfully: real Wikimedia/Pexels search +
+                                 real fal.ai image generation for shots search couldn't
+                                 fill, real FFmpeg render, $0.36 total. A second real run
+                                 (project 58f0a5e6, same timeline reused with corrected
+                                 asset-search queries — see M6 notes) needed zero
+                                 generation calls: all 13 shots resolved from real
+                                 archives, $0.00 spent. Bake-off (Step 0) still
+                                 deliberately skipped — models are direct picks — but now
+                                 genuinely proven against the real API, not just unit
+                                 tested. 93/93 tests green.
+Workflow Engine     ████████████ hardened 2026-08-15 — RenderStep.is_satisfied() only
+  (M4 addendum)                  checked "does a video file exist", so a retry after
+                                 resolve_assets fixed a shot's binding kept serving the
+                                 OLD (e.g. all-placeholder) render forever. Now compares
+                                 the render's file mtime against the latest shot_binding
+                                 update and re-renders if any binding changed since.
+                                 Also added ProjectStatus.AWAITING_APPROVAL and clear
+                                 project.error on that transition, so a project that
+                                 failed once and then succeeded on retry stops reporting
+                                 the old failure via GET /status.
+Code                ████████████ M0 + M2 + M3 + M4 + M5 + M6 + M7, all hardened by a
+                                 real end-to-end paid run — renderer (M8) is still the
+                                 M0 slideshow renderer: no real narration, no audio
+                                 mixing, no captions yet
 Next                M8 · Renderer (ElevenLabs narration - the master clock, D1 - real
                                  audio mixing/ducking, burned captions; key already
-                                 in .env). Recommended first real-money test: flip
-                                 DRY_RUN=false on a small script and watch actual
-                                 fal.ai image/video generation happen end to end.
+                                 in .env). Reuse project 58f0a5e6-008d-468e-862a-e365e463878e
+                                 (real timeline, real resolved assets, real render) as the
+                                 M8 test project rather than creating a fresh one — the
+                                 planning/search work is already done and paid for.
 ```
 
 ---
