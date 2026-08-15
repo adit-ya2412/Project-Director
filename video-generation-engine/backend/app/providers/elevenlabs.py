@@ -90,15 +90,23 @@ class ElevenLabsNarrationProvider:
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             raise TransientError(f"elevenlabs synthesis timed out or errored: {exc}") from exc
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in (401, 403):
+            status = exc.response.status_code
+            if status in (401, 403):
+                raise PermanentError(f"elevenlabs rejected the API key: {status}") from exc
+            if status == 402:
                 raise PermanentError(
-                    f"elevenlabs rejected the API key: {exc.response.status_code}"
+                    "elevenlabs returned 402 Payment Required - the account is out of "
+                    "credits or the plan does not cover this request. Retrying cannot "
+                    "fix this; top up the account at https://elevenlabs.io/app/subscription"
                 ) from exc
-            if exc.response.status_code in (429, 500, 502, 503, 504):
-                raise TransientError(
-                    f"elevenlabs synthesis returned {exc.response.status_code}"
-                ) from exc
-            raise TransientError(f"elevenlabs synthesis failed: {exc}") from exc
+            # 429 is the only 4xx worth retrying (rate limit, self-clearing).
+            # Every other 4xx is the caller's own request being wrong or
+            # unauthorised - a retry just repeats the same mistake three times
+            # with backoff, delaying a clear failure. 5xx is the server's
+            # problem and genuinely may pass.
+            if status == 429 or status >= 500:
+                raise TransientError(f"elevenlabs synthesis returned {status}") from exc
+            raise PermanentError(f"elevenlabs synthesis failed: {exc}") from exc
 
         try:
             content = base64.b64decode(data["audio_base64"])

@@ -111,6 +111,33 @@ async def test_synthesize_maps_401_to_permanent_error(monkeypatch):
         await provider.synthesize(_REQUEST)
 
 
+async def test_synthesize_maps_402_to_permanent_error(monkeypatch):
+    """402 Payment Required means the account is out of credits - retrying
+    burns three attempts and backoff to arrive at the same answer, so it
+    must be permanent. Hit for real on the first live Hindi run."""
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "fake-key")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(402, text="payment required")
+
+    provider = ElevenLabsNarrationProvider(transport=httpx.MockTransport(handler))
+    with pytest.raises(PermanentError, match="402"):
+        await provider.synthesize(_REQUEST)
+
+
+async def test_synthesize_maps_unexpected_4xx_to_permanent_error(monkeypatch):
+    """Any 4xx other than 429 is this caller's request being wrong or
+    unauthorised - repeating it unchanged cannot help."""
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "fake-key")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, text="unprocessable")
+
+    provider = ElevenLabsNarrationProvider(transport=httpx.MockTransport(handler))
+    with pytest.raises(PermanentError):
+        await provider.synthesize(_REQUEST)
+
+
 async def test_synthesize_maps_429_to_transient_error(monkeypatch):
     monkeypatch.setattr(settings, "elevenlabs_api_key", "fake-key")
 
