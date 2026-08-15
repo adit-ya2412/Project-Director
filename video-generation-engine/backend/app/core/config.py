@@ -55,6 +55,17 @@ class Settings(BaseSettings):
     openai_planning_model_cheap: str = "gpt-4o-mini"
     openai_temperature: float = 0.3
     planner_max_repair_attempts: int = 1
+    # Vision constraint check on generated media (M6.5, A12) - a separate,
+    # smaller model than the planning model: vision support isn't
+    # guaranteed on every planning model choice, and this is a mechanical
+    # check, not creative judgement, so a cheap real vision-capable model
+    # is the right default rather than reusing the planning model's.
+    openai_vision_model: str = "gpt-4o-mini"
+    # Hard cap on generations per shot (M6.5, A13): attempt 0 (original
+    # prompt) + up to 2 bounded retries (revised prompt/same seed, then
+    # revised prompt/varied seed) before a constraint-violating shot is
+    # marked failed and surfaced to a human (A14) rather than looped.
+    max_generation_attempts_per_shot: int = 3
 
     # --- fal.ai: image (rung 6) + video (rung 5) generation (M7+) ---
     # Model ids are a config value, never hardcoded in a provider class —

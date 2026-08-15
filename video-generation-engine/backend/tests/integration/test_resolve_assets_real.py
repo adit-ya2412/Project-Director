@@ -19,6 +19,7 @@ from PIL import Image
 from app.core.config import settings
 from app.db.session import async_session_factory
 from app.providers.base import AssetBytes, AssetCandidate
+from app.providers.fakes.vision import FakeVisionConstraintProvider
 from app.repositories.asset_repository import AssetRepository
 from app.repositories.project_repository import PostgresProjectRepository
 from app.repositories.shot_binding_repository import ShotBindingRepository
@@ -132,6 +133,17 @@ def _patch_providers(monkeypatch, historical_provider) -> None:
         lambda: {AssetStrategy.HISTORICAL_SEARCH: historical_provider},
     )
     monkeypatch.setattr(resolve_assets_module, "FalImageProvider", _FakeGenerationImageProvider)
+    # `run()` unconditionally constructs an `OpenAIPlanningProvider()` for
+    # M6.5's vision constraint check whenever DRY_RUN is off, even though
+    # none of these shots set `creative_context.constraints` (so it's
+    # never actually called - M6.5, A12, "zero constraints, zero calls").
+    # A real `OpenAIPlanningProvider()`'s constructor itself requires an
+    # API key to be configured, though, so this suite must patch it too
+    # to stay genuinely key-independent rather than only "working" because
+    # a real key happens to be set in a developer's local .env.
+    monkeypatch.setattr(
+        resolve_assets_module, "OpenAIPlanningProvider", FakeVisionConstraintProvider
+    )
 
 
 async def _run_step(project_id: str) -> None:

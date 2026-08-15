@@ -3,6 +3,10 @@
 DRY_RUN=true: unchanged since M4 - `FakeAssetProvider`/`FakeImageProvider`
 always find/produce something on the shot's primary strategy, so the
 fallback chain and the real generation path below are never exercised.
+DRY_RUN never constructs a vision-constraint provider either (`None`,
+same idiom as `video_provider`) - the fake path never does real
+generation, so there is nothing to check (M6.5, A12); this is also what
+keeps the walking-skeleton e2e test passing with zero API keys.
 
 DRY_RUN=false: real search (M6, rungs 1-4) walks the shot's full
 `asset_plan.fallback_chain`; a miss on every search rung falls through to
@@ -16,38 +20,57 @@ submit-once/poll-once-per-attempt pattern so an in-flight job survives a
 process restart rather than being resubmitted (implementation guide,
 Phase M7 advice).
 
+Every generated image (standalone, or a video's keyframe) is checked
+against the Director's `creative_context.constraints` before it ships
+(M6.5, A12) - `_generate_checked_image`/`_generate_checked_keyframe`,
+bounded-retrying a violation per A13/A18 and raising `PermanentError`
+(caught below, same as any other per-shot failure) if every attempt is
+still violating after `settings.max_generation_attempts_per_shot`
+attempts. Searched assets are never checked (A16 defers that).
+
 Per-shot failure isolation (Principle 10) is enforced throughout: one
-shot failing (or hitting the budget cap) marks that binding `failed` and
-processing continues with the rest, never aborting the whole step.
+shot failing (or hitting the budget cap, or exhausting its constraint
+retries) marks that binding `failed` and processing continues with the
+rest, never aborting the whole step.
 """
 
 import hashlib
 import uuid as uuid_module
 
+from app.assets.constraint_check import (
+    build_revised_prompt,
+    check_generated_image_constraints,
+    seed_for_attempt,
+)
 from app.assets.cost import check_budget, total_project_spend_cents
 from app.assets.ranking import rank_candidates
 from app.assets.relevance import candidate_relevance, passes_relevance_gate
 from app.assets.validation import validate_and_identify_image
 from app.core.config import settings
 from app.core.errors import PermanentError, TransientError
+from app.models.generated_clip import GeneratedClipModel
 from app.providers.base import (
     AssetCandidate,
     AssetProvider,
     AssetQuery,
     ImageProvider,
     ImageRequest,
+    ImageResult,
     VideoProvider,
     VideoRequest,
+    VisionConstraintProvider,
 )
 from app.providers.fakes.asset import FakeAssetProvider
 from app.providers.fakes.image import FakeImageProvider
 from app.providers.fal_image import FalImageProvider
 from app.providers.fal_video import FalVideoProvider
 from app.providers.local_assets import LocalProjectAssetProvider
+from app.providers.openai_provider import OpenAIPlanningProvider
 from app.providers.pexels import PexelsAssetProvider
 from app.providers.wikimedia import WikimediaAssetProvider, WikipediaEntityAssetProvider
 from app.repositories.asset_repository import AssetRepository
 from app.repositories.generated_clip_repository import GeneratedClipRepository
+from app.repositories.llm_call_repository import LlmCallRepository
 from app.repositories.narration_repository import NarrationRepository
 from app.repositories.shot_binding_repository import TERMINAL_STATES, ShotBindingRepository
 from app.schemas.timeline import AssetStrategy, CreativeContext, PreferredMediaType, Shot
@@ -122,6 +145,7 @@ class ResolveAssetsStep:
         asset_repo = AssetRepository(ctx.session)
         clip_repo = GeneratedClipRepository(ctx.session)
         narration_repo = NarrationRepository(ctx.session)
+        llm_call_repo = LlmCallRepository(ctx.session)
 
         project_dir = settings.storage_root / ctx.project_id
         (project_dir / "assets").mkdir(parents=True, exist_ok=True)
@@ -134,6 +158,13 @@ class ResolveAssetsStep:
         # (its own rate limiter is per-instance, same discipline as the
         # search providers above).
         entity_provider = None if settings.dry_run else WikipediaEntityAssetProvider()
+        # M6.5, A12: `None` in DRY_RUN, same idiom as every other real
+        # provider above - `check_generated_image_constraints` treats a
+        # `None` provider as "nothing to call", so DRY_RUN never
+        # constructs an OpenAI client and never needs an API key.
+        vision_provider: VisionConstraintProvider | None = (
+            None if settings.dry_run else OpenAIPlanningProvider()
+        )
         image_provider: ImageProvider = (
             FakeImageProvider() if settings.dry_run else FalImageProvider()
         )
@@ -175,9 +206,11 @@ class ResolveAssetsStep:
                         entity_provider=entity_provider,
                         image_provider=image_provider,
                         video_provider=video_provider,
+                        vision_provider=vision_provider,
                         asset_repo=asset_repo,
                         clip_repo=clip_repo,
                         narration_repo=narration_repo,
+                        llm_call_repo=llm_call_repo,
                         creative_context=timeline.creative_context,
                         already_used_hashes=already_used_hashes,
                     )
@@ -269,9 +302,11 @@ class ResolveAssetsStep:
         entity_provider: WikipediaEntityAssetProvider,
         image_provider: ImageProvider,
         video_provider: VideoProvider,
+        vision_provider: VisionConstraintProvider | None,
         asset_repo: AssetRepository,
         clip_repo: GeneratedClipRepository,
         narration_repo: NarrationRepository,
+        llm_call_repo: LlmCallRepository,
         creative_context: CreativeContext,
         already_used_hashes: set[str],
     ) -> str | None:
@@ -439,8 +474,10 @@ class ResolveAssetsStep:
                 project_dir=project_dir,
                 image_provider=image_provider,
                 video_provider=video_provider,
+                vision_provider=vision_provider,
                 clip_repo=clip_repo,
                 narration_repo=narration_repo,
+                llm_call_repo=llm_call_repo,
                 creative_context=creative_context,
             )
         else:
@@ -450,8 +487,10 @@ class ResolveAssetsStep:
                 project_uuid=project_uuid,
                 project_dir=project_dir,
                 image_provider=image_provider,
+                vision_provider=vision_provider,
                 clip_repo=clip_repo,
                 narration_repo=narration_repo,
+                llm_call_repo=llm_call_repo,
                 creative_context=creative_context,
             )
         return None
@@ -502,54 +541,281 @@ class ResolveAssetsStep:
         project_uuid: uuid_module.UUID,
         project_dir,
         image_provider: ImageProvider,
+        vision_provider: VisionConstraintProvider | None,
         clip_repo: GeneratedClipRepository,
         narration_repo: NarrationRepository,
+        llm_call_repo: LlmCallRepository,
         creative_context: CreativeContext,
     ) -> None:
         prompt = _styled_prompt(shot, creative_context)
-        prompt_hash = hashlib.sha256(f"{prompt}|{settings.fal_image_model}".encode()).hexdigest()
-
-        cached = await clip_repo.get_by_prompt_hash(prompt_hash)
-        if cached is not None and cached.status == "completed":
-            binding.clip_id = cached.id
-            binding.state = "generated"
-            binding.rung = AssetStrategy.GENERATE_IMAGE.value
-            return
-
-        already_spent = await total_project_spend_cents(
-            clip_repo=clip_repo, narration_repo=narration_repo, project_id=project_uuid
-        )
-        check_budget(
-            already_spent_cents=already_spent,
-            additional_cents=settings.fal_image_cost_cents_estimate,
-        )
-
-        result = await image_provider.generate(
-            ImageRequest(
-                prompt=prompt,
-                width=settings.render_width,
-                height=settings.render_height,
-                shot_id=shot.id,
-                seed=_project_seed(str(project_uuid)),
-            )
-        )
-        ext, _width, _height = validate_and_identify_image(result.content)
-        path = project_dir / "clips" / f"{prompt_hash}.{ext}"
-        path.write_bytes(result.content)
-        clip = await clip_repo.insert(
-            project_id=project_uuid,
-            shot_id=shot.id,
-            provider=image_provider.name,
+        clip = await self._generate_checked_image(
+            shot,
+            base_prompt=prompt,
+            project_uuid=project_uuid,
+            project_dir=project_dir,
+            width=settings.render_width,
+            height=settings.render_height,
             model_id=settings.fal_image_model,
-            prompt=prompt,
-            prompt_hash=prompt_hash,
-            duration_s=None,
-            local_path=str(path),
-            cost_cents=settings.fal_image_cost_cents_estimate,
+            image_provider=image_provider,
+            vision_provider=vision_provider,
+            llm_call_repo=llm_call_repo,
+            clip_repo=clip_repo,
+            narration_repo=narration_repo,
+            constraints=creative_context.constraints,
         )
         binding.clip_id = clip.id
         binding.state = "generated"
         binding.rung = AssetStrategy.GENERATE_IMAGE.value
+
+    async def _generate_checked_image(
+        self,
+        shot: Shot,
+        *,
+        base_prompt: str,
+        project_uuid: uuid_module.UUID,
+        project_dir,
+        width: int,
+        height: int,
+        model_id: str,
+        image_provider: ImageProvider,
+        vision_provider: VisionConstraintProvider | None,
+        llm_call_repo: LlmCallRepository,
+        clip_repo: GeneratedClipRepository,
+        narration_repo: NarrationRepository,
+        constraints: list[str],
+    ) -> GeneratedClipModel:
+        """A12/A13/A18 (M6.5): generates an image and checks it against
+        the Director's `constraints`, bounded-retrying a violation up to
+        `settings.max_generation_attempts_per_shot` attempts total -
+        attempt 0 at the project's fixed seed, subsequent attempts with
+        the constraints violated SO FAR appended as explicit negative
+        directives (A18 - a deterministic, de-duplicated rebuild, never a
+        second LLM call - see `build_revised_prompt`), the seed varying
+        only on the LAST attempt the configured cap allows (A13's second
+        lever, never `random` - see `seed_for_attempt`).
+
+        Every FRESH attempt is persisted immediately - `status=
+        "completed"` if it passed, `"rejected"` if it didn't - so a
+        rejected attempt's cost still counts against the budget cap
+        (checked fresh before every fresh attempt, never bypassed)
+        without ever being served back out as a reusable cache hit (the
+        cache-hit check below only ever trusts `status == "completed"`).
+        A cached `"rejected"` row for this EXACT attempt (prompt+model+
+        seed) - found on a resumed run after a crash - is neither
+        regenerated nor re-billed: its `violated_constraint` is recovered
+        directly (a real column, not parsed out of `error`'s free text)
+        and folded into the next attempt's revision, so a resume can
+        never double-pay for (or silently lose the cost of) an attempt
+        already known to fail. The seed is folded into `prompt_hash`
+        (unlike the pre-M6.5 formula) because it is a genuine generation
+        input - same prompt, different seed, different image - and
+        because the de-duplicated revision means two different attempts
+        CAN legitimately produce byte-identical prompt text (the same
+        single constraint violated twice running revises to the same
+        prompt both times), which must not collapse onto the same cache
+        entry.
+
+        Returns the winning `GeneratedClipModel`. Raises `PermanentError`
+        naming the violated constraint if every attempt is exhausted
+        still violating it - the caller's existing per-shot isolation
+        (Principle 10, in `run()`) turns that into a `failed` binding
+        with the reason in `last_error` (A14/A19); nothing here ever
+        ships a violating image."""
+        project_seed = _project_seed(str(project_uuid))
+        violated_constraints: list[str] = []
+        last_violation = ""
+
+        for attempt in range(settings.max_generation_attempts_per_shot):
+            seed = seed_for_attempt(
+                project_seed, attempt, settings.max_generation_attempts_per_shot
+            )
+            prompt = build_revised_prompt(base_prompt, violated_constraints)
+            prompt_hash = hashlib.sha256(f"{prompt}|{model_id}|{seed}".encode()).hexdigest()
+
+            cached = await clip_repo.get_by_prompt_hash(prompt_hash)
+            if cached is not None:
+                if cached.status == "completed":
+                    return cached
+                # "rejected": this exact attempt already ran (and already
+                # violated a constraint) in a prior run - recover it, do
+                # not re-generate or re-bill it.
+                assert cached.violated_constraint is not None
+                last_violation = cached.error or cached.violated_constraint
+                if cached.violated_constraint not in violated_constraints:
+                    violated_constraints.append(cached.violated_constraint)
+                continue
+
+            already_spent = await total_project_spend_cents(
+                clip_repo=clip_repo, narration_repo=narration_repo, project_id=project_uuid
+            )
+            check_budget(
+                already_spent_cents=already_spent,
+                additional_cents=settings.fal_image_cost_cents_estimate,
+            )
+
+            result = await image_provider.generate(
+                ImageRequest(prompt=prompt, width=width, height=height, shot_id=shot.id, seed=seed)
+            )
+            verdict = await check_generated_image_constraints(
+                provider=vision_provider,
+                llm_call_repo=llm_call_repo,
+                project_id=project_uuid,
+                image=result.content,
+                image_content_type=result.content_type,
+                shot_prompt=shot.prompt,
+                constraints=constraints,
+            )
+
+            if not verdict.violated:
+                ext, _width_px, _height_px = validate_and_identify_image(result.content)
+                path = project_dir / "clips" / f"{prompt_hash}.{ext}"
+                path.write_bytes(result.content)
+                return await clip_repo.insert(
+                    project_id=project_uuid,
+                    shot_id=shot.id,
+                    provider=image_provider.name,
+                    model_id=model_id,
+                    prompt=prompt,
+                    prompt_hash=prompt_hash,
+                    duration_s=None,
+                    local_path=str(path),
+                    cost_cents=settings.fal_image_cost_cents_estimate,
+                )
+
+            # Violated - bill it and record it (never free, never
+            # silent), but never shipped and never a reusable cache entry.
+            await clip_repo.insert(
+                project_id=project_uuid,
+                shot_id=shot.id,
+                provider=image_provider.name,
+                model_id=model_id,
+                prompt=prompt,
+                prompt_hash=prompt_hash,
+                duration_s=None,
+                local_path=None,
+                cost_cents=settings.fal_image_cost_cents_estimate,
+                status="rejected",
+                violated_constraint=verdict.violated_constraint,
+                error=f"violated constraint {verdict.violated_constraint!r}: {verdict.reason}",
+            )
+            last_violation = (
+                f"violated constraint {verdict.violated_constraint!r}: {verdict.reason}"
+            )
+            if verdict.violated_constraint not in violated_constraints:
+                violated_constraints.append(verdict.violated_constraint)
+
+        raise PermanentError(
+            f"shot {shot.id} generation blocked after "
+            f"{settings.max_generation_attempts_per_shot} attempts - still violates a "
+            f"Director constraint: {last_violation}"
+        )
+
+    async def _generate_checked_keyframe(
+        self,
+        shot: Shot,
+        *,
+        base_prompt: str,
+        project_uuid: uuid_module.UUID,
+        width: int,
+        height: int,
+        model_id: str,
+        image_provider: ImageProvider,
+        vision_provider: VisionConstraintProvider | None,
+        llm_call_repo: LlmCallRepository,
+        clip_repo: GeneratedClipRepository,
+        narration_repo: NarrationRepository,
+        constraints: list[str],
+    ) -> ImageResult:
+        """The video path's A12/A13/A18 equivalent, for the KEYFRAME
+        only - "check the keyframe, not the clip: it's already an image
+        and it's what determines the content." Unlike
+        `_generate_checked_image`, a PASSING attempt is not persisted as
+        its own `GeneratedClip` row here - `_generate_video_real` folds
+        the keyframe's cost into the video job's own row
+        (`estimated_cents`), exactly as it did before this change, so
+        nothing double-counts. A REJECTED attempt IS persisted (billed,
+        recorded, never reused) - both because it must count against the
+        budget cap on its own, and because a rejected keyframe's bytes
+        are never used for anything downstream, so there is no
+        cache-hit/hosted_url conflict for that branch (a *passing*
+        keyframe's `hosted_url` is ephemeral and provider-specific, which
+        is exactly why it is never persisted or reused as a cache hit).
+
+        Raises `PermanentError` naming the violated constraint if every
+        attempt is exhausted still violating it, same as the image
+        path. Same resume discipline as `_generate_checked_image`: a
+        cached `"rejected"` row for this exact attempt is recovered
+        (via the real `violated_constraint` column), never regenerated
+        or re-billed."""
+        project_seed = _project_seed(str(project_uuid))
+        violated_constraints: list[str] = []
+        last_violation = ""
+
+        for attempt in range(settings.max_generation_attempts_per_shot):
+            seed = seed_for_attempt(
+                project_seed, attempt, settings.max_generation_attempts_per_shot
+            )
+            prompt = build_revised_prompt(base_prompt, violated_constraints)
+            prompt_hash = hashlib.sha256(f"{prompt}|{model_id}|{seed}".encode()).hexdigest()
+
+            cached = await clip_repo.get_by_prompt_hash(prompt_hash)
+            if cached is not None:
+                # Only ever a "rejected" row here - a passing keyframe
+                # attempt is never persisted on its own (see docstring).
+                assert cached.violated_constraint is not None
+                last_violation = cached.error or cached.violated_constraint
+                if cached.violated_constraint not in violated_constraints:
+                    violated_constraints.append(cached.violated_constraint)
+                continue
+
+            already_spent = await total_project_spend_cents(
+                clip_repo=clip_repo, narration_repo=narration_repo, project_id=project_uuid
+            )
+            check_budget(
+                already_spent_cents=already_spent,
+                additional_cents=settings.fal_image_cost_cents_estimate,
+            )
+
+            result = await image_provider.generate(
+                ImageRequest(prompt=prompt, width=width, height=height, shot_id=shot.id, seed=seed)
+            )
+            verdict = await check_generated_image_constraints(
+                provider=vision_provider,
+                llm_call_repo=llm_call_repo,
+                project_id=project_uuid,
+                image=result.content,
+                image_content_type=result.content_type,
+                shot_prompt=shot.prompt,
+                constraints=constraints,
+            )
+            if not verdict.violated:
+                return result
+
+            await clip_repo.insert(
+                project_id=project_uuid,
+                shot_id=shot.id,
+                provider=image_provider.name,
+                model_id=model_id,
+                prompt=prompt,
+                prompt_hash=prompt_hash,
+                duration_s=None,
+                local_path=None,
+                cost_cents=settings.fal_image_cost_cents_estimate,
+                status="rejected",
+                violated_constraint=verdict.violated_constraint,
+                error=f"violated constraint {verdict.violated_constraint!r}: {verdict.reason}",
+            )
+            last_violation = (
+                f"violated constraint {verdict.violated_constraint!r}: {verdict.reason}"
+            )
+            if verdict.violated_constraint not in violated_constraints:
+                violated_constraints.append(verdict.violated_constraint)
+
+        raise PermanentError(
+            f"shot {shot.id} keyframe generation blocked after "
+            f"{settings.max_generation_attempts_per_shot} attempts - still violates a "
+            f"Director constraint: {last_violation}"
+        )
 
     async def _generate_video_real(
         self,
@@ -560,8 +826,10 @@ class ResolveAssetsStep:
         project_dir,
         image_provider: ImageProvider,
         video_provider: VideoProvider,
+        vision_provider: VisionConstraintProvider | None,
         clip_repo: GeneratedClipRepository,
         narration_repo: NarrationRepository,
+        llm_call_repo: LlmCallRepository,
         creative_context: CreativeContext,
     ) -> None:
         prompt = _styled_prompt(shot, creative_context)
@@ -604,8 +872,35 @@ class ResolveAssetsStep:
             binding.rung = AssetStrategy.GENERATE_VIDEO.value
             return
 
-        # Fresh submission: a keyframe image first (bounded, synchronous),
-        # then the video job itself (submit-and-poll, resumable).
+        # Fresh submission: a constraint-checked keyframe first (A12/A13 -
+        # bounded, synchronous, may itself take up to
+        # settings.max_generation_attempts_per_shot attempts), THEN the
+        # video job itself (submit-and-poll, resumable).
+        keyframe = await self._generate_checked_keyframe(
+            shot,
+            base_prompt=prompt,
+            project_uuid=project_uuid,
+            width=settings.render_width,
+            height=settings.render_height,
+            model_id=settings.fal_image_model,
+            image_provider=image_provider,
+            vision_provider=vision_provider,
+            llm_call_repo=llm_call_repo,
+            clip_repo=clip_repo,
+            narration_repo=narration_repo,
+            constraints=creative_context.constraints,
+        )
+        if keyframe.hosted_url is None:
+            raise PermanentError(
+                f"{image_provider.name} did not return a hosted URL required for "
+                "image-to-video generation"
+            )
+
+        # The keyframe's cost is folded into this one bundled estimate
+        # (rather than tracked as its own row) precisely because a
+        # PASSING keyframe attempt is never persisted separately above -
+        # see `_generate_checked_keyframe`'s docstring. A rejected
+        # attempt along the way was already billed on its own.
         estimated_cents = (
             settings.fal_image_cost_cents_estimate + settings.fal_video_cost_cents_estimate
         )
@@ -613,21 +908,6 @@ class ResolveAssetsStep:
             clip_repo=clip_repo, narration_repo=narration_repo, project_id=project_uuid
         )
         check_budget(already_spent_cents=already_spent, additional_cents=estimated_cents)
-
-        keyframe = await image_provider.generate(
-            ImageRequest(
-                prompt=prompt,
-                width=settings.render_width,
-                height=settings.render_height,
-                shot_id=shot.id,
-                seed=_project_seed(str(project_uuid)),
-            )
-        )
-        if keyframe.hosted_url is None:
-            raise PermanentError(
-                f"{image_provider.name} did not return a hosted URL required for "
-                "image-to-video generation"
-            )
 
         job_id = await video_provider.submit(
             VideoRequest(

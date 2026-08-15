@@ -66,9 +66,28 @@ class GeneratedClipRepository:
         prompt: str,
         prompt_hash: str,
         duration_s: float | None,
-        local_path: str,
+        local_path: str | None,
         cost_cents: int,
+        status: str = "completed",
+        error: str | None = None,
+        violated_constraint: str | None = None,
     ) -> GeneratedClipModel:
+        """`status`/`error`/`violated_constraint` default to the original
+        "synchronous success" shape every existing caller relies on. M6.5
+        (A12/A13) adds a third status, `"rejected"`: a generation that
+        violated a Director constraint - never shipped, `local_path`
+        stays `None` since nothing was ever written to disk, but still
+        billed here (`cost_cents`), so a rejected attempt still counts
+        against the project budget cap. The existing cache-hit check
+        elsewhere (`if cached is not None and cached.status ==
+        "completed"`) already excludes anything not `"completed"` - a
+        rejected row is never served back out as if it were a valid,
+        reusable clip. `violated_constraint` is the exact constraint text
+        (not embedded in `error`'s free-form string) - a resumed run that
+        finds its own prior "rejected" row for this exact attempt needs
+        it back in a form it can rebuild the next attempt's prompt from,
+        without regenerating (and re-billing) an attempt already known to
+        fail."""
         model = GeneratedClipModel(
             project_id=project_id,
             shot_id=shot_id,
@@ -79,7 +98,9 @@ class GeneratedClipRepository:
             duration_s=duration_s,
             local_path=local_path,
             cost_cents=cost_cents,
-            status="completed",
+            status=status,
+            error=error,
+            violated_constraint=violated_constraint,
         )
         self._session.add(model)
         await self._session.flush()

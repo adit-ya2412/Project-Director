@@ -221,3 +221,46 @@ class NarrationProvider(Protocol):
     name: str
 
     async def synthesize(self, request: NarrationRequest) -> NarrationResult: ...
+
+
+class ConstraintVerdict(BaseModel):
+    """Vision check verdict for one generated image against the
+    Director's `creative_context.constraints` (M6.5, A12) - a structured
+    output, not free text, same discipline as every other planner
+    response. Lives here (not in `app/assets/`) so both the OpenAI
+    provider (which must produce it) and `app/assets/constraint_check.py`
+    (which interprets it) can import it without an upward import from
+    providers into assets (section 5, "dependency rule")."""
+
+    violated: bool
+    # Exact text of the violated constraint (as written in
+    # `creative_context.constraints`), or "" when `violated` is False.
+    violated_constraint: str
+    # Why, in the model's own words - or "" when `violated` is False.
+    reason: str
+
+
+@dataclass(frozen=True)
+class ConstraintCheckRequest:
+    """Input to a vision constraint check (M6.5, A12). Generated media
+    only - a searched asset never reaches this (A16 defers that pending
+    evidence)."""
+
+    image: bytes
+    image_content_type: str
+    shot_prompt: str
+    constraints: list[str]
+
+
+class VisionConstraintProvider(Protocol):
+    """Checks one generated image against a shot's constraints - vision-
+    capable structured output, the same call shape as
+    `PlanningLLMProvider.structured_complete` but with an image attached.
+    Kept as its own Protocol rather than a method added to
+    `PlanningLLMProvider`: not every LLM swap needs vision, and not every
+    planning call needs an image - a text-only provider would otherwise
+    have to stub out a method it can't implement."""
+
+    name: str
+
+    async def check_constraints(self, request: ConstraintCheckRequest) -> StructuredCompletion: ...

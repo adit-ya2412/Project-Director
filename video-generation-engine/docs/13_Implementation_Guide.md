@@ -1195,6 +1195,8 @@ Worse, the current design throws away the one asset we already have: **the plann
 | **A15** | **Human review of generated media is by exception**, via a conditional second gate, not an unconditional stop. | The engine already supports a step returning `awaiting_approval`. Interrupt only when an automated check fails. |
 | **A16** | **Vision verification of *searched* assets is deferred until A1–A2 are measured.** | It would be checking a much better candidate pool by then, and the residue may not justify the cost. Decide with evidence. |
 | **A17** | **The 11 Hindi shots (`tests/fixtures/hindi_test_project.json`) are the standing benchmark** for any retrieval change. | Wikipedia and Commons are free to query, so retrieval changes can be measured against real shots at zero cost. Baseline: 2/11 as built, 3/11 after the relevance gate. Move that number. |
+| **A18** | **The A13 "revised prompt" is a deterministic append of the violated constraint as an explicit negative directive — not a second LLM call to rewrite the prompt.** | A rewrite call costs money and latency on the *failure* path, and makes the retry non-replayable. The vision check already returns *which* constraint was violated in text; appending it as a negative is testable, free, and is the same information a rewrite would have used. Revisit if a measured run shows appends failing to change the output. |
+| **A19** | **Step 2 marks a constraint-violating shot failed and surfaces it; the A15 conditional approval gate lands in step 4, not here.** | A gate is only useful if the human has a remedy, and the remedy is the upload endpoint (A8), which does not exist until step 4. Gating earlier would halt runs with no way to unblock them. Until then the shot degrades to a placeholder — visible, never silently shipped (A14), and the render still completes (M7). |
 
 ## Known gap, not yet scheduled
 
@@ -1214,11 +1216,148 @@ Preference order for motion, once this is addressed: **real archival footage > K
 
 ## Done when
 
-- [ ] The A17 benchmark improves substantially and is re-measured after every retrieval change
+- [ ] The A17 benchmark improves substantially and is re-measured after every retrieval change — **in progress, deliberately not ticked.** Step 1 (`86d42e1`) moved it from 2 correct + 2 partial to 4 correct + 1 partial with zero regressions, and step 2 re-measured it unchanged (retrieval untouched). But 4/11 means **7 shots are still wrong**, and the phase goal is media that matches the script — a doubling is not a finish. The remaining failures are all generic, no-entity shots (`a wartime fuel depot`, `German tanks rail yard`) where free-text search's candidate pool contains nothing on-topic at all; no gate or ranking change reaches those, which is the evidence for steps 3–4 (uploads and a supervised gate) rather than more automated scoring. Re-measure after every retrieval change and only tick this when the number justifies it.
 - [ ] A human can see real images per shot, and swap or override any of them, before anything expensive runs
 - [ ] A human override survives re-resolution and version bumps
-- [ ] No generated image ships that violates a Director constraint
-- [ ] Generation retries are bounded and counted against the project budget
+- [x] No generated image ships that violates a Director constraint — step 2, below.
+- [x] Generation retries are bounded and counted against the project budget — step 2, below.
+
+## Implementation notes (2026-08-15) — step 2: Director-constraint enforcement at generation (A12/A13/A14/A18/A19)
+
+Built exactly the step-2 scope: a vision check on generated media (never
+searched assets - A16 still deferred), bounded regeneration on a
+violation, and a terminal `failed` binding once attempts are exhausted.
+No pipeline reordering, no upload endpoint, no approval-gate change (A19
+- that's step 4's job, once the upload endpoint gives a human an actual
+remedy).
+
+- **New module `app/assets/constraint_check.py`** - `check_generated_image_constraints`
+  (zero constraint checks, zero calls, when `constraints` is empty OR
+  `provider is None`), `build_revised_prompt` (A18's deterministic,
+  de-duplicated prompt revision), and `seed_for_attempt` (A13's two
+  levers). `ConstraintVerdict`/`ConstraintCheckRequest`/
+  `VisionConstraintProvider` live in `app/providers/base.py`, not in
+  `app/assets/` - the OpenAI provider must produce a `ConstraintVerdict`
+  and `app/assets/` must interpret it, and `providers/` sits below
+  `assets/` in the dependency rule (section 5), so the shared type has to
+  live at or below the lower layer.
+- **`OpenAIPlanningProvider.check_constraints`** (`app/providers/openai_provider.py`)
+  is the only new OpenAI-touching code - a second, cheaper model
+  (`settings.openai_vision_model`, default `gpt-4o-mini`) than the
+  planning model, since vision support isn't guaranteed on every
+  planning-model choice and this is a mechanical check, not creative
+  judgement. Messages are built against the real `openai.types.chat`
+  param types (`ChatCompletionUserMessageParam` etc.), not `dict[str,
+  Any]` - the looser typing type-checked fine for the pre-existing
+  `structured_complete` (a flat two-message, text-only call) but failed
+  mypy for this method's nested multimodal content list, and the fix is
+  to type it properly against the SDK's own types, not to suppress the
+  error.
+- **DRY_RUN stays exactly as it was** - `_resolve_one_fake`/`_generate_fake`
+  are untouched; DRY_RUN's fake generation never did real generation to
+  check in the first place, so the constraint check is never wired into
+  that path at all. `ResolveAssetsStep.run()` constructs `vision_provider
+  = None if settings.dry_run else OpenAIPlanningProvider()`, the same
+  idiom already used for `image_provider`/`video_provider`/
+  `entity_provider`; `check_generated_image_constraints` treats `provider
+  is None` as "nothing to call". Verified, not assumed: ran the full
+  suite with `OPENAI_API_KEY` forced empty in the environment
+  (overriding `.env`'s real key) to prove this - a real
+  `AsyncOpenAI(api_key=None)` raises `OpenAIError` at *construction*
+  (checked directly against the installed `openai==2.8.1`, not inferred
+  from docs), unlike `FalVideoProvider`/`FalImageProvider`, whose
+  constructors are lazy. That asymmetry means every test that runs
+  `ResolveAssetsStep` with `DRY_RUN=false` has to patch
+  `OpenAIPlanningProvider` too, even ones that never touch constraints
+  (`tests/integration/test_resolve_assets_real.py` didn't, before this
+  phase, and needed the same patch added retroactively).
+- **Bounded regeneration** (A13): attempt 0 is the project's fixed seed
+  (`_project_seed`, unchanged from M7); each subsequent attempt's prompt
+  is *rebuilt* from the base prompt plus the de-duplicated set of
+  constraints violated so far (`build_revised_prompt`), not appended
+  onto the previous attempt's prompt - repeating an identical negative
+  directive to an image model is not a stronger instruction, just a
+  longer prompt, and a first version of this code did exactly that
+  before being caught in review. The varied-seed lever
+  (`seed_for_attempt`) fires only on the LAST attempt the configured cap
+  (`settings.max_generation_attempts_per_shot`, default 3) allows - a
+  first version hardcoded the switchover at attempt index 2, which is
+  correct only at the default cap and silently disables the lever
+  entirely if the cap is ever configured to 2; also caught in review, and
+  covered by `test_seed_for_attempt_derives_the_switchover_from_max_attempts`
+  and its integration-level counterpart.
+- **Every attempt is billed, including rejected ones**, via a new
+  `GeneratedClip.status="rejected"` (never reusable as a cache hit - the
+  existing cache-hit check already only trusts `status == "completed"`)
+  and a new `violated_constraint` column (Alembic revision
+  `a1c9f3e7b2d4`) - a real structured field, not something recovered by
+  parsing `error`'s free text. That column exists specifically for
+  resumability: a resumed run whose most recent attempt is already
+  recorded as `"rejected"` recovers the violated constraint from that row
+  and advances straight to the next attempt, without regenerating (paying
+  again) or re-running the vision check. A first version of this code
+  only short-circuited on `status == "completed"`, so a rejected cache
+  hit fell through to a full re-generate-and-re-check - a real
+  cost-accounting hole caught in review (real money spent twice, neither
+  charge recorded), fixed and covered by
+  `test_resume_from_a_rejected_attempt_does_not_regenerate_or_rebill`.
+- **Video generation checks the KEYFRAME, not the final clip**
+  (`_generate_checked_keyframe`) - it's already an image and it's what
+  determines the content. Unlike the image path, a *passing* keyframe
+  attempt is not persisted as its own `GeneratedClip` row - its cost
+  folds into the video job's own row (`estimated_cents`), exactly as
+  before this phase, so nothing double-counts; a *rejected* keyframe
+  attempt is billed on its own, the same as the image path. The video job
+  is only ever submitted with a keyframe that has already passed the
+  check.
+- **Cache-key consequence, recorded so nobody discovers it by accident**:
+  `prompt_hash` now includes the seed (`prompt|model|seed`, not
+  `prompt|model`) - not because attempt 1 and attempt 2 "always" carry
+  identical prompt text (an early draft of this note claimed that; it's
+  wrong - a *different* constraint violated on consecutive attempts
+  produces a strictly different revised prompt each time), but because
+  the seed is a genuine generation input (same prompt, different seed,
+  different image), and because the de-duplicated revision means two
+  attempts *can* legitimately produce byte-identical prompt text (the
+  *same* single constraint violated twice running revises to the same
+  prompt both times) - that case must not collapse onto one cache entry.
+  **Consequence:** this invalidates every `generated_clip` row cached
+  under the old `prompt|model` formula. The next real run of any
+  existing project with generated (not searched) media will not find its
+  old cache entries and will regenerate from scratch, at real cost. This
+  is a one-time price, paid once per project on its next real
+  (non-DRY_RUN) run - accepted here, not discovered later by whoever pays
+  it.
+- **`GET /progress`** gained a `shots` array (`shot_id`, `state`, `rung`,
+  `last_error`) - the only place per-shot detail is exposed until M9's
+  dedicated shot-review surface exists, and A14/A19's "never silently
+  shipped" needs the failure reason (naming the violated constraint)
+  visible somewhere, not just counted.
+- Gate checks, run from the repo root as required (not from `backend/`,
+  which silently finds no config): `ruff check backend`, `black --check
+  backend`, `mypy backend/app` all clean. Full suite: 204/204 passed,
+  watched directly in the foreground (not backgrounded) after a first
+  background run died without reporting. Both fixtures
+  (`hindi_test_project`, default) reseeded afterward via
+  `scripts/seed_test_project.py`.
+- 23 new tests: `tests/unit/assets/test_constraint_check.py` (12, pure
+  functions + one DB-backed audit-row test), `tests/unit/providers/test_openai_provider_vision.py`
+  (5, a hand-rolled fake `AsyncOpenAI`-shaped client per the
+  `test_fal_queue.py` pattern - no real network, no real SDK types beyond
+  the public param types), `tests/integration/test_resolve_assets_generation_real.py`
+  (8 new: empty-constraints, DRY_RUN-never-constructs-vision-provider,
+  first violation/retry, second violation/varied seed, third
+  violation/terminal failure, video-checks-the-keyframe, the resume/no-
+  repay fix, and the configurable-switchover fix).
+
+**What I verified by running it, versus what I reasoned about:** the
+"zero API keys" claim is verified (ran the suite with `OPENAI_API_KEY`
+forced empty and watched it pass, in addition to reading the SDK's
+construction-time key check directly). The gate checks and full suite
+above were watched completing in the foreground, not assumed from a
+background job. The cost-accounting fix is verified by an integration
+test asserting the exact total spend after a resume, not just that the
+code compiles.
 
 ---
 
@@ -1746,17 +1885,24 @@ M8 Renderer        ██████░░░░░░ steps 1-3 done 2026-08-1
                                  synthesised segments. Steps 4-6 (music+ducking,
                                  Ken Burns, determinism+draft) not started.
                                  Captions deliberately out of scope this pass.
-Next               M6.5 · Asset Quality and Supervision — the weak link. Two real
-                                 runs graded 2/11 then 3/11 shots genuinely correct;
-                                 see that section for the evidence, the two diagnoses
-                                 (retrieval not ranking; the gate guards the cheap
-                                 step) and decisions A1-A17, all closed. Build order:
-                                 entity retrieval measured against the 11-shot
-                                 benchmark → Director-constraint enforcement at
-                                 generation → free retrieval before the approval gate
-                                 (needs binding carry-forward) → uploads and per-shot
-                                 override → reassess vision verification. Then finish
-                                 M8 steps 4-6. Reuse projects
+M6.5 step 1+2      ████░░░░░░░░ entity retrieval (`86d42e1`) and Director-constraint
+  (of 5)                        enforcement at generation both done and measured/tested
+                                 (see that section's Done-when + implementation notes for
+                                 both). Step 1: 2 correct + 2 partial → 4 correct + 1
+                                 partial on the 11-shot A17 benchmark, zero regressions.
+                                 Step 2: vision check + bounded regeneration (A12-A14,
+                                 A18-A19) - 23 new tests, 204/204 suite green, DRY_RUN
+                                 verified keyless by forcing OPENAI_API_KEY empty and
+                                 watching the suite pass. Steps 3-5 (pipeline reorder +
+                                 binding carry-forward, upload endpoint, reassess vision
+                                 for search) not started.
+Next               M6.5 step 3 · Pipeline reorder (A5, A7) plus binding carry-forward
+                                 (A11) - move free retrieval before the approval gate;
+                                 A11 is a hard prerequisite (bindings are keyed by
+                                 timeline version and would otherwise be orphaned by an
+                                 append_version). Then step 4 (upload endpoint, A8-A10,
+                                 A15), step 5 (reassess vision for search, A16), then
+                                 finish M8 steps 4-6. Reuse projects
                                  58f0a5e6-008d-468e-862a-e365e463878e (English) and
                                  35290b04-584d-415e-9816-ab6a8998b3e2 (Hindi, with
                                  real narration) via scripts/seed_test_project.py -

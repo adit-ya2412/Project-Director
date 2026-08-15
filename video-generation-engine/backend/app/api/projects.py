@@ -169,6 +169,7 @@ async def get_progress(
             "progress": None,
             "estimated_cost_cents": 0,
             "spent_cost_cents": 0,
+            "shots": [],
         }
 
     bindings = await ShotBindingRepository(session).list_for_version(
@@ -177,6 +178,21 @@ async def get_progress(
     total = len(timeline.all_shots())
     completed = sum(1 for b in bindings if b.state in _TERMINAL_SHOT_STATES)
     failed = sum(1 for b in bindings if b.state == "failed")
+
+    # Per-shot detail - this is the only place shot_binding state is
+    # exposed today (M9's dedicated shot-review surface doesn't exist
+    # yet), so a failed shot's reason (e.g. a constraint violation that
+    # exhausted its regeneration attempts, M6.5 A14/A19) must be visible
+    # here rather than only as an aggregate count.
+    shots_detail = [
+        {
+            "shot_id": b.shot_id,
+            "state": b.state,
+            "rung": b.rung,
+            "last_error": b.last_error,
+        }
+        for b in sorted(bindings, key=lambda b: b.shot_id)
+    ]
 
     # Estimated before generation runs (implementation guide, Phase M7
     # advice: "estimate cost before the approval gate and show it") -
@@ -195,6 +211,7 @@ async def get_progress(
         "progress": (completed / total) if total else None,
         "estimated_cost_cents": estimated_cost_cents,
         "spent_cost_cents": spent_cost_cents,
+        "shots": shots_detail,
     }
 
 

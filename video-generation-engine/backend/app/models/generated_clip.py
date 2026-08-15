@@ -14,6 +14,18 @@ never find"). A row is inserted at submit time with `status="submitted"`
 and `local_path=None`; `mark_completed`/`mark_failed` fill in the rest
 once the job resolves. Fake/dry-run generation still inserts directly
 with `status="completed"` in the same call, since it never actually waits.
+
+`status="rejected"` + `violated_constraint` (M6.5, A12/A13) record a
+generation that violated a Director constraint: billed (`cost_cents`) and
+never reusable as a cache hit (the cache-hit check elsewhere only ever
+trusts `status == "completed"`), with `local_path=None` since the bytes
+are deliberately never written anywhere. `violated_constraint` is a real
+column, not something recovered by parsing `error`'s free text - a
+resumed run that finds its own prior "rejected" row for this exact
+attempt needs the constraint back in a form it can rebuild the next
+attempt's prompt from (`app/assets/constraint_check.py::
+build_revised_prompt`), without re-generating or re-billing an attempt
+already known to fail.
 """
 
 import uuid
@@ -45,6 +57,7 @@ class GeneratedClipModel(Base):
     job_id: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="completed")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    violated_constraint: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
