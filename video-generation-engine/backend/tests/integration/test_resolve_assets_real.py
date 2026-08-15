@@ -187,6 +187,44 @@ async def test_licence_gate_rejects_non_matching_candidate_and_falls_back_to_gen
     assert binding.asset_id is None
 
 
+async def test_relevance_gate_rejects_non_matching_candidate_and_falls_back_to_generation(
+    project_id, monkeypatch
+):
+    """The real defect this fixes: a candidate with an acceptable licence
+    but no genuine connection to the shot's search query (the actual title
+    of a real wrong match from production) must be discarded before it is
+    ever stored - exactly like the licence gate above, not merely
+    deprioritised in ranking."""
+    monkeypatch.setattr(settings, "dry_run", False)
+    shot = _shot("sh_01", licence_requirements=["cc0"])
+    await _seed_timeline(project_id, [shot])
+
+    provider = _FakeSearchProvider(
+        "wikimedia",
+        "historical_search",
+        candidates_by_shot={
+            "sh_01": [
+                AssetCandidate(
+                    source_id="a1",
+                    source_url="http://example.test/a1",
+                    title="Cristo_crucificado.jpg",  # a real wrong match - unrelated subject
+                    licence="cc0",  # licence is fine; relevance is what must reject this
+                    relevance=1.0,  # the old, meaningless rank-position field
+                    width=1080,
+                    height=1920,
+                )
+            ]
+        },
+        content_by_source_id={"a1": _png_bytes((10, 20, 30))},
+    )
+    _patch_providers(monkeypatch, provider)
+
+    await _run_step(project_id)
+    binding = await _binding(project_id, "sh_01")
+    assert binding.state == "generated"  # relevance-rejected -> fell through to generation
+    assert binding.asset_id is None
+
+
 async def test_content_hash_dedup_collapses_duplicate_candidates(project_id, monkeypatch):
     monkeypatch.setattr(settings, "dry_run", False)
     shot = _shot("sh_01", licence_requirements=["cc0"])
@@ -201,7 +239,7 @@ async def test_content_hash_dedup_collapses_duplicate_candidates(project_id, mon
                 AssetCandidate(
                     source_id="dupe-a",
                     source_url="http://example.test/dupe-a",
-                    title="same image, url A",
+                    title="archival image, url A",
                     licence="cc0",
                     relevance=0.9,
                     width=1080,
@@ -210,7 +248,7 @@ async def test_content_hash_dedup_collapses_duplicate_candidates(project_id, mon
                 AssetCandidate(
                     source_id="dupe-b",
                     source_url="http://example.test/dupe-b",
-                    title="same image, url B",
+                    title="archival image, url B",
                     licence="cc0",
                     relevance=0.8,
                     width=1080,
@@ -250,7 +288,7 @@ async def test_reuse_penalty_avoids_repeating_the_same_asset_across_shots(projec
                 AssetCandidate(
                     source_id="popular",
                     source_url="http://example.test/popular",
-                    title="popular photo",
+                    title="archival popular photo",
                     licence="cc0",
                     relevance=1.0,
                     width=1080,
@@ -261,7 +299,7 @@ async def test_reuse_penalty_avoids_repeating_the_same_asset_across_shots(projec
                 AssetCandidate(
                     source_id="popular",
                     source_url="http://example.test/popular",
-                    title="popular photo",
+                    title="archival popular photo",
                     licence="cc0",
                     relevance=1.0,
                     width=1080,
@@ -270,7 +308,7 @@ async def test_reuse_penalty_avoids_repeating_the_same_asset_across_shots(projec
                 AssetCandidate(
                     source_id="fresh",
                     source_url="http://example.test/fresh",
-                    title="fresh photo",
+                    title="archival fresh photo",
                     licence="cc0",
                     relevance=0.5,
                     width=1080,
@@ -304,7 +342,7 @@ async def test_provenance_is_complete_on_a_stored_asset(project_id, monkeypatch)
                 AssetCandidate(
                     source_id="prov",
                     source_url="http://example.test/prov.jpg",
-                    title="a provenance-complete photo",
+                    title="an archival provenance-complete photo",
                     licence="cc0",
                     relevance=0.9,
                     author="Jane Photographer",

@@ -26,6 +26,7 @@ import uuid as uuid_module
 
 from app.assets.cost import check_budget, total_project_spend_cents
 from app.assets.ranking import rank_candidates
+from app.assets.relevance import candidate_relevance, passes_relevance_gate
 from app.assets.validation import validate_and_identify_image
 from app.core.config import settings
 from app.core.errors import PermanentError, TransientError
@@ -267,6 +268,8 @@ class ResolveAssetsStep:
         chain = asset_plan.fallback_chain if asset_plan else []
         licence_requirements = set(asset_plan.licence_requirements) if asset_plan else set()
 
+        search_terms = (asset_plan.search_queries if asset_plan else []) or [shot.id]
+
         for strategy in chain:
             if strategy not in _SEARCH_STRATEGIES:
                 break  # reached a generation rung in the chain - stop searching
@@ -291,8 +294,22 @@ class ResolveAssetsStep:
             if not eligible:
                 continue
 
+            # Relevance is a hard gate too, same principle: a candidate
+            # whose title/description has no genuine term overlap with what
+            # the shot actually asked for is discarded here, before it is
+            # ever downloaded or ranked - never merely deprioritised (see
+            # app/assets/relevance.py for the real production failures this
+            # is fixing - a query returning a crucifixion painting or a
+            # Portuguese railway station scored a perfect "relevance" of
+            # 1.0 under the old rank-position-only field).
+            relevant = [
+                c for c in eligible if passes_relevance_gate(candidate_relevance(search_terms, c))
+            ]
+            if not relevant:
+                continue  # nothing on this rung is actually about the subject - try the next rung
+
             fetched_candidates: list[tuple[AssetCandidate, str, bytes, str]] = []
-            for candidate in eligible[:_CANDIDATES_TO_FETCH_PER_RUNG]:
+            for candidate in relevant[:_CANDIDATES_TO_FETCH_PER_RUNG]:
                 fetched = await provider.fetch(candidate)
                 content_hash = hashlib.sha256(fetched.content).hexdigest()
                 fetched_candidates.append(
@@ -312,6 +329,7 @@ class ResolveAssetsStep:
 
             ranked = rank_candidates(
                 [(c, h) for c, h, _, _ in deduped],
+                search_terms=search_terms,
                 historical_period=creative_context.historical_period,
                 already_used_hashes=frozenset(already_used_hashes),
                 shot_id=shot.id,

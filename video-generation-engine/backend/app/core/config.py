@@ -97,6 +97,18 @@ class Settings(BaseSettings):
     # --- Pexels (M6+) ---
     pexels_api_key: str | None = None
 
+    # --- Asset relevance gate (M6+) ---
+    # A candidate scoring below this on `app/assets/relevance.py`'s
+    # term-overlap score is discarded before download/ranking, exactly like
+    # the licence gate - never merely deprioritised. 0.25 sits strictly
+    # between the highest score measured for a real WRONG match (0.143, a
+    # single shared generic word such as "South" or "coal") and the lowest
+    # score measured for a real CORRECT match (0.333, a single shared
+    # distinctive word such as "Leuna") in the regression corpus in
+    # tests/unit/assets/test_relevance.py - tightening much further starts
+    # rejecting genuine matches and pushing shots to (paid) generation.
+    asset_relevance_threshold: float = 0.25
+
     # --- Music (M8+) ---
     music_provider: str = "pixabay"
     pixabay_api_key: str | None = None

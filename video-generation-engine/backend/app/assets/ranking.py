@@ -6,11 +6,19 @@ pick that photo?', the answer must be in the logs.").
 Ranking runs on already-fetched, already-deduped candidates (dedup by
 content hash happens before this, in the resolve_assets step - the same
 image arriving from two providers under different URLs must not be
-ranked as two separate options).
+ranked as two separate options), and on candidates that have already
+passed the relevance hard gate (`app/assets/relevance.py`,
+`passes_relevance_gate`) - a candidate below that threshold never reaches
+this function at all, the same way a licence-rejected one never does. The
+"relevance" component computed here is the same real term-overlap score,
+kept as a graded input (not just a pass/fail) so that among several
+candidates that all clear the gate, a stronger textual match still outranks
+a weaker one.
 """
 
 from dataclasses import dataclass
 
+from app.assets.relevance import candidate_relevance
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.providers.base import AssetCandidate
@@ -62,16 +70,21 @@ def _licence_score(candidate: AssetCandidate) -> float:
 def rank_candidates(
     candidates_with_hash: list[tuple[AssetCandidate, str]],
     *,
+    search_terms: list[str] | None = None,
     historical_period: str = "",
     already_used_hashes: frozenset[str] = frozenset(),
     shot_id: str = "",
 ) -> list[RankedCandidate]:
     """Highest score first. `candidates_with_hash` must already be
-    deduped by content hash - this function does not dedupe."""
+    deduped by content hash - this function does not dedupe - and already
+    past the relevance hard gate; `search_terms` here only re-derives the
+    graded score for ordering among survivors, it does not re-admit anyone
+    the gate rejected."""
+    search_terms = search_terms or []
     ranked = []
     for candidate, content_hash in candidates_with_hash:
         components = {
-            "relevance": candidate.relevance,
+            "relevance": candidate_relevance(search_terms, candidate),
             "quality": _quality_score(candidate),
             "period_match": _period_match_score(candidate, historical_period),
             "licence": _licence_score(candidate),

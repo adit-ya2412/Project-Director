@@ -110,6 +110,13 @@ class WikimediaAssetProvider:
             artist = _strip_html(extmetadata.get("Artist", {}).get("value", "")) or info.get(
                 "user", ""
             )
+            # ImageDescription/ObjectName are far richer than the filename
+            # alone - a real relevance signal for `app/assets/relevance.py`
+            # to match against, not just the bare title.
+            description = " ".join(
+                _strip_html(extmetadata.get(field, {}).get("value", ""))
+                for field in ("ImageDescription", "ObjectName")
+            ).strip()
             candidates.append(
                 AssetCandidate(
                     source_id=str(page.get("pageid", page.get("title", ""))),
@@ -120,6 +127,7 @@ class WikimediaAssetProvider:
                     author=artist,
                     width=info.get("width"),
                     height=info.get("height"),
+                    description=description,
                 )
             )
         return candidates

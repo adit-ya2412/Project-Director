@@ -124,11 +124,21 @@ class AssetQuery:
 @dataclass(frozen=True)
 class AssetCandidate:
     """Search-result metadata only — no bytes yet (M6). `relevance` is the
-    provider's own naive text-match confidence in [0, 1]; it is one input
-    into the final ranking score (app/assets/ranking.py), never the
-    selection score itself - quality, period match, licence, and reuse
-    all factor in too (implementation guide, Phase M6 advice: "make
-    ranking explicit and weighted, in one function")."""
+    provider's own naive rank-based confidence in [0, 1] (purely the
+    result's position in that provider's response) - kept for logging and
+    for the DRY_RUN fake-provider path, but it is NOT what the real search
+    path gates or ranks on, since a result's position says nothing about
+    whether it depicts the requested subject (a crucifixion painting
+    returned first still scores 1.0 here). The real search path
+    (`ResolveAssetsStep._resolve_one_real`) computes genuine relevance from
+    `title`/`description` text via `app/assets/relevance.py` and treats it
+    as a hard gate before ranking - never a ranking nudge (implementation
+    guide, Phase M6 advice, same principle as the licence check).
+
+    `description` is the richest text a provider can offer beyond the
+    title - Wikimedia's `extmetadata` carries `ImageDescription`/
+    `ObjectName`, Pexels supplies `alt` (folded into `title` there, since
+    it's Pexels' only text field)."""
 
     source_id: str
     source_url: str
@@ -138,6 +148,7 @@ class AssetCandidate:
     author: str = ""
     width: int | None = None
     height: int | None = None
+    description: str = ""
 
 
 @dataclass(frozen=True)
