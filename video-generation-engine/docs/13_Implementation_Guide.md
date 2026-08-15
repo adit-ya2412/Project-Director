@@ -1003,6 +1003,86 @@ exactly the failure mode the real model hit. 93/93 tests total green
 after all of this session's fixes (3 net-new test functions — see M6
 notes for where they landed).
 
+**Update (2026-08-15) — a second occurrence of the same lesson: the Shot
+Planner's narration-span outer boundaries.** A live paid run on a real
+Hinglish script (mid-M8, well after this phase's own build window, but
+the bug and its fix both belong here) hit `ShotPlanner` failing
+permanently:
+
+```
+shot_planner output failed validation after 2 attempt(s):
+["the last shot's narration_end (140) must equal the scene narration
+  length (144) - every character must be covered"]
+```
+
+Scene `sc_04` was 144 characters, ending `'...bana rahi thi. '` (a
+trailing space before the final full stop); the model's last shot
+stopped 4 characters short of it, and the existing validator hard-failed
+the entire run over it after both attempts. **This is the identical
+mistake as the shot-id collision above**, not a new class of bug: a
+value the calling code already knows deterministically (the first shot's
+`narration_start` is always `0`; the last shot's `narration_end` is
+always `len(scene.narration_text)` — neither is a creative decision) was
+being demanded of the model byte-for-byte, and the whole project paid
+for that imprecision with a hard failure.
+
+**Fixed in code, not in the prompt** (a prompt fix cannot *guarantee* the
+model won't be a few characters off again, the same reasoning that ruled
+out a prompt-only fix for the shot-id collision): `app/planners/shot/
+planner.py::_snap_narration_boundaries` corrects the first shot's
+`narration_start` to `0` and the last shot's `narration_end` to the
+scene's true length **before** validation runs, on every attempt.
+Deliberately narrow — only those two OUTER edges are touched:
+
+- Every other check still runs exactly as before, unmodified, on the
+  (now boundary-corrected) shot list — a genuine gap or overlap between
+  two INTERNAL shots is still a hard, immediate failure. Snapping the
+  outer edges can only remove the one violation the model was never
+  going to hit exactly; it cannot mask a real structural inconsistency
+  anywhere else, because the internal tiling walk (`cursor`-based,
+  shot-to-shot) never even looks at the two values that got snapped.
+- **A snap is logged, not silent** — at `WARNING` if the drift exceeds
+  `_LARGE_SNAP_THRESHOLD_CHARS = 10`, at `INFO` otherwise. The threshold
+  sits strictly between the two observed scales: 4 characters (a
+  trailing space — the real case above, imprecision, not
+  misunderstanding) and 40 characters (the coordinator's own illustrative
+  example of the model genuinely misreading where a scene ends) — a
+  human watching the logs sees the difference between "routine" and
+  "worth a look" without either one blocking the run.
+- **Confirmed, not merely assumed**: a scene's trailing space cannot be
+  double-counted or dropped at a scene boundary. `Shot.narration_span`
+  indexes only into its OWN scene's `narration_text` — never a
+  concatenation of scenes — and `app/timeline/narration_fit.py`
+  (`_spoken_durations_for_scene`) independently re-derives and verifies
+  exact tiling per scene at reconciliation time, raising `PermanentError`
+  if a scene's shots don't cover it exactly or if `narration_text`'s
+  length doesn't match its own alignment array's length. Both checks are
+  entirely scene-local; there is no code path anywhere that indexes
+  across a scene boundary, so a trailing space living inside one scene's
+  own text has nowhere to leak into or out of.
+- 4 new regression tests in `tests/unit/planners/test_shot_planner.py`:
+  a short (4-character) end-boundary miss now succeeds on the FIRST
+  attempt with no repair round; a genuine internal gap between two shots
+  (with both outer boundaries already correct) still raises
+  `PermanentError` after the repair round is exhausted; a large
+  (15-character) miss still succeeds but logs exactly one `WARNING`; the
+  same small miss logs at `INFO`, not `WARNING`, so routine corrections
+  don't spam the logs. 308/308 tests total green (up from 304), run once
+  in the foreground per the shared-test-DB discipline
+  (running pytest twice concurrently truncates the same Postgres the
+  live test run depends on — see the memory note this project already
+  carries on that). `ruff check backend`, `black --check backend` (1
+  file reformatted), `mypy backend/app` all clean from the repo root.
+  Both fixtures reseeded afterward.
+
+**The lesson, now cost twice**: a value that is a deterministic
+consequence of data the calling code already has — a namespace prefix
+that must be unique, a span boundary that must equal a known length — is
+not a creative judgement, and validating it against the model's raw
+output (rather than computing or correcting it directly) turns the
+model's ordinary imprecision into a hard, expensive failure. The fix
+belongs in code both times, not in a better-worded prompt.
+
 ---
 
 # Phase M6 — Asset Pipeline
@@ -2769,7 +2849,17 @@ M5 AI Planners      ████████████ complete 2026-08-14, ha
                                  completeness). Planning model moved off gpt-4o to
                                  gpt-5.6-terra; openai_provider.py now falls back to a
                                  model's default temperature when a reasoning-tier model
-                                 rejects a custom value. 93/93 tests green.
+                                 rejects a custom value. 93/93 tests green. **Hardened
+                                 again 2026-08-15 (mid-M8, a live paid Hinglish run):**
+                                 a third occurrence of the SAME lesson as the shot-id
+                                 collision - the Shot Planner's outer narration-span
+                                 boundaries (first shot starts at 0, last shot ends at
+                                 the scene's true length) are structural facts, not
+                                 model output to validate byte-for-byte, so they are
+                                 now snapped in code before validation runs (large
+                                 snaps logged, internal gaps still fail loudly). See
+                                 this phase's own Implementation notes. 308/308 tests
+                                 green.
 M6 Asset Pipeline   ████████████ complete 2026-08-14, hardened 2026-08-15 — real Wikimedia
                                  (rungs 2+3) and Pexels (rung 4) search, licence hard-gate,
                                  content-hash dedup before ranking, explicit weighted
