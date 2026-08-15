@@ -1,0 +1,994 @@
+{
+  "project_id": "194ad0e7-e545-4524-a597-59e4ff604ba2",
+  "name": "Hinglish - Germany Coal to Fuel (run 2)",
+  "script": "Bro, Germany ke paas oil tha hi nahi... phir bhi unke tanks chalte rahe. Kaise? Simple. Unke paas coal tha. Bohot saara coal. Toh scientists ne kuch aisa kiya jo impossible lagta hai - coal ko liquid fuel mein badal diya. Iska naam tha Fischer-Tropsch process. 1925 mein invent hua, aur 1940s tak Germany ki poori war machine isi pe chal rahi thi. Leuna-Werke jaisi factories din raat fuel bana rahi thi. Ab yahan twist hai. Yeh technology mari nahi. 1950s mein South Africa ne isse uthaya - apartheid ki wajah se unpe oil embargo laga tha. Toh unhone Sasol banaya, Secunda mein duniya ka sabse bada coal-to-liquid plant. Aaj bhi chal raha hai. Ek war-time jugaad, jo permanent solution ban gaya.",
+  "language": "en",
+  "timeline_version": 6,
+  "timeline_document": {
+    "scenes": [
+      {
+        "id": "sc_01",
+        "order": 0,
+        "shots": [
+          {
+            "id": "sc_01_sh_01",
+            "order": 0,
+            "camera": {
+              "movement": "slow_push",
+              "direction": "in",
+              "intensity": 0.18
+            },
+            "intent": "introduce",
+            "prompt": "1930s Germany, archival black-and-white industrial documentary photograph of an austere fuel storage depot with nearly empty cylindrical oil tanks, overcast sky, grainy period texture",
+            "framing": "close",
+            "asset_plan": {
+              "entity": "",
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Germany oil depot 1930s",
+                "German fuel tanks 1930s",
+                "Wehrmacht fuel depot",
+                "empty oil tanks"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 2.4,
+            "intent_text": "Establish Germany's apparent lack of domestic oil as the central paradox.",
+            "asset_locked": false,
+            "narration_span": [
+              0,
+              39
+            ],
+            "transition_out": {
+              "type": "dissolve",
+              "duration_s": 0.3
+            }
+          },
+          {
+            "id": "sc_01_sh_02",
+            "order": 1,
+            "camera": {
+              "movement": "pull_back",
+              "direction": "out",
+              "intensity": 0.2
+            },
+            "intent": "reveal",
+            "prompt": "World War II Germany, archival black-and-white documentary photograph of a column of German tanks advancing along a rural road, industrial haze on the horizon, restrained grainy period realism",
+            "framing": "wide",
+            "asset_plan": {
+              "entity": "",
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Wehrmacht tanks advance",
+                "German tanks rural road",
+                "Panzer column 1940",
+                "German tanks WWII"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 3.1,
+            "intent_text": "Reveal the contradiction of German tanks continuing to operate despite the oil shortage, inviting the question of how.",
+            "asset_locked": false,
+            "narration_span": [
+              39,
+              87
+            ],
+            "transition_out": {
+              "type": "fade",
+              "duration_s": 0.4
+            }
+          }
+        ],
+        "title": "The Oil Paradox",
+        "emotion": "Intrigue",
+        "summary": "Germany's apparent ability to keep its tanks running despite having no oil is posed as a mystery.",
+        "duration_s": 5.5,
+        "narration_text": "Bro, Germany ke paas oil tha hi nahi... phir bhi unke tanks chalte rahe. Kaise? Simple.",
+        "narrative_purpose": "Hook"
+      },
+      {
+        "id": "sc_02",
+        "order": 1,
+        "shots": [
+          {
+            "id": "sc_02_sh_01",
+            "order": 0,
+            "camera": {
+              "movement": "static",
+              "direction": "none",
+              "intensity": 0.12
+            },
+            "intent": "introduce",
+            "prompt": "1930s German coalfield, towering heaps of black coal beside a working mine headframe, labourers small against the scale of the stockpiles, overcast industrial sky, archival black-and-white documentary photograph",
+            "framing": "wide",
+            "asset_plan": {
+              "entity": "",
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "German coal mine 1930s",
+                "Ruhr coalfield 1930s",
+                "Germany mine headframe",
+                "coal heaps Germany"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 2.3,
+            "intent_text": "Establish the immense coal reserves that made the later transformation possible.",
+            "asset_locked": false,
+            "narration_span": [
+              0,
+              38
+            ],
+            "transition_out": {
+              "type": "dissolve",
+              "duration_s": 0.4
+            }
+          },
+          {
+            "id": "sc_02_sh_02",
+            "order": 1,
+            "camera": {
+              "movement": "slow_push",
+              "direction": "in",
+              "intensity": 0.2
+            },
+            "intent": "explain",
+            "prompt": "1940s synthetic-fuel chemical plant interior, coal feed entering tall steel gasification vessels and pipes leading toward liquid-fuel storage tanks, restrained technical process-diagram aesthetic, black-and-white archival industrial documentary",
+            "framing": "medium",
+            "asset_plan": {
+              "entity": "Fischer–Tropsch process",
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Fischer-Tropsch reactor",
+                "German synthetic fuel",
+                "coal gasification plant",
+                "Leuna Werke interior"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 5.8,
+            "intent_text": "Make the improbable conversion of solid coal into liquid fuel visually understandable.",
+            "asset_locked": false,
+            "narration_span": [
+              38,
+              134
+            ],
+            "transition_out": {
+              "type": "dissolve",
+              "duration_s": 0.4
+            }
+          },
+          {
+            "id": "sc_02_sh_03",
+            "order": 2,
+            "camera": {
+              "movement": "slow_zoom",
+              "direction": "in",
+              "intensity": 0.16
+            },
+            "intent": "emphasize",
+            "prompt": "1925 German chemistry laboratory, two early twentieth-century chemists examining glass reaction apparatus and a technical fuel-process drawing on a worktable, archival scientific documentary photograph, muted monochrome tones",
+            "framing": "close",
+            "asset_plan": {
+              "entity": "Bergius process",
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Bergius process laboratory",
+                "Friedrich Bergius 1925",
+                "German chemistry laboratory",
+                "coal hydrogenation apparatus"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 2.4,
+            "intent_text": "Land on Fischer-Tropsch as the name behind the coal-to-liquid breakthrough.",
+            "asset_locked": false,
+            "narration_span": [
+              134,
+              173
+            ],
+            "transition_out": {
+              "type": "fade",
+              "duration_s": 0.5
+            }
+          }
+        ],
+        "title": "Coal Into Fuel",
+        "emotion": "Wonder",
+        "summary": "Germany's vast coal reserves and the Fischer-Tropsch process reveal how coal became liquid fuel.",
+        "duration_s": 10.5,
+        "narration_text": " Unke paas coal tha. Bohot saara coal. Toh scientists ne kuch aisa kiya jo impossible lagta hai - coal ko liquid fuel mein badal diya. Iska naam tha Fischer-Tropsch process.",
+        "narrative_purpose": "Explanation"
+      },
+      {
+        "id": "sc_03",
+        "order": 2,
+        "shots": [
+          {
+            "id": "sc_03_sh_01",
+            "order": 0,
+            "camera": {
+              "movement": "static",
+              "direction": "none",
+              "intensity": 0.1
+            },
+            "intent": "introduce",
+            "prompt": "1925 industrial chemistry laboratory, German scientist beside early coal-hydrogenation apparatus, glass vessels and steel gauges, black-and-white archival documentary photograph",
+            "framing": "close",
+            "asset_plan": {
+              "entity": "Bergius process",
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Bergius process 1925",
+                "Friedrich Bergius laboratory",
+                "coal hydrogenation apparatus",
+                "German chemistry laboratory"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 1.7,
+            "intent_text": "Introduce the 1925 invention as the technical origin of the process.",
+            "asset_locked": false,
+            "narration_span": [
+              0,
+              22
+            ],
+            "transition_out": {
+              "type": "dissolve",
+              "duration_s": 0.4
+            }
+          },
+          {
+            "id": "sc_03_sh_02",
+            "order": 1,
+            "camera": {
+              "movement": "pull_back",
+              "direction": "out",
+              "intensity": 0.18
+            },
+            "intent": "reveal",
+            "prompt": "World War II German synthetic-fuel refinery, immense pipework, distillation towers and rail sidings under overcast sky, black-and-white archival industrial documentary photograph",
+            "framing": "wide",
+            "asset_plan": {
+              "entity": "",
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "German synthetic fuel plant",
+                "World War II refinery",
+                "hydrogenation plant Germany",
+                "German industrial rail siding"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 4.3,
+            "intent_text": "Reveal the immense dependence of Germany's wartime machine on synthetic fuel production.",
+            "asset_locked": false,
+            "narration_span": [
+              22,
+              87
+            ],
+            "transition_out": {
+              "type": "dissolve",
+              "duration_s": 0.4
+            }
+          },
+          {
+            "id": "sc_03_sh_03",
+            "order": 2,
+            "camera": {
+              "movement": "slow_zoom",
+              "direction": "in",
+              "intensity": 0.18
+            },
+            "intent": "emphasize",
+            "prompt": "Leuna-Werke synthetic-fuel plant during World War II, workers on a night shift among steel pipes and refinery valves, factory haze, black-and-white archival documentary photograph",
+            "framing": "medium",
+            "asset_plan": {
+              "entity": "Leuna-Werke",
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Leuna Werke 1943",
+                "Leuna Werke workers",
+                "Leuna synthetic fuel",
+                "Leuna refinery night"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 3.5,
+            "intent_text": "Emphasize the relentless round-the-clock labor of Leuna-Werke fuel production.",
+            "asset_locked": false,
+            "narration_span": [
+              87,
+              144
+            ],
+            "transition_out": {
+              "type": "fade",
+              "duration_s": 0.6
+            }
+          }
+        ],
+        "title": "Fueling the War Machine",
+        "emotion": "Grave",
+        "summary": "The process is situated in its wartime role powering Nazi Germany's industrial war machine.",
+        "duration_s": 9.5,
+        "narration_text": " 1925 mein invent hua, aur 1940s tak Germany ki poori war machine isi pe chal rahi thi. Leuna-Werke jaisi factories din raat fuel bana rahi thi.",
+        "narrative_purpose": "Revelation"
+      },
+      {
+        "id": "sc_04",
+        "order": 3,
+        "shots": [
+          {
+            "id": "sc_04_sh_01",
+            "order": 0,
+            "camera": {
+              "movement": "slow_push",
+              "direction": "in",
+              "intensity": 0.18
+            },
+            "intent": "reveal",
+            "prompt": "Archival industrial documentary, fading black-and-white German synthetic-fuel refinery machinery, dense pipes and steel valves emerging from shadow, production-record texture, restrained historical atmosphere",
+            "framing": "close",
+            "asset_plan": {
+              "entity": "Fischer–Tropsch process",
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Fischer Tropsch Germany",
+                "German synthetic fuel",
+                "Leuna Werke machinery",
+                "hydrogenation plant Germany"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 2.4,
+            "intent_text": "Reveal that the technology survived rather than disappearing.",
+            "asset_locked": false,
+            "narration_span": [
+              0,
+              46
+            ],
+            "transition_out": {
+              "type": "dissolve",
+              "duration_s": 0.5
+            }
+          },
+          {
+            "id": "sc_04_sh_02",
+            "order": 1,
+            "camera": {
+              "movement": "pan",
+              "direction": "right",
+              "intensity": 0.16
+            },
+            "intent": "introduce",
+            "prompt": "Muted colour archival industrial documentary, 1950s South African coal mine and early coal-to-liquids processing infrastructure, conveyors, mine headframes and smokestacks under a pale overcast sky",
+            "framing": "wide",
+            "asset_plan": {
+              "entity": "Sasol",
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Sasolburg 1950s",
+                "Sasol coal mine",
+                "Sasolburg plant",
+                "South Africa coal"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 2.1,
+            "intent_text": "Introduce apartheid-era South Africa as the technology's new destination in the 1950s.",
+            "asset_locked": false,
+            "narration_span": [
+              46,
+              85
+            ],
+            "transition_out": {
+              "type": "cut",
+              "duration_s": 0.0
+            }
+          },
+          {
+            "id": "sc_04_sh_03",
+            "order": 2,
+            "camera": {
+              "movement": "slow_push",
+              "direction": "in",
+              "intensity": 0.22
+            },
+            "intent": "explain",
+            "prompt": "Muted colour archival industrial documentary, apartheid-era South African refinery storage tanks and coal processing plant behind perimeter fencing, hazy industrial sky, austere geopolitical isolation",
+            "framing": "medium",
+            "asset_plan": {
+              "entity": "Sasol",
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Sasol Secunda refinery",
+                "Secunda 1980s",
+                "Sasol storage tanks",
+                "South Africa coal liquefaction"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 2.5,
+            "intent_text": "Explain the oil embargo pressure that made domestic synthetic fuel strategically necessary.",
+            "asset_locked": false,
+            "narration_span": [
+              85,
+              136
+            ],
+            "transition_out": {
+              "type": "fade",
+              "duration_s": 0.0
+            }
+          }
+        ],
+        "title": "The Geopolitical Afterlife",
+        "emotion": "Suspense",
+        "summary": "The story shifts to apartheid-era South Africa, where oil embargoes revived the technology.",
+        "duration_s": 7.0,
+        "narration_text": " Ab yahan twist hai. Yeh technology mari nahi. 1950s mein South Africa ne isse uthaya - apartheid ki wajah se unpe oil embargo laga tha.",
+        "narrative_purpose": "Turn"
+      },
+      {
+        "id": "sc_05",
+        "order": 4,
+        "shots": [
+          {
+            "id": "sc_05_sh_01",
+            "order": 0,
+            "camera": {
+              "movement": "static",
+              "direction": "none",
+              "intensity": 0.15
+            },
+            "intent": "introduce",
+            "prompt": "Muted colour industrial documentary image of Sasol Secunda coal-to-liquids processing plant, vast refinery towers, pipes, cooling structures and coal-handling infrastructure, overcast South African sky, sober scale, present-day context",
+            "framing": "wide",
+            "asset_plan": {
+              "entity": "Sasol Secunda",
+              "strategy": "stock_search",
+              "fallback_chain": [
+                "stock_search",
+                "generate_video",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Sasol Secunda refinery",
+                "Secunda coal liquefaction",
+                "Sasol Secunda plant",
+                "Secunda refinery towers"
+              ],
+              "licence_requirements": [
+                "cc0",
+                "cc_by",
+                "pexels_licence",
+                "commercial_stock_licence"
+              ]
+            },
+            "duration_s": 4.3,
+            "intent_text": "Introduce Sasol's immense coal-to-liquids complex in Secunda as the culmination of the industrial project.",
+            "asset_locked": false,
+            "narration_span": [
+              0,
+              81
+            ],
+            "transition_out": {
+              "type": "dissolve",
+              "duration_s": 0.5
+            }
+          },
+          {
+            "id": "sc_05_sh_02",
+            "order": 1,
+            "camera": {
+              "movement": "slow_zoom",
+              "direction": "in",
+              "intensity": 0.18
+            },
+            "intent": "emphasize",
+            "prompt": "Muted colour industrial documentary view of active Secunda processing infrastructure, steam rising from pipes and refinery units, working industrial atmosphere, sober present-day South Africa",
+            "framing": "medium",
+            "asset_plan": {
+              "entity": "Sasol Secunda",
+              "strategy": "stock_search",
+              "fallback_chain": [
+                "stock_search",
+                "generate_video",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Sasol Secunda infrastructure",
+                "Secunda refinery steam",
+                "Sasol Secunda pipes",
+                "Secunda processing plant"
+              ],
+              "licence_requirements": [
+                "cc0",
+                "cc_by",
+                "pexels_licence",
+                "commercial_stock_licence"
+              ]
+            },
+            "duration_s": 1.5,
+            "intent_text": "Emphasize that the Secunda plant remains operational in the present day.",
+            "asset_locked": false,
+            "narration_span": [
+              81,
+              104
+            ],
+            "transition_out": {
+              "type": "dissolve",
+              "duration_s": 0.4
+            }
+          },
+          {
+            "id": "sc_05_sh_03",
+            "order": 2,
+            "camera": {
+              "movement": "slow_push",
+              "direction": "in",
+              "intensity": 0.2
+            },
+            "intent": "reveal",
+            "prompt": "Archival industrial documentary composition linking a black-and-white wartime synthetic-fuel factory production record to muted colour South African coal-to-liquids machinery, aged paper texture, restrained historical continuity",
+            "framing": "close",
+            "asset_plan": {
+              "entity": "Fischer–Tropsch process",
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_video",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Fischer-Tropsch plant",
+                "German synthetic fuel",
+                "Sasol Secunda machinery",
+                "coal liquefaction archive"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by",
+                "commercial_stock_licence"
+              ]
+            },
+            "duration_s": 2.7,
+            "intent_text": "Reveal the sober irony that a wartime improvisation became a lasting solution.",
+            "asset_locked": false,
+            "narration_span": [
+              104,
+              156
+            ],
+            "transition_out": {
+              "type": "fade",
+              "duration_s": 0.0
+            }
+          }
+        ],
+        "title": "A Permanent Solution",
+        "emotion": "Sober",
+        "summary": "Sasol's Secunda complex demonstrates how a wartime workaround became enduring industrial infrastructure.",
+        "duration_s": 8.5,
+        "narration_text": " Toh unhone Sasol banaya, Secunda mein duniya ka sabse bada coal-to-liquid plant. Aaj bhi chal raha hai. Ek war-time jugaad, jo permanent solution ban gaya.",
+        "narrative_purpose": "Conclusion"
+      }
+    ],
+    "status": "draft",
+    "version": 6,
+    "metadata": {
+      "fps": 30,
+      "language": "en",
+      "voice_id": null,
+      "resolution": [
+        1080,
+        1920
+      ],
+      "aspect_ratio": "9:16",
+      "total_duration_s": 36.2
+    },
+    "created_at": "2026-08-15T15:27:36.776891Z",
+    "music_plan": {
+      "mood": "Low-key investigative, mechanical, and increasingly sobering.",
+      "tempo": "Slow-to-mid tempo, approximately 75–95 BPM; sparse enough to leave clear space for Hindi/Hinglish narration.",
+      "energy_arc": "build_fall",
+      "search_terms": [
+        "documentary industrial underscore",
+        "restrained investigative ambient",
+        "mechanical pulse minimal",
+        "historical tension cinematic",
+        "somber geopolitical documentary"
+      ],
+      "selected_track": null,
+      "selection_attempted": true,
+      "licence_requirements": [
+        "cc0",
+        "by"
+      ]
+    },
+    "project_id": "194ad0e7-e545-4524-a597-59e4ff604ba2",
+    "produced_by": "music_selection",
+    "timeline_id": "194ad0e7-e545-4524-a597-59e4ff604ba2",
+    "parent_version": 5,
+    "schema_version": "1.0",
+    "creative_context": {
+      "tone": "Intrigued and explanatory at the hook, shifting into sober industrial-history revelation and morally alert geopolitical context.",
+      "audience": "Hindi/Hinglish-speaking viewers interested in overlooked World War II technology, industrial history, and the geopolitical afterlife of wartime inventions.",
+      "constraints": [
+        "Use authentic or clearly labelled archival imagery for Nazi Germany, Leuna-Werke, Fischer-Tropsch facilities, Sasol, and Secunda; do not fabricate historical photographs.",
+        "No glorification of Nazi Germany, its war machine, or wartime industrial achievement; frame the technology as industrial history with human and environmental consequences.",
+        "Avoid prominent or celebratory Nazi symbols; use only when historically necessary and contextualised.",
+        "Do not use AI-generated faces or depictions of real historical figures.",
+        "Treat apartheid explicitly as a system of racial oppression; do not present embargo-era South African industrial self-sufficiency as heroic or politically neutral.",
+        "Avoid graphic wartime violence; focus on infrastructure, records, maps, chemistry, and industrial landscapes.",
+        "Do not imply that Germany's entire war machine ran solely on synthetic fuel; present coal-to-liquid fuel as a major strategic supply source."
+      ],
+      "visual_style": "Archival industrial documentary: black-and-white WWII factory photography and period maps transition into muted colour imagery of South African coal mines, Sasol infrastructure, and Secunda’s vast processing plant; simple annotated process diagrams and production-record textures.",
+      "colour_palette": [
+        "#242424",
+        "#5E5547",
+        "#A98F62",
+        "#C8C1B1",
+        "#6E7F72"
+      ],
+      "camera_language": "Measured archival montage: static factory and scientist photographs, slow map moves, restrained push-ins on documents and industrial diagrams; no whip pans or spectacle.",
+      "historical_period": "1925 Fischer-Tropsch invention; Nazi German synthetic-fuel industry during World War II (1930s–1945); apartheid-era South African coal-to-liquids expansion from the 1950s; present-day Secunda context."
+    }
+  },
+  "assets": [
+    {
+      "provider": "wikimedia",
+      "source_url": "https://upload.wikimedia.org/wikipedia/commons/9/97/Sasol_CTL%2C_Secunda.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "type": "image",
+      "licence": "cc_by",
+      "attribution": "Horst Vogel, via Wikimedia Commons",
+      "content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6",
+      "confidence": 0.5725,
+      "filename": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6.jpg"
+    },
+    {
+      "provider": "wikipedia_entity",
+      "source_url": "https://upload.wikimedia.org/wikipedia/commons/3/32/Bundesarchiv_DH_2_Bild-F-01930%2C_Leuna-Werke%2C_Destillationsanlagen.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "type": "image",
+      "licence": "cc_by",
+      "attribution": "Wolter, via Wikimedia Commons",
+      "content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1",
+      "confidence": 0.5525,
+      "filename": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1.jpg"
+    },
+    {
+      "provider": "pexels",
+      "source_url": "https://images.pexels.com/photos/38343897/pexels-photo-38343897.jpeg",
+      "type": "image",
+      "licence": "pexels_licence",
+      "attribution": "Photo by Dheeraj Singh on Pexels",
+      "content_hash": "adefe337bb0bb1b8ae55502bac44a56810535d0b27ab5673e6cd307b96767382",
+      "confidence": 0.4665517241379311,
+      "filename": "adefe337bb0bb1b8ae55502bac44a56810535d0b27ab5673e6cd307b96767382.jpg"
+    }
+  ],
+  "bindings": [
+    {
+      "shot_id": "sc_01_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 5,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_01_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 6,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_01_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 5,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_01_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 6,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_02_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 5,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_02_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 6,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_02_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 5,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_02_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 6,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_02_sh_03",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 6,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_02_sh_03",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 5,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_03_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 6,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_03_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 5,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_03_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 5,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_03_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 6,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_03_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 5,
+      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
+    },
+    {
+      "shot_id": "sc_03_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 6,
+      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
+    },
+    {
+      "shot_id": "sc_04_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 6,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 5,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 6,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 5,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 6,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_04_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 5,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_05_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 6,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_05_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 5,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_05_sh_02",
+      "state": "resolved",
+      "rung": "stock_search",
+      "timeline_version": 5,
+      "asset_content_hash": "adefe337bb0bb1b8ae55502bac44a56810535d0b27ab5673e6cd307b96767382"
+    },
+    {
+      "shot_id": "sc_05_sh_02",
+      "state": "resolved",
+      "rung": "stock_search",
+      "timeline_version": 6,
+      "asset_content_hash": "adefe337bb0bb1b8ae55502bac44a56810535d0b27ab5673e6cd307b96767382"
+    },
+    {
+      "shot_id": "sc_05_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 6,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_05_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 5,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    }
+  ],
+  "narrations": []
+}
