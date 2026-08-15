@@ -24,23 +24,42 @@ from app.workflow.steps.complete import CompleteStep
 from app.workflow.steps.generate_timeline import GenerateTimelineStep
 from app.workflow.steps.narration import NarrationStep
 from app.workflow.steps.render import RenderStep
-from app.workflow.steps.resolve_assets import ResolveAssetsStep
+from app.workflow.steps.resolve_assets import GENERATION_RUNGS, SEARCH_RUNGS, ResolveAssetsStep
 
 logger = get_logger(__name__)
 
-# NarrationStep sits between AwaitApproval and ResolveAssets, not after
-# them: it costs money (I6 forbids it before approval), and it appends a
-# NEW Timeline version with reconciled durations (M8) - ShotBinding rows
-# are keyed by (project_id, timeline_version, shot_id), so if narration
-# ran AFTER ResolveAssets, its new version would orphan every binding at
-# the old version, forcing a full re-resolve (and re-pay) of every shot.
-# Running it here means ResolveAssets and Render always bind against the
-# FINAL, narration-corrected version.
+# M6.5, A5/A6/A7/A21: `ResolveAssetsStep` runs TWICE, once for each half
+# of the asset ladder (canon 3.1) - never as a single pass, and never as
+# two separate classes (see that module's own docstring for why one
+# parameterised class, not two).
+#
+# `resolve_assets_search` (rungs 1-4, free) runs BEFORE the approval gate
+# - I6 only forbids EXPENSIVE work pre-approval, and search costs nothing,
+# so this is what makes the risky acquisition step supervised at the
+# moment fixing it is still free (A5). A shot it cannot resolve is left
+# `awaiting_generation`, not failed - the paid pass still owns it.
+#
+# `resolve_assets_generate` (rungs 5-6, paid) runs AFTER NarrationStep,
+# not directly after approval (A6/A7): narration is cheap (~9c) and is
+# what validates the real, spoken duration - a script that blows the 90s
+# cap must fail there, before dollars of generation are spent on a video
+# that can never ship. NarrationStep appends a NEW Timeline version
+# (reconciled durations, M8); ShotBinding rows are keyed by (project_id,
+# timeline_version, shot_id), so that version bump would orphan every
+# binding `resolve_assets_search` and a human just approved, forcing a
+# full, silent re-resolve (and re-pay for generation) of every shot - A11
+# is the hard prerequisite this depends on: `TimelineService` carries a
+# shot's binding forward across that exact version bump whenever the
+# shot's acquisition-relevant fields (`prompt`, `asset_plan`) are
+# unchanged (A20), which is true for every shot narration ever touches
+# (it only changes durations). See `app/timeline/service.py` for where
+# that carry-forward actually happens and why.
 DEFAULT_PIPELINE: list[WorkflowStep] = [
     GenerateTimelineStep(),
+    ResolveAssetsStep(name="resolve_assets_search", permitted_strategies=SEARCH_RUNGS),
     AwaitApprovalStep(),
     NarrationStep(),
-    ResolveAssetsStep(),
+    ResolveAssetsStep(name="resolve_assets_generate", permitted_strategies=GENERATION_RUNGS),
     RenderStep(),
     CompleteStep(),
 ]

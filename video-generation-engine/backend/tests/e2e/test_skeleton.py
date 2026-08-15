@@ -76,8 +76,12 @@ def test_script_to_video_end_to_end(client, tmp_path):
     assert script_resp.status_code == 200
     assert script_resp.json()["status"] == "script_uploaded"
 
-    # 3. Render — the engine runs generate_timeline, then stops at the
-    # human approval gate (ADR-008). Nothing expensive has happened yet.
+    # 3. Render — the engine runs generate_timeline, THEN the free
+    # search-only ResolveAssetsStep pass (M6.5, A5 - search costs
+    # nothing, so I6 permits it before approval), then stops at the human
+    # approval gate (ADR-008). Nothing EXPENSIVE has happened yet - but
+    # search has, and the whole point of moving it here is that the human
+    # reaches this gate having already seen what was found.
     render_resp = client.post(f"/api/v1/projects/{project_id}/render")
     assert render_resp.status_code == 200
     awaiting = render_resp.json()
@@ -94,6 +98,15 @@ def test_script_to_video_end_to_end(client, tmp_path):
     progress = progress_resp.json()
     assert progress["workflow_state"] == "awaiting_approval"
     assert progress["current_step"] == "await_approval"
+    # M6.5, A5: proof the reorder actually happened, not just that the
+    # pipeline still reaches the gate - every shot is already resolved
+    # (DRY_RUN's FakeAssetProvider always finds something) BEFORE
+    # approval, with its source visible via `shots[*].asset`, and none
+    # are waiting on the (not-yet-run, paid) generation pass.
+    assert len(progress["shots"]) == 6
+    assert all(s["state"] == "resolved" for s in progress["shots"])
+    assert all(s["asset"] is not None for s in progress["shots"])
+    assert all(s["will_generate"] is False for s in progress["shots"])
 
     timeline_resp = client.get(f"/api/v1/projects/{project_id}/timeline")
     assert timeline_resp.status_code == 200
@@ -104,7 +117,8 @@ def test_script_to_video_end_to_end(client, tmp_path):
     render_again_resp = client.post(f"/api/v1/projects/{project_id}/render")
     assert render_again_resp.json()["timeline"]["version"] == awaiting["timeline"]["version"]
 
-    # 4. Approve — resumes the same run: resolve_assets -> render -> complete.
+    # 4. Approve — resumes the same run: narration -> resolve_assets
+    # (paid pass) -> render -> complete.
     approve_resp = client.post(f"/api/v1/projects/{project_id}/timeline/approve")
     assert approve_resp.status_code == 200
     rendered = approve_resp.json()

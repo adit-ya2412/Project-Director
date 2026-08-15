@@ -1,7 +1,11 @@
-"""ResolveAssetsStep with DRY_RUN=false: proves the real-search path's
-hardest rules - the licence hard gate, content-hash dedup before ranking,
-the within-project reuse penalty, complete provenance on stored assets,
-and falling through to (fake) generation when every rung comes up empty.
+"""The search-only `ResolveAssetsStep` pass (`resolve_assets_search`,
+rungs 1-4 - M6.5, A5/A21) with DRY_RUN=false: proves the real-search
+path's hardest rules - the licence hard gate, content-hash dedup before
+ranking, the within-project reuse penalty, complete provenance on stored
+assets, deferring to the paid pass (`awaiting_generation`, never
+generating directly - A6) when every permitted rung comes up empty, and
+a total provider failure still returning a clean step outcome rather
+than blocking the approval gate (A22).
 
 No real network: the ladder's provider routing table
 (`_real_search_providers`) is monkeypatched to fakes with canned
@@ -35,7 +39,11 @@ from app.schemas.timeline import (
 from app.timeline.service import TimelineService
 from app.workflow.context import RunContext
 from app.workflow.steps import resolve_assets as resolve_assets_module
-from app.workflow.steps.resolve_assets import ResolveAssetsStep
+from app.workflow.steps.resolve_assets import SEARCH_RUNGS, ResolveAssetsStep
+
+
+def _search_step() -> ResolveAssetsStep:
+    return ResolveAssetsStep(name="resolve_assets_search", permitted_strategies=SEARCH_RUNGS)
 
 
 @pytest_asyncio.fixture
@@ -89,19 +97,6 @@ async def _seed_timeline(project_id: str, shots: list[Shot]) -> None:
         )
 
 
-class _FakeGenerationImageProvider:
-    """Stands in for FalImageProvider (M7) - these tests are about the
-    search/ladder path, not real generation; a real network call here
-    would 404 (no fal.ai account is wired into tests)."""
-
-    name = "fake_fal_image"
-
-    async def generate(self, request):
-        from app.providers.base import ImageResult
-
-        return ImageResult(content=_png_bytes((1, 2, 3)), content_type="image/png")
-
-
 class _FakeSearchProvider:
     def __init__(
         self,
@@ -126,21 +121,34 @@ class _FakeSearchProvider:
         )
 
 
+class _RaisingSearchProvider:
+    """A22: stands in for a search rung that is entirely down (e.g.
+    Wikimedia unreachable) - every call raises, never returns."""
+
+    name = "wikimedia"
+    rung = "historical_search"
+
+    async def search(self, query):
+        raise RuntimeError("simulated total provider outage")
+
+    async def fetch(self, candidate: AssetCandidate) -> AssetBytes:
+        raise RuntimeError("simulated total provider outage")
+
+
 def _patch_providers(monkeypatch, historical_provider) -> None:
     monkeypatch.setattr(
         resolve_assets_module,
         "_real_search_providers",
         lambda: {AssetStrategy.HISTORICAL_SEARCH: historical_provider},
     )
-    monkeypatch.setattr(resolve_assets_module, "FalImageProvider", _FakeGenerationImageProvider)
     # `run()` unconditionally constructs an `OpenAIPlanningProvider()` for
-    # M6.5's vision constraint check whenever DRY_RUN is off, even though
-    # none of these shots set `creative_context.constraints` (so it's
-    # never actually called - M6.5, A12, "zero constraints, zero calls").
-    # A real `OpenAIPlanningProvider()`'s constructor itself requires an
-    # API key to be configured, though, so this suite must patch it too
-    # to stay genuinely key-independent rather than only "working" because
-    # a real key happens to be set in a developer's local .env.
+    # M6.5's vision constraint check whenever the pass permits generation
+    # and DRY_RUN is off - the search-only pass never permits generation
+    # (`self._generation_permitted` is False), so it never even
+    # constructs one; this patch is kept anyway as a defensive guard
+    # against that assumption ever quietly changing, so this suite stays
+    # genuinely key-independent rather than "working" only because a real
+    # key happens to be set in a developer's local .env.
     monkeypatch.setattr(
         resolve_assets_module, "OpenAIPlanningProvider", FakeVisionConstraintProvider
     )
@@ -155,7 +163,7 @@ async def _run_step(project_id: str) -> None:
             repo=repo,
             timeline_service=TimelineService(session),
         )
-        result = await ResolveAssetsStep().run(ctx)
+        result = await _search_step().run(ctx)
         assert result.outcome == "ok"
         await session.commit()
 
@@ -166,9 +174,14 @@ async def _binding(project_id: str, shot_id: str):
         return await repo.get(uuid_module.UUID(project_id), 2, shot_id)
 
 
-async def test_licence_gate_rejects_non_matching_candidate_and_falls_back_to_generation(
+async def test_licence_gate_rejects_non_matching_candidate_and_defers_to_generation(
     project_id, monkeypatch
 ):
+    """M6.5, A5/A6/A21: this is the search-ONLY pass - it must never
+    generate, even as a fallback. A licence-rejected candidate defers the
+    shot to the paid pass (`awaiting_generation`), which is the intended
+    behaviour change from the pre-reorder single-pass step (which used to
+    fall all the way through to a real `generate_image` call here)."""
     monkeypatch.setattr(settings, "dry_run", False)
     shot = _shot("sh_01", licence_requirements=["cc0"])
     await _seed_timeline(project_id, [shot])
@@ -195,18 +208,20 @@ async def test_licence_gate_rejects_non_matching_candidate_and_falls_back_to_gen
 
     await _run_step(project_id)
     binding = await _binding(project_id, "sh_01")
-    assert binding.state == "generated"  # licence-rejected -> fell through to generation
+    assert binding.state == "awaiting_generation"  # licence-rejected -> deferred, not generated
     assert binding.asset_id is None
+    assert binding.clip_id is None
 
 
-async def test_relevance_gate_rejects_non_matching_candidate_and_falls_back_to_generation(
+async def test_relevance_gate_rejects_non_matching_candidate_and_defers_to_generation(
     project_id, monkeypatch
 ):
     """The real defect this fixes: a candidate with an acceptable licence
     but no genuine connection to the shot's search query (the actual title
     of a real wrong match from production) must be discarded before it is
     ever stored - exactly like the licence gate above, not merely
-    deprioritised in ranking."""
+    deprioritised in ranking. Deferred to the paid pass, same as the
+    licence-gate case - the search-only pass never generates."""
     monkeypatch.setattr(settings, "dry_run", False)
     shot = _shot("sh_01", licence_requirements=["cc0"])
     await _seed_timeline(project_id, [shot])
@@ -233,7 +248,7 @@ async def test_relevance_gate_rejects_non_matching_candidate_and_falls_back_to_g
 
     await _run_step(project_id)
     binding = await _binding(project_id, "sh_01")
-    assert binding.state == "generated"  # relevance-rejected -> fell through to generation
+    assert binding.state == "awaiting_generation"  # relevance-rejected -> deferred, not generated
     assert binding.asset_id is None
 
 
@@ -388,7 +403,10 @@ async def test_provenance_is_complete_on_a_stored_asset(project_id, monkeypatch)
     assert asset.local_path is not None and asset.local_path.endswith(".png")
 
 
-async def test_falls_back_to_generation_when_every_rung_is_empty(project_id, monkeypatch):
+async def test_defers_to_generation_when_every_rung_is_empty(project_id, monkeypatch):
+    """M6.5, A5/A6: the search-only pass never generates - a shot every
+    permitted rung came up empty for is left `awaiting_generation` for the
+    paid pass to pick up after approval, not silently generated here."""
     monkeypatch.setattr(settings, "dry_run", False)
     shot = _shot("sh_01", licence_requirements=["cc0"])
     await _seed_timeline(project_id, [shot])
@@ -400,5 +418,43 @@ async def test_falls_back_to_generation_when_every_rung_is_empty(project_id, mon
 
     await _run_step(project_id)
     binding = await _binding(project_id, "sh_01")
-    assert binding.state == "generated"
-    assert binding.clip_id is not None
+    assert binding.state == "awaiting_generation"
+    assert binding.clip_id is None
+    assert binding.asset_id is None
+
+
+async def test_total_search_provider_failure_never_blocks_the_gate(project_id, monkeypatch):
+    """A22: a total failure of the pre-approval search pass must not
+    block the approval gate. Every call to the only permitted rung raises
+    - the step must still return outcome="ok" (per-shot isolation,
+    Principle 10), not propagate the exception and fail the whole run."""
+    monkeypatch.setattr(settings, "dry_run", False)
+    shot = _shot("sh_01", licence_requirements=["cc0"])
+    await _seed_timeline(project_id, [shot])
+
+    _patch_providers(monkeypatch, _RaisingSearchProvider())
+
+    async with async_session_factory() as session:
+        repo = PostgresProjectRepository(session)
+        ctx = RunContext(
+            project_id=project_id,
+            session=session,
+            repo=repo,
+            timeline_service=TimelineService(session),
+        )
+        result = await _search_step().run(ctx)
+        await session.commit()
+
+    # The step itself completes cleanly - this is what lets the engine
+    # proceed straight to the approval gate regardless of how badly
+    # search went, exactly like a licence/relevance rejection or an empty
+    # rung: never a step-level failure, only ever a per-shot one.
+    assert result.outcome == "ok"
+
+    binding = await _binding(project_id, "sh_01")
+    # A generic (non-Transient) exception from every rung marks the ONE
+    # shot failed - it does not propagate up and fail the whole pass, and
+    # it does not silently invent a resolved/generated asset either.
+    assert binding.state == "failed"
+    assert binding.asset_id is None
+    assert binding.clip_id is None

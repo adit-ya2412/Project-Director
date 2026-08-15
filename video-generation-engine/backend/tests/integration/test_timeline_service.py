@@ -1,6 +1,9 @@
 """TimelineService — proves Invariant I3 (immutable Timeline versions) is
-enforced in code, not just convention. Needs real Postgres (docs/12_Testing_Strategy.md:
-integration tests, unlike unit tests, are allowed to hit the database)."""
+enforced in code, not just convention, and (M6.5, A11/A20) that
+`ShotBinding` carry-forward across a version bump is impossible to skip,
+living inside `_persist` rather than as an opt-in a caller could forget.
+Needs real Postgres (docs/12_Testing_Strategy.md: integration tests,
+unlike unit tests, are allowed to hit the database)."""
 
 import uuid
 
@@ -8,9 +11,19 @@ import pytest_asyncio
 
 from app.core.errors import PermanentError
 from app.db.session import async_session_factory
+from app.models.asset import AssetModel
 from app.models.project import ProjectModel
 from app.repositories.project_repository import PostgresProjectRepository
-from app.schemas.timeline import ProducedBy, Scene, Shot, ShotIntent, TimelineStatus
+from app.repositories.shot_binding_repository import ShotBindingRepository
+from app.schemas.timeline import (
+    AssetPlan,
+    AssetStrategy,
+    ProducedBy,
+    Scene,
+    Shot,
+    ShotIntent,
+    TimelineStatus,
+)
 from app.timeline.service import TimelineService
 
 
@@ -285,3 +298,194 @@ async def test_rollback_appends_a_copy_and_preserves_history(project_id):
     assert len(rolled_back.scenes[0].shots) == 1  # matches v2's content
     assert original_v2 is not None and len(original_v2.scenes[0].shots) == 1
     assert original_v3 is not None and len(original_v3.scenes[0].shots) == 2
+
+
+# --- M6.5, A11/A20: ShotBinding carry-forward across a version bump -----
+
+
+async def _seed_resolved_binding(
+    session, project_id: str, version: int, shot_id: str
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """A minimal stand-in for what the search-only ResolveAssetsStep pass
+    would have written - just enough (asset_id, state, rung) to prove
+    carry-forward copies it, without pulling in the whole real search
+    path."""
+    asset = AssetModel(
+        project_id=uuid.UUID(project_id),
+        provider="wikimedia",
+        source_url="http://example.test/x.jpg",
+        type="image",
+        licence="cc0",
+        content_hash=f"hash-{shot_id}-{version}",
+        confidence=0.9,
+    )
+    session.add(asset)
+    await session.flush()
+
+    binding_repo = ShotBindingRepository(session)
+    binding = await binding_repo.get_or_create_pending(uuid.UUID(project_id), version, shot_id)
+    binding.state = "resolved"
+    binding.asset_id = asset.id
+    binding.rung = "historical_search"
+    await session.flush()
+    return asset.id, binding.id
+
+
+async def test_binding_carries_forward_when_prompt_and_asset_plan_are_unchanged(project_id):
+    """A20's central case: narration only ever changes `duration_s`, so a
+    binding must survive that version bump untouched in substance."""
+    async with async_session_factory() as session:
+        service = TimelineService(session)
+        await service.create_initial(project_id, script="s")
+
+        def v2(base):
+            shot = _shot("sh_01_01", 0)
+            shot.prompt = "a coal mine"
+            base.scenes = [_scene("sc_01", 0, [shot])]
+            return base
+
+        v2_result = await service.append_version(
+            project_id, produced_by=ProducedBy.DIRECTOR, transform=v2, owns=frozenset({"scenes"})
+        )
+        asset_id, _ = await _seed_resolved_binding(
+            session, project_id, v2_result.version, "sh_01_01"
+        )
+
+        def v3_duration_only(base):
+            base.scenes[0].shots[0].duration_s = 9.0
+            return base
+
+        v3_result = await service.append_version(
+            project_id,
+            produced_by=ProducedBy.NARRATION,
+            transform=v3_duration_only,
+            owns=frozenset({"scenes"}),
+        )
+
+        binding_repo = ShotBindingRepository(session)
+        carried = await binding_repo.get(uuid.UUID(project_id), v3_result.version, "sh_01_01")
+        original = await binding_repo.get(uuid.UUID(project_id), v2_result.version, "sh_01_01")
+
+    assert carried is not None
+    assert carried.state == "resolved"
+    assert carried.asset_id == asset_id
+    assert carried.rung == "historical_search"
+    # The original row at the superseded version is untouched, not moved
+    # or deleted - carry-forward copies.
+    assert original is not None
+    assert original.asset_id == asset_id
+
+
+async def test_binding_does_not_carry_forward_when_prompt_changes(project_id):
+    """A20: a re-plan that changes a shot's `prompt` must not carry the
+    old binding across - it was acquired for a question no longer being
+    asked."""
+    async with async_session_factory() as session:
+        service = TimelineService(session)
+        await service.create_initial(project_id, script="s")
+
+        def v2(base):
+            shot = _shot("sh_01_01", 0)
+            shot.prompt = "a coal mine"
+            base.scenes = [_scene("sc_01", 0, [shot])]
+            return base
+
+        v2_result = await service.append_version(
+            project_id, produced_by=ProducedBy.DIRECTOR, transform=v2, owns=frozenset({"scenes"})
+        )
+        await _seed_resolved_binding(session, project_id, v2_result.version, "sh_01_01")
+
+        def v3_reprompt(base):
+            base.scenes[0].shots[0].prompt = "a different subject entirely"
+            return base
+
+        v3_result = await service.append_version(
+            project_id,
+            produced_by=ProducedBy.SHOT_PLANNER,
+            transform=v3_reprompt,
+            owns=frozenset({"scenes"}),
+        )
+
+        binding_repo = ShotBindingRepository(session)
+        carried = await binding_repo.get(uuid.UUID(project_id), v3_result.version, "sh_01_01")
+
+    assert carried is None  # must re-resolve against the new prompt
+
+
+async def test_binding_does_not_carry_forward_when_asset_plan_changes(project_id):
+    """A20: acquisition-relevant also means `asset_plan` - a shot whose
+    search queries or licence requirements changed must re-resolve, even
+    if its `prompt` happens to read the same."""
+    async with async_session_factory() as session:
+        service = TimelineService(session)
+        await service.create_initial(project_id, script="s")
+
+        def v2(base):
+            shot = _shot("sh_01_01", 0)
+            shot.prompt = "a coal mine"
+            shot.asset_plan = AssetPlan(
+                strategy=AssetStrategy.HISTORICAL_SEARCH,
+                search_queries=["coal mine"],
+                fallback_chain=[AssetStrategy.HISTORICAL_SEARCH, AssetStrategy.GENERATE_IMAGE],
+                licence_requirements=["cc0"],
+            )
+            base.scenes = [_scene("sc_01", 0, [shot])]
+            return base
+
+        v2_result = await service.append_version(
+            project_id, produced_by=ProducedBy.DIRECTOR, transform=v2, owns=frozenset({"scenes"})
+        )
+        await _seed_resolved_binding(session, project_id, v2_result.version, "sh_01_01")
+
+        def v3_replan(base):
+            base.scenes[0].shots[0].asset_plan.search_queries = ["Ruhr coal mine 1936"]
+            return base
+
+        v3_result = await service.append_version(
+            project_id,
+            produced_by=ProducedBy.ASSET_PLANNER,
+            transform=v3_replan,
+            owns=frozenset({"scenes"}),
+        )
+
+        binding_repo = ShotBindingRepository(session)
+        carried = await binding_repo.get(uuid.UUID(project_id), v3_result.version, "sh_01_01")
+
+    assert carried is None  # must re-resolve against the new asset_plan
+
+
+async def test_binding_does_not_carry_forward_when_the_shot_no_longer_exists(project_id):
+    async with async_session_factory() as session:
+        service = TimelineService(session)
+        await service.create_initial(project_id, script="s")
+
+        def v2(base):
+            base.scenes = [_scene("sc_01", 0, [_shot("sh_01_01", 0)])]
+            return base
+
+        v2_result = await service.append_version(
+            project_id, produced_by=ProducedBy.DIRECTOR, transform=v2, owns=frozenset({"scenes"})
+        )
+        await _seed_resolved_binding(session, project_id, v2_result.version, "sh_01_01")
+
+        def v3_remove_shot(base):
+            base.scenes = [_scene("sc_01", 0, [_shot("sh_01_02", 0)])]
+            return base
+
+        v3_result = await service.append_version(
+            project_id,
+            produced_by=ProducedBy.SHOT_PLANNER,
+            transform=v3_remove_shot,
+            owns=frozenset({"scenes"}),
+        )
+
+        binding_repo = ShotBindingRepository(session)
+        carried_old_shot = await binding_repo.get(
+            uuid.UUID(project_id), v3_result.version, "sh_01_01"
+        )
+        new_shot_binding = await binding_repo.get(
+            uuid.UUID(project_id), v3_result.version, "sh_01_02"
+        )
+
+    assert carried_old_shot is None  # the removed shot has nothing to carry to
+    assert new_shot_binding is None  # a brand new shot gets no binding until resolved

@@ -4,6 +4,32 @@
 `append_version` is the ONLY way a new Timeline version is created. No
 other code in the system should call `session.add(TimelineVersionModel(...))`
 - if you find yourself doing that, route through this service instead.
+
+## ShotBinding carry-forward lives here (M6.5, A11/A20)
+
+`ShotBinding` rows are a different table/aggregate than `TimelineVersion`,
+so carrying them forward across a version bump is a genuine design
+choice, not a given from I3. It is made HERE, inside `_persist` - the one
+method every version-creating path (`append_version`, `rollback_to`)
+funnels through before a new version becomes visible - specifically so
+that it is structurally impossible for a new version to exist without
+carry-forward having been considered. An opt-in helper that callers
+remember to invoke is not good enough: the day someone adds a new
+version-creating path and forgets to call it, every binding at the
+superseded version silently orphans, and the free-search pre-approval
+pass this whole phase exists to protect gets thrown away without anyone
+noticing (exactly the failure A11 names). `create_initial` doesn't need
+it - there is no prior version to carry anything from.
+
+A20's rule is per-shot, never all-or-nothing: a binding carries forward
+when its `shot_id` still exists in the new version AND that shot's
+acquisition-relevant fields (`prompt`, `asset_plan`) are unchanged.
+Compared as parsed Pydantic values (both sides already went through the
+same JSON round-trip in `append_version`), not as raw byte strings - that
+is a strictly more correct interpretation of "byte-identical" than a
+literal string comparison, since it can't be defeated by harmless
+key-order/formatting differences that never reached the actual planning
+content.
 """
 
 import uuid
@@ -15,6 +41,7 @@ from app.core.clock import utcnow
 from app.core.config import settings
 from app.core.errors import PermanentError
 from app.models.project import ProjectModel
+from app.repositories.shot_binding_repository import ShotBindingRepository
 from app.repositories.timeline_repository import TimelineVersionRepository
 from app.schemas.timeline import (
     CreativeContext,
@@ -196,10 +223,17 @@ class TimelineService:
         if supersede_previous:
             previous = await self._repo.get_latest(project_id)
             if previous is not None and previous.status != TimelineStatus.SUPERSEDED.value:
+                # Parsed before superseding, purely to compare shots against
+                # `timeline` below - the status mutation two lines down
+                # doesn't affect any field carry-forward looks at.
+                previous_timeline = Timeline.model_validate(previous.document)
+
                 previous_document = dict(previous.document)
                 previous_document["status"] = TimelineStatus.SUPERSEDED.value
                 previous.document = previous_document
                 previous.status = TimelineStatus.SUPERSEDED.value
+
+                await self._carry_forward_bindings(project_id, previous_timeline, timeline)
 
         await self._repo.insert(
             project_id=project_id,
@@ -215,3 +249,37 @@ class TimelineService:
             project.active_timeline_version = timeline.version
 
         await self._session.commit()
+
+    async def _carry_forward_bindings(
+        self, project_id: uuid.UUID, previous_timeline: Timeline, new_timeline: Timeline
+    ) -> None:
+        """A11/A20 (M6.5) - see this module's docstring for why this lives
+        here rather than as an opt-in helper. Per-shot, never all-or-
+        nothing: a binding carries forward only when its `shot_id` still
+        exists in `new_timeline` AND that shot's `prompt`/`asset_plan` are
+        unchanged from `previous_timeline`. Narration changes only
+        durations, so in that case every binding carries; a re-plan can
+        change a shot's `prompt`, and carrying a binding across that
+        change would silently serve an asset acquired for a question no
+        longer being asked."""
+        binding_repo = ShotBindingRepository(self._session)
+        previous_bindings = await binding_repo.list_for_version(
+            project_id, previous_timeline.version
+        )
+        if not previous_bindings:
+            return  # nothing resolved yet at the previous version - nothing to carry
+
+        previous_shots = {shot.id: shot for shot in previous_timeline.all_shots()}
+        new_shots = {shot.id: shot for shot in new_timeline.all_shots()}
+
+        for binding in previous_bindings:
+            previous_shot = previous_shots.get(binding.shot_id)
+            new_shot = new_shots.get(binding.shot_id)
+            if previous_shot is None or new_shot is None:
+                continue  # shot doesn't exist on one side - nothing to carry
+            if (
+                previous_shot.prompt != new_shot.prompt
+                or previous_shot.asset_plan != new_shot.asset_plan
+            ):
+                continue  # acquisition-relevant fields changed - must re-resolve
+            await binding_repo.carry_forward(binding, new_timeline_version=new_timeline.version)

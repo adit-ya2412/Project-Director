@@ -1,24 +1,59 @@
-"""Step 3: resolve or generate media for every shot.
+"""Step: resolve or generate media for every shot.
 
-DRY_RUN=true: unchanged since M4 - `FakeAssetProvider`/`FakeImageProvider`
-always find/produce something on the shot's primary strategy, so the
-fallback chain and the real generation path below are never exercised.
-DRY_RUN never constructs a vision-constraint provider either (`None`,
-same idiom as `video_provider`) - the fake path never does real
-generation, so there is nothing to check (M6.5, A12); this is also what
-keeps the walking-skeleton e2e test passing with zero API keys.
+One class, two pipeline positions (M6.5, A5/A21). `ResolveAssetsStep` is
+parameterised by `permitted_strategies` - which rungs of the asset ladder
+(canon 3.1) it is allowed to use - and instantiated TWICE in
+`app.workflow.engine.DEFAULT_PIPELINE`, under two distinct `name`s:
+
+- `resolve_assets_search` (rungs 1-4, free): runs BEFORE the approval
+  gate. Search costs nothing, so I6 permits it, and this is what makes
+  the risky acquisition step supervised at the moment fixing it is still
+  free (A5) - the human reaches approval having already seen what was
+  found, with the found-vs-will-generate distinction visible via
+  `GET /progress`.
+- `resolve_assets_generate` (rungs 5-6, paid): runs AFTER the approval
+  gate, after narration (A6/A7) - narration is cheap and validates real
+  duration; a script that blows the 90s cap must fail there, before
+  dollars of generation are spent on a video that cannot ship.
+
+Not two step classes: the ladder walk, relevance gate, licence gate, hash
+dedup, budget checks, and per-shot failure isolation are all shared, and
+two classes would duplicate that logic and let it drift. `is_satisfied`
+is pass-specific (A21) - "search finished" and "generation finished" are
+different questions, encoded as `self._done_states` below. A shot the
+search pass could not resolve is marked `awaiting_generation`, not
+`failed` - that state is deliberately excluded from `TERMINAL_STATES`
+(see `app/repositories/shot_binding_repository.py`), so the search
+pass's own `is_satisfied` treats it as done while the generation pass's
+does not.
+
+DRY_RUN=true: unchanged in spirit since M4 - `FakeAssetProvider`/
+`FakeImageProvider` always find/produce something, so the fallback chain
+and the real generation path below are never exercised. DRY_RUN never
+constructs a vision-constraint provider either (`None`, same idiom as
+`video_provider`) - the fake path never does real generation, so there is
+nothing to check (M6.5, A12); this is also what keeps the walking-
+skeleton e2e test passing with zero API keys. Each pass instance also
+only ever constructs the providers ITS OWN permitted rungs could need -
+the search-only pass never constructs `FalImageProvider`/
+`OpenAIPlanningProvider`, the generation-only pass never constructs the
+search/entity providers.
 
 DRY_RUN=false: real search (M6, rungs 1-4) walks the shot's full
-`asset_plan.fallback_chain`; a miss on every search rung falls through to
-real generation (M7, rungs 5-6) via fal.ai. Image generation
-(`fal-ai/bytedance/seedream/v4/text-to-image` by default) is a bounded
-synchronous poll - Seedream is fast. Video generation
-(`fal-ai/kling-video/o3/standard/image-to-video` by default) is
-image-to-video: a keyframe is generated first via the same image
-provider, then fed into Kling, and the video job itself uses a real
-submit-once/poll-once-per-attempt pattern so an in-flight job survives a
-process restart rather than being resubmitted (implementation guide,
-Phase M7 advice).
+`asset_plan.fallback_chain`, restricted to whichever rungs THIS pass
+permits; a miss on every permitted search rung, when generation is not
+permitted this pass, defers the shot (`awaiting_generation`) rather than
+falling through to generation (A6 - generation only ever happens in the
+post-approval pass). When generation IS permitted, a search miss (or a
+pass with no search rungs permitted at all) falls through to real
+generation (M7, rungs 5-6) via fal.ai. Image generation (`fal-ai/
+bytedance/seedream/v4/text-to-image` by default) is a bounded synchronous
+poll - Seedream is fast. Video generation (`fal-ai/kling-video/o3/
+standard/image-to-video` by default) is image-to-video: a keyframe is
+generated first via the same image provider, then fed into Kling, and
+the video job itself uses a real submit-once/poll-once-per-attempt
+pattern so an in-flight job survives a process restart rather than being
+resubmitted (implementation guide, Phase M7 advice).
 
 Every generated image (standalone, or a video's keyframe) is checked
 against the Director's `creative_context.constraints` before it ships
@@ -31,7 +66,13 @@ attempts. Searched assets are never checked (A16 defers that).
 Per-shot failure isolation (Principle 10) is enforced throughout: one
 shot failing (or hitting the budget cap, or exhausting its constraint
 retries) marks that binding `failed` and processing continues with the
-rest, never aborting the whole step.
+rest, never aborting the whole step. This is also what makes A22 true for
+the search pass without any extra code: a shot whose EVERY search call
+raises still only ever marks that ONE binding `failed` (or leaves it
+`pending` for a retryable `TransientError`) - the step itself always
+returns `outcome="ok"`, so a total outage of every search provider still
+reaches the approval gate, showing nothing was found rather than
+blocking on it.
 """
 
 import hashlib
@@ -77,17 +118,29 @@ from app.schemas.timeline import AssetStrategy, CreativeContext, PreferredMediaT
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
 
-_SEARCH_STRATEGIES = {
-    AssetStrategy.PROJECT_ASSETS,
-    AssetStrategy.HISTORICAL_SEARCH,
-    AssetStrategy.PUBLIC_DOMAIN,
-    AssetStrategy.STOCK_SEARCH,
-}
+_SEARCH_STRATEGIES = frozenset(
+    {
+        AssetStrategy.PROJECT_ASSETS,
+        AssetStrategy.HISTORICAL_SEARCH,
+        AssetStrategy.PUBLIC_DOMAIN,
+        AssetStrategy.STOCK_SEARCH,
+    }
+)
+_GENERATION_STRATEGIES = frozenset({AssetStrategy.GENERATE_VIDEO, AssetStrategy.GENERATE_IMAGE})
 # Entity retrieval (M6.5, A1/A2) only makes sense for the two Wikimedia-
 # backed rungs - Pexels and project uploads have no notion of a Wikipedia
 # article or Commons category to resolve against.
-_ENTITY_ELIGIBLE_STRATEGIES = {AssetStrategy.HISTORICAL_SEARCH, AssetStrategy.PUBLIC_DOMAIN}
+_ENTITY_ELIGIBLE_STRATEGIES = frozenset(
+    {AssetStrategy.HISTORICAL_SEARCH, AssetStrategy.PUBLIC_DOMAIN}
+)
 _CANDIDATES_TO_FETCH_PER_RUNG = 5
+
+# The canonical ladder split (implementation guide, M6.5 build order + A5):
+# rungs 1-4 are free and run before approval; rungs 5-6 cost real money and
+# run after. `app.workflow.engine.DEFAULT_PIPELINE` instantiates one
+# `ResolveAssetsStep` per set.
+SEARCH_RUNGS = _SEARCH_STRATEGIES
+GENERATION_RUNGS = _GENERATION_STRATEGIES
 
 
 def _real_search_providers() -> dict[AssetStrategy, AssetProvider]:
@@ -115,9 +168,24 @@ def _styled_prompt(shot: Shot, creative_context: CreativeContext) -> str:
 
 
 class ResolveAssetsStep:
-    name = "resolve_assets"
     retryable = True
     max_attempts = 3
+
+    def __init__(self, *, name: str, permitted_strategies: frozenset[AssetStrategy]) -> None:
+        self.name = name
+        self._permitted_strategies = permitted_strategies
+        self._search_permitted = bool(permitted_strategies & _SEARCH_STRATEGIES)
+        self._generation_permitted = bool(permitted_strategies & _GENERATION_STRATEGIES)
+        # A21: "search finished" and "generation finished" are different
+        # questions. The search pass additionally treats
+        # `awaiting_generation` as done - it IS done, with search; the
+        # generation pass must not, since that state is exactly its own
+        # work queue.
+        self._done_states = (
+            TERMINAL_STATES
+            if self._generation_permitted
+            else TERMINAL_STATES | {"awaiting_generation"}
+        )
 
     async def is_satisfied(self, ctx: RunContext) -> bool:
         timeline = await ctx.timeline_service.get_active(ctx.project_id)
@@ -133,7 +201,7 @@ class ResolveAssetsStep:
         shots = timeline.all_shots()
         if len(bindings) < len(shots):
             return False
-        return all(bindings[s.id].state in TERMINAL_STATES for s in shots)
+        return all(bindings[s.id].state in self._done_states for s in shots)
 
     async def run(self, ctx: RunContext) -> StepResult:
         timeline = await ctx.timeline_service.get_active(ctx.project_id)
@@ -151,36 +219,55 @@ class ResolveAssetsStep:
         (project_dir / "assets").mkdir(parents=True, exist_ok=True)
         (project_dir / "clips").mkdir(parents=True, exist_ok=True)
 
-        fake_asset_provider = FakeAssetProvider() if settings.dry_run else None
-        search_providers = None if settings.dry_run else _real_search_providers()
+        # Every provider below is constructed only if THIS pass's
+        # permitted rungs could ever need it - the search pass never
+        # touches fal.ai/OpenAI, the generation pass never touches
+        # Wikimedia/Pexels/entity retrieval.
+        fake_asset_provider = (
+            FakeAssetProvider() if settings.dry_run and self._search_permitted else None
+        )
+        search_providers = (
+            _real_search_providers() if (not settings.dry_run and self._search_permitted) else None
+        )
         # A1/A2 (M6.5): entity -> images is a deterministic lookup, not a
         # search rung - one instance, reused across every shot in this run
         # (its own rate limiter is per-instance, same discipline as the
         # search providers above).
-        entity_provider = None if settings.dry_run else WikipediaEntityAssetProvider()
+        entity_provider = (
+            WikipediaEntityAssetProvider()
+            if (not settings.dry_run and self._search_permitted)
+            else None
+        )
         # M6.5, A12: `None` in DRY_RUN, same idiom as every other real
         # provider above - `check_generated_image_constraints` treats a
         # `None` provider as "nothing to call", so DRY_RUN never
         # constructs an OpenAI client and never needs an API key.
         vision_provider: VisionConstraintProvider | None = (
-            None if settings.dry_run else OpenAIPlanningProvider()
+            (None if settings.dry_run else OpenAIPlanningProvider())
+            if self._generation_permitted
+            else None
         )
-        image_provider: ImageProvider = (
-            FakeImageProvider() if settings.dry_run else FalImageProvider()
+        image_provider: ImageProvider | None = (
+            (FakeImageProvider() if settings.dry_run else FalImageProvider())
+            if self._generation_permitted
+            else None
         )
-        video_provider: VideoProvider | None = None if settings.dry_run else FalVideoProvider()
+        video_provider: VideoProvider | None = (
+            (None if settings.dry_run else FalVideoProvider())
+            if self._generation_permitted
+            else None
+        )
         already_used_hashes = await asset_repo.list_content_hashes_for_project(project_uuid)
 
         for shot in timeline.all_shots():
             binding = await binding_repo.get_or_create_pending(
                 project_uuid, timeline.version, shot.id
             )
-            if binding.state in TERMINAL_STATES:
-                continue  # already resolved on a prior attempt/run
+            if binding.state in self._done_states:
+                continue  # already decided by this pass on a prior attempt/run
 
             try:
                 if settings.dry_run:
-                    assert fake_asset_provider is not None
                     await self._resolve_one_fake(
                         shot,
                         binding,
@@ -192,11 +279,6 @@ class ResolveAssetsStep:
                         clip_repo=clip_repo,
                     )
                 else:
-                    assert (
-                        search_providers is not None
-                        and video_provider is not None
-                        and entity_provider is not None
-                    )
                     used_hash = await self._resolve_one_real(
                         shot,
                         binding,
@@ -230,7 +312,9 @@ class ResolveAssetsStep:
         await ctx.session.flush()
         # Per-shot failures do not fail the step (Principle 10) - the
         # render step gives a failed/pending shot a placeholder image
-        # rather than blocking the other fifty-nine.
+        # rather than blocking the other fifty-nine. This is also what
+        # makes A22 true: even if every shot's search raised, the step
+        # still returns "ok" and the run reaches the approval gate.
         return StepResult(outcome="ok")
 
     async def _resolve_one_fake(
@@ -240,14 +324,15 @@ class ResolveAssetsStep:
         *,
         project_uuid: uuid_module.UUID,
         project_dir,
-        asset_provider: FakeAssetProvider,
-        image_provider: ImageProvider,
+        asset_provider: FakeAssetProvider | None,
+        image_provider: ImageProvider | None,
         asset_repo: AssetRepository,
         clip_repo: GeneratedClipRepository,
     ) -> None:
         strategy = shot.asset_plan.strategy if shot.asset_plan else AssetStrategy.GENERATE_IMAGE
 
-        if strategy in _SEARCH_STRATEGIES:
+        if strategy in _SEARCH_STRATEGIES and self._search_permitted:
+            assert asset_provider is not None
             query = AssetQuery(
                 search_terms=shot.asset_plan.search_queries if shot.asset_plan else [],
                 preferred_type=(
@@ -280,8 +365,15 @@ class ResolveAssetsStep:
                 binding.state = "resolved"
                 binding.rung = strategy.value
                 return
-            # Fell through the search rung with nothing found - generate.
+            # Fell through the search rung with nothing found.
 
+        if not self._generation_permitted:
+            # A5/A6/A21: this pass may only search - defer to the paid
+            # pass rather than generate.
+            binding.state = "awaiting_generation"
+            return
+
+        assert image_provider is not None
         await self._generate_fake(
             shot,
             binding,
@@ -298,10 +390,10 @@ class ResolveAssetsStep:
         *,
         project_uuid: uuid_module.UUID,
         project_dir,
-        search_providers: dict[AssetStrategy, AssetProvider],
-        entity_provider: WikipediaEntityAssetProvider,
-        image_provider: ImageProvider,
-        video_provider: VideoProvider,
+        search_providers: dict[AssetStrategy, AssetProvider] | None,
+        entity_provider: WikipediaEntityAssetProvider | None,
+        image_provider: ImageProvider | None,
+        video_provider: VideoProvider | None,
         vision_provider: VisionConstraintProvider | None,
         asset_repo: AssetRepository,
         clip_repo: GeneratedClipRepository,
@@ -310,10 +402,11 @@ class ResolveAssetsStep:
         creative_context: CreativeContext,
         already_used_hashes: set[str],
     ) -> str | None:
-        """Walks the shot's fallback_chain across real search providers.
-        Returns the content_hash it resolved to (for reuse-penalty
-        tracking across the rest of this run), or None if it fell through
-        to generation."""
+        """Walks the shot's fallback_chain across real search providers,
+        restricted to `self._permitted_strategies`. Returns the
+        content_hash it resolved to (for reuse-penalty tracking across
+        the rest of this run), or None if it deferred to the generation
+        pass or fell through to generation itself."""
         asset_plan = shot.asset_plan
         chain = asset_plan.fallback_chain if asset_plan else []
         licence_requirements = set(asset_plan.licence_requirements) if asset_plan else set()
@@ -328,143 +421,166 @@ class ResolveAssetsStep:
         entity_candidates: list[AssetCandidate] = []
         entity_candidates_fetched = False
 
-        for strategy in chain:
-            if strategy not in _SEARCH_STRATEGIES:
-                break  # reached a generation rung in the chain - stop searching
+        if self._search_permitted:
+            assert search_providers is not None
+            for strategy in chain:
+                if strategy not in _SEARCH_STRATEGIES:
+                    break  # reached a generation rung in the chain - stop searching
+                if strategy not in self._permitted_strategies:
+                    continue  # not one of THIS pass's permitted rungs - try the next
 
-            provider = search_providers[strategy]
-            query = AssetQuery(
-                search_terms=asset_plan.search_queries if asset_plan else [],
-                preferred_type=asset_plan.preferred_type.value if asset_plan else "image",
-                shot_id=shot.id,
-                historical_period=creative_context.historical_period,
-            )
-            candidates = await provider.search(query)
-
-            # Only merged in on the Wikimedia-backed rungs, not on every
-            # rung the fallback chain happens to reach afterwards: `fetch`
-            # below is called on *this rung's* provider, and a candidate's
-            # bytes must be downloaded with the Wikimedia User-Agent
-            # Commons requires (implementation guide, M6 notes - a generic
-            # UA is silently blocklisted by upload.wikimedia.org) rather
-            # than whatever the current provider (e.g. Pexels) happens to
-            # send.
-            entity_eligible_rung = strategy in _ENTITY_ELIGIBLE_STRATEGIES
-            if entity and not entity_candidates_fetched and entity_eligible_rung:
-                entity_candidates = await entity_provider.resolve_entity(entity)
-                entity_candidates_fetched = True
-
-            # Entity-sourced candidates are pooled with the free-text ones
-            # from here on and run through the exact same gates - NOT
-            # exempted from either. An earlier version of this step skipped
-            # the relevance gate for entity candidates on the theory that a
-            # human filing an image under a subject makes it relevant by
-            # construction; measured against the live API, that premise is
-            # false (see WikipediaEntityAssetProvider's docstring - a
-            # Wikipedia article legitimately embeds off-topic images
-            # alongside the one that actually matches a given shot). A bad
-            # entity guess must fail exactly as gracefully as a bad
-            # free-text query: fall through to the next rung, not win by
-            # default.
-            pool = candidates + (entity_candidates if entity_eligible_rung else [])
-
-            # Licence is a hard gate, never a ranking factor (implementation
-            # guide, Phase M6 advice) - a candidate whose licence isn't
-            # acceptable is discarded outright, not deprioritised.
-            eligible = [
-                c for c in pool if not licence_requirements or c.licence in licence_requirements
-            ]
-            if not eligible:
-                continue
-
-            # Relevance is a hard gate too, same principle, applied
-            # identically to every candidate regardless of source: a
-            # candidate whose title/description has no genuine term overlap
-            # with what the shot actually asked for is discarded here,
-            # before it is ever downloaded or ranked - never merely
-            # deprioritised (see app/assets/relevance.py for the real
-            # production failures this is fixing - a query returning a
-            # crucifixion painting or a Portuguese railway station scored a
-            # perfect "relevance" of 1.0 under the old rank-position-only
-            # field).
-            relevant = [
-                c for c in eligible if passes_relevance_gate(candidate_relevance(search_terms, c))
-            ]
-            if not relevant:
-                continue  # nothing on this rung (entity or free-text) is actually about the subject
-
-            fetched_candidates: list[tuple[AssetCandidate, str, bytes, str]] = []
-            for candidate in relevant[:_CANDIDATES_TO_FETCH_PER_RUNG]:
-                fetched = await provider.fetch(candidate)
-                content_hash = hashlib.sha256(fetched.content).hexdigest()
-                fetched_candidates.append(
-                    (candidate, content_hash, fetched.content, fetched.attribution)
+                provider = search_providers[strategy]
+                query = AssetQuery(
+                    search_terms=asset_plan.search_queries if asset_plan else [],
+                    preferred_type=asset_plan.preferred_type.value if asset_plan else "image",
+                    shot_id=shot.id,
+                    historical_period=creative_context.historical_period,
                 )
+                candidates = await provider.search(query)
 
-            # Dedupe by content hash before ranking - the same image can
-            # arrive under different URLs, and must not be ranked as two
-            # separate options.
-            seen_hashes: set[str] = set()
-            deduped: list[tuple[AssetCandidate, str, bytes, str]] = []
-            for entry in fetched_candidates:
-                if entry[1] in seen_hashes:
+                # Only merged in on the Wikimedia-backed rungs, not on
+                # every rung the fallback chain happens to reach
+                # afterwards: `fetch` below is called on *this rung's*
+                # provider, and a candidate's bytes must be downloaded
+                # with the Wikimedia User-Agent Commons requires
+                # (implementation guide, M6 notes - a generic UA is
+                # silently blocklisted by upload.wikimedia.org) rather
+                # than whatever the current provider (e.g. Pexels)
+                # happens to send.
+                entity_eligible_rung = strategy in _ENTITY_ELIGIBLE_STRATEGIES
+                if entity and not entity_candidates_fetched and entity_eligible_rung:
+                    assert entity_provider is not None
+                    entity_candidates = await entity_provider.resolve_entity(entity)
+                    entity_candidates_fetched = True
+
+                # Entity-sourced candidates are pooled with the free-text
+                # ones from here on and run through the exact same gates
+                # - NOT exempted from either. An earlier version of this
+                # step skipped the relevance gate for entity candidates on
+                # the theory that a human filing an image under a subject
+                # makes it relevant by construction; measured against the
+                # live API, that premise is false (see
+                # WikipediaEntityAssetProvider's docstring - a Wikipedia
+                # article legitimately embeds off-topic images alongside
+                # the one that actually matches a given shot). A bad
+                # entity guess must fail exactly as gracefully as a bad
+                # free-text query: fall through to the next rung, not win
+                # by default.
+                pool = candidates + (entity_candidates if entity_eligible_rung else [])
+
+                # Licence is a hard gate, never a ranking factor
+                # (implementation guide, Phase M6 advice) - a candidate
+                # whose licence isn't acceptable is discarded outright,
+                # not deprioritised.
+                eligible = [
+                    c for c in pool if not licence_requirements or c.licence in licence_requirements
+                ]
+                if not eligible:
                     continue
-                seen_hashes.add(entry[1])
-                deduped.append(entry)
 
-            ranked = rank_candidates(
-                [(c, h) for c, h, _, _ in deduped],
-                search_terms=search_terms,
-                historical_period=creative_context.historical_period,
-                already_used_hashes=frozenset(already_used_hashes),
-                shot_id=shot.id,
-            )
+                # Relevance is a hard gate too, same principle, applied
+                # identically to every candidate regardless of source: a
+                # candidate whose title/description has no genuine term
+                # overlap with what the shot actually asked for is
+                # discarded here, before it is ever downloaded or ranked -
+                # never merely deprioritised (see app/assets/relevance.py
+                # for the real production failures this is fixing - a
+                # query returning a crucifixion painting or a Portuguese
+                # railway station scored a perfect "relevance" of 1.0
+                # under the old rank-position-only field).
+                relevant = [
+                    c
+                    for c in eligible
+                    if passes_relevance_gate(candidate_relevance(search_terms, c))
+                ]
+                if not relevant:
+                    continue  # nothing on this rung is actually about the subject
 
-            by_hash = {h: (c, content, attribution) for c, h, content, attribution in deduped}
-            for rank_result in ranked:
-                candidate, content, attribution = by_hash[rank_result.content_hash]
+                fetched_candidates: list[tuple[AssetCandidate, str, bytes, str]] = []
+                for candidate in relevant[:_CANDIDATES_TO_FETCH_PER_RUNG]:
+                    fetched = await provider.fetch(candidate)
+                    content_hash = hashlib.sha256(fetched.content).hexdigest()
+                    fetched_candidates.append(
+                        (candidate, content_hash, fetched.content, fetched.attribution)
+                    )
 
-                existing = await asset_repo.get_by_content_hash(
-                    project_uuid, rank_result.content_hash
+                # Dedupe by content hash before ranking - the same image
+                # can arrive under different URLs, and must not be ranked
+                # as two separate options.
+                seen_hashes: set[str] = set()
+                deduped: list[tuple[AssetCandidate, str, bytes, str]] = []
+                for entry in fetched_candidates:
+                    if entry[1] in seen_hashes:
+                        continue
+                    seen_hashes.add(entry[1])
+                    deduped.append(entry)
+
+                ranked = rank_candidates(
+                    [(c, h) for c, h, _, _ in deduped],
+                    search_terms=search_terms,
+                    historical_period=creative_context.historical_period,
+                    already_used_hashes=frozenset(already_used_hashes),
+                    shot_id=shot.id,
                 )
-                if existing is not None:
-                    binding.asset_id = existing.id
+
+                by_hash = {h: (c, content, attribution) for c, h, content, attribution in deduped}
+                for rank_result in ranked:
+                    candidate, content, attribution = by_hash[rank_result.content_hash]
+
+                    existing = await asset_repo.get_by_content_hash(
+                        project_uuid, rank_result.content_hash
+                    )
+                    if existing is not None:
+                        binding.asset_id = existing.id
+                        binding.state = "resolved"
+                        binding.rung = strategy.value
+                        return rank_result.content_hash
+
+                    try:
+                        ext, _width, _height = validate_and_identify_image(content)
+                    except PermanentError:
+                        continue  # this candidate's bytes are bad - try the next-ranked one
+
+                    path = project_dir / "assets" / f"{rank_result.content_hash}.{ext}"
+                    path.write_bytes(content)
+                    # Provenance reflects how this candidate was actually
+                    # found (M6.5) - `entity_provider.name`
+                    # ("wikipedia_entity") for an entity-curated hit,
+                    # `provider.name` ("wikimedia") for a free-text one,
+                    # even though both were fetched through the same
+                    # rung's WikimediaAssetProvider instance above.
+                    found_by = (
+                        entity_provider.name
+                        if candidate.entity_curated and entity_provider is not None
+                        else provider.name
+                    )
+                    asset = await asset_repo.insert(
+                        project_id=project_uuid,
+                        provider=found_by,
+                        source_url=candidate.source_url,
+                        type="image",
+                        local_path=str(path),
+                        licence=candidate.licence,
+                        attribution=attribution or candidate.author or None,
+                        content_hash=rank_result.content_hash,
+                        confidence=rank_result.score,
+                    )
+                    binding.asset_id = asset.id
                     binding.state = "resolved"
                     binding.rung = strategy.value
                     return rank_result.content_hash
 
-                try:
-                    ext, _width, _height = validate_and_identify_image(content)
-                except PermanentError:
-                    continue  # this candidate's bytes are bad - try the next-ranked one
+                # Every fetched candidate in this rung failed validation -
+                # move on to the next strategy in the fallback chain.
 
-                path = project_dir / "assets" / f"{rank_result.content_hash}.{ext}"
-                path.write_bytes(content)
-                # Provenance reflects how this candidate was actually found
-                # (M6.5) - `entity_provider.name` ("wikipedia_entity") for
-                # an entity-curated hit, `provider.name` ("wikimedia") for
-                # a free-text one, even though both were fetched through
-                # the same rung's WikimediaAssetProvider instance above.
-                found_by = entity_provider.name if candidate.entity_curated else provider.name
-                asset = await asset_repo.insert(
-                    project_id=project_uuid,
-                    provider=found_by,
-                    source_url=candidate.source_url,
-                    type="image",
-                    local_path=str(path),
-                    licence=candidate.licence,
-                    attribution=attribution or candidate.author or None,
-                    content_hash=rank_result.content_hash,
-                    confidence=rank_result.score,
-                )
-                binding.asset_id = asset.id
-                binding.state = "resolved"
-                binding.rung = strategy.value
-                return rank_result.content_hash
+        if not self._generation_permitted:
+            # A5/A6/A21: this pass may only search - every permitted rung
+            # came up empty (or none were permitted at all), so defer to
+            # the paid pass rather than generate here.
+            binding.state = "awaiting_generation"
+            return None
 
-            # Every fetched candidate in this rung failed validation -
-            # move on to the next strategy in the fallback chain.
-
+        assert image_provider is not None and video_provider is not None
         is_video = bool(asset_plan and asset_plan.preferred_type == PreferredMediaType.VIDEO)
         if is_video:
             await self._generate_video_real(

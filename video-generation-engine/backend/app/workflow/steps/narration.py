@@ -12,13 +12,20 @@ around it (provider call, cache, budget, `append_version`).
 
 `ShotBinding` rows are keyed by `(project_id, timeline_version, shot_id)`,
 and both `ResolveAssetsStep` and `RenderStep` look up bindings by the
-*active* timeline version. If narration ran AFTER `ResolveAssetsStep`, its
-new `append_version` call would orphan every binding at the old version -
-`ResolveAssetsStep` would re-resolve (and re-pay for) every shot, and
-`RenderStep` would find no bindings at all. So this step must run BEFORE
-`ResolveAssetsStep`. It must also run AFTER `AwaitApprovalStep` - TTS costs
-money, and I6 forbids anything expensive before approval. See
-`app/workflow/engine.DEFAULT_PIPELINE`.
+*active* timeline version. `ResolveAssetsStep` now runs TWICE (M6.5, A5/
+A21) - a free search-only pass BEFORE `AwaitApprovalStep`, and a paid
+generation-only pass after this step. This step's own `append_version`
+call (reconciled durations) bumps the version between those two passes,
+which would silently orphan every binding the search pass found (and a
+human just approved) if `TimelineService` didn't carry them forward
+(A11/A20 - see `app/timeline/service.py` for where that actually
+happens: every shot narration reconciles keeps its `prompt`/`asset_plan`
+byte-identical, since it only ever changes `duration_s`, so every
+binding carries). This step must run AFTER `AwaitApprovalStep` - TTS
+costs money, and I6 forbids anything expensive before approval - and
+BEFORE the generation-only `ResolveAssetsStep` pass, so that pass (and
+`RenderStep`) always bind against the FINAL, narration-corrected version.
+See `app/workflow/engine.DEFAULT_PIPELINE`.
 
 ## Approval, and the crash window around it
 

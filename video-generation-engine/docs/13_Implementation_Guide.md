@@ -1209,10 +1209,10 @@ Preference order for motion, once this is addressed: **real archival footage > K
 
 ## Build order
 
-1. **Entity retrieval (A1, A2), measured against the A17 benchmark.** Cheapest, needs no UI, improves quality automatically. Its result determines how much burden steps 3–4 must carry.
-2. **Director-constraint enforcement at generation (A12, A13, A14).** Small, and the only harm-relevant item here.
-3. **Pipeline reorder (A5, A7) plus binding carry-forward (A11).** The structural change that makes the step supervised. A11 is a hard prerequisite.
-4. **Upload endpoint and per-shot override (A8, A9, A10, A15).** Only useful once 3 exists, since the gate is where a human acts on it.
+1. ~~**Entity retrieval (A1, A2), measured against the A17 benchmark.**~~ **Done** (`86d42e1`). Cheapest, needs no UI, improves quality automatically. Its result determines how much burden steps 3–4 must carry.
+2. ~~**Director-constraint enforcement at generation (A12, A13, A14).**~~ **Done** (`11ad0aa`). Small, and the only harm-relevant item here.
+3. ~~**Pipeline reorder (A5, A7) plus binding carry-forward (A11).**~~ **Done** (this step, A20-A22 closing the design questions it raised). The structural change that makes the step supervised.
+4. **Upload endpoint and per-shot override (A8, A9, A10, A15).** Only useful now that step 3 exists, since the gate is where a human acts on it. Next.
 5. **Reassess vision verification for search (A16)** against whatever failures actually remain.
 
 **Caveat:** there is no frontend — M9 has not been built. "You see the images at approval" means, for now, an API exposing the resolved asset per shot plus files on disk. The full experience needs M9; the backend reordering is still worth doing first, so M9 is not built against the wrong pipeline shape.
@@ -1220,8 +1220,8 @@ Preference order for motion, once this is addressed: **real archival footage > K
 ## Done when
 
 - [ ] The A17 benchmark improves substantially and is re-measured after every retrieval change — **in progress, deliberately not ticked.** Step 1 (`86d42e1`) moved it from 2 correct + 2 partial to 4 correct + 1 partial with zero regressions, and step 2 re-measured it unchanged (retrieval untouched). But 4/11 means **7 shots are still wrong**, and the phase goal is media that matches the script — a doubling is not a finish. The remaining failures are all generic, no-entity shots (`a wartime fuel depot`, `German tanks rail yard`) where free-text search's candidate pool contains nothing on-topic at all; no gate or ranking change reaches those, which is the evidence for steps 3–4 (uploads and a supervised gate) rather than more automated scoring. Re-measure after every retrieval change and only tick this when the number justifies it.
-- [ ] A human can see real images per shot, and swap or override any of them, before anything expensive runs
-- [ ] A human override survives re-resolution and version bumps
+- [ ] A human can see real images per shot, and swap or override any of them, before anything expensive runs — **half done, deliberately not ticked.** Step 3 (below) moved free search before the approval gate and extended `GET /progress` with a per-shot `asset`/`will_generate` breakdown, so "the human can SEE real images per shot before anything expensive runs" is now true, verified via the e2e test. "Swap or override" is not built — that's the upload endpoint (A8/A9), step 4. Half a done-when is not done.
+- [ ] A human override survives re-resolution and version bumps — still not ticked: there is no override to survive yet (step 4). The generic *mechanism* it depends on — a binding surviving a version bump at all — is now built and tested (A11/A20, step 3), and will carry an override forward the same way once one exists; this box is about A10 specifically, which step 4 adds.
 - [x] No generated image ships that violates a Director constraint — step 2, below.
 - [x] Generation retries are bounded and counted against the project budget — step 2, below.
 
@@ -1361,6 +1361,140 @@ above were watched completing in the foreground, not assumed from a
 background job. The cost-accounting fix is verified by an integration
 test asserting the exact total spend after a resume, not just that the
 code compiles.
+
+## Implementation notes (2026-08-15) — step 3: pipeline reorder + binding carry-forward (A5-A7, A11, A20-A22)
+
+Built the target shape exactly: `GenerateTimeline → ResolveAssets(search,
+free) → AwaitApproval → Narration → ResolveAssets(generate, paid) →
+Render → Complete`. No new dependencies, no money spent building or
+testing this (fakes only).
+
+- **One `ResolveAssetsStep`, two instances, not two classes** (A21) -
+  `app/workflow/steps/resolve_assets.py`'s constructor now takes
+  `name`/`permitted_strategies`; `DEFAULT_PIPELINE`
+  (`app/workflow/engine.py`) instantiates it as `resolve_assets_search`
+  (`SEARCH_RUNGS` - rungs 1-4) before `AwaitApprovalStep`, and
+  `resolve_assets_generate` (`GENERATION_RUNGS` - rungs 5-6) after
+  `NarrationStep`. The ladder walk, licence gate, relevance gate, hash
+  dedup, budget checks, and per-shot isolation are all the exact same
+  code path for both - only which rungs are ever reached differs.
+  `is_satisfied` is genuinely pass-specific (A21): each instance derives
+  its own "done" state set from whether it permits generation.
+- **A new `ShotBinding` state, `awaiting_generation`** - what the search
+  pass writes when every rung it's permitted to use came up empty (or a
+  shot's chain has none at all). Deliberately excluded from
+  `TERMINAL_STATES` (`app/repositories/shot_binding_repository.py`): the
+  search pass's own `is_satisfied` treats it as done (search is finished
+  with this shot), the generation pass's does not (this is exactly its
+  work queue). Getting this state's membership wrong in either set would
+  either loop the search pass forever or let the generation pass silently
+  skip a shot that needs it.
+- **Carry-forward lives inside `TimelineService._persist`, not as an
+  opt-in helper** (A11/A20) - the brief's own framing was "it must be
+  impossible for a new version to exist without carry-forward having
+  been considered", and `_persist` is the one method every version-
+  creating path (`append_version`, `rollback_to`) funnels through before
+  a new version becomes visible; `create_initial` skips it correctly
+  (nothing to carry from). The rule itself (A20) compares each shot's
+  `prompt`/`asset_plan` as parsed Pydantic values, not raw JSON strings -
+  both sides already went through the same JSON round-trip inside
+  `append_version`, so this is a strictly more correct reading of "byte-
+  identical" than a literal string comparison would be (immune to
+  harmless key-order/formatting noise that never touched real content).
+  A carried binding is a NEW row at the new version
+  (`ShotBindingRepository.carry_forward`) - the old row is left exactly
+  as it was, never deleted or moved, same immutability spirit as the
+  Timeline versions themselves.
+- **`GET /progress`'s `shots` array (added in step 2) now distinguishes
+  what was found from what will be generated** - `asset` (provider,
+  source_url, licence, local_path) whenever `asset_id` is set, `clip`
+  similarly for `clip_id`, and `will_generate` = `state ==
+  "awaiting_generation"`. There is no frontend (M9 doesn't exist yet);
+  this is the whole of "the human sees the images" for now, per the
+  phase's own caveat.
+- **A22 holds structurally, not by new code** - per-shot failure
+  isolation (Principle 10) already means `ResolveAssetsStep.run()` always
+  returns `outcome="ok"` regardless of how many individual shots' search
+  calls raised; that was already true before this phase, it just wasn't
+  load-bearing for reaching the approval gate until search moved before
+  it. Verified, not just reasoned about: added a step-level test
+  (`test_total_search_provider_failure_never_blocks_the_gate`) and a
+  full-pipeline one
+  (`test_total_search_outage_still_reaches_the_approval_gate`) that make
+  every search call raise and assert the run still reaches
+  `awaiting_approval`.
+- **DRY_RUN preserved end to end** - `_resolve_one_fake` now also respects
+  `permitted_strategies`/`generation_permitted`, deferring to
+  `awaiting_generation` instead of calling `_generate_fake` when the
+  search-only pass's fake search comes up empty, so DRY_RUN exercises the
+  same two-pass shape as the real pipeline rather than silently
+  collapsing back to one. Verified by running the e2e walking-skeleton
+  test with this change in place (see below) and by adding assertions to
+  it that every shot is already `resolved`, with a real `asset` visible,
+  strictly BEFORE approval - proof the reorder took effect through the
+  real HTTP API, not just at the unit level.
+- **Existing tests whose *intended* behaviour changed, updated
+  accordingly** (not just patched to stop failing):
+  - `tests/integration/test_resolve_assets_real.py` is now explicitly the
+    search-ONLY pass's test file. Its three "falls back to generation"
+    tests now assert `state == "awaiting_generation"` and `clip_id is
+    None` - the search-only pass must never generate, even as a
+    fallback, which is the actual point of A6. Also gained the A22 test
+    above.
+  - `tests/integration/test_resolve_assets_generation_real.py` now
+    constructs the generation-only instance explicitly
+    (`GENERATION_RUNGS`); its shots never had search rungs in their
+    fallback chains to begin with, so no behavioural assertions changed.
+  - `tests/integration/test_narration_pipeline_ordering.py` was rewritten
+    (it previously asserted `stale_bindings == []` - "nothing exists at
+    the pre-narration version" - which was only true because the OLD
+    single-pass step never ran before narration at all). The NEW,
+    intended behaviour is the opposite: bindings DO exist at the pre-
+    narration version (the search pass put them there), and the same
+    ones - by `asset_id`, not just by count - reappear at the post-
+    narration version via carry-forward, while the pre-narration row is
+    left untouched. Also gained the pipeline-order and full-pipeline A22
+    assertions.
+  - `tests/e2e/test_skeleton.py`'s render-step comments updated to
+    describe the two-pass shape; new assertions confirm every shot is
+    resolved with a visible `asset` before approval.
+  - `tests/integration/test_timeline_service.py` gained four new tests
+    exercising carry-forward directly against `TimelineService`
+    (unchanged fields carry; a changed `prompt` doesn't; a changed
+    `asset_plan` doesn't; a removed shot carries nothing) - the pipeline-
+    level tests above prove it works end to end, these prove the rule
+    itself is exactly A20's, isolated from narration/search entirely.
+- No new Alembic migration - `shot_binding.state` is an unconstrained
+  string column; `awaiting_generation` is a new value, not a new column.
+- **A17 benchmark: unaffected, confirmed by inspection rather than
+  re-running the throwaway measurement script.** Step 3 touched
+  `app/workflow/`, `app/timeline/service.py`, and `app/api/projects.py`
+  only - none of `app/assets/ranking.py`, `app/assets/relevance.py`, or
+  `app/providers/wikimedia.py` (the files the benchmark actually
+  exercises) changed at all, so the same 11 shots resolve through
+  byte-identical ranking/relevance/provider code and there is no
+  mechanism by which the score could have moved. Re-running the live-API
+  script to double-check a change that provably didn't happen was judged
+  not worth the several real minutes of Wikimedia/Wikipedia traffic.
+- Gate checks, run from the repo root as required: `ruff check backend`,
+  `black --check backend`, `mypy backend/app` all clean. Full suite:
+  **211/211 passed**, watched directly in the foreground (ffmpeg on
+  `PATH`) - twice, once before and once after the ruff/black auto-fixes,
+  to prove the formatting changes didn't alter behaviour. Both fixtures
+  (`hindi_test_project`, default) reseeded afterward.
+- 7 new tests over the 204 from step 2 (211 total): 2 in
+  `test_narration_pipeline_ordering.py` (pipeline order + full carry-
+  forward-across-narration proof), 4 in `test_timeline_service.py`
+  (direct carry-forward rule tests), 1 in `test_resolve_assets_real.py`
+  (A22).
+
+**What I verified by running it, versus what I reasoned about:** the
+pipeline order, the carry-forward mechanism (both the happy path and all
+three "must NOT carry" cases), A22 (both step-level and full-pipeline),
+and DRY_RUN end-to-end were all run and watched passing, not inferred.
+The A17-benchmark claim above is the one thing in this note argued by
+code inspection rather than re-executed - stated as such, not blurred
+into "verified".
 
 ---
 
@@ -1888,24 +2022,39 @@ M8 Renderer        ██████░░░░░░ steps 1-3 done 2026-08-1
                                  synthesised segments. Steps 4-6 (music+ducking,
                                  Ken Burns, determinism+draft) not started.
                                  Captions deliberately out of scope this pass.
-M6.5 step 1+2      ████░░░░░░░░ entity retrieval (`86d42e1`) and Director-constraint
-  (of 5)                        enforcement at generation both done and measured/tested
-                                 (see that section's Done-when + implementation notes for
-                                 both). Step 1: 2 correct + 2 partial → 4 correct + 1
-                                 partial on the 11-shot A17 benchmark, zero regressions.
-                                 Step 2: vision check + bounded regeneration (A12-A14,
-                                 A18-A19) - 23 new tests, 204/204 suite green, DRY_RUN
-                                 verified keyless by forcing OPENAI_API_KEY empty and
-                                 watching the suite pass. Steps 3-5 (pipeline reorder +
-                                 binding carry-forward, upload endpoint, reassess vision
-                                 for search) not started.
-Next               M6.5 step 3 · Pipeline reorder (A5, A7) plus binding carry-forward
-                                 (A11) - move free retrieval before the approval gate;
-                                 A11 is a hard prerequisite (bindings are keyed by
-                                 timeline version and would otherwise be orphaned by an
-                                 append_version). Then step 4 (upload endpoint, A8-A10,
-                                 A15), step 5 (reassess vision for search, A16), then
-                                 finish M8 steps 4-6. Reuse projects
+M6.5 steps 1-3     ███████░░░░░ entity retrieval (`86d42e1`), Director-constraint
+  (of 5)                        enforcement at generation, and the pipeline reorder +
+                                 binding carry-forward all done and tested (see that
+                                 section's Done-when + implementation notes for all
+                                 three). Step 1: 2 correct + 2 partial → 4 correct + 1
+                                 partial on the 11-shot A17 benchmark, zero regressions
+                                 (unaffected by steps 2-3, confirmed by inspection - no
+                                 file the benchmark exercises has changed since). Step
+                                 2: vision check + bounded regeneration (A12-A14, A18-
+                                 A19). Step 3: one ResolveAssetsStep parameterised by
+                                 permitted ladder rungs, run twice (free search before
+                                 approval, paid generation after narration - A5-A7,
+                                 A21); ShotBinding carry-forward across narration's
+                                 version bump lives inside TimelineService._persist,
+                                 not an opt-in helper (A11/A20); a total search-provider
+                                 outage still reaches the approval gate (A22, tested at
+                                 both step and full-pipeline level); GET /progress now
+                                 shows, per shot, what was found (with source) vs what
+                                 will be generated. 211/211 suite green (204→211 across
+                                 step 3's 7 new tests), DRY_RUN verified end to end
+                                 through the real HTTP API with the new two-pass shape.
+                                 Steps 4-5 (upload endpoint, reassess vision for search)
+                                 not started.
+Next               M6.5 step 4 · Upload endpoint and per-shot override (A8-A10, A15) -
+                                 project_assets (ladder rung 1) becomes real, an
+                                 uploaded image becomes a locked ShotBinding via
+                                 append_version(produced_by=HUMAN), and the A15
+                                 conditional approval gate lands now that step 3 gives
+                                 it a real remedy to offer (upload instead of accepting
+                                 a generated result). Then step 5 (reassess vision for
+                                 search, A16) against whatever failures actually remain
+                                 once steps 1-4 are all in place, then finish M8 steps
+                                 4-6. Reuse projects
                                  58f0a5e6-008d-468e-862a-e365e463878e (English) and
                                  35290b04-584d-415e-9816-ab6a8998b3e2 (Hindi, with
                                  real narration) via scripts/seed_test_project.py -

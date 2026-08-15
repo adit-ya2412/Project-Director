@@ -18,6 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_repo, get_timeline_service, get_workflow_engine
 from app.assets.cost import estimate_project_cost_cents
 from app.db.session import get_db
+from app.models.asset import AssetModel
+from app.models.generated_clip import GeneratedClipModel
 from app.repositories.generated_clip_repository import GeneratedClipRepository
 from app.repositories.project_repository import ProjectRepository
 from app.repositories.shot_binding_repository import ShotBindingRepository
@@ -184,15 +186,49 @@ async def get_progress(
     # yet), so a failed shot's reason (e.g. a constraint violation that
     # exhausted its regeneration attempts, M6.5 A14/A19) must be visible
     # here rather than only as an aggregate count.
-    shots_detail = [
-        {
-            "shot_id": b.shot_id,
-            "state": b.state,
-            "rung": b.rung,
-            "last_error": b.last_error,
-        }
-        for b in sorted(bindings, key=lambda b: b.shot_id)
-    ]
+    #
+    # M6.5 (A5/A21/A22): the whole point of moving free search before the
+    # approval gate is that a human sees, per shot, what was ALREADY
+    # FOUND (with its real source - `asset`, populated whenever
+    # `asset_id` is set) versus what WILL BE GENERATED
+    # (`will_generate`, true exactly when the search-only pass deferred
+    # this shot rather than found or failed it). There is no frontend yet
+    # (M9) - this is the API surface that stands in for "the human sees
+    # the images": the resolved asset's provenance plus its path on disk.
+    shots_detail = []
+    for b in sorted(bindings, key=lambda binding: binding.shot_id):
+        asset_detail = None
+        if b.asset_id is not None:
+            asset = await session.get(AssetModel, b.asset_id)
+            if asset is not None:
+                asset_detail = {
+                    "provider": asset.provider,
+                    "source_url": asset.source_url,
+                    "licence": asset.licence,
+                    "attribution": asset.attribution,
+                    "local_path": asset.local_path,
+                }
+        clip_detail = None
+        if b.clip_id is not None:
+            clip = await session.get(GeneratedClipModel, b.clip_id)
+            if clip is not None:
+                clip_detail = {
+                    "provider": clip.provider,
+                    "model_id": clip.model_id,
+                    "status": clip.status,
+                    "local_path": clip.local_path,
+                }
+        shots_detail.append(
+            {
+                "shot_id": b.shot_id,
+                "state": b.state,
+                "rung": b.rung,
+                "last_error": b.last_error,
+                "will_generate": b.state == "awaiting_generation",
+                "asset": asset_detail,
+                "clip": clip_detail,
+            }
+        )
 
     # Estimated before generation runs (implementation guide, Phase M7
     # advice: "estimate cost before the approval gate and show it") -

@@ -36,7 +36,11 @@ from app.schemas.timeline import (
 from app.timeline.service import TimelineService
 from app.workflow.context import RunContext
 from app.workflow.steps import resolve_assets as resolve_assets_module
-from app.workflow.steps.resolve_assets import ResolveAssetsStep, _project_seed
+from app.workflow.steps.resolve_assets import GENERATION_RUNGS, ResolveAssetsStep, _project_seed
+
+
+def _generation_step() -> ResolveAssetsStep:
+    return ResolveAssetsStep(name="resolve_assets_generate", permitted_strategies=GENERATION_RUNGS)
 
 
 @pytest_asyncio.fixture
@@ -160,7 +164,7 @@ async def _run_step(project_id: str) -> None:
             repo=repo,
             timeline_service=TimelineService(session),
         )
-        result = await ResolveAssetsStep().run(ctx)
+        result = await _generation_step().run(ctx)
         assert result.outcome == "ok"
         await session.commit()
 

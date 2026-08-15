@@ -37,7 +37,15 @@ class ShotBindingModel(Base):
     timeline_version: Mapped[int] = mapped_column(Integer, nullable=False)
     shot_id: Mapped[str] = mapped_column(String, nullable=False)
     state: Mapped[str] = mapped_column(String, nullable=False, default="pending")
-    # pending | searching | resolved | generating | generated | failed | skipped
+    # pending | searching | resolved | awaiting_generation | generating |
+    # generated | failed | skipped
+    # `awaiting_generation` (M6.5, A5/A21) is set only by the pre-approval
+    # search-only `ResolveAssetsStep` instance: every rung it is permitted
+    # to use (1-4, free) came up empty, and this shot needs the paid
+    # generation pass that runs after approval. It is deliberately NOT in
+    # `ShotBindingRepository.TERMINAL_STATES` - that set means "nothing
+    # more to do for this shot, ever", which is false here; the
+    # generation-only pass instance is exactly the thing still to do.
     asset_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("asset.id"), nullable=True
     )
