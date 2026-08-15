@@ -49,9 +49,12 @@ sys.path.insert(0, str(_BACKEND))
 # the server will look. Anchor to the repo root explicitly.
 os.chdir(_BACKEND.parent)
 
+import app.models  # noqa: E402,F401 - registers every model on Base.metadata
 from app.core.config import settings  # noqa: E402
+from app.db.base import Base  # noqa: E402
 from app.db.session import async_session_factory  # noqa: E402
 from app.models.asset import AssetModel  # noqa: E402
+from app.models.narration import NarrationModel  # noqa: E402
 from app.models.script import ScriptModel  # noqa: E402
 from app.models.shot_binding import ShotBindingModel  # noqa: E402
 from app.schemas.timeline import ProducedBy, Timeline  # noqa: E402
@@ -103,16 +106,16 @@ async def main(force: bool, fixture_name: str) -> None:
                 ),
                 {"pid": pid},
             )
+            # Derived from the schema, never hand-listed: every table that
+            # carries project_id, deleted children-first (sorted_tables is
+            # parents-first, so reverse it). A hand-maintained list silently
+            # goes stale the moment a phase adds a table - `narration` was
+            # already missing from one, and the failure surfaces as an
+            # opaque foreign-key violation rather than "you forgot a table".
             for table in (
-                "shot_binding",
-                "asset",
-                "generated_clip",
-                "timeline_version",
-                "script",
-                "llm_call",
-                "domain_event",
-                "workflow_run",
-                "render",
+                t.name
+                for t in reversed(Base.metadata.sorted_tables)
+                if "project_id" in t.columns and t.name != "project"
             ):
                 await session.execute(
                     text(f"DELETE FROM {table} WHERE project_id = :pid"), {"pid": pid}
@@ -187,6 +190,38 @@ async def main(force: bool, fixture_name: str) -> None:
             await session.flush()
             asset_id_by_hash[a["content_hash"]] = model.id
 
+        # Narration rows come back only when their audio file still exists:
+        # the row is a cache entry pointing AT that file, so restoring one
+        # without the other would make NarrationStep skip synthesis and then
+        # hand the renderer a path to nothing. TTS is not re-fetchable the
+        # way an asset is (it costs money and is not byte-reproducible), so
+        # a missing file is reported, not silently worked around.
+        narration_dir = settings.storage_root / pid / "narration"
+        restored_narrations = 0
+        missing_audio: list[str] = []
+        for n in fixture.get("narrations", []):
+            audio_path = narration_dir / n["filename"]
+            if not audio_path.exists():
+                missing_audio.append(n["scene_id"])
+                continue
+            session.add(
+                NarrationModel(
+                    project_id=pid_uuid,
+                    scene_id=n["scene_id"],
+                    provider=n["provider"],
+                    voice_id=n["voice_id"],
+                    model_id=n["model_id"],
+                    output_format=n["output_format"],
+                    text=n["text"],
+                    content_hash=n["content_hash"],
+                    local_path=str(audio_path),
+                    alignment=n["alignment"],
+                    character_count=n["character_count"],
+                    cost_cents=n["cost_cents"],
+                )
+            )
+            restored_narrations += 1
+
         for b in fixture["bindings"]:
             session.add(
                 ShotBindingModel(
@@ -204,8 +239,13 @@ async def main(force: bool, fixture_name: str) -> None:
     print(
         f"  timeline v{appended.version} ({'approved' if was_approved else 'draft'}), "
         f"{len(fixture['assets'])} assets ({downloaded} re-downloaded), "
-        f"{len(fixture['bindings'])} bindings"
+        f"{len(fixture['bindings'])} bindings, {restored_narrations} narration segments"
     )
+    if missing_audio:
+        print(
+            f"  WARNING: no audio on disk for scene(s) {missing_audio} - those rows were "
+            "skipped, so the next run will re-synthesise (and re-pay for) them"
+        )
 
 
 if __name__ == "__main__":

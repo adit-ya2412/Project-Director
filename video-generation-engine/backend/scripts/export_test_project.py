@@ -89,6 +89,21 @@ async def main(project_id: str, fixture_name: str) -> None:
                 {"pid": project_id},
             )
         ).fetchall()
+        # Narration is exported in full, alignment included: unlike an asset
+        # (re-fetchable from source_url) TTS output cannot be reproduced for
+        # free, and its character-level alignment is what the master clock
+        # reads. Losing these rows means re-paying ElevenLabs to regenerate
+        # data we already own.
+        narrations = (
+            await session.execute(
+                text(
+                    "SELECT scene_id, provider, voice_id, model_id, output_format, text, "
+                    "content_hash, local_path, alignment, character_count, cost_cents "
+                    "FROM narration WHERE project_id = :pid ORDER BY scene_id"
+                ),
+                {"pid": project_id},
+            )
+        ).fetchall()
 
     hash_by_asset_id = {str(a.id): a.content_hash for a in assets}
     fixture = {
@@ -121,6 +136,22 @@ async def main(project_id: str, fixture_name: str) -> None:
             }
             for b in bindings
         ],
+        "narrations": [
+            {
+                "scene_id": n.scene_id,
+                "provider": n.provider,
+                "voice_id": n.voice_id,
+                "model_id": n.model_id,
+                "output_format": n.output_format,
+                "text": n.text,
+                "content_hash": n.content_hash,
+                "filename": n.local_path.replace("\\", "/").rsplit("/", 1)[-1],
+                "alignment": n.alignment,
+                "character_count": n.character_count,
+                "cost_cents": n.cost_cents,
+            }
+            for n in narrations
+        ],
     }
 
     out = FIXTURE_DIR / f"{fixture_name}.json"
@@ -130,7 +161,8 @@ async def main(project_id: str, fixture_name: str) -> None:
     print(f"wrote {out.relative_to(_BACKEND)}")
     print(
         f"  timeline v{timeline.version}, {len(scenes)} scenes, {shots} shots, "
-        f"{len(fixture['assets'])} assets, {len(fixture['bindings'])} bindings"
+        f"{len(fixture['assets'])} assets, {len(fixture['bindings'])} bindings, "
+        f"{len(fixture['narrations'])} narration segments"
     )
 
 

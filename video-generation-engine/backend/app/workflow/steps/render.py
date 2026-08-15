@@ -32,6 +32,7 @@ from app.providers.elevenlabs import compute_narration_content_hash
 from app.renderer.audio import mux_narration
 from app.renderer.placeholder import render_placeholder
 from app.renderer.slideshow import RenderSettings, render_timeline
+from app.renderer.still import ensure_still_image
 from app.repositories.narration_repository import NarrationRepository
 from app.repositories.shot_binding_repository import ShotBindingRepository
 from app.schemas.project import ProjectStatus
@@ -87,6 +88,15 @@ class RenderStep:
         work_dir = project_dir / "work"
         work_dir.mkdir(parents=True, exist_ok=True)
 
+        render_settings = RenderSettings(
+            width=settings.render_width,
+            height=settings.render_height,
+            fps=settings.render_fps,
+            pixel_format=settings.render_pixel_format,
+            ffmpeg_binary=settings.ffmpeg_binary,
+            ffprobe_binary=settings.ffprobe_binary,
+        )
+
         shot_images: dict[str, Path] = {}
         for shot in timeline.all_shots():
             binding = bindings_by_shot.get(shot.id)
@@ -96,16 +106,15 @@ class RenderStep:
                 path.write_bytes(
                     render_placeholder(shot.id, settings.render_width, settings.render_height)
                 )
+            else:
+                # An animated asset (Commons serves plenty of GIF maps and
+                # diagrams) cannot be `-loop`ed as a still, and ffmpeg
+                # aborts the ENTIRE render over one such input rather than
+                # failing just that shot - see app/renderer/still.py.
+                path = await ensure_still_image(
+                    path, shot_id=shot.id, work_dir=work_dir, settings=render_settings
+                )
             shot_images[shot.id] = path
-
-        render_settings = RenderSettings(
-            width=settings.render_width,
-            height=settings.render_height,
-            fps=settings.render_fps,
-            pixel_format=settings.render_pixel_format,
-            ffmpeg_binary=settings.ffmpeg_binary,
-            ffprobe_binary=settings.ffprobe_binary,
-        )
         output_path = project_dir / "renders" / "final.mp4"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         # The silent video always lands in the work dir first, never at
