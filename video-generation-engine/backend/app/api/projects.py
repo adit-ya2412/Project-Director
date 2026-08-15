@@ -13,10 +13,18 @@ shots later by the existing relevance gate, and a per-shot override that
 bypasses every gate and locks that shot's asset. Neither one runs the
 workflow engine synchronously except the override, which resumes it
 (A26's only remedy for a shot stuck `failed` at the review gate).
+
+`POST /{id}/music/retry` (M3) and `POST /{id}/narration/retry` (N1) are
+the same "an automated creative choice, redone by a human" shape applied
+to music and narration respectively - both resume the engine too, and
+both share their common tail with `_resume_after_human_correction`
+(see that helper's own docstring for why the per-shot override above
+does NOT also use it).
 """
 
 import hashlib
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -75,6 +83,15 @@ class RetryMusicSelectionRequest(BaseModel):
     search_terms: list[str] | None = None
 
 
+class RetryNarrationVoiceRequest(BaseModel):
+    # Required, unlike RetryMusicSelectionRequest's optional search_terms
+    # - there is no meaningful "retry with the same voice" for narration
+    # (it would just hit the same cache entry and produce an identical,
+    # wasted version bump), so an actual new voice is always the point of
+    # calling this.
+    voice_id: str
+
+
 class UploadScriptRequest(BaseModel):
     content: str
 
@@ -84,6 +101,70 @@ async def _get_project_or_404(project_id: str, repo: ProjectRepository) -> Proje
     if project is None:
         raise HTTPException(status_code=404, detail=f"project {project_id} not found")
     return project
+
+
+async def _resume_after_human_correction(
+    project_id: str,
+    active: Timeline,
+    *,
+    timeline_service: TimelineService,
+    engine: WorkflowEngine,
+    transform: Callable[[Timeline], Timeline],
+    owns: frozenset[str],
+) -> Project:
+    """The shared tail of "a human corrects an automated creative
+    choice" - used by `retry_music_selection` (M3) and
+    `retry_narration_voice` (N1) below: record the correction as a
+    `produced_by=HUMAN` `append_version` (I3, never mutated in place),
+    re-approve if the timeline had already moved past DRAFT so resuming
+    doesn't demand a redundant second human click, then resume the
+    engine.
+
+    **A considered call, not an assumed one** (this is the third
+    instance of the same "automated choice, human redo path" shape -
+    per-shot image override, M3's music retry, and this - so the
+    question of whether they want ONE shape was asked explicitly rather
+    than skipped): the FRONT half of each - what precondition to check,
+    what the correction even IS, what `transform`/`owns` it needs - is
+    genuinely different per domain (an uploaded file plus asset dedup
+    for a shot, search terms for music, a bare voice id for narration),
+    and forcing that into one generic shape would hide the interesting,
+    domain-specific logic behind a parameter bag - the "speculative
+    framework" explicitly not wanted here. The BACK half above, though,
+    is now byte-for-byte identical between music-retry and narration-
+    retry, which is a different claim than "these features are the same
+    feature": it is reusable PLUMBING, not shared POLICY, and extracting
+    exactly that (nothing more) is the considered middle ground.
+
+    **`override_shot_asset` (the original, per-shot override) deliberately
+    still does NOT use this helper**, and that is also a considered
+    choice, not an oversight: it must create/populate a `ShotBinding` row
+    using the NEW version's id, and that has to happen strictly BETWEEN
+    the `append_version` call and `engine.run()` - `engine.run()` reads
+    bindings for the active version immediately, so the binding must
+    already be flushed before it starts, or the override would appear to
+    do nothing until a second, unrelated resume. Adding a mid-flow hook
+    parameter to this helper just to fit that one case back in would
+    reintroduce the exact "generic parameter bag" problem this function
+    exists to avoid - three near-identical endpoints are clearer than one
+    endpoint with a callback threaded through its middle.
+    """
+    was_already_approved = active.status == TimelineStatus.APPROVED or (
+        active.produced_by == ProducedBy.NARRATION
+    )
+    new_timeline = await timeline_service.append_version(
+        project_id,
+        produced_by=ProducedBy.HUMAN,
+        transform=transform,
+        owns=owns,
+    )
+    if was_already_approved:
+        await timeline_service.approve(project_id, new_timeline.version)
+
+    # An active timeline (checked by every caller before this) implies a
+    # script already exists (`create_initial` requires one) - `engine.run()`
+    # always has something to resume from here.
+    return await engine.run()
 
 
 @router.post("", response_model=Project)
@@ -476,12 +557,10 @@ async def retry_music_selection(
     this - `is_satisfied`'s own logic isn't changed here at all, only
     reset to the same "nothing tried yet" state it already recognises.
 
-    Mirrors `override_shot_asset`'s own re-approval belt-and-braces
-    exactly: if the timeline was already approved (or narration already
-    ran), the new version is immediately re-approved too, so resuming
-    does not demand a redundant second human click for a correction
-    already requested. A never-approved project is left in DRAFT, same
-    as that endpoint.
+    Shares its "record as HUMAN, re-approve if needed, resume" tail with
+    `retry_narration_voice` (N1) via `_resume_after_human_correction` -
+    see that helper's own docstring for why this one qualifies for the
+    shared shape and `override_shot_asset` deliberately does not.
     """
     await _get_project_or_404(project_id, repo)
     active = await timeline_service.get_active(project_id)
@@ -492,10 +571,6 @@ async def retry_music_selection(
     if body.search_terms is not None and not body.search_terms:
         raise HTTPException(status_code=400, detail="search_terms, if supplied, must not be empty")
 
-    was_already_approved = active.status == TimelineStatus.APPROVED or (
-        active.produced_by == ProducedBy.NARRATION
-    )
-
     def _reset_music_plan(base: Timeline) -> Timeline:
         assert base.music_plan is not None
         base.music_plan.selected_track = None
@@ -504,20 +579,95 @@ async def retry_music_selection(
             base.music_plan.search_terms = body.search_terms
         return base
 
-    new_timeline = await timeline_service.append_version(
+    return await _resume_after_human_correction(
         project_id,
-        produced_by=ProducedBy.HUMAN,
+        active,
+        timeline_service=timeline_service,
+        engine=engine,
         transform=_reset_music_plan,
         owns=frozenset({"music_plan"}),
     )
 
-    if was_already_approved:
-        await timeline_service.approve(project_id, new_timeline.version)
 
-    # An active timeline (checked above) implies a script already exists
-    # (`create_initial` requires one) - `engine.run()` always has
-    # something to resume from here.
-    return await engine.run()
+@router.post("/{project_id}/narration/retry", response_model=Project)
+async def retry_narration_voice(
+    project_id: str,
+    body: RetryNarrationVoiceRequest,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    engine: WorkflowEngine = Depends(get_workflow_engine),
+) -> Project:
+    """N1 (2026-08-15): narration is otherwise permanently frozen at
+    whichever voice it first ran with - `NarrationStep.is_satisfied`
+    returns true whenever the active version is `produced_by ==
+    NARRATION`, with no way back once that is true. The third instance
+    of the same shape as the per-shot override and M3's music retry: an
+    automated creative choice (here, ElevenLabs synthesising with
+    whichever voice was configured) that a human may disagree with and
+    must be able to redo.
+
+    The fix needs no new plumbing: `NarrationStep.run` already reads
+    `timeline.metadata.voice_id or settings.elevenlabs_voice_id`, so a
+    per-project voice override is already honoured end to end - nothing
+    calls it today because nothing ever WRITES `metadata.voice_id`. This
+    endpoint is that write: a `produced_by=HUMAN` `append_version`
+    setting `metadata.voice_id` makes the active version no longer
+    `NARRATION`, so `is_satisfied` goes false and resuming the engine
+    re-runs `NarrationStep` for real, with the new voice.
+
+    Two properties fall out of the EXISTING narration cache and
+    duration-reconciliation code, unchanged by this endpoint, and are
+    exactly what make this safe to use experimentally (try a voice,
+    dislike it, try another):
+
+    - **Switching back is free.** The narration cache key is `hash(text
+      + voice_id + model + output_format)` (`compute_narration_content_hash`)
+      - voice_id is part of the hash, so a previously-used voice's audio
+      is still on disk under its own content hash and is never
+      re-synthesised, whatever DID change is (re-)synthesised once and
+      cached the same way.
+    - **Durations recompute, and a stale render is never served.**
+      `NarrationStep` reconciles every shot's `duration_s` against the
+      NEW voice's real spoken pace (D1, the master clock) in its own
+      subsequent `append_version` - this endpoint does not need to touch
+      `scenes` itself. Human-locked bindings still carry forward across
+      that bump unconditionally (A11/A20/A25 - already proven under real
+      conditions by the first live render). The render fingerprint
+      (`app/renderer/fingerprint.py`) also changes: it is built from
+      `narration_content_hashes`, and since voice_id is part of THAT hash
+      too, a different voice always produces a different fingerprint -
+      `RenderStep`'s cache-hit check can never serve the OLD voice's
+      `final.mp4` for the new version. Belt and braces: `RenderStep
+      .is_satisfied` independently invalidates too, since every
+      `append_version` call (this one, and NarrationStep's own
+      reconciliation) re-inserts every ShotBinding row via `TimelineService
+      ._carry_forward_bindings`, and a freshly-inserted row's `updated_at`
+      is always newer than the existing rendered file's mtime.
+
+    Shares its "record as HUMAN, re-approve if needed, resume" tail with
+    `retry_music_selection` (M3) via `_resume_after_human_correction` -
+    see that helper's own docstring for the considered decision behind
+    sharing exactly this much and no more.
+    """
+    await _get_project_or_404(project_id, repo)
+    active = await timeline_service.get_active(project_id)
+    if active is None:
+        raise HTTPException(status_code=400, detail="no timeline to retry narration on yet")
+    if not body.voice_id.strip():
+        raise HTTPException(status_code=400, detail="voice_id must not be empty")
+
+    def _set_voice(base: Timeline) -> Timeline:
+        base.metadata.voice_id = body.voice_id
+        return base
+
+    return await _resume_after_human_correction(
+        project_id,
+        active,
+        timeline_service=timeline_service,
+        engine=engine,
+        transform=_set_voice,
+        owns=frozenset({"metadata"}),
+    )
 
 
 @router.get("/{project_id}/status")

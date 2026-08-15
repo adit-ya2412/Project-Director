@@ -207,6 +207,14 @@ class TimelineMetadata(BaseModel):
     resolution: tuple[int, int] = (1080, 1920)
     fps: int = 30
     total_duration_s: float = Field(default=0.0, ge=0.0)
+    # `None` falls back to `settings.elevenlabs_voice_id` (NarrationStep's
+    # own read). A human sets this directly via `POST
+    # /projects/{id}/narration/retry` (N1, 2026-08-15) to redo narration
+    # with a different voice - that endpoint's own docstring covers why
+    # this was previously write-only-never-written (nothing wrote it, so
+    # nothing could differ from the one global default) and what makes
+    # switching voices safe (the narration cache is keyed on voice_id
+    # too, so a previously-used voice is never re-synthesised).
     voice_id: str | None = None
 
 

@@ -2719,6 +2719,121 @@ Two properties fall out for free and are worth keeping:
 - **Switching back is free.** The narration cache is keyed on `hash(text + voice_id + model + output_format)`, so audio for a previously-used voice is still cached — trying three voices and returning to the first costs nothing the second time.
 - **Durations recompute correctly.** A different voice speaks at a different pace, narration is the master clock (D1), and its new version reconciles every shot boundary. Human-locked bindings carry forward across that bump (A11/A20/A25), which the first render already proved under real conditions.
 
+## Implementation notes (2026-08-15) — N1: a third redo path, and the considered call about sharing one
+
+### The shared-shape question, decided rather than assumed
+
+This is the third occurrence of one pattern (per-shot image override,
+M3's music retry, now this), and the coordinator explicitly asked
+whether the two that already existed "want a shared shape" before a
+third bespoke endpoint got built - not a rhetorical question, an actual
+decision to make and record.
+
+**Verdict: extract the mechanical TAIL, keep the domain-specific FRONT
+separate.** Looking at `override_shot_asset`, `retry_music_selection`,
+and the new `retry_narration_voice` side by side, the tail - compute
+`was_already_approved` (timeline already `APPROVED` or already
+`produced_by=NARRATION`), call `append_version(produced_by=HUMAN,
+transform=..., owns=...)`, re-approve if it was already approved,
+resume the engine - is now byte-for-byte identical between the music
+and narration endpoints. That is reusable PLUMBING. The front half -
+what precondition to check, what the correction even IS, what
+`transform`/`owns` it needs - is genuinely different every time (an
+uploaded file plus asset-hash dedup for a shot; search terms for music;
+a bare voice id for narration), and folding that into one generic
+"correct an asset choice" endpoint would hide the interesting,
+domain-specific logic behind a parameter bag - the speculative
+framework the coordinator explicitly did not want built.
+
+So: a new private helper, `_resume_after_human_correction` (`app/api/
+projects.py`), holds exactly the tail. `retry_music_selection` was
+refactored to call it (no behaviour change - same tests should still
+pass unmodified). The new `retry_narration_voice` calls it too.
+**`override_shot_asset` deliberately still does NOT use it** - it has a
+genuinely different shape: it must create and flush a `ShotBinding` row
+using the NEW version's id strictly BETWEEN the `append_version` call
+and `engine.run()` (which reads bindings for the active version the
+moment it starts), so the helper has nowhere to run that step without
+either special-casing it or adding a mid-flow callback parameter - which
+would just reintroduce the "generic parameter bag" problem one level
+down. Three near-identical endpoints, one of which stays a near-copy of
+the other two's SHAPE without sharing their CODE, was judged clearer
+than a single endpoint with a callback threaded through its middle.
+
+### The fix itself
+
+New `POST /projects/{id}/narration/retry` (`RetryNarrationVoiceRequest
+{voice_id: str}`, required - unlike music's optional `search_terms`,
+there is no meaningful "retry with the unchanged voice" for narration:
+it would hit the identical cache entry and produce a wasted version
+bump). Sets `metadata.voice_id` via `append_version(produced_by=HUMAN,
+owns={"metadata"})`, which is the entire fix - `NarrationStep.run`
+already reads `metadata.voice_id or settings.elevenlabs_voice_id`, and
+`is_satisfied` already keys on `produced_by == NARRATION` alone, so
+nothing about either needed to change.
+
+### Verified, not merely reasoned about - against a throwaway project, DRY_RUN, zero real ElevenLabs calls
+
+Every property the coordinator asked to see proven was checked directly
+against the real database (never the live project - a throwaway one,
+created and deleted the same way the A30/M3 measurements were):
+
+1. **`compute_narration_content_hash` differs by `voice_id`** for
+   identical text (the property switching-costs-nothing and
+   switching-back-is-free both rest on) - confirmed directly.
+2. **A real `NarrationStep().run()` with voice A** creates one
+   `narration` row, sets `produced_by=NARRATION`, flips `is_satisfied`
+   to `True`.
+3. **The retry transform** (identical in shape to the endpoint's own)
+   sets `metadata.voice_id=B` via a `produced_by=HUMAN` version and
+   flips `is_satisfied` back to `False`.
+4. **Re-running `NarrationStep` with voice B** creates a genuinely NEW
+   row at voice B's own content hash - a real re-synthesis, not a
+   silent no-op.
+5. **Retrying back to voice A** and re-running `NarrationStep` creates
+   NO new row - the narration-row count stays exactly where it was
+   after step 2. This is the property the coordinator most wanted
+   proven, and it holds.
+6. **Fresh `ShotBinding` rows postdate a simulated "already rendered"
+   file's mtime** after the voice-change version bumps - proving
+   `RenderStep.is_satisfied`'s own binding-timestamp comparison (already
+   existing code, `TimelineService._carry_forward_bindings` re-inserts
+   every binding row - locked or not - on every `append_version`, always
+   with a fresh `updated_at`) would correctly treat the pre-existing
+   render as stale and redo it, never silently serving the old voice's
+   video back.
+7. **`compute_render_fingerprint` differs when only
+   `narration_content_hashes` differs** - a pure, DB-free check,
+   confirming the render's own cache-hit path can never falsely reuse a
+   different voice's output either. (This property is also covered
+   generically, and permanently, by the pre-existing
+   `tests/unit/renderer/test_fingerprint.py
+   ::test_different_narration_changes_the_fingerprint` - no new test
+   needed there.)
+
+All seven passed on the first clean run. The throwaway project was
+deleted afterward via the same derived-from-schema, child-tables-first
+approach used for the A30 and M3 measurements.
+
+### Tests written, not run
+
+`tests/integration/test_narration_voice_retry.py` (3 cases: the full
+retry-and-resynthesise cycle with `is_satisfied` checked at each stage;
+the switch-back-costs-nothing cache-hit proof; the carry-forward
+staleness proof) and `tests/e2e/test_narration_retry_api.py` (4 cases
+over the real HTTP route: missing timeline, empty `voice_id` rejected,
+the voice actually changing and narration re-running, and the
+re-approval belt-and-braces). All DRY_RUN + `FakeNarrationProvider` -
+**no real ElevenLabs calls, no money spent**, matching the constraint;
+`FakeNarrationProvider` still writes real content-hash-keyed rows (fake
+bytes), which is exactly what the cache-hit tests need. Not executed in
+this session - the live project (`194ad0e7-...`, now fully rendered) is
+still in the same shared dev Postgres, and `pytest` truncates every
+table via `tests/conftest.py`'s autouse `clean_database` fixture.
+`ruff check backend`, `black --check backend` (1 file auto-reformatted),
+`mypy backend/app` all run normally (no database touched) and are
+clean.
+
 ## Backlog — deferred, not blocking
 
 Raised during the first real Hinglish run (2026-08-15, project `194ad0e7`, fixture `hinglish_test_project`). Deliberately not fixed then, so the run could continue.
