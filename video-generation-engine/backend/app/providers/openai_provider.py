@@ -32,6 +32,14 @@ ResponseModelT = TypeVar("ResponseModelT", bound=BaseModel)
 
 _TRANSIENT_ERRORS = (RateLimitError, APITimeoutError, APIConnectionError, InternalServerError)
 
+# Model ids observed to reject a custom `temperature` (see the fallback in
+# `structured_complete`). Learned at runtime from OpenAI's own error rather
+# than hardcoded, so it stays correct when the configured model changes -
+# but remembered, so the doomed first attempt is paid ONCE per process
+# instead of on every single planner call. Without this, a 5-scene script
+# costs ~11 wasted round-trips and doubles planning latency.
+_MODELS_REJECTING_TEMPERATURE: set[str] = set()
+
 
 class OpenAIPlanningProvider:
     name = "openai"
@@ -71,13 +79,19 @@ class OpenAIPlanningProvider:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
         ]
+        model = settings.openai_planning_model
+        # Skip the doomed attempt entirely once this model has already told
+        # us it won't take a custom temperature.
+        temperature = (
+            None if model in _MODELS_REJECTING_TEMPERATURE else settings.openai_temperature
+        )
         try:
             try:
                 completion = await self._parse(
                     messages=messages,
                     response_model=response_model,
                     seed=seed,
-                    temperature=settings.openai_temperature,
+                    temperature=temperature,
                 )
             except BadRequestError as exc:
                 # Reasoning-tier models (o-series, gpt-5.x) reject any
@@ -85,11 +99,13 @@ class OpenAIPlanningProvider:
                 # via this exact param/code pair - fall back to the
                 # model's default rather than hardcoding a model allowlist
                 # that will be stale the next time the configured model
-                # changes.
-                if exc.param == "temperature" and exc.code == "unsupported_value":
+                # changes. Remembering the answer keeps that discovery to
+                # one wasted request per process rather than one per call.
+                if temperature is not None and exc.param == "temperature":
+                    _MODELS_REJECTING_TEMPERATURE.add(model)
                     logger.info(
                         "openai.temperature_unsupported_falling_back_to_default",
-                        extra={"model": settings.openai_planning_model},
+                        extra={"model": model},
                     )
                     completion = await self._parse(
                         messages=messages,

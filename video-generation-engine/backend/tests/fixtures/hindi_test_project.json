@@ -1,0 +1,609 @@
+{
+  "project_id": "35290b04-584d-415e-9816-ab6a8998b3e2",
+  "name": "Hindi - Synthetic Fuel",
+  "script": "क्या आप जानते हैं, जर्मनी के पास तेल नहीं था… फिर भी उसके टैंक चलते रहे? दूसरे विश्व युद्ध में जर्मनी के पास पेट्रोलियम बहुत कम था, लेकिन उसके पास कोयला भरपूर था। वैज्ञानिकों ने इसी कोयले से synthetic fuel बनाना शुरू किया—यानी कोयले को रासायनिक प्रक्रिया से तेल जैसे ईंधन में बदलना। इसी तकनीक का इस्तेमाल बाद में South Africa ने भी किया, जब उस पर तेल के अंतरराष्ट्रीय प्रतिबंध लगे। यानी कभी-कभी किसी देश की सबसे बड़ी ताकत उसके पास मौजूद तेल नहीं, बल्कि उसके पास मौजूद विकल्प होता है।",
+  "language": "en",
+  "timeline_version": 5,
+  "timeline_document": {
+    "scenes": [
+      {
+        "id": "sc_01",
+        "order": 0,
+        "shots": [
+          {
+            "id": "sc_01_sh_01",
+            "order": 0,
+            "camera": {
+              "movement": "static",
+              "direction": "none",
+              "intensity": 0.12
+            },
+            "intent": "introduce",
+            "prompt": "द्वितीय विश्व युद्ध काल का श्वेत-श्याम औद्योगिक डॉक्यूमेंट्री दृश्य, यूरोप का युद्धकालीन संसाधन मानचित्र, जर्मनी पर केंद्रित भूभाग, कोयला क्षेत्रों और रेल संपर्कों का सूक्ष्म दृश्य संकेत, गंभीर अभिलेखीय बनावट",
+            "framing": "wide",
+            "asset_plan": {
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Germany coalfields map",
+                "German railway map 1940",
+                "Deutschland Kohlegebiete Karte",
+                "WWII Europe resource map"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 2.8,
+            "intent_text": "जर्मनी के तेल-विहीन होने के असंभव लगने वाले तथ्य को स्थापित करना।",
+            "narration_span": [
+              0,
+              45
+            ],
+            "transition_out": {
+              "type": "dissolve",
+              "duration_s": 0.35
+            }
+          },
+          {
+            "id": "sc_01_sh_02",
+            "order": 1,
+            "camera": {
+              "movement": "slow_push",
+              "direction": "in",
+              "intensity": 0.2
+            },
+            "intent": "reveal",
+            "prompt": "1940 के दशक का श्वेत-श्याम अभिलेखीय औद्योगिक डॉक्यूमेंट्री दृश्य, धूल भरे यूरोपीय रेल-यार्ड के पास ईंधन-भरे जर्मन सैन्य टैंक आगे बढ़ते हुए, पीछे धुआँ उगलते कारखाने और मालगाड़ियाँ, संयमित ऐतिहासिक यथार्थवाद",
+            "framing": "medium",
+            "asset_plan": {
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_video",
+                "generate_image"
+              ],
+              "preferred_type": "video",
+              "search_queries": [
+                "German tanks rail yard",
+                "Wehrmacht tank train",
+                "German industrial railway",
+                "Germany factory wartime"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by",
+                "pexels_licence"
+              ]
+            },
+            "duration_s": 1.7,
+            "intent_text": "तेल के अभाव के बावजूद चलते जर्मन टैंकों के विरोधाभास को उजागर करना।",
+            "narration_span": [
+              45,
+              72
+            ],
+            "transition_out": {
+              "type": "cut",
+              "duration_s": 0.0
+            }
+          }
+        ],
+        "title": "ईंधन का विरोधाभास",
+        "emotion": "जिज्ञासु",
+        "summary": "यह दृश्य युद्धकालीन जर्मनी के ईंधन-विरोधाभास से दर्शक की जिज्ञासा जगाता है।",
+        "duration_s": 4.5,
+        "narration_text": "क्या आप जानते हैं, जर्मनी के पास तेल नहीं था… फिर भी उसके टैंक चलते रहे?",
+        "narrative_purpose": "hook"
+      },
+      {
+        "id": "sc_02",
+        "order": 1,
+        "shots": [
+          {
+            "id": "sc_02_sh_01",
+            "order": 0,
+            "camera": {
+              "movement": "slow_push",
+              "direction": "in",
+              "intensity": 0.18
+            },
+            "intent": "explain",
+            "prompt": "द्वितीय विश्व युद्धकालीन नाज़ी जर्मनी का श्वेत-श्याम संसाधन मानचित्र, जर्मनी पर केंद्रित, पेट्रोलियम स्रोतों की कमी दर्शाता विरल औद्योगिक मानचित्रण, अभिलेखीय औद्योगिक डॉक्यूमेंट्री शैली",
+            "framing": "wide",
+            "asset_plan": {
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Germany oil map 1942",
+                "Nazi Germany resources map",
+                "German petroleum map",
+                "WWII economic map"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 4.3,
+            "intent_text": "जर्मनी की पेट्रोलियम की गंभीर कमी को युद्धकालीन संसाधन-मानचित्र के माध्यम से स्पष्ट करना।",
+            "narration_span": [
+              0,
+              59
+            ],
+            "transition_out": {
+              "type": "dissolve",
+              "duration_s": 0.3
+            }
+          },
+          {
+            "id": "sc_02_sh_02",
+            "order": 1,
+            "camera": {
+              "movement": "static",
+              "direction": "none",
+              "intensity": 0.12
+            },
+            "intent": "emphasize",
+            "prompt": "1939–1945 का जर्मन कोयला खदान परिसर, कोयले से भरी रेल वैगनें और खदान के ढांचे, धुआँभरा औद्योगिक आकाश, श्वेत-श्याम अभिलेखीय औद्योगिक डॉक्यूमेंट्री शैली",
+            "framing": "wide",
+            "asset_plan": {
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Ruhr coal mine 1940",
+                "German coal wagons",
+                "Zeche 1943",
+                "Germany colliery WWII"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 2.2,
+            "intent_text": "पेट्रोलियम की कमी के विपरीत जर्मनी के प्रचुर कोयला भंडार को स्थापित करना।",
+            "narration_span": [
+              59,
+              90
+            ],
+            "transition_out": {
+              "type": "fade",
+              "duration_s": 0.5
+            }
+          }
+        ],
+        "title": "कोयले की प्रचुरता",
+        "emotion": "तथ्यात्मक",
+        "summary": "यह दृश्य जर्मनी की सीमित पेट्रोलियम आपूर्ति और प्रचुर कोयला संसाधन को स्थापित करता है।",
+        "duration_s": 6.5,
+        "narration_text": " दूसरे विश्व युद्ध में जर्मनी के पास पेट्रोलियम बहुत कम था, लेकिन उसके पास कोयला भरपूर था।",
+        "narrative_purpose": "setup"
+      },
+      {
+        "id": "sc_03",
+        "order": 2,
+        "shots": [
+          {
+            "id": "sc_03_sh_01",
+            "order": 0,
+            "camera": {
+              "movement": "static",
+              "direction": "none",
+              "intensity": 0.1
+            },
+            "intent": "introduce",
+            "prompt": "1940s Nazi Germany coal-based synthetic fuel hydrogenation plant, coal conveyors feeding a vast industrial refinery, workers in protective clothing, smokestacks, monochrome archival industrial documentary photograph",
+            "framing": "wide",
+            "asset_plan": {
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Leuna Werke 1943",
+                "Pölitz hydrogenation plant",
+                "Bergius process Germany",
+                "German synthetic fuel"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 3.5,
+            "intent_text": "यह शॉट कोयले से सिंथेटिक ईंधन उत्पादन की शुरुआत को औद्योगिक पैमाने पर स्थापित करता है।",
+            "narration_span": [
+              0,
+              60
+            ],
+            "transition_out": {
+              "type": "dissolve",
+              "duration_s": 0.5
+            }
+          },
+          {
+            "id": "sc_03_sh_02",
+            "order": 1,
+            "camera": {
+              "movement": "slow_zoom",
+              "direction": "in",
+              "intensity": 0.18
+            },
+            "intent": "explain",
+            "prompt": "simple unlabeled archival-era chemical process diagram showing coal entering an industrial conversion vessel and emerging as liquid fuel, black-and-white technical documentary aesthetic, aged paper texture",
+            "framing": "medium",
+            "asset_plan": {
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Bergius process diagram",
+                "coal hydrogenation diagram",
+                "Fischer Tropsch diagram",
+                "synthetic fuel process"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 3.5,
+            "intent_text": "यह शॉट रासायनिक प्रक्रिया द्वारा कोयले को तेल-जैसे ईंधन में बदलने की अवधारणा स्पष्ट करता है।",
+            "narration_span": [
+              60,
+              120
+            ],
+            "transition_out": {
+              "type": "fade",
+              "duration_s": 0.8
+            }
+          }
+        ],
+        "title": "कृत्रिम ईंधन",
+        "emotion": "खोजपूर्ण",
+        "summary": "यह दृश्य कोयले को रासायनिक रूप से तरल ईंधन में बदलने की तकनीक समझाता है।",
+        "duration_s": 7.0,
+        "narration_text": " वैज्ञानिकों ने इसी कोयले से synthetic fuel बनाना शुरू किया—यानी कोयले को रासायनिक प्रक्रिया से तेल जैसे ईंधन में बदलना।",
+        "narrative_purpose": "explanation"
+      },
+      {
+        "id": "sc_04",
+        "order": 3,
+        "shots": [
+          {
+            "id": "sc_04_sh_01",
+            "order": 0,
+            "camera": {
+              "movement": "static",
+              "direction": "none",
+              "intensity": 0.15
+            },
+            "intent": "compare",
+            "prompt": "1970–80 के दशक का दक्षिण अफ्रीकी सिंथेटिक-फ्यूल औद्योगिक संयंत्र, ऊंचे पाइप, धुआं छोड़ते टावर और कोयला-प्रसंस्करण संरचनाएं, श्वेत-श्याम अभिलेखीय औद्योगिक डॉक्यूमेंट्री शैली",
+            "framing": "wide",
+            "asset_plan": {
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_video",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Sasol Secunda 1980",
+                "Sasolburg refinery 1975",
+                "Secunda coal gasification",
+                "South Africa synthetic fuel"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 4.8,
+            "intent_text": "दक्षिण अफ्रीका द्वारा उसी सिंथेटिक-ईंधन तकनीक को अपनाने का समानांतर उदाहरण स्थापित करना।",
+            "narration_span": [
+              0,
+              56
+            ],
+            "transition_out": {
+              "type": "dissolve",
+              "duration_s": 0.5
+            }
+          },
+          {
+            "id": "sc_04_sh_02",
+            "order": 1,
+            "camera": {
+              "movement": "slow_push",
+              "direction": "in",
+              "intensity": 0.18
+            },
+            "intent": "explain",
+            "prompt": "1970–80 के दशक का दक्षिणी अफ्रीका का अभिलेखीय नक्शा, तेल आपूर्ति मार्गों से अलग-थलग दक्षिण अफ्रीका, पास में तेल-प्रतिबंध संदर्भ वाला पुराना समाचारपत्र, संयमित श्वेत-श्याम डॉक्यूमेंट्री शैली",
+            "framing": "medium",
+            "asset_plan": {
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "South Africa oil embargo",
+                "apartheid oil sanctions",
+                "South Africa 1980 map",
+                "oil embargo newspaper"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 3.7,
+            "intent_text": "तेल के अंतरराष्ट्रीय प्रतिबंधों को दक्षिण अफ्रीका के सिंथेटिक ईंधन उपयोग के कारण के रूप में स्पष्ट करना।",
+            "narration_span": [
+              56,
+              99
+            ],
+            "transition_out": {
+              "type": "fade",
+              "duration_s": 0.5
+            }
+          }
+        ],
+        "title": "दक्षिण अफ्रीका का उदाहरण",
+        "emotion": "चिंतनशील",
+        "summary": "यह दृश्य दक्षिण अफ्रीका के प्रतिबंधकालीन अनुभव के माध्यम से तकनीक की बाद की प्रासंगिकता दिखाता है।",
+        "duration_s": 8.5,
+        "narration_text": " इसी तकनीक का इस्तेमाल बाद में South Africa ने भी किया, जब उस पर तेल के अंतरराष्ट्रीय प्रतिबंध लगे।",
+        "narrative_purpose": "parallel"
+      },
+      {
+        "id": "sc_05",
+        "order": 4,
+        "shots": [
+          {
+            "id": "sc_05_sh_01",
+            "order": 0,
+            "camera": {
+              "movement": "static",
+              "direction": "none",
+              "intensity": 0.1
+            },
+            "intent": "introduce",
+            "prompt": "श्वेत-श्याम अभिलेखीय औद्योगिक डॉक्यूमेंट्री, 1940 के दशक का यूरोपीय रेल-यार्ड और कोयले से भरे वैगन, दूर धुएँ उगलते भारी उद्योग, बादलों भरा आकाश, संयमित ऐतिहासिक वातावरण",
+            "framing": "wide",
+            "asset_plan": {
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_video",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Ruhr rail yard 1940",
+                "German coal wagons",
+                "Ruhr industry 1943",
+                "European railway freight"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 3.3,
+            "intent_text": "राष्ट्रीय ताकत को संसाधनों से आगे की एक व्यापक औद्योगिक क्षमता के रूप में स्थापित करना।",
+            "narration_span": [
+              0,
+              41
+            ],
+            "transition_out": {
+              "type": "dissolve",
+              "duration_s": 0.4
+            }
+          },
+          {
+            "id": "sc_05_sh_02",
+            "order": 1,
+            "camera": {
+              "movement": "slow_push",
+              "direction": "in",
+              "intensity": 0.16
+            },
+            "intent": "contrast",
+            "prompt": "श्वेत-श्याम अभिलेखीय औद्योगिक डॉक्यूमेंट्री, युद्धकालीन यूरोपीय तेल भंडारण टैंक और विरल ईंधन आपूर्ति वाला औद्योगिक परिदृश्य, धुंधली धातु संरचनाएँ, गंभीर और संयमित वातावरण",
+            "framing": "medium",
+            "asset_plan": {
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_video",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "German oil depot 1940",
+                "WWII fuel storage",
+                "oil tanks Germany",
+                "wartime petroleum depot"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 2.2,
+            "intent_text": "तेल की अनुपस्थिति को देश की शक्ति की अनिवार्य सीमा न मानने का विरोधाभास दिखाना।",
+            "narration_span": [
+              41,
+              65
+            ],
+            "transition_out": {
+              "type": "dissolve",
+              "duration_s": 0.4
+            }
+          },
+          {
+            "id": "sc_05_sh_03",
+            "order": 2,
+            "camera": {
+              "movement": "pull_back",
+              "direction": "out",
+              "intensity": 0.18
+            },
+            "intent": "reveal",
+            "prompt": "श्वेत-श्याम अभिलेखीय औद्योगिक डॉक्यूमेंट्री, 1940 के दशक का विशाल कोयला-आधारित सिंथेटिक ईंधन संयंत्र, पाइपों के जाल, हाइड्रोजनेशन टावर और श्रमिकों के छोटे आकार, धुएँ भरा क्षितिज, चिंतनशील ऐतिहासिक दृश्य",
+            "framing": "wide",
+            "asset_plan": {
+              "strategy": "historical_search",
+              "fallback_chain": [
+                "historical_search",
+                "public_domain",
+                "stock_search",
+                "generate_video",
+                "generate_image"
+              ],
+              "preferred_type": "image",
+              "search_queries": [
+                "Leuna Werke 1943",
+                "Fischer-Tropsch plant",
+                "German hydrogenation plant",
+                "synthetic fuel Germany"
+              ],
+              "licence_requirements": [
+                "public_domain",
+                "cc0",
+                "cc_by"
+              ]
+            },
+            "duration_s": 3.0,
+            "intent_text": "सिंथेटिक ईंधन उत्पादन की क्षमता को वास्तविक रणनीतिक विकल्प के रूप में प्रकट करना।",
+            "narration_span": [
+              65,
+              102
+            ],
+            "transition_out": {
+              "type": "fade",
+              "duration_s": 0.5
+            }
+          }
+        ],
+        "title": "विकल्प की ताकत",
+        "emotion": "चिंतनशील",
+        "summary": "यह दृश्य संसाधन-सुरक्षा के व्यापक निष्कर्ष पर कहानी को समाप्त करता है।",
+        "duration_s": 8.5,
+        "narration_text": " यानी कभी-कभी किसी देश की सबसे बड़ी ताकत उसके पास मौजूद तेल नहीं, बल्कि उसके पास मौजूद विकल्प होता है।",
+        "narrative_purpose": "conclusion"
+      }
+    ],
+    "status": "draft",
+    "version": 5,
+    "metadata": {
+      "fps": 30,
+      "language": "en",
+      "voice_id": null,
+      "resolution": [
+        1080,
+        1920
+      ],
+      "aspect_ratio": "9:16",
+      "total_duration_s": 30.75
+    },
+    "created_at": "2026-08-15T05:18:24.927952Z",
+    "music_plan": {
+      "mood": "संयत औद्योगिक जिज्ञासा, हल्का तनाव, अंत में विचारशील समाधान",
+      "tempo": "धीमा से मध्यम, लगभग 70–90 BPM; वॉइसओवर के नीचे हल्का और गैर-प्रमुख",
+      "energy_arc": "build_fall",
+      "search_terms": [
+        "restrained documentary underscore",
+        "industrial ambient documentary",
+        "historical investigation minimal",
+        "subtle tension piano",
+        "cinematic technology documentary"
+      ],
+      "licence_requirements": [
+        "cc0",
+        "pixabay"
+      ]
+    },
+    "project_id": "35290b04-584d-415e-9816-ab6a8998b3e2",
+    "produced_by": "asset_planner",
+    "timeline_id": "35290b04-584d-415e-9816-ab6a8998b3e2",
+    "parent_version": 4,
+    "schema_version": "1.0",
+    "creative_context": {
+      "tone": "तथ्यात्मक, जिज्ञासा-जगाने वाला और सावधानी से चिंतनशील",
+      "audience": "हिंदी-भाषी दर्शक जिन्हें द्वितीय विश्व युद्ध, ऊर्जा-तकनीक और भू-राजनीति के संक्षिप्त तथ्यात्मक इतिहास में रुचि है",
+      "constraints": [
+        "नाज़ी प्रतीकों, सैन्य परेडों या टैंकों को महिमामंडित करने वाली प्रस्तुति नहीं",
+        "होलोकॉस्ट, युद्ध-अपराध या पीड़ितों की छवियों को ईंधन-तकनीक की कहानी के सजावटी बैकड्रॉप के रूप में इस्तेमाल न करें",
+        "हिटलर या अन्य वास्तविक ऐतिहासिक व्यक्तियों के AI-निर्मित चेहरे/वीडियो नहीं",
+        "जर्मन सिंथेटिक-फ्यूल उत्पादन को युद्धकालीन संसाधन-समस्या के संदर्भ में दिखाएँ, तकनीकी उपलब्धि या सैन्य प्रशंसा के रूप में नहीं",
+        "दक्षिण अफ्रीका के संदर्भ में रंगभेद और अंतरराष्ट्रीय तेल-प्रतिबंधों के राजनीतिक संदर्भ को न मिटाएँ; रंगभेदी शासन का महिमामंडन नहीं",
+        "फिशर-ट्रॉप्श/कोयला-द्रवीकरण प्रक्रिया के लिए तथ्यात्मक औद्योगिक आरेख, अभिलेखीय संयंत्र-फोटो और स्रोतयुक्त मानचित्र प्राथमिकता हों"
+      ],
+      "visual_style": "अभिलेखीय औद्योगिक डॉक्यूमेंट्री: 1939–45 के यूरोपीय रेल-यार्ड, कोयला खदानें, हाइड्रोजनेशन/सिंथेटिक-फ्यूल संयंत्रों की श्वेत-श्याम तस्वीरें, युद्धकालीन संसाधन-मानचित्र, सरल रासायनिक प्रक्रिया-आरेख; फिर 1970–80 के दशक के दक्षिण अफ्रीकी औद्योगिक रिकॉर्ड और तेल-प्रतिबंध संदर्भ वाले समाचारपत्र/मानचित्र",
+      "colour_palette": [
+        "#252525",
+        "#5B554A",
+        "#8A7658",
+        "#B9B2A3",
+        "#D7D0C2"
+      ],
+      "camera_language": "स्थिर अभिलेखीय फ्रेम, नक्शों पर धीमे पुश-इन, औद्योगिक आरेखों और दस्तावेज़ों के बीच संयमित कट; कोई तेज़ व्हिप-पैन या युद्ध-रोमांचकारी मोंटाज नहीं",
+      "historical_period": "द्वितीय विश्व युद्ध में नाज़ी जर्मनी की कोयला-आधारित सिंथेटिक ईंधन व्यवस्था (1939–1945), तथा रंगभेदकालीन दक्षिण अफ्रीका में तेल-प्रतिबंधों के बीच सिंथेटिक-फ्यूल उपयोग (मुख्यतः 1970–1980 के दशक)"
+    }
+  },
+  "assets": [],
+  "bindings": []
+}

@@ -1,7 +1,12 @@
 """Recreate the M8 test project from a committed fixture — no LLM calls,
 no asset search, no generation, no cost.
 
-    python scripts/seed_test_project.py [--force]
+    python scripts/seed_test_project.py [--fixture NAME] [--force]
+
+`--fixture` names a file in `tests/fixtures/` (default: `m8_test_project`),
+produced by `scripts/export_test_project.py`. A fixture snapshotted before
+approval simply carries no assets or bindings and restores to exactly that
+state.
 
 Why this exists: `tests/conftest.py`'s `clean_database` fixture truncates
 every table before every test, and it runs against the *same* Postgres the
@@ -52,7 +57,7 @@ from app.models.shot_binding import ShotBindingModel  # noqa: E402
 from app.schemas.timeline import ProducedBy, Timeline  # noqa: E402
 from app.timeline.service import TimelineService  # noqa: E402
 
-FIXTURE = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "m8_test_project.json"
+FIXTURE_DIR = _BACKEND / "tests" / "fixtures"
 
 
 async def _download(url: str, expected_hash: str) -> bytes:
@@ -71,8 +76,12 @@ async def _download(url: str, expected_hash: str) -> bytes:
     return content
 
 
-async def main(force: bool) -> None:
-    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+async def main(force: bool, fixture_name: str) -> None:
+    fixture_path = FIXTURE_DIR / f"{fixture_name}.json"
+    if not fixture_path.exists():
+        available = sorted(p.stem for p in FIXTURE_DIR.glob("*_test_project.json"))
+        raise SystemExit(f"no fixture {fixture_path.name} - available: {available}")
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
     pid = fixture["project_id"]
     pid_uuid = uuid.UUID(pid)
 
@@ -145,7 +154,13 @@ async def main(force: bool) -> None:
             transform=_apply,
             owns=frozenset({"metadata", "creative_context", "music_plan", "scenes"}),
         )
-        await svc.approve(pid, appended.version)
+        # Restore the approval state it was snapshotted in, rather than
+        # always approving: a fixture captured at the approval gate must
+        # come back sitting AT that gate, or seeding it would silently skip
+        # the human-in-the-loop step (ADR-008) the next run depends on.
+        was_approved = fixture["timeline_document"].get("status") == "approved"
+        if was_approved:
+            await svc.approve(pid, appended.version)
 
         assets_dir = settings.storage_root / pid / "assets"
         assets_dir.mkdir(parents=True, exist_ok=True)
@@ -185,10 +200,11 @@ async def main(force: bool) -> None:
             )
         await session.commit()
 
-    print(f"seeded project {pid}")
+    print(f"seeded project {pid} from {fixture_path.name}")
     print(
-        f"  timeline v{appended.version} (approved), {len(fixture['assets'])} assets "
-        f"({downloaded} re-downloaded), {len(fixture['bindings'])} bindings"
+        f"  timeline v{appended.version} ({'approved' if was_approved else 'draft'}), "
+        f"{len(fixture['assets'])} assets ({downloaded} re-downloaded), "
+        f"{len(fixture['bindings'])} bindings"
     )
 
 
@@ -197,4 +213,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--force", action="store_true", help="delete and recreate if it already exists"
     )
-    asyncio.run(main(parser.parse_args().force))
+    parser.add_argument(
+        "--fixture",
+        default="m8_test_project",
+        help="fixture name in tests/fixtures/ (default: m8_test_project)",
+    )
+    args = parser.parse_args()
+    asyncio.run(main(args.force, args.fixture))
