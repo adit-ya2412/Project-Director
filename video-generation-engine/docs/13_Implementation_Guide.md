@@ -26,7 +26,8 @@
 11. [Phase M4 — Workflow Engine](#phase-m4--workflow-engine)
 12. [Phase M5 — AI Planners](#phase-m5--ai-planners)
 13. [Phase M6 — Asset Pipeline](#phase-m6--asset-pipeline)
-14. [Phase M7 — Media Generation](#phase-m7--media-generation)
+14. [Phase M6.5 — Asset Quality and Supervision](#phase-m65--asset-quality-and-supervision)
+15. [Phase M7 — Media Generation](#phase-m7--media-generation)
 15. [Phase M8 — Renderer](#phase-m8--renderer)
 16. [Phase M9 — API and Frontend](#phase-m9--api-and-frontend)
 17. [Phase M10 — Hardening](#phase-m10--hardening)
@@ -1146,6 +1147,81 @@ provider proving separate-not-joined requests plus dedup; one on
 
 ---
 
+# Phase M6.5 — Asset Quality and Supervision
+
+> **Goal:** make asset acquisition produce media that actually matches the script, and put a human in front of that step while fixing it is still free.
+>
+> **Status:** designed 2026-08-15 from two real runs. Sequenced after M8 steps 1–3 (narration, done) and interleaved with M8 steps 4–6.
+
+## Why this phase exists — the measured evidence
+
+M6 declared success on "a historical script resolves the majority of shots from archives." It does resolve them. It resolves them to the **wrong things**, and no test caught it because every test asserted mechanism (a licence gate fires, a hash dedupes) rather than outcome (is this a picture of the thing we asked for).
+
+Two real runs, hand-graded:
+
+| run | shots | genuinely correct |
+|---|---|---|
+| Hindi run, as built | 11 | **2** |
+| after the relevance gate (`1aa22d3`) | 11 | **3** |
+
+The original failures were not near-misses. `Germany oil map 1942` returned a crucifixion painting; `South Africa oil embargo` returned a map of South **America**; `German oil depot 1940` returned a Dutch painting of ships in a storm. The relevance gate removed all of those, but the residue is still wrong — a Polish coal elevator for Leuna-Werke, a modern British freight train for a 1940 Ruhr rail yard, a museum **diorama** standing in for wartime footage.
+
+## The two diagnoses
+
+**1. The problem is retrieval, not ranking.** Ranking can only reorder what the provider returned. Commons search is MediaWiki full-text search over file-page wikitext — it answers "which pages contain these words", not "which image depicts this concept". When the right photograph never enters the candidate set, no gate conjures it. Every fix aimed at scoring is polishing the wrong end of the pipe.
+
+Worse, the current design throws away the one asset we already have: **the planner knows the answer and we never ask it.** The model knows the plant is Leuna-Werke, the process is Fischer–Tropsch, the company is Sasol. We flatten that knowledge into a keyword string and hand it to a keyword matcher. The only two correct results in the first run were correct precisely because a distinctive proper noun survived that flattening.
+
+**2. The approval gate guards the cheap step and leaves the risky one unsupervised.** A human approves a *plan* — text, read in seconds, ~$0.40 to redo. Then acquisition, the step that actually determines whether the video is watchable, runs unwatched, and the failure is discovered only after narration and rendering have been paid for. There is exactly one gate and it sits before the part that goes wrong.
+
+## Decisions — all closed (2026-08-15)
+
+| ID | Decision | Rationale |
+|---|---|---|
+| **A1** | **The Asset Planner emits a named `entity` alongside `search_queries`.** | Naming an entity is world knowledge, which only the model has. It costs nothing extra — one more field in a call already being made. |
+| **A2** | **Entity → images is resolved by deterministic code (Wikipedia article images, Commons categories), never by an LLM tool call.** | A lookup is not a judgement. Article images are curated by humans to illustrate that exact topic — relevance for free, no inference cost. |
+| **A3** | **Planners do NOT get search tools. I4 stands.** | Tool-calling would fix planner blindness but costs replayability, testability and cost-bounding, at 3–10× planning spend. Revisit only if A1–A2 plus supervision prove insufficient — decide on evidence, not appetite. |
+| **A4** | **Where a bounded feedback loop is needed, reuse the existing repair pattern** (`run_structured_with_repair`): resolve, feed failures back, re-plan those shots once. | Keeps planners pure (they only see text handed to them), bounds cost to one extra pass, ~70% of tool-calling's benefit for ~10% of the disruption. |
+| **A5** | **Free retrieval (uploads, Wikimedia, Pexels) moves BEFORE the approval gate.** | I6 forbids anything *expensive* before approval; search is free. This is what makes the unsupervised step supervised, at the moment fixing it still costs nothing. |
+| **A6** | **Generation stays AFTER approval.** | It costs real money (I6). At approval you see real photos for what was found and an explicit "will be generated" marker for what wasn't — and can still upload instead. |
+| **A7** | **Post-approval order is narrate → generate → render.** | Narration is cheap (~9¢) and is what validates real duration. A script that blows the 90s cap must fail there, before dollars of generation are spent on a video that cannot ship. |
+| **A8** | **User-supplied assets are optional, uploaded with the script, and become ladder rung 1.** | `project_assets` already exists as a wired stub. A human-chosen image is *guaranteed* relevant — no gate, no vision model, no retrieval lottery. |
+| **A9** | **An uploaded image becomes a `ShotBinding`; the shot's `prompt` is left unchanged as creative intent.** | I2 — the Timeline holds decisions, never media. The prompt's job was to drive acquisition, which is now settled. |
+| **A10** | **A human override is recorded as an `append_version` with `produced_by=HUMAN`, marking that shot's asset locked.** | Without it, any later re-resolution silently discards the human's choice — the worst possible failure for a curation feature. Also makes provenance auditable. |
+| **A11** | **`ShotBinding` rows must carry forward across a version bump that does not change shot identity.** | Prerequisite for A5/A10. Bindings are keyed by `(project_id, timeline_version, shot_id)`, so appending a version orphans them — which would silently eat exactly the curation this phase exists to enable. |
+| **A12** | **The Director's `constraints` are enforced at generation time by a vision check.** | The Director already writes "no AI-generated faces of real historical figures" and "avoid Nazi symbols except where historically necessary". Nothing enforces them today. This is the one gap here about *harm* rather than quality. |
+| **A13** | **Regeneration is bounded at 2 attempts: revised prompt first, varied seed second (derived from the project seed, never random).** | "A retry bug against a paid video API is the most expensive failure mode this system has." Varying the seed trades away the fixed-per-project stylistic consistency M7 chose deliberately, so it is the second lever, not the first. |
+| **A14** | **After bounded retries, a shot is surfaced for human input — never silently shipped, never looped.** | Generation is the bottom rung; below it is only a placeholder. The terminal fallback is a person. |
+| **A15** | **Human review of generated media is by exception**, via a conditional second gate, not an unconditional stop. | The engine already supports a step returning `awaiting_approval`. Interrupt only when an automated check fails. |
+| **A16** | **Vision verification of *searched* assets is deferred until A1–A2 are measured.** | It would be checking a much better candidate pool by then, and the residue may not justify the cost. Decide with evidence. |
+| **A17** | **The 11 Hindi shots (`tests/fixtures/hindi_test_project.json`) are the standing benchmark** for any retrieval change. | Wikipedia and Commons are free to query, so retrieval changes can be measured against real shots at zero cost. Baseline: 2/11 as built, 3/11 after the relevance gate. Move that number. |
+
+## Known gap, not yet scheduled
+
+**Real video footage is never searched for.** `WikimediaAssetProvider` hardcodes `filetype:bitmap`, and the Pexels provider uses the photos endpoint, not `/videos/search`. So although a shot can declare `preferred_type: video`, every search rung can only return a still, and the *only* route to motion is generating it. For a WWII documentary that is backwards — genuine archival film exists on Commons and is better material than any generated clip.
+
+Preference order for motion, once this is addressed: **real archival footage > Ken Burns on a real photograph (M8 step 5) > generated video.** Generated video is where synthetic artefacts are most visible, at roughly 12× the cost of an image (~50¢ vs ~4¢).
+
+## Build order
+
+1. **Entity retrieval (A1, A2), measured against the A17 benchmark.** Cheapest, needs no UI, improves quality automatically. Its result determines how much burden steps 3–4 must carry.
+2. **Director-constraint enforcement at generation (A12, A13, A14).** Small, and the only harm-relevant item here.
+3. **Pipeline reorder (A5, A7) plus binding carry-forward (A11).** The structural change that makes the step supervised. A11 is a hard prerequisite.
+4. **Upload endpoint and per-shot override (A8, A9, A10, A15).** Only useful once 3 exists, since the gate is where a human acts on it.
+5. **Reassess vision verification for search (A16)** against whatever failures actually remain.
+
+**Caveat:** there is no frontend — M9 has not been built. "You see the images at approval" means, for now, an API exposing the resolved asset per shot plus files on disk. The full experience needs M9; the backend reordering is still worth doing first, so M9 is not built against the wrong pipeline shape.
+
+## Done when
+
+- [ ] The A17 benchmark improves substantially and is re-measured after every retrieval change
+- [ ] A human can see real images per shot, and swap or override any of them, before anything expensive runs
+- [ ] A human override survives re-resolution and version bumps
+- [ ] No generated image ships that violates a Director constraint
+- [ ] Generation retries are bounded and counted against the project budget
+
+---
+
 # Phase M7 — Media Generation
 
 > **Goal:** fill the gaps search could not. Rungs 5–6. This is where real money starts moving.
@@ -1660,19 +1736,31 @@ Code                ████████████ M0 + M2 + M3 + M4 + M5 
                                  real end-to-end paid run — renderer (M8) is still the
                                  M0 slideshow renderer: no real narration, no audio
                                  mixing, no captions yet
-Next                M8 · Renderer — build order, open decisions and scope are written
-                                 up in the M8 section (2026-08-15). Six steps: narration
-                                 provider → master clock → mux → music/ducking → Ken
-                                 Burns → determinism+draft. Also in scope this iteration:
-                                 Hindi narration (plan in-language, never translate after)
-                                 and an optional Timeline.hook. Captions explicitly OUT
-                                 of scope this pass. Verified up front that ElevenLabs'
-                                 timestamps are CHARACTER-level, not word-level as D1
-                                 originally claimed — which makes the master clock a
-                                 direct index lookup against narration_span. Reuse
-                                 project 58f0a5e6-008d-468e-862a-e365e463878e rather
-                                 than creating a fresh one; its planning and asset
-                                 work is already done and paid for.
+M8 Renderer        ██████░░░░░░ steps 1-3 done 2026-08-15 — ElevenLabs narration
+                                 provider + content-hash cache, the master clock
+                                 (character-level alignment reconciled into a new
+                                 Timeline version), and audio muxed onto the render
+                                 via the concat FILTER. Proven live end to end on a
+                                 real Hindi script: predicted 39.568s vs 39.5668s
+                                 actual audio, 1.2ms across five separately
+                                 synthesised segments. Steps 4-6 (music+ducking,
+                                 Ken Burns, determinism+draft) not started.
+                                 Captions deliberately out of scope this pass.
+Next               M6.5 · Asset Quality and Supervision — the weak link. Two real
+                                 runs graded 2/11 then 3/11 shots genuinely correct;
+                                 see that section for the evidence, the two diagnoses
+                                 (retrieval not ranking; the gate guards the cheap
+                                 step) and decisions A1-A17, all closed. Build order:
+                                 entity retrieval measured against the 11-shot
+                                 benchmark → Director-constraint enforcement at
+                                 generation → free retrieval before the approval gate
+                                 (needs binding carry-forward) → uploads and per-shot
+                                 override → reassess vision verification. Then finish
+                                 M8 steps 4-6. Reuse projects
+                                 58f0a5e6-008d-468e-862a-e365e463878e (English) and
+                                 35290b04-584d-415e-9816-ab6a8998b3e2 (Hindi, with
+                                 real narration) via scripts/seed_test_project.py -
+                                 their planning, assets and TTS are already paid for.
 ```
 
 ---
