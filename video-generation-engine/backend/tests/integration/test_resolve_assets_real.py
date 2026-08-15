@@ -627,8 +627,10 @@ async def test_depiction_check_drops_a_wrong_top_candidate_and_falls_through_to_
         monkeypatch,
         FakeVisionConstraintProvider(
             depiction_verdicts=[
-                DepictionVerdict(depicts=False, reason="wrong subject entirely"),
-                DepictionVerdict(depicts=True, reason="correct"),
+                DepictionVerdict(
+                    confidently_wrong=True, reason="a different kind of subject entirely"
+                ),
+                DepictionVerdict(confidently_wrong=False, reason="plausible"),
             ]
         ),
     )
@@ -710,7 +712,7 @@ async def test_vision_check_skips_a_corrupt_top_candidate_and_checks_the_next_va
         content_by_source_id={"corrupt": b"not a real image", "valid": _png_bytes((4, 4, 4))},
     )
     _patch_providers(monkeypatch, provider)
-    vision_provider = FakeVisionConstraintProvider()  # default: depicts=True
+    vision_provider = FakeVisionConstraintProvider()  # default: confidently_wrong=False
     _patch_vision_provider(monkeypatch, vision_provider)
 
     await _run_step(project_id)
@@ -753,7 +755,9 @@ async def test_depiction_check_rejection_on_the_last_rung_defers_to_generation(
     _patch_vision_provider(
         monkeypatch,
         FakeVisionConstraintProvider(
-            depiction_verdicts=[DepictionVerdict(depicts=False, reason="not the right subject")]
+            depiction_verdicts=[
+                DepictionVerdict(confidently_wrong=True, reason="a different kind of subject")
+            ]
         ),
     )
 

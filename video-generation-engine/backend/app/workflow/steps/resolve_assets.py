@@ -65,13 +65,17 @@ bounded-retrying a violation per A13/A18 and raising `PermanentError`
 (caught below, same as any other per-shot failure) if every attempt is
 still violating after `settings.max_generation_attempts_per_shot`
 attempts. Searched assets get their OWN, narrower vision check (M6.5,
-A16 -> A30): the top-ranked candidate per rung only, skipped for an
-entity-curated hit, dropping the candidate (and the whole rung) on
-failure rather than retrying or failing the shot - a different question
-(`check_candidate_depicts_subject`, "does this depict X") from the
-generation-side one above (`check_generated_image_constraints`, "does
-this violate Y"), sharing only the provider and the `llm_call` audit
-mechanism. See `app/assets/depiction_check.py`.
+A16 -> A30 -> A30a): the top-ranked candidate per rung only, skipped for
+an entity-curated hit, dropping the candidate (and the whole rung) when
+it is CONFIDENTLY a different kind of subject entirely - never merely
+because a specific named place/event can't be visually confirmed, which
+measured live as an unanswerable question that cost two genuinely
+correct images (see `app/assets/depiction_check.py`'s own docstring for
+the full account). A different question
+(`check_candidate_plausibility`, "is this confidently something else")
+from the generation-side one above (`check_generated_image_constraints`,
+"does this violate Y"), sharing only the provider and the `llm_call`
+audit mechanism.
 
 Per-shot failure isolation (Principle 10) is enforced throughout: one
 shot failing (or hitting the budget cap, or exhausting its constraint
@@ -94,7 +98,7 @@ from app.assets.constraint_check import (
     seed_for_attempt,
 )
 from app.assets.cost import check_budget, total_project_spend_cents
-from app.assets.depiction_check import check_candidate_depicts_subject
+from app.assets.depiction_check import check_candidate_plausibility
 from app.assets.ranking import rank_candidates
 from app.assets.relevance import candidate_relevance, passes_relevance_gate
 from app.assets.validation import mime_type_for_extension, validate_and_identify_image
@@ -255,7 +259,7 @@ class ResolveAssetsStep:
         )
         # M6.5, A12/A30: `None` in DRY_RUN, same idiom as every other real
         # provider above - both `check_generated_image_constraints` (A12,
-        # generated media) and `check_candidate_depicts_subject` (A30,
+        # generated media) and `check_candidate_plausibility` (A30,
         # searched media) treat a `None` provider as "nothing to call".
         # Unlike the generation-only providers below, this one is needed
         # by BOTH passes now (A30 runs in the search pass, A12 in the
@@ -593,7 +597,7 @@ class ResolveAssetsStep:
                         # already refuses to let an automated heuristic
                         # overrule a human override.
                         if not candidate.entity_curated:
-                            verdict = await check_candidate_depicts_subject(
+                            verdict = await check_candidate_plausibility(
                                 provider=vision_provider,
                                 llm_call_repo=llm_call_repo,
                                 project_id=project_uuid,
@@ -602,7 +606,7 @@ class ResolveAssetsStep:
                                 shot_prompt=shot.prompt,
                                 search_subject=" / ".join(search_terms),
                             )
-                            if not verdict.depicts:
+                            if verdict.confidently_wrong:
                                 # Drops this candidate AND abandons this
                                 # rung - falls through to the next
                                 # strategy in the fallback chain, exactly

@@ -3,9 +3,14 @@
 hard licence gate, `check_budget` folded in, and the "never fails the
 step" degrade-to-no-track guarantee (A22's own precedent, extended).
 
-No real Pixabay call: `PixabayMusicProvider` is monkeypatched to a fake
-with canned candidates, exactly the pattern
-`test_resolve_assets_real.py` uses for Wikimedia/Pexels.
+No real network call: the real-provider factory (`_real_music_provider`)
+is monkeypatched to a fake with canned candidates, exactly the pattern
+`test_resolve_assets_real.py` uses for Wikimedia/Pexels. The REAL
+`OpenverseMusicProvider`/`PixabayMusicProvider` classes have their own
+dedicated test files (`test_openverse_music.py` via `httpx.MockTransport`,
+and `test_pixabay_music.py`/this step's own
+`test_the_real_pixabay_provider_is_the_honest_documented_limitation` for
+Pixabay's documented non-functional gap).
 """
 
 import pytest_asyncio
@@ -116,8 +121,13 @@ async def _seed_timeline_with_music_plan(
         return appended.version
 
 
-def _patch_pixabay(monkeypatch, provider) -> None:
-    monkeypatch.setattr(select_music_module, "PixabayMusicProvider", lambda: provider)
+def _patch_music_provider(monkeypatch, provider) -> None:
+    # Patches the real-provider FACTORY (`_real_music_provider`), not a
+    # specific class - `SelectMusicStep` now dispatches on
+    # `settings.music_provider` (M8 step 4 batch 2: Openverse replaced
+    # Pixabay as the real default), so patching one named class would
+    # silently stop covering whichever one is actually configured.
+    monkeypatch.setattr(select_music_module, "_real_music_provider", lambda: provider)
 
 
 async def test_no_music_plan_is_a_trivial_no_op(project_id):
@@ -187,7 +197,7 @@ async def test_licence_gate_rejects_a_non_matching_candidate(project_id, monkeyp
         ],
         content_by_id={"t1": content},
     )
-    _patch_pixabay(monkeypatch, provider)
+    _patch_music_provider(monkeypatch, provider)
 
     async with async_session_factory() as session:
         ctx = _make_ctx(project_id, session)
@@ -219,7 +229,7 @@ async def test_a_matching_candidate_is_selected_and_recorded_with_full_provenanc
         ],
         content_by_id={"t1": content},
     )
-    _patch_pixabay(monkeypatch, provider)
+    _patch_music_provider(monkeypatch, provider)
 
     async with async_session_factory() as session:
         ctx = _make_ctx(project_id, session)
@@ -245,7 +255,7 @@ async def test_total_provider_failure_never_fails_the_step(project_id, monkeypat
     degrades to 'no suitable track', never blocks anything."""
     monkeypatch.setattr(settings, "dry_run", False)
     await _seed_timeline_with_music_plan(project_id, licence_requirements=["cc0"])
-    _patch_pixabay(monkeypatch, _RaisingMusicSearchProvider())
+    _patch_music_provider(monkeypatch, _RaisingMusicSearchProvider())
 
     async with async_session_factory() as session:
         ctx = _make_ctx(project_id, session)
@@ -260,11 +270,16 @@ async def test_total_provider_failure_never_fails_the_step(project_id, monkeypat
 async def test_the_real_pixabay_provider_is_the_honest_documented_limitation(
     project_id, monkeypatch
 ):
-    """No monkeypatch here - proves the REAL `PixabayMusicProvider` (not
-    a fake standing in for it) degrades to 'no suitable track' rather
+    """No provider monkeypatch here - proves the REAL `PixabayMusicProvider`
+    (not a fake standing in for it) degrades to 'no suitable track' rather
     than crashing the step, exercising the documented, verified-live gap
-    (see app/providers/pixabay_music.py's own docstring)."""
+    (see app/providers/pixabay_music.py's own docstring). `music_provider`
+    IS explicitly pinned to "pixabay" - Openverse is the real default now
+    (M8 step 4 batch 2), and this test's whole point is Pixabay's
+    specific, documented non-functional gap, not whichever provider
+    happens to be configured."""
     monkeypatch.setattr(settings, "dry_run", False)
+    monkeypatch.setattr(settings, "music_provider", "pixabay")
     await _seed_timeline_with_music_plan(project_id, licence_requirements=["cc0"])
 
     async with async_session_factory() as session:
@@ -275,6 +290,36 @@ async def test_the_real_pixabay_provider_is_the_honest_documented_limitation(
 
     assert timeline.music_plan.selection_attempted is True
     assert timeline.music_plan.selected_track is None
+
+
+async def test_select_music_step_with_the_real_openverse_provider(project_id, monkeypatch):
+    """No provider monkeypatch and no `music_provider` override - the
+    default configuration end to end, against the real, free, keyless
+    Openverse API. `documentary underscore`/`wartime` is verified live to
+    return dozens of permissively-licensed results (the coordinator's own
+    live check: `documentary ambient` -> 81), so this is expected to find
+    and record a real track, not degrade - proving the actual default
+    path genuinely works, not just that it fails gracefully when it
+    can't (that's the Pixabay test above)."""
+    monkeypatch.setattr(settings, "dry_run", False)
+    await _seed_timeline_with_music_plan(project_id, licence_requirements=["cc0", "by"])
+
+    async with async_session_factory() as session:
+        ctx = _make_ctx(project_id, session)
+        result = await SelectMusicStep().run(ctx)
+        assert result.outcome == "ok"
+        timeline = await ctx.timeline_service.get_active(project_id)
+
+    assert timeline.music_plan.selection_attempted is True
+    selection = timeline.music_plan.selected_track
+    assert selection is not None
+    assert selection.provider == "openverse"
+    assert selection.licence in {"cc0", "by"}
+    assert selection.content_hash
+
+    music_path = settings.storage_root / project_id / "music" / f"{selection.content_hash}.mp3"
+    assert music_path.exists()
+    assert music_path.stat().st_size > 0
 
 
 async def test_budget_cap_blocks_a_fetch_and_degrades_to_no_track(project_id, monkeypatch):
@@ -298,7 +343,7 @@ async def test_budget_cap_blocks_a_fetch_and_degrades_to_no_track(project_id, mo
         ],
         content_by_id={"t1": content},
     )
-    _patch_pixabay(monkeypatch, provider)
+    _patch_music_provider(monkeypatch, provider)
 
     async with async_session_factory() as session:
         ctx = _make_ctx(project_id, session)

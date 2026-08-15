@@ -226,41 +226,99 @@ class OpenAIPlanningProvider:
         )
 
     async def check_depiction(self, request: DepictionCheckRequest) -> StructuredCompletion:
-        """M6.5, A30 - `VisionConstraintProvider`'s other half. A genuinely
-        different question from `check_constraints`: not "does this
-        violate a fixed rule" but "does this image actually show the
-        subject a search was run for at all" - the top-ranked searched
-        candidate for a shot may have passed the text-based relevance
-        gate (`app/assets/relevance.py`) on term overlap alone and still
-        depict the wrong thing entirely (a real production failure this
-        exists to catch - see A17's regression table). Same model
-        (`settings.openai_vision_model`) and call shape as
-        `check_constraints`, deliberately its own prompt: asking this as
-        a negatively-phrased "constraint" would blur two different
-        questions into a prompt worded for the other one."""
+        """M6.5, A16 -> A30 -> A30a - `VisionConstraintProvider`'s other
+        half, recalibrated twice after live measurement against the real
+        Hindi benchmark - both rounds measured, not guessed.
+
+        Round 1 (original A30): "does this image genuinely depict the
+        specific subject searched for" rejected two genuinely correct
+        images - a real Bundesarchiv Leuna photograph and a real
+        Fischer-Tropsch diagram - because nothing in the PIXELS can
+        confirm a specific NAMED place or event; that identity lives in
+        an archive's catalogue metadata, invisible to a vision model.
+
+        Round 2 (first A30a draft): loosened to "is this confidently a
+        different KIND of subject" - correctly restored both of those,
+        but measured to ALSO let back in two of the five originally-
+        eliminated wrong picks (a map of Greece for a "German WWII
+        resource map" query; modern re-enactors on motorcycles for
+        "German tanks") - the model's own recorded reasoning called a
+        map "consistent with the general theme of a resource map"
+        regardless of which COUNTRY it showed, and called motorcycles
+        "plausibly relat[ed] to wartime Germany" despite showing no
+        tanks at all. Vague thematic resemblance, exactly what the
+        original A30 prompt (correctly) refused to accept, crept back in
+        under the looser wording.
+
+        This version narrows the question with concrete positive and
+        negative examples grounded in those exact measured cases: reject
+        on visible, CHECKABLE subject-matter facts (which country/region
+        a map shows, which general type of object/vehicle/structure is
+        present, whether the material is genuinely archival or a modern/
+        re-enactment scene) - these are things pixels really can answer.
+        Do not reject merely because the SPECIFIC NAMED identity (this
+        exact plant, as opposed to a similar one) cannot be confirmed -
+        that is a catalogue-metadata question, not a pixel one. Biased
+        toward keeping only within that narrower band: a false reject
+        permanently discards a real, usable image; a false accept costs
+        one image a human still sees at the approval gate and can
+        override. Same model (`settings.openai_vision_model`) and call
+        shape as `check_constraints`, its own prompt for the same reason
+        as before - a different question from "does this violate a fixed
+        rule"."""
         image_b64 = base64.b64encode(request.image).decode("ascii")
         data_url = f"data:{request.image_content_type};base64,{image_b64}"
 
         system_message: ChatCompletionSystemMessageParam = {
             "role": "system",
             "content": (
-                "You check whether an image genuinely depicts a specific "
-                "real-world subject a search was run to find. Archive and "
-                "stock search engines often return images that share only "
-                "a keyword with the query, not the actual subject (e.g. a "
-                "search for a named chemical plant returning an unrelated "
-                "factory, or a search for a historical event returning a "
-                "generic stock photo of the same era). Say the image does "
-                "NOT depict the subject unless it plausibly, genuinely "
-                "shows it - a vague thematic resemblance is not enough."
+                "You check whether an image's actual visible content is a "
+                "plausible match for a shot's subject matter. Reject when the "
+                "image is CONFIDENTLY wrong on visible, checkable facts: the "
+                "general region, country, or place shown; the general type of "
+                "object, vehicle, or structure shown; or the general era "
+                "(genuinely archival material versus a clearly modern scene "
+                "or costumed re-enactment). Do NOT reject merely because you "
+                "cannot confirm this is the SPECIFIC NAMED site, plant, or "
+                "event that was searched for - that level of identity lives "
+                "in an archive's catalogue, not in the pixels, and is not "
+                "something you can verify by looking.\n\n"
+                "Examples of what TO reject (checkable from the pixels "
+                "alone):\n"
+                "- A map of the wrong country or region (e.g. a map of "
+                "Greece when a map of wartime Germany or Europe was wanted).\n"
+                "- The wrong general type of vehicle, object, or structure "
+                "(e.g. motorcycles when tanks were wanted; a burning ship at "
+                "sea when a resource map was wanted; a ruined, abandoned "
+                "structure when an operating industrial plant was wanted).\n"
+                "- A clearly modern photograph, or a costumed re-enactment, "
+                "when genuine archival-era material was wanted.\n"
+                "- A generic building or scene with no visible resemblance to "
+                "the requested structure (e.g. plain modern offices when oil "
+                "storage tanks were wanted).\n\n"
+                "Examples of what NOT to reject (unverifiable from pixels "
+                "alone, never a reason to reject on their own):\n"
+                "- An industrial photograph that could plausibly be the named "
+                "plant, even though nothing in the image proves it is THAT "
+                "specific site rather than a similar one.\n"
+                "- A process diagram depicting the right general chemistry or "
+                "process, even if its exact layout, labelling, or style "
+                "differs from what was imagined.\n\n"
+                "A false rejection permanently discards a real, usable image; "
+                "a false acceptance only costs one image a human will see at "
+                "the approval gate and can still override."
             ),
         }
         text_part: ChatCompletionContentPartTextParam = {
             "type": "text",
             "text": (
-                f"This image was found searching for: {request.search_subject}\n\n"
-                f"The shot it is meant to illustrate: {request.shot_prompt}\n\n"
-                "Does this image genuinely depict that subject?"
+                f"The shot this image is meant to illustrate: {request.shot_prompt}\n\n"
+                f"It was found searching for: {request.search_subject} - treat this "
+                "as context for the general kind of thing being looked for, not as "
+                "a specific identity you need to confirm.\n\n"
+                "Is this image CONFIDENTLY wrong on visible, checkable subject-matter "
+                "facts (region/place, object/vehicle/structure type, or era) - not "
+                "merely unconfirmed as the exact named subject?"
             ),
         }
         image_part: ChatCompletionContentPartImageParam = {

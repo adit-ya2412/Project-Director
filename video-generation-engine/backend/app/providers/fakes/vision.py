@@ -15,7 +15,7 @@ from app.providers.base import (
 )
 
 _NOT_VIOLATED = ConstraintVerdict(violated=False, violated_constraint="", reason="")
-_DEPICTS = DepictionVerdict(depicts=True, reason="")
+_NOT_CONFIDENTLY_WRONG = DepictionVerdict(confidently_wrong=False, reason="")
 
 
 class FakeVisionConstraintProvider:
@@ -35,7 +35,9 @@ class FakeVisionConstraintProvider:
         # list, since the two checks are unrelated questions with
         # independent call counts.
         self._verdicts = list(verdicts) if verdicts else [_NOT_VIOLATED]
-        self._depiction_verdicts = list(depiction_verdicts) if depiction_verdicts else [_DEPICTS]
+        self._depiction_verdicts = (
+            list(depiction_verdicts) if depiction_verdicts else [_NOT_CONFIDENTLY_WRONG]
+        )
         self.calls: list[ConstraintCheckRequest] = []
         self.depiction_calls: list[DepictionCheckRequest] = []
 

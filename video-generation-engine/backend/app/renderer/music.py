@@ -137,6 +137,14 @@ async def build_ducked_bed(
         "[aout]",
         "-c:a",
         "aac",
+        # I5 (M8 step 6): see app/renderer/slideshow.py's own comment on
+        # this exact pair - strips non-deterministic muxer/encoder
+        # metadata from the (intermediate) ducked-bed file too, so the
+        # final mux downstream is reproducible from identical inputs.
+        "-fflags",
+        "+bitexact",
+        "-flags:a",
+        "+bitexact",
         str(output_path),
     ]
     await run_ffmpeg(args)
@@ -216,6 +224,10 @@ async def mux_music(
         "copy",
         "-c:a",
         "aac",
+        "-fflags",
+        "+bitexact",
+        "-flags:a",
+        "+bitexact",
         "-movflags",
         "+faststart",
         str(output_path),

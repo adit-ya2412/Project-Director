@@ -103,6 +103,13 @@ async def mux_narration(
         "copy",
         "-c:a",
         "aac",
+        # I5 (M8 step 6): strip non-deterministic muxer/encoder metadata
+        # so the same inputs always produce the same output bytes - see
+        # app/renderer/slideshow.py's own comment on this exact pair.
+        "-fflags",
+        "+bitexact",
+        "-flags:a",
+        "+bitexact",
         "-movflags",
         "+faststart",
         str(output_path),

@@ -32,6 +32,8 @@ from app.core.errors import PermanentError
 from app.db.session import get_db
 from app.models.asset import AssetModel
 from app.models.generated_clip import GeneratedClipModel
+from app.renderer.retention import purge_expired_drafts
+from app.renderer.slideshow import RenderSettings
 from app.repositories.asset_repository import AssetRepository
 from app.repositories.generated_clip_repository import GeneratedClipRepository
 from app.repositories.project_repository import ProjectRepository
@@ -40,7 +42,9 @@ from app.repositories.workflow_repository import WorkflowRunRepository
 from app.schemas.project import Project, ProjectStatus
 from app.schemas.timeline import ProducedBy, Timeline, TimelineStatus
 from app.timeline.service import TimelineService
+from app.workflow.context import RunContext
 from app.workflow.engine import WorkflowEngine
+from app.workflow.steps.render import render_video
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -221,6 +225,78 @@ async def render_project(
     if not project.script:
         raise HTTPException(status_code=400, detail="upload a script before rendering")
     return await engine.run()
+
+
+@router.post("/{project_id}/render/draft")
+async def render_draft(
+    project_id: str,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """A fast, low-res preview of the CURRENT active timeline (M8 step 6,
+    "always render a fast draft first") - independent of `POST /render`'s
+    own workflow-engine progression, so a human can preview a timeline
+    that hasn't been approved yet, and can re-preview after any edit
+    without disturbing `project.video_path`/`project.status` at all: this
+    endpoint never touches either, only writes `draft.mp4` and a `render`
+    row.
+
+    Reuses `render_video` (`app/workflow/steps/render.py`) directly with
+    `settings.draft_width/draft_height` and `output_filename="draft.mp4"`
+    - the exact same fingerprinted, cached, deterministic pipeline the
+    final render uses, just at a different resolution. Draft and final
+    can never collide on one cache entry (width/height are themselves
+    part of the fingerprint - see `app/renderer/fingerprint.py`).
+
+    Opportunistically sweeps expired drafts (`settings.draft_retention_days`,
+    D3) on every call - see `app/renderer/retention.py` for why a request-
+    triggered sweep, rather than a scheduler, is the right amount of
+    infrastructure here.
+    """
+    await _get_project_or_404(project_id, repo)
+    timeline = await timeline_service.get_active(project_id)
+    if timeline is None:
+        raise HTTPException(status_code=400, detail="no timeline to render a draft of yet")
+
+    purged = await purge_expired_drafts(session)
+
+    render_settings = RenderSettings(
+        width=settings.draft_width,
+        height=settings.draft_height,
+        fps=settings.render_fps,
+        pixel_format=settings.render_pixel_format,
+        ffmpeg_binary=settings.ffmpeg_binary,
+        ffprobe_binary=settings.ffprobe_binary,
+    )
+    ctx = RunContext(
+        project_id=project_id, session=session, repo=repo, timeline_service=timeline_service
+    )
+    try:
+        output_path = await render_video(
+            ctx, timeline, render_settings, output_filename="draft.mp4"
+        )
+    except PermanentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await session.commit()
+
+    return {
+        "project_id": project_id,
+        "timeline_version": timeline.version,
+        "draft_path": str(output_path),
+        "expired_drafts_purged": purged,
+    }
+
+
+@router.get("/{project_id}/video/draft")
+async def get_draft_video(
+    project_id: str, repo: ProjectRepository = Depends(get_repo)
+) -> FileResponse:
+    project = await _get_project_or_404(project_id, repo)
+    path = settings.storage_root / project_id / "renders" / "draft.mp4"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="no draft render for this project yet")
+    return FileResponse(path, media_type="video/mp4", filename=f"{project.id}_draft.mp4")
 
 
 @router.post("/{project_id}/timeline/approve", response_model=Project)

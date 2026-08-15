@@ -7,6 +7,23 @@ narration onto the finished output of `render_timeline` as a separate
 final pass (M8 step 3), so this file's graph stays exactly what it was
 when it was first proven, video-only.
 
+## Ken Burns (M8 step 5)
+
+A shot whose `camera.movement` isn't `STATIC`/`SPLIT_FRAME` gets a
+`zoompan` filter instead of the plain static-frame path -
+`app/renderer/ken_burns.py` owns the expression arithmetic (kept
+separate and unit-testable without shelling out); this module only
+builds the ffmpeg filter STRING around it. Critically, a Ken-Burns
+shot's INPUT is `-i path` (no `-loop`/`-t`) - not the static path's
+`-loop 1 -t duration` - because `zoompan` must see exactly ONE decoded
+frame to accumulate its `zoom` variable correctly across the `d` frames
+it generates internally; feeding it the static path's already-looped,
+multi-frame input is the well-known cause of `zoompan` resetting to
+zoom=1 every single frame (see that module's own docstring). Both paths
+still produce a stream of exactly `duration_s` seconds at `settings.fps`
+- the crossfade arithmetic below never needs to know which path a given
+shot took.
+
 Determinism (Invariant I5): every ffmpeg invocation is built as an argument
 list (never a shell string — see security guidance in the implementation
 guide), inputs are normalised individually before composition, and nothing
@@ -18,6 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.errors import PermanentError
+from app.renderer.ken_burns import WORKING_CANVAS_SCALE, ZoompanExpression, build_zoompan_expression
 from app.schemas.timeline import Shot, Timeline
 from app.timeline.duration import group_into_runs
 
@@ -53,6 +71,30 @@ def _normalize_filter(index: int, settings: RenderSettings, label: str) -> str:
     )
 
 
+def _ken_burns_filter(
+    index: int, settings: RenderSettings, label: str, expr: ZoompanExpression, frames: int
+) -> str:
+    """The Ken-Burns equivalent of `_normalize_filter` - scales up to an
+    oversized working canvas first (so `zoompan` resamples real extra
+    pixels rather than upscaling an already-target-resolution frame),
+    then applies the zoom/pan envelope, landing on the exact same output
+    size/pixel format `_normalize_filter` would have. No `fps=` filter
+    needed afterwards - `zoompan`'s own `fps=` parameter already sets it,
+    and its `d` parameter is what makes this stream exactly `frames`
+    frames long (== `shot.duration_s` seconds at `settings.fps`, the
+    caller's arithmetic, not this function's)."""
+    w, h = settings.width, settings.height
+    canvas_w = round(w * WORKING_CANVAS_SCALE)
+    canvas_h = round(h * WORKING_CANVAS_SCALE)
+    return (
+        f"[{index}:v]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,"
+        f"crop={canvas_w}:{canvas_h},setsar=1,"
+        f"zoompan=z='{expr.zoom_expr}':x='{expr.x_expr}':y='{expr.y_expr}':"
+        f"d={frames}:s={w}x{h}:fps={settings.fps},"
+        f"format={settings.pixel_format}[{label}]"
+    )
+
+
 async def _render_run(
     run: list[Shot],
     shot_images: dict[str, Path],
@@ -62,15 +104,34 @@ async def _render_run(
     """Render one run (shots joined only by crossfades, no hard cuts) to
     a single MP4."""
     args = [settings.ffmpeg_binary, "-y"]
-    for shot in run:
+    # M8 step 5: a Ken-Burns shot's frame count is computed HERE (the one
+    # place duration-to-frames arithmetic lives for this module, D5's
+    # "compute it once" discipline) and reused for both the input args
+    # (which input shape a shot gets) and the filter (zoompan's `d`).
+    frame_counts = [max(round(shot.duration_s * settings.fps), 1) for shot in run]
+    ken_burns_exprs = [
+        build_zoompan_expression(shot.camera, frames=f)
+        for shot, f in zip(run, frame_counts, strict=True)
+    ]
+
+    for shot, expr in zip(run, ken_burns_exprs, strict=True):
         image_path = shot_images[shot.id]
-        args += ["-loop", "1", "-t", f"{shot.duration_s:.3f}", "-i", str(image_path)]
+        if expr is None:
+            args += ["-loop", "1", "-t", f"{shot.duration_s:.3f}", "-i", str(image_path)]
+        else:
+            # Exactly one decoded frame - see this module's own docstring
+            # and `app/renderer/ken_burns.py`'s for why `-loop`/`-t` must
+            # NOT be used here.
+            args += ["-i", str(image_path)]
 
     filters: list[str] = []
     labels: list[str] = []
-    for i in range(len(run)):
+    for i, expr in enumerate(ken_burns_exprs):
         label = f"n{i}"
-        filters.append(_normalize_filter(i, settings, label))
+        if expr is None:
+            filters.append(_normalize_filter(i, settings, label))
+        else:
+            filters.append(_ken_burns_filter(i, settings, label, expr, frame_counts[i]))
         labels.append(label)
 
     if len(run) == 1:
@@ -98,6 +159,20 @@ async def _render_run(
         f"[{vout}]",
         "-r",
         str(settings.fps),
+        # I5 (M8 step 6): `+bitexact` strips non-deterministic muxer/
+        # encoder metadata (creation_time, encoder version string) that
+        # ffmpeg otherwise stamps into the output on every run even given
+        # byte-identical inputs; `-threads 1` pins libx264 to a single
+        # thread, since its default multi-threaded mode is not guaranteed
+        # to make the same internal decisions run to run. Both are
+        # required for `tests/integration/test_render_determinism.py`'s
+        # actual byte-for-byte proof, not just asserted here.
+        "-fflags",
+        "+bitexact",
+        "-flags:v",
+        "+bitexact",
+        "-threads",
+        "1",
         "-c:v",
         "libx264",
         "-pix_fmt",
@@ -159,6 +234,11 @@ async def render_timeline(
         str(concat_list),
         "-c",
         "copy",
+        # I5: even a stream-copy pass stamps a fresh `creation_time` into
+        # the container by default - `+bitexact` suppresses that too, so
+        # concatenating the same runs twice produces the same bytes.
+        "-fflags",
+        "+bitexact",
         "-movflags",
         "+faststart",
         str(output_path),

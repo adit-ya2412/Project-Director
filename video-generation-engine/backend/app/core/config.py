@@ -131,17 +131,22 @@ class Settings(BaseSettings):
     asset_relevance_threshold: float = 0.25
 
     # --- Music (M8+) ---
-    music_provider: str = "pixabay"
+    # "pixabay" was the original spec pick; verified live 2026-08-15 that
+    # Pixabay has no public Music/Audio search API at all (only Images
+    # and Videos - see app/providers/pixabay_music.py). "openverse" (no
+    # API key, aggregates Jamendo + Freesound, verified live the same
+    # day) is the real, working default now.
+    music_provider: str = "openverse"
     pixabay_api_key: str | None = None
     freesound_api_key: str | None = None
     music_bed_gain_db: float = -22.0
     music_duck_gain_db: float = -32.0
     # Rough cost estimate in cents, folded into `check_budget` the same
     # way `fal_image_cost_cents_estimate`/narration are (M8 build order
-    # item 4) - 0 by default because Pixabay search is genuinely free;
-    # kept as a real config value (not hardcoded 0 inline) so a future
-    # paid music provider only ever needs a config change here, never a
-    # new call site.
+    # item 4) - 0 by default because both Openverse and Pixabay search
+    # are genuinely free; kept as a real config value (not hardcoded 0
+    # inline) so a future paid music provider only ever needs a config
+    # change here, never a new call site.
     music_cost_cents_estimate: int = 0
 
     # --- Rendering ---

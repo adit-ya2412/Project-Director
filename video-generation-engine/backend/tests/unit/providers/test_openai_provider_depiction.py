@@ -1,5 +1,5 @@
-"""`OpenAIPlanningProvider.check_depiction` (M6.5, A16 -> A30) - the
-depiction-verification vision call, mirroring
+"""`OpenAIPlanningProvider.check_depiction` (M6.5, A16 -> A30 -> A30a) -
+the depiction-verification vision call, mirroring
 test_openai_provider_vision.py's pattern exactly (a hand-rolled fake
 `AsyncOpenAI`-shaped client, no real network/API key)."""
 
@@ -76,7 +76,7 @@ def _request() -> DepictionCheckRequest:
 
 
 async def test_check_depiction_returns_the_parsed_verdict():
-    verdict = DepictionVerdict(depicts=True, reason="a clearly labelled industrial plant")
+    verdict = DepictionVerdict(confidently_wrong=False, reason="a plausible industrial plant")
     fake_client = _FakeAsyncOpenAI(_FakeCompletion(choices=[_FakeChoice(_FakeMessage(verdict))]))
     provider = OpenAIPlanningProvider(client=fake_client)
 
@@ -89,7 +89,7 @@ async def test_check_depiction_returns_the_parsed_verdict():
 
 
 async def test_check_depiction_sends_the_image_and_search_subject():
-    verdict = DepictionVerdict(depicts=True, reason="")
+    verdict = DepictionVerdict(confidently_wrong=False, reason="")
     fake_client = _FakeAsyncOpenAI(_FakeCompletion(choices=[_FakeChoice(_FakeMessage(verdict))]))
     provider = OpenAIPlanningProvider(client=fake_client)
 

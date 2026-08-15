@@ -3,11 +3,19 @@
 ## Where this sits, and why (the newly-closed decision)
 
 Runs BEFORE `AwaitApprovalStep`, right after the free search-only
-`ResolveAssetsStep` pass - Pixabay search is free, so A5 applies exactly
-as it does to visual assets: this is what makes music a supervised
-decision at the moment fixing it is still free, rather than a surprise
-in the final render. "A human approving a video should hear what it will
-sound like" (M8 open decisions, closed 2026-08-15).
+`ResolveAssetsStep` pass - the real music search (Openverse) is free, so
+A5 applies exactly as it does to visual assets: this is what makes music
+a supervised decision at the moment fixing it is still free, rather than
+a surprise in the final render. "A human approving a video should hear
+what it will sound like" (M8 open decisions, closed 2026-08-15).
+
+## Which provider (`settings.music_provider`)
+
+`_PROVIDERS` maps the config string to a real class. Default is
+`"openverse"` (`app/providers/openverse_music.py`) - free, keyless, and
+verified live to actually work, unlike `"pixabay"`
+(`app/providers/pixabay_music.py`), kept only as honest, non-functional
+scaffolding for whenever a real Pixabay Music API might exist.
 
 ## Where the decision lives
 
@@ -48,6 +56,7 @@ muxing under DRY_RUN - see that step's own docstring.
 
 import hashlib
 import uuid as uuid_module
+from collections.abc import Callable
 
 from app.assets.cost import check_budget, total_project_spend_cents
 from app.assets.music_ranking import rank_music_candidates
@@ -55,6 +64,7 @@ from app.core.config import settings
 from app.core.errors import PermanentError
 from app.providers.base import MusicProvider, MusicSearchQuery
 from app.providers.fakes.music import FakeMusicProvider
+from app.providers.openverse_music import OpenverseMusicProvider
 from app.providers.pixabay_music import PixabayMusicProvider
 from app.renderer.slideshow import probe_duration_seconds
 from app.repositories.generated_clip_repository import GeneratedClipRepository
@@ -62,6 +72,22 @@ from app.repositories.narration_repository import NarrationRepository
 from app.schemas.timeline import MusicTrackSelection, ProducedBy, Timeline
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
+
+# `settings.music_provider` selects the implementation (M8, 21.1) -
+# "openverse" is the real, working default; "pixabay" is kept only as
+# honest, non-functional scaffolding (see that module's own docstring).
+# An unrecognised value falls back to the real one rather than raising -
+# a typo in config should degrade to "still tries to find music", not
+# crash the whole pipeline.
+_PROVIDERS: dict[str, Callable[[], MusicProvider]] = {
+    "openverse": OpenverseMusicProvider,
+    "pixabay": PixabayMusicProvider,
+}
+
+
+def _real_music_provider() -> MusicProvider:
+    provider_cls = _PROVIDERS.get(settings.music_provider, OpenverseMusicProvider)
+    return provider_cls()
 
 
 class SelectMusicStep:
@@ -109,7 +135,7 @@ class SelectMusicStep:
         assert plan is not None
         project_uuid = uuid_module.UUID(ctx.project_id)
         provider: MusicProvider = (
-            FakeMusicProvider() if settings.dry_run else PixabayMusicProvider()
+            FakeMusicProvider() if settings.dry_run else _real_music_provider()
         )
 
         try:

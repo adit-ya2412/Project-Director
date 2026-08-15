@@ -255,20 +255,33 @@ class ConstraintCheckRequest:
 
 
 class DepictionVerdict(BaseModel):
-    """Vision check verdict for whether a SEARCHED candidate genuinely
-    depicts what a shot asked for (M6.5, A16 -> A30) - a different
-    question from `ConstraintVerdict` ("does this violate a fixed list of
-    hard constraints") and deliberately its own type rather than a
-    constraint-shaped workaround: A30 is a positive-match question ("does
-    this image show X"), not a negative-avoidance one, and forcing it
-    through `ConstraintVerdict`'s shape would blur two genuinely
-    different checks into one prompt that was worded for the other one.
-    `reason` is always populated (unlike `ConstraintVerdict.reason`,
-    empty when not violated) - useful for understanding a miss either
-    way, and this check has no "steady state" where an empty reason is
-    the expected case."""
+    """Vision check verdict for a SEARCHED candidate (M6.5, A16 -> A30 ->
+    A30a) - a different question from `ConstraintVerdict` ("does this
+    violate a fixed list of hard constraints") and deliberately its own
+    type rather than a constraint-shaped workaround.
 
-    depicts: bool
+    `confidently_wrong`, not `depicts` (A30's original field name,
+    renamed under A30a): measured live against the Hindi fixture, asking
+    the model to CONFIRM a specific subject ("does this depict X")
+    rejected two genuinely correct images - a real Bundesarchiv Leuna
+    photograph and a real Fischer-Tropsch diagram - because nothing in
+    the pixels can confirm a specific NAMED place or event; that identity
+    lives in an archive's catalogue metadata, which no vision model can
+    see. `confidently_wrong` asks the answerable, asymmetric question
+    instead: is this image CONFIDENTLY a different KIND of subject
+    entirely (a map instead of a photograph, a modern scene instead of
+    archival material, an unrelated event)? Default bias is toward
+    keeping - a false reject costs a real, usable image; a false accept
+    costs one image a human still sees and can override at the approval
+    gate. The field name itself is deliberately asymmetric (not
+    `plausible: bool` inverted) so a caller can never mis-read which
+    direction is the safe default.
+
+    `reason` is always populated - useful for understanding either
+    outcome, and this check has no "steady state" where an empty reason
+    is expected."""
+
+    confidently_wrong: bool
     reason: str
 
 
@@ -293,8 +306,9 @@ class DepictionCheckRequest:
 class VisionConstraintProvider(Protocol):
     """Checks one image against either a fixed list of hard creative
     constraints (`check_constraints`, M6.5 A12, generated media only) or
-    against whether it depicts a shot's search subject at all
-    (`check_depiction`, M6.5 A30, searched media only) - vision-capable
+    against whether it is CONFIDENTLY a different kind of subject than a
+    shot's search called for (`check_depiction`, M6.5 A30/A30a, searched
+    media only) - vision-capable
     structured output, the same call shape as
     `PlanningLLMProvider.structured_complete` but with an image attached.
     Kept as its own Protocol rather than methods added to
@@ -345,6 +359,13 @@ class TrackCandidate:
     author: str = ""
     duration_s: float | None = None
     tags: str = ""
+    # A provider-supplied, ready-to-use attribution string, when it has
+    # one (Openverse does - a precise, licence-version-and-URL-correct
+    # sentence, better than anything this codebase would reconstruct
+    # from `author`/`licence` alone). Empty when a provider has nothing
+    # better than `author` to offer - `fetch()` falls back to building
+    # one from that, the same pattern `PexelsAssetProvider.fetch` uses.
+    attribution: str = ""
 
 
 @dataclass(frozen=True)
