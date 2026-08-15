@@ -2516,6 +2516,26 @@ None of these are settled. Answer them before or during the build, and record th
 - ~~**Where does the chosen music track live?**~~ **CLOSED 2026-08-15 — the Timeline, and selection happens BEFORE the approval gate.** The chosen track is recorded in `music_plan` via an `append_version`, not in a side table: D6 makes music selection creative, and I1 makes the Timeline the only source of truth for creative decisions. The Timeline holds the *selection* (provider, track id, source url, licence, attribution, content hash) and never the bytes (I2) — the audio lives in `storage/{project}/music/{content_hash}.mp3` like every other asset. **Pixabay search is free, so selection belongs in the pre-approval pass** (A5): a human approving a video should hear what it will sound like, and changing the music after approval is exactly the kind of correction this phase moved earlier. The content hash in the Timeline is also what lets the track participate in the render fingerprint (step 6).
 - ~~**Does TTS count against the budget cap?**~~ **CLOSED — already true in code.** `check_budget` is called with `total_project_spend_cents(clip_repo=..., narration_repo=...)`, which sums narration alongside generated clips. Verified in `app/workflow/steps/resolve_assets.py`; no work needed. Music must be folded in the same way when step 4 lands.
 
+## Music search, corrected against real Openverse results (2026-08-15)
+
+The first real run selected **no track at all**, and the cause was not the code. Measured directly against the live API with the licence filter applied:
+
+| the Director's actual terms | permissive results |
+|---|---|
+| `documentary industrial ambient` | **1** (birdsong) |
+| `investigative historical underscore` | **0** |
+| `minimal mechanical pulse` | **0** |
+| `dark archival documentary` | **0** |
+| `restrained tension piano` | **0** |
+
+Simple, literal terms answer readily — `documentary music` → 102 results, top hit *"Documentary Music Strings"*, CC-BY, 53.8s; `ambient`, `orchestral`, `cinematic`, `dark ambient` → the API's 240-result page cap each.
+
+**M1 — the Director writes production-library vocabulary for a pool that does not speak it.** Terms like "investigative historical underscore" are what Epidemic Sound or Artlist understand. Openverse aggregates Freesound and Jamendo, where audio is tagged plainly. The prompt must ask for simple, literal terms.
+
+**M2 — the ranking needs a duration floor, and this only becomes urgent once M1 is fixed.** `music_ranking.py` deliberately has no duration preference because the render loops the bed — sound reasoning for a 30-second music loop, dangerous for this pool: `industrial` returns a **2.5-second air horn**, `tension` a 15-second stab. Fixing the vocabulary without a duration floor would bed an air horn looping sixteen times under a documentary. Prefer tracks at least as long as the video, or a substantial fraction of it.
+
+**M3 — a selection miss is permanent, and it should not be.** `SelectMusicStep.is_satisfied` returns true once `selection_attempted` is set, so a project that found nothing can never try again — not even after the two fixes above. The live project has that flag set and its jargon `search_terms` frozen into the Timeline, so it would render silent forever. A human needs a way to say "try again", optionally with their own terms. This is the same principle the rest of M6.5 rests on: an automated asset choice a human disagrees with must be correctable, and music is an asset choice like any other.
+
 ## Backlog — deferred, not blocking
 
 Raised during the first real Hinglish run (2026-08-15, project `194ad0e7`, fixture `hinglish_test_project`). Deliberately not fixed then, so the run could continue.
