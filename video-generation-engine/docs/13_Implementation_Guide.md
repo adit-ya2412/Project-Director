@@ -2572,6 +2572,83 @@ Raised during the first real Hinglish run (2026-08-15, project `194ad0e7`, fixtu
 - [ ] Errors are legible to a non-developer
 - [ ] Regenerating one scene does not touch the others
 
+## Implementation notes (2026-08-15) — folding shot semantics into `GET /progress`, ahead of the frontend
+
+No frontend exists yet (M9 proper hasn't started), but the gap this
+closes couldn't wait for one: a live paid run put a human in front of
+`GET /progress` at the approval gate, and it reported pure execution
+state (`shot_id`, `state`, `rung`, `asset`/`clip`) with no meaning - the
+narration, prompt, intent, and timing all lived only in `GET /timeline`,
+and nothing joined the two. A human could see THAT a shot resolved, not
+WHAT it was or whether its picture was right - exactly backwards for a
+phase whose whole premise (M6.5) is putting a human in front of
+acquisition while fixing it is still free.
+
+- **Additive fields only**, per shot in the `shots` array: `says` (the
+  shot's narration text, already resolved - `scene.narration_text[start:
+  end]`, not the raw offsets, because the human wants the words, not
+  arithmetic to do themselves), `prompt`, `intent`, `duration_s`, and
+  `starts_at_s`. Every existing field keeps its name and shape - nothing
+  was removed or renamed, since the e2e suite asserts on the old shape
+  directly.
+- **`starts_at_s` reuses D5's existing run/overlap arithmetic rather than
+  a naive cumulative sum** - a naive `sum(duration_s)` up to a shot is
+  wrong the moment any transition overlaps two shots (a 0.4s dissolve
+  between two 3.0s shots means the second starts 0.4s before the first's
+  own footage ends, not after it). New `app/timeline/duration.py::
+  compute_shot_start_times(shots) -> dict[shot_id, float]` computes this
+  directly from `group_into_runs`/`compute_run_duration` - the SAME two
+  functions `compute_timeline_duration` already uses - rather than
+  re-deriving the overlap math a third time in the API layer. It is
+  `duration.py`'s "one function" (module docstring) gaining one more
+  reading of itself, not a second, competing arithmetic.
+- **`shots` is now ordered in TIMELINE order** (scene order, then shot
+  order within each scene - iterating `timeline.scenes`/`scene.shots`
+  directly, which is exactly the order every planner already writes and
+  never reorders after) **instead of sorted by `shot_id`.** The two
+  happened to coincide on every fixture built so far (ids are namespaced
+  `{scene_id}_{s.id}` and scenes/shots are typically numbered in order),
+  which is precisely why that coincidence could not be trusted - nothing
+  enforced it, and a human reading the list expects playback order, not
+  an accident of string sorting.
+- **Verified against the real live project**, not merely reasoned about
+  - with a real constraint: a live project (`194ad0e7-e545-4524-a597-
+  59e4ff604ba2`, 14 shots/5 scenes, sitting at the approval gate) was
+  live in the shared dev Postgres, and running `pytest` (which truncates
+  every table via `tests/conftest.py`'s autouse `clean_database`) would
+  have destroyed it - so the full suite was NOT run for this change. The
+  already-running dev server also could not be used directly: it had not
+  reloaded this code (confirmed - a plain `curl` against it still
+  returned the OLD field set), and restarting a server serving a live,
+  in-progress human test was judged too risky to do unilaterally.
+  Verified instead by calling the real, updated `get_progress()`
+  function directly against a real, read-only database session pointed
+  at that same live project (zero commits, zero writes - `TimelineService
+  .get_active` and the binding/asset lookups inside `get_progress` are
+  all `SELECT`s) - the actual code path, not a reimplementation of it.
+  Result matched the coordinator's own known-good values exactly:
+  `sc_01_sh_01` says "Bro, Germany ke paas oil tha hi nahi..." at
+  `starts_at_s=0.0`; `sc_03_sh_03` carries the Bundesarchiv Leuna asset
+  and says "...Leuna-Werke jaisi factories din raat fuel bana rahi thi."
+  (a leading space is real - it is the space that already separated it
+  from the previous shot's own sentence in the scene's continuous
+  narration text, not a bug); the last shot, `sc_05_sh_03`, says "...Ek
+  war-time jugaad, jo permanent solution ban gaya." All 14 shots came
+  back in timeline order across all 5 scenes.
+- **Tests written but deliberately NOT run this session** - per the
+  coordinator's explicit instruction while the live project above was in
+  play: `tests/unit/timeline/test_duration.py` (new - pure-function
+  proof that `compute_shot_start_times` agrees with
+  `compute_timeline_duration`/`compute_run_duration` across hard-cut and
+  dissolve cases, cross-checked both ways) and `tests/e2e/
+  test_progress_shot_semantics.py` (new - a hand-built two-scene, three-
+  shot timeline whose shot ids are deliberately chosen so alphabetical
+  order disagrees with timeline order, proving the reorder fix over the
+  real HTTP surface, plus the new fields' values and the additive-only
+  shape of the existing ones). `ruff check backend`, `black --check
+  backend` (1 file reformatted), `mypy backend/app` all run normally (no
+  database touched) and are clean.
+
 ---
 
 # Phase M10 — Hardening

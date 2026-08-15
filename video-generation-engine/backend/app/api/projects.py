@@ -41,6 +41,7 @@ from app.repositories.shot_binding_repository import ShotBindingRepository
 from app.repositories.workflow_repository import WorkflowRunRepository
 from app.schemas.project import Project, ProjectStatus
 from app.schemas.timeline import ProducedBy, Timeline, TimelineStatus
+from app.timeline.duration import compute_shot_start_times
 from app.timeline.service import TimelineService
 from app.workflow.context import RunContext
 from app.workflow.engine import WorkflowEngine
@@ -495,41 +496,69 @@ async def get_progress(
     # criterion): a locked shot's own state proves the override survives.
     locked_by_shot = {s.id: s.asset_locked for s in timeline.all_shots()}
 
+    # M9 (folding shot semantics into /progress): everything below joins
+    # execution state (shot_binding) with the CREATIVE meaning that only
+    # lives on the Timeline itself (narration, prompt, intent, timing) -
+    # without this, a human at the approval gate can see THAT a shot
+    # resolved but not what it is or whether its picture is right.
+    # `starts_at_s` reuses `compute_shot_start_times` (D5's own run/overlap
+    # arithmetic - see app/timeline/duration.py) rather than a naive
+    # cumulative sum of duration_s, which would be wrong the moment any
+    # transition overlaps two shots.
+    bindings_by_shot = {b.shot_id: b for b in bindings}
+    start_times = compute_shot_start_times(timeline.all_shots())
+
     shots_detail = []
-    for b in sorted(bindings, key=lambda binding: binding.shot_id):
-        asset_detail = None
-        if b.asset_id is not None:
-            asset = await session.get(AssetModel, b.asset_id)
-            if asset is not None:
-                asset_detail = {
-                    "provider": asset.provider,
-                    "source_url": asset.source_url,
-                    "licence": asset.licence,
-                    "attribution": asset.attribution,
-                    "local_path": asset.local_path,
+    for scene in timeline.scenes:
+        for shot in scene.shots:
+            b = bindings_by_shot.get(shot.id)
+            if b is None:
+                continue
+
+            asset_detail = None
+            if b.asset_id is not None:
+                asset = await session.get(AssetModel, b.asset_id)
+                if asset is not None:
+                    asset_detail = {
+                        "provider": asset.provider,
+                        "source_url": asset.source_url,
+                        "licence": asset.licence,
+                        "attribution": asset.attribution,
+                        "local_path": asset.local_path,
+                    }
+            clip_detail = None
+            if b.clip_id is not None:
+                clip = await session.get(GeneratedClipModel, b.clip_id)
+                if clip is not None:
+                    clip_detail = {
+                        "provider": clip.provider,
+                        "model_id": clip.model_id,
+                        "status": clip.status,
+                        "local_path": clip.local_path,
+                    }
+
+            says = None
+            if shot.narration_span is not None:
+                start, end = shot.narration_span
+                says = scene.narration_text[start:end]
+
+            shots_detail.append(
+                {
+                    "shot_id": b.shot_id,
+                    "state": b.state,
+                    "rung": b.rung,
+                    "last_error": b.last_error,
+                    "will_generate": b.state == "awaiting_generation",
+                    "locked": locked_by_shot.get(b.shot_id, False),
+                    "asset": asset_detail,
+                    "clip": clip_detail,
+                    "says": says,
+                    "prompt": shot.prompt,
+                    "intent": shot.intent,
+                    "duration_s": shot.duration_s,
+                    "starts_at_s": start_times.get(shot.id),
                 }
-        clip_detail = None
-        if b.clip_id is not None:
-            clip = await session.get(GeneratedClipModel, b.clip_id)
-            if clip is not None:
-                clip_detail = {
-                    "provider": clip.provider,
-                    "model_id": clip.model_id,
-                    "status": clip.status,
-                    "local_path": clip.local_path,
-                }
-        shots_detail.append(
-            {
-                "shot_id": b.shot_id,
-                "state": b.state,
-                "rung": b.rung,
-                "last_error": b.last_error,
-                "will_generate": b.state == "awaiting_generation",
-                "locked": locked_by_shot.get(b.shot_id, False),
-                "asset": asset_detail,
-                "clip": clip_detail,
-            }
-        )
+            )
 
     # Estimated before generation runs (implementation guide, Phase M7
     # advice: "estimate cost before the approval gate and show it") -

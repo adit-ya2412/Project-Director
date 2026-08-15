@@ -54,3 +54,30 @@ def compute_timeline_duration(shots: list[Shot]) -> float:
     this same function, never by hand.
     """
     return sum(compute_run_duration(run) for run in group_into_runs(shots))
+
+
+def compute_shot_start_times(shots: list[Shot]) -> dict[str, float]:
+    """Each shot's start time in seconds from the beginning of the
+    rendered video (M9 — `GET /progress`, `starts_at_s`) — the offset a
+    human would seek to in order to find that shot in the finished piece.
+
+    Reuses the exact same run/overlap arithmetic `compute_timeline_duration`
+    already uses (D5), rather than a naive running sum of `duration_s`,
+    which would be wrong the moment any transition overlaps two shots:
+    hard cuts between runs cost nothing, so a run's own start is exactly
+    the sum of every previous run's `compute_run_duration`; within a run,
+    shot i (i > 0) starts `overlap` seconds before the previous shot's own
+    footage would otherwise have ended — the same crossfade math
+    `compute_run_duration` sums up, just recorded per shot instead of
+    only as a run total.
+    """
+    starts: dict[str, float] = {}
+    elapsed = 0.0
+    for run in group_into_runs(shots):
+        cursor = elapsed
+        starts[run[0].id] = cursor
+        for previous, current in zip(run, run[1:], strict=False):
+            cursor += previous.duration_s - previous.transition_out.duration_s
+            starts[current.id] = cursor
+        elapsed += compute_run_duration(run)
+    return starts
