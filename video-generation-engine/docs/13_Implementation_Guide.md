@@ -2536,6 +2536,151 @@ Simple, literal terms answer readily — `documentary music` → 102 results, to
 
 **M3 — a selection miss is permanent, and it should not be.** `SelectMusicStep.is_satisfied` returns true once `selection_attempted` is set, so a project that found nothing can never try again — not even after the two fixes above. The live project has that flag set and its jargon `search_terms` frozen into the Timeline, so it would render silent forever. A human needs a way to say "try again", optionally with their own terms. This is the same principle the rest of M6.5 rests on: an automated asset choice a human disagrees with must be correctable, and music is an asset choice like any other.
 
+## Implementation notes (2026-08-15) — M1–M3: fixing why the first real run selected no music
+
+All three built against the diagnosis above, scoped tight per the
+coordinator's instruction: fix exactly M1–M3, do not build the M4–M7
+local-library plan yet (it lands after M1–M3, per that section's own
+"Sequencing" note above).
+
+### M1 — Director prompt vocabulary
+
+`app/prompts/director/v1.md`'s `search_terms` guidance was rewritten to
+ask explicitly for "simple, literal, one-or-two-word terms a plain
+keyword search would match, never production-library jargon" - with the
+measured failing terms named directly as what NOT to write, and the
+measured working terms (`documentary music`, `ambient`, `orchestral`,
+`cinematic`, `dark ambient`) named as what a plainly-tagged pool
+actually answers. Prompt-only change (as scoped) - no schema or
+validator change, since the defect is entirely in wording, not in a
+checkable structural property `search_terms` could be validated against.
+
+**Re-verified live against the real Openverse API** (12 calls: 5 old
+jargon terms + 5 new simple terms + 2 combined-query terms for the M2
+check below): the five jargon terms from the live run returned 1
+permissive result total (birdsong, matching `0711551`'s own finding
+exactly); all five new terms returned the API's per-page result cap
+(10 each, `_PAGE_SIZE`) - confirming the fix actually changes what a
+real search returns, not just what the prompt asks for.
+
+### M2 — a duration floor in music ranking
+
+`app/assets/music_ranking.py` gained `compute_duration_floor_s` and a
+duration-aware `rank_music_candidates`. **Chosen design: a
+lexicographic reorder, not a hard filter and not a weighted/soft
+score** - candidates meeting the floor always sort ahead of ones that
+don't, regardless of relevance, but nothing is ever discarded from the
+pool. Argued explicitly (per the instruction to argue for the choice,
+not just state it):
+
+- **A hard gate** (discard anything under the floor) risks the exact
+  failure that motivated this fix in the first place: selecting nothing
+  on a thin, honestly-filtered pool. That is literally how the live
+  project ended up silent.
+- **A pure weighted/blended score** (fold duration into one combined
+  number with relevance) risks the air horn still winning if the
+  weights are not tuned exactly right - and there is no corpus large
+  enough to tune them against with real confidence.
+- **A lexicographic reorder** gets both guarantees at once: whenever
+  ANY floor-passing candidate exists, it wins over a short one no
+  matter the relevance gap; when NONE do, the best-matching short
+  candidate is still returned rather than nothing. Selecting a short
+  loop that repeats a little is strictly better than silence, and is
+  exactly the outcome this pool already produced before this fix
+  existed - not a regression, just no longer the risk-free default.
+
+The floor itself: `min(20.0, 0.5 * video_duration_s)` - an absolute
+20-second ceiling (chosen to sit above both measured one-shot cases,
+2.5s and 15s, while not demanding a track cover anywhere near a full
+60-90s documentary, since the render already loops the bed to cover
+that) and a `0.5 ×` scaling term so a short video doesn't demand an
+unreasonably long track relative to its own length. A candidate with no
+reported duration (Openverse does not guarantee the field) is treated
+as NOT meeting the floor - unverified is not the same as confirmed long
+enough.
+
+**Re-verified live** (2 more calls, `tension`+`industrial` combined,
+20 unique permissive candidates returned): without the floor, the top 5
+by relevance alone were dominated by 15-16s clips tied on relevance;
+with the floor applied (`video_duration_s=60.0` → `floor_s=20.0`), the
+34.3s and 63.3s tracks correctly sorted ahead of the sub-20s ones, and a
+94s track with a WEAKER relevance score (0.200 vs 0.800) still
+out-ranked every floor-failing candidate - direct, measured proof the
+lexicographic preference behaves as designed, not just as intended.
+
+### M3 — a recoverable music-selection miss
+
+New `POST /projects/{id}/music/retry` (`RetryMusicSelectionRequest`,
+optional `search_terms: list[str] | None`). Resets
+`music_plan.selected_track` to `None` and `selection_attempted` to
+`False` via a normal `append_version` (I3, `produced_by=HUMAN`,
+`owns={"music_plan"}`) - never mutated in place - optionally
+overwriting the Timeline's own frozen `search_terms` in the same call,
+since the whole point is escaping terms that were bad from the start
+(re-running unchanged jargon terms would just fail the same way again).
+Mirrors `override_shot_asset`'s own belt-and-braces re-approval exactly:
+an already-approved timeline is re-approved after the reset so resuming
+does not demand a redundant second human click.
+
+**Costs nothing extra for a project that has never attempted
+selection** - `SelectMusicStep.is_satisfied` itself is completely
+unchanged; the reset simply puts a stuck project back into the exact
+"not yet tried" state that method already recognises, so a project that
+never hit this path at all behaves identically to before.
+
+**Scoped tight, as instructed**: no music-upload endpoint. A per-shot-
+image-upload analogue (a human supplying their own track file directly)
+would be the natural next step if ever wanted, but does not fall out of
+this design for free (it would need its own validation/storage path,
+mirroring `POST /{id}/assets`) and was not built.
+
+**Verified against a throwaway project, created and deleted the same
+way the A30 measurement's disposable projects were - never the live
+project.** Seeded a Timeline with `music_plan` in the exact stuck shape
+(`search_terms` = the live project's own jargon terms,
+`selection_attempted=True`, `selected_track=None`). Confirmed, in order,
+against the real database and the real live Openverse API: (1)
+`SelectMusicStep.is_satisfied` reads `True` (stuck, matching the live
+project); (2) the reset transform (identical to the endpoint's own)
+flips it to `False`; (3) re-running `SelectMusicStep` for real, with
+human-supplied terms `["documentary music", "ambient"]`, genuinely finds
+and records a real track (`"Stasis (music for space)" by Drakensson`,
+CC BY 4.0, via Freesound) with full provenance; (4) `is_satisfied` reads
+`True` again - freshly and correctly settled, not stuck. The throwaway
+project was deleted afterward via the same derived-from-schema,
+child-tables-first approach `scripts/seed_test_project.py` already uses
+(never a hand-typed table list). A first attempt at this same check
+returned no track at all with no error - later understood to coincide
+with a real network outage (the same one that killed the session
+mid-task); repeated once connectivity was confirmed restored, with a
+clean, positive result.
+
+### Verification, honestly
+
+**The test suite was NOT run at any point during M1–M3** - project
+`194ad0e7-e545-4524-a597-59e4ff604ba2` sits at the approval gate in the
+same shared dev Postgres with 13 of 14 shots overridden with
+irreplaceable human-uploaded images, and running `pytest` truncates
+every table via `tests/conftest.py`'s autouse `clean_database` fixture.
+New/updated tests were written, not executed: 6 new cases in
+`tests/unit/assets/test_music_ranking.py` (the duration-floor scaling
+formula, the measured air-horn-vs-loop case, the lexicographic-not-
+weighted proof, the never-discard-only-reorder proof, the unknown-
+duration case, and the floor's no-op behaviour when the video length
+isn't known yet), a new `tests/unit/planners/test_director_music_prompt.py`
+(regression guard on the prompt's own wording, not on planner code), and
+a new `tests/e2e/test_music_retry_api.py` (5 cases over the real HTTP
+route, DRY_RUN + `FakeMusicProvider` throughout - the override taking
+effect, an omitted override leaving existing terms in place, the empty-
+list rejection, the two "nothing to retry" 400s, and the re-approval
+belt-and-braces). `ruff check backend`, `black --check backend` (2
+files auto-reformatted), `mypy backend/app` all run normally (no
+database touched) and are clean. Live-API verification: **16 real
+Openverse calls total** across M1/M2/M3 (12 for M1 + 2 more for M2's
+combined query + 2 for M3's search, across two M3 attempts - the first
+interrupted by the network outage, the second clean), all free, no key
+required.
+
 ## Music decisions M4–M7 — a curated local library replaces open-ended search (2026-08-15)
 
 Proposed by the user after M1–M3 were diagnosed. Adopted, because it does not merely work around the failure — it removes the failure class.
@@ -2551,6 +2696,12 @@ Layout, as proposed: `assets/music/{documentary_dark,documentary_mystery,documen
 **M6 — the Director selects a mood from the closed set; it no longer invents search terms for the local provider.** This is the change that actually fixes M1. Keep `search_terms` in `music_plan` for the fallback provider, but the local provider matches on the category.
 
 **M7 — a mood with no matching track degrades; it never forces a wrong pick.** If a script genuinely does not fit the six categories, fall back to the search provider, and past that to silence. Forcing a selection because an enum demanded one would reintroduce, by a different route, exactly the confidently-wrong behaviour A30a exists to prevent. **Attribution:** CC-BY requires credit, and where it appears (video, description, or both) should be decided before the renderer is built rather than retrofitted.
+
+**M8 — the Director chooses the category, and it chooses exactly one for the whole video.** The Director is the only agent that sees the whole script, and it already derives the emotional arc (`music_plan.mood`/`tempo`/`energy_arc`, plus every `scene.emotion`), so the choice costs no extra call. **One bed per video, not one per scene:** at D7's 90-second ceiling, swapping tracks reads as choppy rather than dynamic — short-form documentary gets its dynamics from ducking under narration and the volume envelope, both of which already exist. Per-scene scoring becomes right somewhere past two or three minutes, and the input for it is already present (`scene.emotion`), so this is a deferral, not a dead end.
+
+**M9 — every category must be defined in the prompt by WHEN TO USE IT, never just named.** This is the trap that would otherwise reproduce M1 one level up: `documentary_dark` versus `historical_epic` versus `industrial` means nothing to a model, so it would guess at a private taxonomy exactly as it guessed at stock-library vocabulary. Each category needs a usage description — e.g. *`documentary_dark`: sombre, minor key; grim or morally heavy material — war, exploitation, human cost*; *`industrial`: mechanical, rhythmic, driving; factories, machinery, process and scale*; *`documentary_ambient`: neutral texture, minimal; explanatory passages where the narration carries everything*.
+
+**M10 — hold two or three tracks per category and pick deterministically from the project seed.** With one track per folder, every video on a similar topic gets identical music. Seeding the pick from the existing per-project seed (`_project_seed`) keeps a given project reproducible — I5 — while letting different projects vary.
 
 **Sourcing:** Incompetech (Kevin MacLeod) is CC-BY, genuinely good documentary scoring, and already categorised close to these folder names; Free Music Archive and Jamendo's CC-BY subset fill gaps.
 
