@@ -9,6 +9,13 @@ from app.schemas.timeline import AssetStrategy, PreferredMediaType
 
 class AssetPlanShotOutput(BaseModel):
     shot_id: str
+    # The named real-world subject this shot depicts (M6.5, A1) - e.g.
+    # "Leuna-Werke", "Fischer-Tropsch process", "Sasol". Required (like
+    # every field here, for OpenAI structured-output strict mode) but must
+    # be allowed to be the empty string: a generic scene-setting shot with
+    # no single nameable subject should say so honestly rather than invent
+    # one. See app/prompts/asset_planner/v1.md for the worked examples.
+    entity: str
     strategy: AssetStrategy
     search_queries: list[str]
     preferred_type: PreferredMediaType

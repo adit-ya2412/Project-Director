@@ -94,6 +94,16 @@ class Settings(BaseSettings):
     wikimedia_api_url: str = "https://commons.wikimedia.org/w/api.php"
     wikimedia_rate_limit_per_second: int = 5
 
+    # --- Wikipedia entity retrieval (M6.5+, A1/A2) ---
+    # Entity -> images resolution (WikipediaEntityAssetProvider) needs two
+    # endpoints beyond Commons itself: the English Wikipedia API (to find
+    # the article an entity name refers to) and its REST media-list
+    # endpoint (to take that article's own curated images). Both verified
+    # against the live API before use, not guessed - see
+    # app/providers/wikimedia.py.
+    wikipedia_search_api_url: str = "https://en.wikipedia.org/w/api.php"
+    wikipedia_media_list_api_url: str = "https://en.wikipedia.org/api/rest_v1/page/media-list"
+
     # --- Pexels (M6+) ---
     pexels_api_key: str | None = None
 

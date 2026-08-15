@@ -89,6 +89,7 @@ def _make_validator(scene: Scene):
 
 def _to_domain(p: AssetPlanShotOutput) -> AssetPlan:
     return AssetPlan(
+        entity=p.entity,
         strategy=p.strategy,
         search_queries=p.search_queries,
         preferred_type=p.preferred_type,

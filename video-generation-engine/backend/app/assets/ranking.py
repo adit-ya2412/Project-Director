@@ -14,8 +14,37 @@ this function at all, the same way a licence-rejected one never does. The
 kept as a graded input (not just a pass/fail) so that among several
 candidates that all clear the gate, a stronger textual match still outranks
 a weaker one.
+
+Entity-curated candidates (`AssetCandidate.entity_curated`, M6.5 A1/A2) go
+through this same relevance gate as everything else - an earlier version
+of this pipeline exempted them on the theory that human curation implies
+relevance; measured against the live API, that premise is false (a
+Wikipedia article legitimately embeds off-topic images alongside the one
+that matches a given shot - see `app/providers/wikimedia.py`). Here,
+`entity_curated` is folded into the weighted score as a small, modest
+component (`_W_ENTITY_CURATED`) rather than an overriding priority tier: a
+measured run showed the tier version letting a poorly-matched
+entity-curated candidate (e.g. a stray photo pulled in under a loosely
+related article) beat an already-correct free-text hit outright. A modest
+weight breaks a near-tie in favour of curated provenance without being
+able to override a genuinely stronger free-text match on relevance/
+quality/period.
+
+**`quality` measures adequacy for the render, not raw pixel count** - a
+correction made after a live measurement traced a real wrong pick
+(a Polish coal elevator photo beating two genuine Bundesarchiv Leuna-Werke
+archival photos for a Leuna-Werke shot) to `_quality_score`, not to
+relevance or to entity retrieval: the old formula was `min(1.0,
+source_area / target_area)`, raw pixel count against the render target.
+Since archival material is close to a century old and modern stock/
+incidental photography is not, that formula systematically rewards a
+candidate for being modern and penalises one for being archival - in a
+tool whose entire visual language is archival documentary, that is
+exactly backwards. See `_quality_score` for the corrected formula and the
+threshold rationale.
 """
 
+import math
 from dataclasses import dataclass
 
 from app.assets.relevance import candidate_relevance
@@ -38,6 +67,44 @@ _W_QUALITY = 0.2
 _W_PERIOD = 0.2
 _W_LICENCE = 0.15
 _W_REUSE_PENALTY = 0.4
+# Deliberately the smallest weight in the formula - smaller than every
+# other single component (the next-smallest, licence, is 0.15) - so
+# entity-curated provenance can only break a close tie among otherwise
+# similar candidates, never override a candidate that is genuinely more
+# relevant, higher quality, or a better period match (M6.5, A2: measured
+# against the live API, an unconditional priority tier let a poorly
+# matched entity-curated candidate beat an already-correct free-text hit -
+# see this module's docstring).
+_W_ENTITY_CURATED = 0.08
+
+# `quality` thresholds, expressed as the LINEAR upscale factor a source
+# image would need to fill the render frame (`sqrt(target_area /
+# source_area)`, not the raw area ratio the old formula used) - linear
+# scale is what actually determines visible softness, since resampling
+# error grows with the per-axis stretch, not with pixel-count ratio.
+#
+# - Up to ~1.5x linear upscale is full score: a 1.2-1.4x enlargement is
+#   not perceptible at typical render/viewing sizes, and 1.5x is a
+#   deliberately generous cutoff so a real archival scan a bit under the
+#   render's native resolution isn't quietly marked down for being
+#   archival - the exact defect this replaces (see module docstring).
+# - Beyond that it degrades linearly, reaching the floor at a 4x linear
+#   upscale, the rough point a stretch stops reading as "a bit soft" and
+#   starts reading as visibly mushy/blocky.
+# - The floor is 0.1, not 0.0: a small, low-resolution source is still
+#   worse than nothing scoreable, but it may genuinely be the only real
+#   photograph of its subject that exists, and 0.2 (the unknown-licence
+#   floor) sets the precedent that "worst case" isn't zero either.
+#
+# Symmetrically, and just as deliberately: a source far ABOVE the render
+# target (a 12MP modern photo against a 720x1280 target) gets no bonus for
+# it - `min(..., 1.0)` already capped that before this fix, and still
+# does. More pixels than the render needs are worth nothing; that half of
+# the principle was already right. What was wrong was punishing not having
+# more pixels than a modern camera produces.
+_QUALITY_FULL_SCORE_UPSCALE = 1.5
+_QUALITY_FLOOR_UPSCALE = 4.0
+_QUALITY_FLOOR_SCORE = 0.1
 
 
 @dataclass(frozen=True)
@@ -49,10 +116,23 @@ class RankedCandidate:
 
 
 def _quality_score(candidate: AssetCandidate) -> float:
-    if candidate.width is None or candidate.height is None:
+    """Adequacy for the render, not raw resolution (see module docstring
+    for the defect this fixes: raw pixel count systematically penalises
+    archival material for predating modern cameras)."""
+    if not candidate.width or not candidate.height:
         return 0.5
+    source_area = candidate.width * candidate.height
     target_area = settings.render_width * settings.render_height
-    return min(1.0, (candidate.width * candidate.height) / target_area)
+    linear_upscale_needed = math.sqrt(target_area / source_area)
+
+    if linear_upscale_needed <= _QUALITY_FULL_SCORE_UPSCALE:
+        return 1.0
+    if linear_upscale_needed >= _QUALITY_FLOOR_UPSCALE:
+        return _QUALITY_FLOOR_SCORE
+
+    span = _QUALITY_FLOOR_UPSCALE - _QUALITY_FULL_SCORE_UPSCALE
+    fraction_degraded = (linear_upscale_needed - _QUALITY_FULL_SCORE_UPSCALE) / span
+    return 1.0 - fraction_degraded * (1.0 - _QUALITY_FLOOR_SCORE)
 
 
 def _period_match_score(candidate: AssetCandidate, historical_period: str) -> float:
@@ -89,12 +169,14 @@ def rank_candidates(
             "period_match": _period_match_score(candidate, historical_period),
             "licence": _licence_score(candidate),
             "reuse_penalty": 1.0 if content_hash in already_used_hashes else 0.0,
+            "entity_curated": 1.0 if candidate.entity_curated else 0.0,
         }
         score = (
             _W_RELEVANCE * components["relevance"]
             + _W_QUALITY * components["quality"]
             + _W_PERIOD * components["period_match"]
             + _W_LICENCE * components["licence"]
+            + _W_ENTITY_CURATED * components["entity_curated"]
             - _W_REUSE_PENALTY * components["reuse_penalty"]
         )
         ranked.append(

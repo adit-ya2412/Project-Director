@@ -45,7 +45,7 @@ from app.providers.fal_image import FalImageProvider
 from app.providers.fal_video import FalVideoProvider
 from app.providers.local_assets import LocalProjectAssetProvider
 from app.providers.pexels import PexelsAssetProvider
-from app.providers.wikimedia import WikimediaAssetProvider
+from app.providers.wikimedia import WikimediaAssetProvider, WikipediaEntityAssetProvider
 from app.repositories.asset_repository import AssetRepository
 from app.repositories.generated_clip_repository import GeneratedClipRepository
 from app.repositories.narration_repository import NarrationRepository
@@ -60,6 +60,10 @@ _SEARCH_STRATEGIES = {
     AssetStrategy.PUBLIC_DOMAIN,
     AssetStrategy.STOCK_SEARCH,
 }
+# Entity retrieval (M6.5, A1/A2) only makes sense for the two Wikimedia-
+# backed rungs - Pexels and project uploads have no notion of a Wikipedia
+# article or Commons category to resolve against.
+_ENTITY_ELIGIBLE_STRATEGIES = {AssetStrategy.HISTORICAL_SEARCH, AssetStrategy.PUBLIC_DOMAIN}
 _CANDIDATES_TO_FETCH_PER_RUNG = 5
 
 
@@ -125,6 +129,11 @@ class ResolveAssetsStep:
 
         fake_asset_provider = FakeAssetProvider() if settings.dry_run else None
         search_providers = None if settings.dry_run else _real_search_providers()
+        # A1/A2 (M6.5): entity -> images is a deterministic lookup, not a
+        # search rung - one instance, reused across every shot in this run
+        # (its own rate limiter is per-instance, same discipline as the
+        # search providers above).
+        entity_provider = None if settings.dry_run else WikipediaEntityAssetProvider()
         image_provider: ImageProvider = (
             FakeImageProvider() if settings.dry_run else FalImageProvider()
         )
@@ -152,13 +161,18 @@ class ResolveAssetsStep:
                         clip_repo=clip_repo,
                     )
                 else:
-                    assert search_providers is not None and video_provider is not None
+                    assert (
+                        search_providers is not None
+                        and video_provider is not None
+                        and entity_provider is not None
+                    )
                     used_hash = await self._resolve_one_real(
                         shot,
                         binding,
                         project_uuid=project_uuid,
                         project_dir=project_dir,
                         search_providers=search_providers,
+                        entity_provider=entity_provider,
                         image_provider=image_provider,
                         video_provider=video_provider,
                         asset_repo=asset_repo,
@@ -252,6 +266,7 @@ class ResolveAssetsStep:
         project_uuid: uuid_module.UUID,
         project_dir,
         search_providers: dict[AssetStrategy, AssetProvider],
+        entity_provider: WikipediaEntityAssetProvider,
         image_provider: ImageProvider,
         video_provider: VideoProvider,
         asset_repo: AssetRepository,
@@ -269,6 +284,14 @@ class ResolveAssetsStep:
         licence_requirements = set(asset_plan.licence_requirements) if asset_plan else set()
 
         search_terms = (asset_plan.search_queries if asset_plan else []) or [shot.id]
+        entity = (asset_plan.entity if asset_plan else "").strip()
+        # Fetched at most once per shot, at the first Wikimedia-backed rung
+        # reached in the chain - reused as-is on any later rung (A1/A2,
+        # M6.5): the entity itself doesn't change between rungs, so
+        # re-fetching would just repeat the same network call for no
+        # benefit.
+        entity_candidates: list[AssetCandidate] = []
+        entity_candidates_fetched = False
 
         for strategy in chain:
             if strategy not in _SEARCH_STRATEGIES:
@@ -283,30 +306,57 @@ class ResolveAssetsStep:
             )
             candidates = await provider.search(query)
 
+            # Only merged in on the Wikimedia-backed rungs, not on every
+            # rung the fallback chain happens to reach afterwards: `fetch`
+            # below is called on *this rung's* provider, and a candidate's
+            # bytes must be downloaded with the Wikimedia User-Agent
+            # Commons requires (implementation guide, M6 notes - a generic
+            # UA is silently blocklisted by upload.wikimedia.org) rather
+            # than whatever the current provider (e.g. Pexels) happens to
+            # send.
+            entity_eligible_rung = strategy in _ENTITY_ELIGIBLE_STRATEGIES
+            if entity and not entity_candidates_fetched and entity_eligible_rung:
+                entity_candidates = await entity_provider.resolve_entity(entity)
+                entity_candidates_fetched = True
+
+            # Entity-sourced candidates are pooled with the free-text ones
+            # from here on and run through the exact same gates - NOT
+            # exempted from either. An earlier version of this step skipped
+            # the relevance gate for entity candidates on the theory that a
+            # human filing an image under a subject makes it relevant by
+            # construction; measured against the live API, that premise is
+            # false (see WikipediaEntityAssetProvider's docstring - a
+            # Wikipedia article legitimately embeds off-topic images
+            # alongside the one that actually matches a given shot). A bad
+            # entity guess must fail exactly as gracefully as a bad
+            # free-text query: fall through to the next rung, not win by
+            # default.
+            pool = candidates + (entity_candidates if entity_eligible_rung else [])
+
             # Licence is a hard gate, never a ranking factor (implementation
             # guide, Phase M6 advice) - a candidate whose licence isn't
             # acceptable is discarded outright, not deprioritised.
             eligible = [
-                c
-                for c in candidates
-                if not licence_requirements or c.licence in licence_requirements
+                c for c in pool if not licence_requirements or c.licence in licence_requirements
             ]
             if not eligible:
                 continue
 
-            # Relevance is a hard gate too, same principle: a candidate
-            # whose title/description has no genuine term overlap with what
-            # the shot actually asked for is discarded here, before it is
-            # ever downloaded or ranked - never merely deprioritised (see
-            # app/assets/relevance.py for the real production failures this
-            # is fixing - a query returning a crucifixion painting or a
-            # Portuguese railway station scored a perfect "relevance" of
-            # 1.0 under the old rank-position-only field).
+            # Relevance is a hard gate too, same principle, applied
+            # identically to every candidate regardless of source: a
+            # candidate whose title/description has no genuine term overlap
+            # with what the shot actually asked for is discarded here,
+            # before it is ever downloaded or ranked - never merely
+            # deprioritised (see app/assets/relevance.py for the real
+            # production failures this is fixing - a query returning a
+            # crucifixion painting or a Portuguese railway station scored a
+            # perfect "relevance" of 1.0 under the old rank-position-only
+            # field).
             relevant = [
                 c for c in eligible if passes_relevance_gate(candidate_relevance(search_terms, c))
             ]
             if not relevant:
-                continue  # nothing on this rung is actually about the subject - try the next rung
+                continue  # nothing on this rung (entity or free-text) is actually about the subject
 
             fetched_candidates: list[tuple[AssetCandidate, str, bytes, str]] = []
             for candidate in relevant[:_CANDIDATES_TO_FETCH_PER_RUNG]:
@@ -355,9 +405,15 @@ class ResolveAssetsStep:
 
                 path = project_dir / "assets" / f"{rank_result.content_hash}.{ext}"
                 path.write_bytes(content)
+                # Provenance reflects how this candidate was actually found
+                # (M6.5) - `entity_provider.name` ("wikipedia_entity") for
+                # an entity-curated hit, `provider.name` ("wikimedia") for
+                # a free-text one, even though both were fetched through
+                # the same rung's WikimediaAssetProvider instance above.
+                found_by = entity_provider.name if candidate.entity_curated else provider.name
                 asset = await asset_repo.insert(
                     project_id=project_uuid,
-                    provider=provider.name,
+                    provider=found_by,
                     source_url=candidate.source_url,
                     type="image",
                     local_path=str(path),

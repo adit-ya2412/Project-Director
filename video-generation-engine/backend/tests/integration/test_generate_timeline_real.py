@@ -157,6 +157,7 @@ def _asset_output(scene_id: str) -> AssetPlannerOutput:
         asset_plans=[
             AssetPlanShotOutput(
                 shot_id=f"{scene_id}_sh_01",
+                entity="",
                 strategy=AssetStrategy.HISTORICAL_SEARCH,
                 search_queries=["archival search term"],
                 preferred_type=PreferredMediaType.IMAGE,
@@ -165,6 +166,7 @@ def _asset_output(scene_id: str) -> AssetPlannerOutput:
             ),
             AssetPlanShotOutput(
                 shot_id=f"{scene_id}_sh_02",
+                entity="",
                 strategy=AssetStrategy.PUBLIC_DOMAIN,
                 search_queries=["archival search term 2"],
                 preferred_type=PreferredMediaType.IMAGE,

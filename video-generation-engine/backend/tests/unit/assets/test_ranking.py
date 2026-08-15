@@ -49,6 +49,58 @@ def test_unknown_dimensions_get_a_neutral_quality_score():
     assert ranked[0].components["quality"] == 0.5
 
 
+def test_quality_scores_full_for_a_modest_upscale_need():
+    """A source needing only a ~1.05x linear upscale to fill the render
+    frame (700x1200 against a 720x1280 target) is not visibly degraded -
+    full quality score, not a fraction of raw pixel count."""
+    modest = _candidate(source_id="modest", width=700, height=1200)
+    ranked = rank_candidates([(modest, "hash-modest")])
+    assert ranked[0].components["quality"] == 1.0
+
+
+def test_quality_gives_no_bonus_for_resolution_far_beyond_the_render_target():
+    """The fix corrects punishing archival material for being low-res; it
+    does not start rewarding a modern source for being needlessly high-res
+    either - a 4000x6000 source scores the same 1.0 as one just barely
+    big enough for the render."""
+    modest = _candidate(source_id="modest", width=700, height=1200)
+    huge = _candidate(source_id="huge", width=4000, height=6000)
+    ranked = rank_candidates([(modest, "hash-modest"), (huge, "hash-huge")])
+    assert ranked[0].components["quality"] == ranked[1].components["quality"] == 1.0
+
+
+def test_quality_degrades_for_a_source_needing_a_large_upscale():
+    """A genuinely tiny source (150x200, a ~5.5x linear upscale for a
+    720x1280 render) reads as visibly soft/mushy - low score, but not the
+    absolute floor of every other component (never a hard zero)."""
+    tiny = _candidate(source_id="tiny", width=150, height=200)
+    ranked = rank_candidates([(tiny, "hash-tiny")])
+    assert 0.0 < ranked[0].components["quality"] < 0.5
+
+
+def test_a_low_resolution_archival_photo_no_longer_loses_to_a_high_resolution_irrelevant_one():
+    """The regression this fix targets, reproduced directly: measured
+    against the live API, a modern high-resolution but off-topic photo
+    (here standing in for the real "Polish coal elevator" case) used to
+    outrank a lower-resolution but genuinely on-topic archival photo
+    purely because of raw pixel count. Same relevance/period/licence on
+    both sides; only resolution differs, and it must no longer decide."""
+    archival = _candidate(
+        source_id="archival",
+        title="Leuna Werke synthetic fuel plant archival photograph",
+        width=598,
+        height=800,
+    )
+    modern_offtopic = _candidate(
+        source_id="modern", title="a modern city skyline", width=3000, height=4000
+    )
+    ranked = rank_candidates(
+        [(archival, "hash-archival"), (modern_offtopic, "hash-modern")],
+        search_terms=["Leuna Werke synthetic fuel plant"],
+    )
+    assert ranked[0].candidate.source_id == "archival"
+
+
 def test_public_domain_outranks_unknown_licence_all_else_equal():
     pd = _candidate(source_id="pd", licence="public_domain")
     unknown = _candidate(source_id="unknown", licence="some_weird_licence")
@@ -94,6 +146,39 @@ def test_reuse_penalty_can_flip_the_ranking_despite_higher_relevance():
     assert reused_result.components["relevance"] > fresh_result.components["relevance"]
     assert ranked[0].candidate.source_id == "fresh"
     assert reused_result.components["reuse_penalty"] == 1.0
+
+
+def test_entity_curated_breaks_a_close_tie_in_its_own_favour():
+    """M6.5, A2 (revised after measurement): entity-curated provenance is a
+    small, modest component - a tie-breaker among otherwise-similar
+    candidates, not an overriding priority tier. Same relevance/quality/
+    period/licence on both sides here; only `entity_curated` differs."""
+    free_text = _candidate(source_id="free_text", title="Leuna Werke synthetic fuel plant")
+    entity = _candidate(
+        source_id="entity", title="Leuna Werke synthetic fuel plant", entity_curated=True
+    )
+    ranked = rank_candidates(
+        [(free_text, "hash-free-text"), (entity, "hash-entity")],
+        search_terms=["Leuna Werke"],
+    )
+    assert ranked[0].candidate.source_id == "entity"
+
+
+def test_entity_curated_does_not_override_a_much_better_free_text_match():
+    """The failure mode a live measurement actually found: an unconditional
+    entity-curated priority let a poorly-matched entity candidate (here,
+    no relation to the query at all) beat an already-correct free-text
+    hit. The modest weighted component must not reproduce that - a
+    genuinely stronger free-text match still wins outright."""
+    strong_free_text = _candidate(
+        source_id="strong", title="Leuna Werke Buna synthetic fuel plant 1943"
+    )
+    weak_entity = _candidate(source_id="weak", title="a modern city skyline", entity_curated=True)
+    ranked = rank_candidates(
+        [(strong_free_text, "hash-strong"), (weak_entity, "hash-weak")],
+        search_terms=["Leuna Werke Buna 1943"],
+    )
+    assert ranked[0].candidate.source_id == "strong"
 
 
 def test_results_are_sorted_descending_by_score():

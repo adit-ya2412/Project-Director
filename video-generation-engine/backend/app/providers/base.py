@@ -149,6 +149,15 @@ class AssetCandidate:
     width: int | None = None
     height: int | None = None
     description: str = ""
+    # Set by entity-based retrieval only (M6.5, A2) - a Wikipedia article's
+    # own images or a Commons category's file members, resolved by
+    # deterministic lookup from the Asset Planner's `entity` field, never
+    # by keyword search. A human already filed this image under that exact
+    # subject, so `app/assets/ranking.py` ranks it ahead of free-text
+    # search hits for the same shot, and `ResolveAssetsStep` skips the
+    # relevance gate for it - relevant by construction, not by term
+    # overlap (see app/providers/wikimedia.py:WikipediaEntityAssetProvider).
+    entity_curated: bool = False
 
 
 @dataclass(frozen=True)

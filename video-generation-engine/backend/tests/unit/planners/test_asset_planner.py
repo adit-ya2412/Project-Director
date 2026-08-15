@@ -50,6 +50,7 @@ def _valid_output() -> AssetPlannerOutput:
         asset_plans=[
             AssetPlanShotOutput(
                 shot_id="sh_01",
+                entity="",
                 strategy=AssetStrategy.HISTORICAL_SEARCH,
                 search_queries=["Ruhr coal mine 1936"],
                 preferred_type=PreferredMediaType.IMAGE,
@@ -62,6 +63,7 @@ def _valid_output() -> AssetPlannerOutput:
             ),
             AssetPlanShotOutput(
                 shot_id="sh_02",
+                entity="",
                 strategy=AssetStrategy.PUBLIC_DOMAIN,
                 search_queries=["1930s Europe map"],
                 preferred_type=PreferredMediaType.IMAGE,

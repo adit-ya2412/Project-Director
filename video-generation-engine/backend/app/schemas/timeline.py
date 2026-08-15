@@ -124,6 +124,13 @@ class Transition(BaseModel):
 
 
 class AssetPlan(BaseModel):
+    # The real-world subject a Wikipedia article would be titled after
+    # ("Leuna-Werke", "Fischer-Tropsch process", "Sasol") - world knowledge
+    # only the planner has (M6.5, A1). Deliberately allowed to be empty: a
+    # generic scene-setting shot ("a wartime fuel depot") legitimately has
+    # no such entity, and a deterministic lookup step (A2) only ever fires
+    # when this is non-empty - it never invents one.
+    entity: str = ""
     strategy: AssetStrategy
     search_queries: list[str] = Field(default_factory=list)
     preferred_type: PreferredMediaType = PreferredMediaType.IMAGE
