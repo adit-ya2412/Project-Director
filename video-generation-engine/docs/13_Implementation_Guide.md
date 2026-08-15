@@ -2834,6 +2834,30 @@ table via `tests/conftest.py`'s autouse `clean_database` fixture.
 `mypy backend/app` all run normally (no database touched) and are
 clean.
 
+## S1 — the Shot Planner stops doing character arithmetic (2026-08-15)
+
+Three failures, one root cause, finally addressed at the root rather than patched a fourth time:
+
+1. **Cross-scene shot-id collisions** — the model reproduced the prompt's example id verbatim in every scene. Patched by namespacing ids in code.
+2. **Outer narration boundaries off by four characters** — `narration_end=140` on a 144-character scene ending in a trailing space. **Killed a live paid run.** Patched by snapping the two outer edges.
+3. **Internal boundaries splitting words and graphemes** — `Leuna-Werke` cut into `L` + `euna-Werke`, `इससे` into `इ` + `ससे`, and `दिन` into `द` + `िन`, which separates a Devanagari dependent vowel sign from its consonant and produces malformed text, not merely truncated text. 6 of 21 shots affected on a real run.
+
+Each patch bought one round before the next variant appeared. The common factor is that **we asked a language model to do character arithmetic**, which is not a prompt-quality problem and not a post-processing problem — it is the wrong job for the tool.
+
+**The fix: the Shot Planner no longer emits character offsets.** Each scene's `narration_text` is pre-split into numbered fragments deterministically in code, on sentence and line boundaries. The planner receives the numbered fragments and chooses a **contiguous range of fragment indices** per shot. Code converts those ranges back into exact character spans.
+
+`Shot.narration_span` is unchanged in the persisted schema — this changes what the *planner is asked for*, not what the Timeline stores, so `narration_fit.py`, the master clock and the renderer are all untouched.
+
+What falls out:
+- **A mid-word boundary becomes structurally impossible**, rather than detected and corrected.
+- Coverage and contiguity become "the ranges tile 1..N" — checkable and repairable in code instead of by re-asking the model.
+- The task gets *easier* for the model: "this shot covers fragments 1–2" is a natural judgement; counting to 144 is not.
+- Devanagari needs no special handling at all, which is itself evidence the design is right.
+
+The outer-boundary snap from (2) stays as a cheap backstop against a malformed range.
+
+**The general lesson, worth stating plainly because it has now cost three fixes and one live run:** deterministic structural facts belong in code — and when a model keeps getting the same thing wrong, the question is not how to correct its answer but whether it should have been asked the question at all.
+
 ## Backlog — deferred, not blocking
 
 Raised during the first real Hinglish run (2026-08-15, project `194ad0e7`, fixture `hinglish_test_project`). Deliberately not fixed then, so the run could continue.
