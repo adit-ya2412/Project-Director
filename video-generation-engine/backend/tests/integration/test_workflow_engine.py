@@ -62,6 +62,23 @@ class _DoomedStep:
         return StepResult(outcome="failed", error="this step can never succeed")
 
 
+class _AlwaysAwaitingReviewStep:
+    """Stands in for `AwaitReviewStep` when a shot is stuck `failed` - the
+    engine-level half of M6.5's A26/A28 proof (the step's own condition
+    logic is proven directly against real bindings in
+    tests/integration/test_await_review.py)."""
+
+    name = "await_review"
+    retryable = False
+    max_attempts = 1
+
+    async def is_satisfied(self, ctx) -> bool:
+        return False
+
+    async def run(self, ctx) -> StepResult:
+        return StepResult(outcome="awaiting_review")
+
+
 async def test_retryable_step_succeeds_after_transient_failures(project_id):
     step = _FlakyStep(fail_times=2)
     async with async_session_factory() as session:
@@ -122,6 +139,32 @@ async def test_permanent_failure_stops_with_clear_error_and_is_inspectable(proje
         refetched = await PostgresProjectRepository(session).get(project_id)
     assert refetched.status.value == "failed"
     assert refetched.error == "this step can never succeed"
+
+
+async def test_awaiting_review_outcome_sets_distinct_status_and_stops_cleanly(project_id):
+    """M6.5, A28: `awaiting_review` is its own project status, distinct
+    from `awaiting_approval` - a human arriving at a stopped project must
+    be able to tell "approve the plan" from "fix these failed shots"
+    apart, not read the same status for both."""
+    step = _AlwaysAwaitingReviewStep()
+    async with async_session_factory() as session:
+        repo = PostgresProjectRepository(session)
+        ctx = RunContext(
+            project_id=project_id,
+            session=session,
+            repo=repo,
+            timeline_service=TimelineService(session),
+        )
+        engine = WorkflowEngine(ctx, steps=[step], base_delay_s=0.01)
+        project = await engine.run()
+
+    assert project.status.value == "awaiting_review"
+    assert project.status.value != "awaiting_approval"
+    assert project.error is None
+
+    async with async_session_factory() as session:
+        run_row = await WorkflowRunRepository(session).get_latest(uuid_module.UUID(project_id))
+    assert run_row.state == "awaiting_review"
 
 
 async def test_resume_after_simulated_crash_does_not_redo_completed_steps(project_id, monkeypatch):

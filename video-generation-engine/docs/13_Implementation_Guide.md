@@ -1206,6 +1206,7 @@ Worse, the current design throws away the one asset we already have: **the plann
 | **A26** | **The A15 gate fires after the generation pass whenever any shot ended `failed`, and has exactly ONE exit: resolve every failed shot. There is no "proceed anyway". A project cannot reach `completed` while any shot is failed.** | Decided by the user, 2026-08-15: "you should not be able to finish a video if we can't fix it." A button that ships a visibly broken video gets clicked reflexively, and generated media is the least reliable rung — the one most likely to be the thing failing. This is not a deadlock: the remedy is always available, because a per-shot upload (A24) bypasses every gate and always resolves. **Consequence, accepted deliberately:** an unattended run halts until a human acts, and a project with one unfixable shot stays unfinished rather than shipping with a placeholder. This overrides M7's "a 59-shot video with one gap is more useful than no video" **at the project level only** — per-shot isolation still holds during a pass (one shot failing never aborts the others), and the renderer still degrades gracefully; what changes is that the project is not marked complete. |
 | **A27** | **Uploaded bytes are validated and hashed on arrival, and stored under the project like any other asset.** | An upload is untrusted input reaching the renderer. It goes through the same `validate_and_identify_image` path that every searched asset already does — a file that claims to be a PNG and isn't must fail at the endpoint, not inside ffmpeg during the render. Hashing also makes it participate in the existing dedup. |
 | **A28** | **The A26 review gate gets its own project status, distinct from the plan-approval gate, and sits BEFORE render.** | A human arriving at a stopped project must be able to tell "approve this plan" from "fix these failed shots" — they are different questions with different remedies, and one status for both makes the API ambiguous. Placing it before render means a failed shot never renders a placeholder at all, so nothing half-finished lands on disk. |
+| **A25a** | **A25's "preserve verbatim" is implemented as *reject loudly*: `append_version` raises if any later version changes a locked Shot's `prompt`/`asset_plan`, rather than silently substituting the old values.** | Deviation from A25's wording, accepted deliberately. Silently preserving means a re-plan appears to succeed while quietly ignoring part of its own output — the kind of divergence that is discovered months later. Rejecting is unreachable today (no code path re-plans after an override: `GenerateTimelineStep.is_satisfied` short-circuits once planned, and narration changes only durations), so it costs nothing now and forces whoever builds re-planning to confront the question. **Known gap:** there is no unlock endpoint, so a shot locked by an override cannot currently be handed back to the planner. Add one when re-planning arrives, not before. |
 | **A29** | **An override changes only the binding and `asset_locked`. It never changes `prompt`, `duration_s`, narration text, framing, camera, or transitions.** | Narration is the master clock (D1) — durations are derived from real spoken audio to the millisecond. If an upload could change a shot's duration, every later shot would shift and the audio would need re-synthesising, turning a free, instant swap into a paid re-narration. Decoupling "which picture" from "how long" is what makes curation cheap. A shot that genuinely needs different timing is a separate edit, behind its own decision. |
 
 ## Known gap, not yet scheduled
@@ -1219,18 +1220,19 @@ Preference order for motion, once this is addressed: **real archival footage > K
 1. ~~**Entity retrieval (A1, A2), measured against the A17 benchmark.**~~ **Done** (`86d42e1`). Cheapest, needs no UI, improves quality automatically. Its result determines how much burden steps 3–4 must carry.
 2. ~~**Director-constraint enforcement at generation (A12, A13, A14).**~~ **Done** (`11ad0aa`). Small, and the only harm-relevant item here.
 3. ~~**Pipeline reorder (A5, A7) plus binding carry-forward (A11).**~~ **Done** (this step, A20-A22 closing the design questions it raised). The structural change that makes the step supervised.
-4. **Upload endpoint and per-shot override (A8, A9, A10, A15).** Only useful now that step 3 exists, since the gate is where a human acts on it. Next.
-5. **Reassess vision verification for search (A16)** against whatever failures actually remain.
+4. ~~**Upload endpoint and per-shot override (A8, A9, A10, A15).**~~ **Done** (this step, A23-A29 closing the design questions it raised). The remedy that makes the review gate a gate rather than a dead end.
+5. **Reassess vision verification for search (A16)** against whatever failures actually remain. Next.
 
 **Caveat:** there is no frontend — M9 has not been built. "You see the images at approval" means, for now, an API exposing the resolved asset per shot plus files on disk. The full experience needs M9; the backend reordering is still worth doing first, so M9 is not built against the wrong pipeline shape.
 
 ## Done when
 
-- [ ] The A17 benchmark improves substantially and is re-measured after every retrieval change — **in progress, deliberately not ticked.** Step 1 (`86d42e1`) moved it from 2 correct + 2 partial to 4 correct + 1 partial with zero regressions, and step 2 re-measured it unchanged (retrieval untouched). But 4/11 means **7 shots are still wrong**, and the phase goal is media that matches the script — a doubling is not a finish. The remaining failures are all generic, no-entity shots (`a wartime fuel depot`, `German tanks rail yard`) where free-text search's candidate pool contains nothing on-topic at all; no gate or ranking change reaches those, which is the evidence for steps 3–4 (uploads and a supervised gate) rather than more automated scoring. Re-measure after every retrieval change and only tick this when the number justifies it.
-- [ ] A human can see real images per shot, and swap or override any of them, before anything expensive runs — **half done, deliberately not ticked.** Step 3 (below) moved free search before the approval gate and extended `GET /progress` with a per-shot `asset`/`will_generate` breakdown, so "the human can SEE real images per shot before anything expensive runs" is now true, verified via the e2e test. "Swap or override" is not built — that's the upload endpoint (A8/A9), step 4. Half a done-when is not done.
-- [ ] A human override survives re-resolution and version bumps — still not ticked: there is no override to survive yet (step 4). The generic *mechanism* it depends on — a binding surviving a version bump at all — is now built and tested (A11/A20, step 3), and will carry an override forward the same way once one exists; this box is about A10 specifically, which step 4 adds.
+- [ ] The A17 benchmark improves substantially and is re-measured after every retrieval change — **still not ticked, unaffected by this step.** Step 1 (`86d42e1`) moved it from 2 correct + 2 partial to 4 correct + 1 partial with zero regressions; steps 2-3 re-measured it unchanged (retrieval untouched). Step 4 adds upload-matching as ladder rung 1 and touches `app/workflow/steps/resolve_assets.py`, but the Hindi fixture (`tests/fixtures/hindi_test_project.json`) has no uploads, so `LocalProjectAssetProvider.search` returns `[]` for every one of its 11 shots exactly as the pre-step-4 stub did - by inspection, not re-measured, same reasoning as step 3's equivalent note (the changed code path is provably never reached by this benchmark). 4/11 means **7 shots are still wrong** by automated retrieval alone; step 4's answer for those is a human uploading the photo directly, which is a different mechanism than "improve the benchmark score" and does not move this number.
+- [x] A human can see real images per shot, and swap or override any of them, before anything expensive runs — **step 3 built "see"; step 4 built "swap or override", and both halves are now verified through the real HTTP API**, not just at the service layer: `tests/e2e/test_upload_and_override_api.py` creates a project, renders it (DRY_RUN, zero API keys) to the point every shot already has a real, visible asset via `GET /progress` (`asset`/`locked` fields), then calls `POST /{id}/shots/{shot_id}/override` with a real multipart file upload and confirms the shot's asset changes and `locked` flips to `true` in the same `GET /progress` response - all before the plan is even approved, i.e. before anything expensive has run.
+- [x] A human override survives re-resolution and version bumps — **verified in both directions**, per the coordinator's explicit instruction to test the interaction both ways rather than just the happy path: `tests/integration/test_timeline_service.py::test_locked_shot_binding_carries_forward_even_when_prompt_changes` (locked survives) sits directly alongside the pre-existing `test_binding_does_not_carry_forward_when_prompt_changes` (unlocked does not) - same shape of change, opposite, deliberate outcomes. `tests/e2e/test_upload_and_override_api.py::test_override_before_approval_locks_the_shot_but_still_requires_approval` additionally confirms the lock survives the real narration version bump through the full HTTP pipeline, not just inside `TimelineService` directly.
 - [x] No generated image ships that violates a Director constraint — step 2, below.
 - [x] Generation retries are bounded and counted against the project budget — step 2, below.
+- [x] A shot that failed generation blocks the project from completing until a human fixes it, with no way to ship around it — **new for step 4 (A15/A26/A28)**: `tests/e2e/test_upload_and_override_api.py::test_review_gate_blocks_completion_until_the_failed_shot_is_overridden` manufactures a `failed` binding, drives it through the real `POST /timeline/approve` and `POST /render` routes to `status == "awaiting_review"`, confirms re-rendering without fixing anything is a no-op (not a "proceed anyway"), then confirms the override endpoint is the only thing that clears it.
 
 ## Implementation notes (2026-08-15) — step 2: Director-constraint enforcement at generation (A12/A13/A14/A18/A19)
 
@@ -1502,6 +1504,191 @@ and DRY_RUN end-to-end were all run and watched passing, not inferred.
 The A17-benchmark claim above is the one thing in this note argued by
 code inspection rather than re-executed - stated as such, not blurred
 into "verified".
+
+## Implementation notes (2026-08-15) — step 4: upload endpoint and per-shot override (A8-A10, A15, A23-A29)
+
+Built the revised scope exactly, including the mid-step decision rewrite
+(A25 gaining a second half, A26 losing "proceed anyway", A28/A29 new) -
+none of the discarded first-draft design (a `failures_acknowledged_version`
+column, a "proceed anyway" endpoint, a defensive `asset_locked` shortcut
+in `AwaitApprovalStep`) made it into the final code; see "false starts"
+below for why each was wrong.
+
+- **Upload endpoint** (`POST /projects/{id}/assets`, A8/A23/A27) -
+  `app/api/projects.py`. Accepts one or more files plus one description
+  per file (`files: list[UploadFile]`, `descriptions: list[str]`,
+  matched by index; rejected with 400 if the counts differ or any
+  description is blank). Every file goes through the exact
+  `validate_and_identify_image` path a searched asset already does (A27)
+  before anything is written to disk, and is deduplicated by content
+  hash exactly like a searched asset (M6) - re-uploading the same bytes
+  is reported as a duplicate, not stored twice. Stored as an `AssetModel`
+  row with `provider="project_assets"` and the new `description` column
+  (Alembic revision `c7d2a8e91f3b`) - the only column this step adds.
+  Entirely optional: a project that never calls this endpoint is
+  byte-for-byte unaffected, verified by
+  `test_upload_is_optional_and_a_no_upload_project_is_unaffected`.
+- **`LocalProjectAssetProvider` is real now, not the M6 stub**
+  (`app/providers/local_assets.py`) - `search` returns every
+  `provider="project_assets"` row for the project
+  (`AssetRepository.list_uploads_for_project`, new), `fetch` reads the
+  bytes back off `local_path`. No internal filtering: A23 is explicit
+  that an upload competes through the SAME relevance gate
+  (`app/assets/relevance.py`) every other candidate goes through, scored
+  against its own human-written `description` - matching against a
+  filename would be worthless, which is the entire reason the upload
+  endpoint requires a description at all. `ResolveAssetsStep` had to
+  change in exactly two places to accommodate this: `_real_search_providers`
+  now takes `asset_repo`/`project_uuid` (the provider needs a live
+  session-bound repository, unlike the stateless Wikimedia/Pexels
+  providers), and the licence gate is explicitly bypassed for the
+  `project_assets` strategy only - `licence_requirements` is written by
+  the Asset Planner with no visibility into whether an upload even
+  exists (A3), so it can never have been chosen with a human's own photo
+  in mind; requiring an uploaded image to happen to satisfy a licence
+  string written for Wikimedia/Pexels would be an arbitrary rejection of
+  media the human already vetted by choosing to supply it. Proven
+  end-to-end against the real relevance gate (not a fake), with a
+  deliberately non-matching licence, in
+  `test_uploaded_asset_matches_via_the_real_relevance_gate_and_skips_licence_gate`.
+- **Per-shot override** (`POST /projects/{id}/shots/{shot_id}/override`,
+  A9/A10/A24/A25/A29) - names a `shot_id` directly, bypasses relevance
+  and licence gates entirely (A24), and works on ANY shot regardless of
+  its current binding state, not only a failed one (a Done-when
+  criterion is "swap or override any of them"). Validates and hashes the
+  file the same way the general upload endpoint does (A27), records an
+  `append_version(produced_by=HUMAN)` that sets `Shot.asset_locked = True`
+  on that one shot (new field, `app/schemas/timeline.py`) and nothing
+  else (A29 - never `prompt`, `duration_s`, narration, framing, camera,
+  or transitions), then writes the shot's `ShotBinding` directly to the
+  overridden asset, bypassing every gate.
+- **A25's two halves, both enforced in `TimelineService`** - carry-forward
+  and prompt/asset_plan immutability are two SEPARATE mechanisms, not one
+  check reused, because they answer different questions and the second
+  is deliberately not expressible through the existing `owns` mechanism:
+  - `_carry_forward_bindings` carries a locked shot's binding forward
+    UNCONDITIONALLY - checked directly against `asset_locked` before the
+    ordinary A20 prompt/asset_plan equality check, which it now skips
+    entirely for a locked shot.
+  - `_reject_locked_shot_drift` (new, called from `append_version`,
+    unconditionally - not gated by `owns`) raises `PermanentError` if ANY
+    later version changes a locked shot's `prompt` or `asset_plan` at
+    all. This has to be separate from the additive-violation check
+    (`app/timeline/additive.py`) because `owns` grants blanket permission
+    over a whole top-level path - `NarrationStep` legitimately owns
+    `"scenes"` to change `duration_s` freely, and that same broad grant
+    would otherwise also legitimise changing a locked shot's `prompt`,
+    which A25 must never allow regardless of what the caller declared
+    ownership of. Both mechanisms are tested independently and are
+    provably redundant with each other by construction (once drift is
+    impossible, the "unconditional" carry-forward branch for a locked
+    shot only ever fires on the one field that legitimately still
+    changes, `duration_s`) - kept both anyway, belt-and-braces, exactly
+    the same discipline `NarrationStep`/`AwaitApprovalStep` already use
+    for their own crash-window robustness.
+- **The review gate** (`AwaitReviewStep`, A15/A26/A28) - a new pipeline
+  step, positioned between `resolve_assets_generate` and `RenderStep`
+  (never after - A28: a failed shot must not reach the renderer even as
+  a placeholder). Its condition is purely observable - "is any binding at
+  the active version `failed`, right now" - with nothing stored anywhere
+  as an acknowledgement, because A26 removed the "proceed anyway" exit
+  entirely: there is exactly one way past this gate, fixing the shot, so
+  there is nothing to acknowledge, only something to resolve. A new,
+  distinct `ProjectStatus.AWAITING_REVIEW` (A28) keeps it visibly
+  different from `AWAITING_APPROVAL` - the two questions ("approve the
+  plan" vs. "fix these failed shots") have different remedies, and one
+  status for both would make the API ambiguous about which applies.
+- **The override endpoint's self-approval is conditional, not automatic**
+  - if the timeline was already approved (or narration has already run)
+  before the override, the new locked version is immediately re-approved
+  too, mirroring `NarrationStep`'s own append-then-approve pattern
+  exactly (two separate commits, same crash-window shape) - this is what
+  lets the override endpoint be the review gate's remedy without a
+  redundant second human click. If the timeline had NOT yet been
+  approved, the override does NOT self-approve, leaving the human's
+  first plan approval still required as normal - overriding a shot is a
+  legitimate pre-approval action too (previewing search results and
+  fixing one before ever approving), and must not silently skip that
+  first approval as a side effect. Both paths are tested explicitly
+  (`test_override_before_approval_locks_the_shot_but_still_requires_approval`,
+  `test_override_after_completion_self_approves_and_preserves_duration_and_narration`).
+- **`GET /progress`'s `shots` array gained `locked`** - the other half of
+  "a human can see... any shot's asset", alongside the existing `asset`/
+  `clip`/`will_generate` fields from step 3.
+- **Fixture round-trip: made to fail loudly, not silently** -
+  `scripts/seed_test_project.py` re-downloads a missing asset from its
+  `source_url` and verifies the hash, which works for every Wikimedia/
+  Pexels asset but cannot work for an upload (ladder rung `project_assets`)
+  whose bytes were never anywhere but `storage/` (gitignored) in the
+  first place. Neither committed fixture (`hindi_test_project`,
+  `m8_test_project`) has any uploads, so this is not exercised by the
+  reseed above - but if a future fixture snapshot ever does include one
+  whose file is missing on disk, the script now raises `SystemExit` with
+  an explicit explanation and a next step (re-upload, re-export) rather
+  than silently writing an `asset` row pointing at nothing, which would
+  otherwise surface much later as an incomprehensible ffmpeg error with
+  no connection to the actual cause.
+- **False starts, corrected before finishing** (the user changed two
+  decisions mid-build and the coordinator reverted the half-applied
+  first draft rather than let it linger):
+  - First draft had A26 keep "proceed anyway", recorded via a new
+    `Project.failures_acknowledged_version` column. The rewritten A26
+    removes it entirely ("you should not be able to finish a video if we
+    can't fix it") - no column, no acknowledgement state anywhere;
+    `AwaitReviewStep`'s condition is purely a live query.
+  - First draft had `AwaitApprovalStep` treat `any(shot.asset_locked ...)`
+    as approval-equivalent, mirroring the existing `produced_by ==
+    NARRATION` shortcut, as a crash-window defence for the override's
+    self-approval. Traced through carefully, this is actually unsafe: an
+    override performed BEFORE a project's first-ever approval would set
+    `asset_locked = True` on a version that has never been approved, and
+    this shortcut would then let `AwaitApprovalStep` skip approval
+    entirely for it - a real I6/ADR-008 violation (expensive work before
+    approval). Dropped; the override endpoint's self-approval is
+    conditioned on whether the PRIOR version was already
+    approved-or-narration-produced instead (see above), which has no such
+    hole.
+- Gate checks, run from the repo root as required: `ruff check backend`
+  (one real finding - `zip()` without `strict=`, fixed, not suppressed),
+  `black --check backend` (5 files reformatted by the auto-formatter,
+  re-ran the full suite afterward to confirm no behavioural change),
+  `mypy backend/app` all clean. Full suite: **227/227 passed**, watched
+  directly in the foreground (ffmpeg on `PATH`) - twice, once before and
+  once after the black auto-fixes. Both fixtures (`hindi_test_project`,
+  default `m8_test_project`) reseeded afterward; the new Alembic
+  migration (`c7d2a8e91f3b`, adds `asset.description`) was applied first.
+- 16 new/changed tests over the 211 from step 3 (227 total): 4 in
+  `tests/integration/test_await_review.py` (the gate's own condition
+  logic, including the no-deadlock proof that fixing the binding
+  directly - never a flag - clears it), 1 in
+  `tests/integration/test_workflow_engine.py` (the new `awaiting_review`
+  outcome's distinct status at the engine level), 3 in
+  `tests/integration/test_timeline_service.py` (locked-shot carries
+  despite a duration-only change; a locked shot's prompt/asset_plan
+  change is rejected outright; same for `asset_plan`), 1 in
+  `tests/integration/test_resolve_assets_real.py` (the real
+  `LocalProjectAssetProvider` through the real relevance gate, licence
+  bypass included), 7 in the new
+  `tests/e2e/test_upload_and_override_api.py` (upload validation/dedup,
+  a no-upload project unaffected, override pre-approval, override
+  post-completion with the A29 duration/narration equality assertion,
+  the review gate blocking and clearing over HTTP, override on an
+  unknown shot, override with invalid bytes).
+
+**What I verified by running it, versus what I reasoned about:** every
+test above was run and watched passing, including the full suite twice.
+The one thing NOT verified through DRY_RUN is a real vision-constraint
+generation failure driving the review gate - DRY_RUN's fake providers
+always succeed, so `test_review_gate_blocks_completion_until_the_failed_shot_is_overridden`
+manufactures a `failed` binding directly rather than deriving one from a
+real exhausted-retries generation failure (that mechanism is proven for
+real, separately, in `test_resolve_assets_generation_real.py` from step
+2). This is stated plainly rather than implied: the review gate's own
+condition logic (is any binding failed, right now) is identical
+regardless of how a binding got to `failed`, so this is a legitimate
+proof of the gate and the override endpoint acting as its remedy through
+the real HTTP surface - it is not a claim that DRY_RUN itself can
+produce a real generation failure end to end.
 
 ---
 
@@ -2029,43 +2216,63 @@ M8 Renderer        ██████░░░░░░ steps 1-3 done 2026-08-1
                                  synthesised segments. Steps 4-6 (music+ducking,
                                  Ken Burns, determinism+draft) not started.
                                  Captions deliberately out of scope this pass.
-M6.5 steps 1-3     ███████░░░░░ entity retrieval (`86d42e1`), Director-constraint
-  (of 5)                        enforcement at generation, and the pipeline reorder +
-                                 binding carry-forward all done and tested (see that
-                                 section's Done-when + implementation notes for all
-                                 three). Step 1: 2 correct + 2 partial → 4 correct + 1
-                                 partial on the 11-shot A17 benchmark, zero regressions
-                                 (unaffected by steps 2-3, confirmed by inspection - no
-                                 file the benchmark exercises has changed since). Step
-                                 2: vision check + bounded regeneration (A12-A14, A18-
-                                 A19). Step 3: one ResolveAssetsStep parameterised by
-                                 permitted ladder rungs, run twice (free search before
-                                 approval, paid generation after narration - A5-A7,
-                                 A21); ShotBinding carry-forward across narration's
-                                 version bump lives inside TimelineService._persist,
-                                 not an opt-in helper (A11/A20); a total search-provider
-                                 outage still reaches the approval gate (A22, tested at
-                                 both step and full-pipeline level); GET /progress now
-                                 shows, per shot, what was found (with source) vs what
-                                 will be generated. 211/211 suite green (204→211 across
-                                 step 3's 7 new tests), DRY_RUN verified end to end
-                                 through the real HTTP API with the new two-pass shape.
-                                 Steps 4-5 (upload endpoint, reassess vision for search)
-                                 not started.
-Next               M6.5 step 4 · Upload endpoint and per-shot override (A8-A10, A15) -
-                                 project_assets (ladder rung 1) becomes real, an
-                                 uploaded image becomes a locked ShotBinding via
-                                 append_version(produced_by=HUMAN), and the A15
-                                 conditional approval gate lands now that step 3 gives
-                                 it a real remedy to offer (upload instead of accepting
-                                 a generated result). Then step 5 (reassess vision for
-                                 search, A16) against whatever failures actually remain
-                                 once steps 1-4 are all in place, then finish M8 steps
-                                 4-6. Reuse projects
+M6.5 steps 1-4     ██████████░░ entity retrieval (`86d42e1`), Director-constraint
+  (of 5)                        enforcement at generation, the pipeline reorder +
+                                 binding carry-forward, and the upload endpoint + per-
+                                 shot override all done and tested (see that section's
+                                 Done-when + implementation notes for all four). Step 1:
+                                 2 correct + 2 partial → 4 correct + 1 partial on the
+                                 11-shot A17 benchmark, zero regressions (unaffected by
+                                 steps 2-4, confirmed by inspection - no file the
+                                 benchmark exercises has changed since). Step 2: vision
+                                 check + bounded regeneration (A12-A14, A18-A19). Step
+                                 3: one ResolveAssetsStep parameterised by permitted
+                                 ladder rungs, run twice (free search before approval,
+                                 paid generation after narration - A5-A7, A21);
+                                 ShotBinding carry-forward across narration's version
+                                 bump lives inside TimelineService._persist, not an
+                                 opt-in helper (A11/A20); a total search-provider outage
+                                 still reaches the approval gate (A22, tested at both
+                                 step and full-pipeline level); GET /progress now shows,
+                                 per shot, what was found (with source) vs what will be
+                                 generated. Step 4: project_assets (ladder rung 1) is
+                                 real - POST /projects/{id}/assets uploads media matched
+                                 to shots via the existing relevance gate, never a
+                                 planner (A8/A23/A27); POST /projects/{id}/shots/{id}/
+                                 override bypasses every gate and locks a shot's asset
+                                 via append_version(produced_by=HUMAN) (A9/A10/A24);
+                                 a locked shot's prompt/asset_plan can never change
+                                 again and its binding carries forward unconditionally
+                                 (A25, both halves enforced in TimelineService, tested
+                                 in both directions); the A15 review gate fires after
+                                 generation with exactly ONE exit - override, never
+                                 "proceed anyway" (A26, decided by the user 2026-08-15) -
+                                 and gets its own ProjectStatus.AWAITING_REVIEW, ahead of
+                                 RenderStep (A28); an override touches only the binding
+                                 and the lock, never duration_s or narration (A29).
+                                 227/227 suite green (211→227 across step 4's 16 new/
+                                 changed tests), both Done-when boxes about seeing and
+                                 overriding assets now genuinely ticked - verified
+                                 through the real HTTP API, not just the service layer.
+                                 Step 5 (reassess vision for search) not started.
+Next               M6.5 step 5 · Reassess vision verification for search (A16) against
+                                 whatever failures actually remain now that steps 1-4
+                                 are all in place - the 7 shots still wrong on the A17
+                                 benchmark are generic, no-entity shots free-text search
+                                 cannot fix and a human now has a real remedy for
+                                 (upload, or override once generation runs). Decide with
+                                 evidence: measure what's left before building a vision
+                                 check for searched assets, not on appetite. Then finish
+                                 M8 steps 4-6. Reuse projects
                                  58f0a5e6-008d-468e-862a-e365e463878e (English) and
                                  35290b04-584d-415e-9816-ab6a8998b3e2 (Hindi, with
                                  real narration) via scripts/seed_test_project.py -
                                  their planning, assets and TTS are already paid for.
+                                 Neither fixture has any uploads, so the fixture
+                                 round-trip's new "fail loudly on an unrestorable
+                                 upload" branch (scripts/seed_test_project.py) is
+                                 unexercised by either reseed - documented, not silently
+                                 assumed safe.
 ```
 
 ---

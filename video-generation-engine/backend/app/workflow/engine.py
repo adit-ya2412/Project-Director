@@ -20,6 +20,7 @@ from app.workflow.context import RunContext
 from app.workflow.retry import backoff_sleep
 from app.workflow.step import StepResult, WorkflowStep
 from app.workflow.steps.await_approval import AwaitApprovalStep
+from app.workflow.steps.await_review import AwaitReviewStep
 from app.workflow.steps.complete import CompleteStep
 from app.workflow.steps.generate_timeline import GenerateTimelineStep
 from app.workflow.steps.narration import NarrationStep
@@ -54,12 +55,20 @@ logger = get_logger(__name__)
 # unchanged (A20), which is true for every shot narration ever touches
 # (it only changes durations). See `app/timeline/service.py` for where
 # that carry-forward actually happens and why.
+# A15/A26/A28 (M6.5): `AwaitReviewStep` runs after the generation pass and
+# BEFORE `RenderStep` - a shot that ended `failed` there must never reach
+# the renderer, not even as a placeholder. This is a different gate from
+# `AwaitApprovalStep` above (a different project status, A28), with a
+# different, single exit: a human overrides the failed shot
+# (`POST /projects/{id}/shots/{shot_id}/override`, A9/A24), never
+# "proceed anyway" (A26) - see that step's own docstring.
 DEFAULT_PIPELINE: list[WorkflowStep] = [
     GenerateTimelineStep(),
     ResolveAssetsStep(name="resolve_assets_search", permitted_strategies=SEARCH_RUNGS),
     AwaitApprovalStep(),
     NarrationStep(),
     ResolveAssetsStep(name="resolve_assets_generate", permitted_strategies=GENERATION_RUNGS),
+    AwaitReviewStep(),
     RenderStep(),
     CompleteStep(),
 ]
@@ -123,6 +132,25 @@ class WorkflowEngine:
                 await self._ctx.session.commit()
                 logger.info(
                     "workflow.awaiting_approval",
+                    extra={"project_id": self._ctx.project_id, "step": step.name},
+                )
+                return await self._reload_project()
+
+            if result.outcome == "awaiting_review":
+                # A26/A28: no acknowledgement to store here - the ONLY
+                # exit is a human override that resolves the failed
+                # shot(s), so a later run re-checks the same observable
+                # condition (`AwaitReviewStep.is_satisfied`) rather than
+                # trusting a flag that could go stale.
+                await self._workflow_repo.update_state(run_row, state="awaiting_review")
+                project = await self._reload_project()
+                project.status = ProjectStatus.AWAITING_REVIEW
+                project.error = None
+                await self._ctx.repo.update(project)
+                await self._events.emit(project_uuid, "ShotsAwaitingReview", {"step": step.name})
+                await self._ctx.session.commit()
+                logger.info(
+                    "workflow.awaiting_review",
                     extra={"project_id": self._ctx.project_id, "step": step.name},
                 )
                 return await self._reload_project()

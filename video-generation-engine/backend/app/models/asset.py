@@ -32,6 +32,13 @@ class AssetModel(Base):
     local_path: Mapped[str | None] = mapped_column(String, nullable=True)
     licence: Mapped[str] = mapped_column(String, nullable=False, default="unknown")
     attribution: Mapped[str | None] = mapped_column(String, nullable=True)
+    # A human-written caption (M6.5, A23) - the only text an uploaded
+    # asset has to be matched against a shot with, since nothing searched
+    # for it. Null for every asset a search provider found (their own
+    # provider description is never persisted here) - this column exists
+    # purely to feed `app/assets/relevance.py`'s existing term-overlap
+    # gate for uploads, via `LocalProjectAssetProvider.search`.
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
     # Dedup key (M6 advice): the same photo arrives from multiple providers
     # under different URLs; hash the bytes, not the URL.
     content_hash: Mapped[str] = mapped_column(String, nullable=False)

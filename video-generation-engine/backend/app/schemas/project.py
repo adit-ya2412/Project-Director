@@ -19,6 +19,13 @@ class ProjectStatus(StrEnum):
     CREATED = "created"
     SCRIPT_UPLOADED = "script_uploaded"
     AWAITING_APPROVAL = "awaiting_approval"
+    # A28 (M6.5): the A15/A26 generated-media review gate is a DIFFERENT
+    # question from AWAITING_APPROVAL ("approve the creative plan") and
+    # gets its own status, so a human arriving at a stopped project can
+    # tell which remedy applies - re-approving a plan does nothing for a
+    # shot that failed generation, and overriding a shot does nothing for
+    # an unapproved plan.
+    AWAITING_REVIEW = "awaiting_review"
     RENDERING = "rendering"
     COMPLETED = "completed"
     FAILED = "failed"

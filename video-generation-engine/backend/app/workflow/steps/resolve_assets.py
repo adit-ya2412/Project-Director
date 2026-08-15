@@ -143,9 +143,11 @@ SEARCH_RUNGS = _SEARCH_STRATEGIES
 GENERATION_RUNGS = _GENERATION_STRATEGIES
 
 
-def _real_search_providers() -> dict[AssetStrategy, AssetProvider]:
+def _real_search_providers(
+    *, asset_repo: AssetRepository, project_uuid: uuid_module.UUID
+) -> dict[AssetStrategy, AssetProvider]:
     return {
-        AssetStrategy.PROJECT_ASSETS: LocalProjectAssetProvider(),
+        AssetStrategy.PROJECT_ASSETS: LocalProjectAssetProvider(asset_repo, project_uuid),
         AssetStrategy.HISTORICAL_SEARCH: WikimediaAssetProvider(rung="historical_search"),
         AssetStrategy.PUBLIC_DOMAIN: WikimediaAssetProvider(rung="public_domain"),
         AssetStrategy.STOCK_SEARCH: PexelsAssetProvider(),
@@ -227,7 +229,9 @@ class ResolveAssetsStep:
             FakeAssetProvider() if settings.dry_run and self._search_permitted else None
         )
         search_providers = (
-            _real_search_providers() if (not settings.dry_run and self._search_permitted) else None
+            _real_search_providers(asset_repo=asset_repo, project_uuid=project_uuid)
+            if (not settings.dry_run and self._search_permitted)
+            else None
         )
         # A1/A2 (M6.5): entity -> images is a deterministic lookup, not a
         # search rung - one instance, reused across every shot in this run
@@ -471,10 +475,25 @@ class ResolveAssetsStep:
                 # Licence is a hard gate, never a ranking factor
                 # (implementation guide, Phase M6 advice) - a candidate
                 # whose licence isn't acceptable is discarded outright,
-                # not deprioritised.
-                eligible = [
-                    c for c in pool if not licence_requirements or c.licence in licence_requirements
-                ]
+                # not deprioritised. `project_assets` is exempt (M6.5,
+                # A23 only ever names the relevance gate for uploads):
+                # `licence_requirements` is written by the Asset Planner
+                # with no visibility into whether an upload even exists
+                # for this project (A3), so it can never have been chosen
+                # with a human's own upload in mind - requiring an
+                # uploaded photo to happen to satisfy a licence string
+                # written for searching Wikimedia/Pexels would be an
+                # arbitrary rejection of media the human already vetted
+                # themselves by choosing to supply it.
+                eligible = (
+                    pool
+                    if strategy == AssetStrategy.PROJECT_ASSETS
+                    else [
+                        c
+                        for c in pool
+                        if not licence_requirements or c.licence in licence_requirements
+                    ]
+                )
                 if not eligible:
                     continue
 

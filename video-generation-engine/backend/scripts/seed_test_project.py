@@ -173,6 +173,27 @@ async def main(force: bool, fixture_name: str) -> None:
         for a in fixture["assets"]:
             path = assets_dir / a["filename"]
             if not path.exists():
+                if not a.get("source_url"):
+                    # M6.5: a human upload (ladder rung `project_assets`,
+                    # A8/A23) has no external URL its bytes can be
+                    # re-fetched from - unlike every Wikimedia/Pexels
+                    # asset above, which this loop can always recover for
+                    # free. `storage/` is gitignored, so an upload's bytes
+                    # simply do not exist anywhere this script can reach
+                    # once they are gone from disk. Fail loudly rather
+                    # than silently writing a row that points at nothing
+                    # (the render would then fail much later, deep inside
+                    # ffmpeg, for a reason that has nothing to do with the
+                    # actual defect) - re-upload the file to the source
+                    # project and re-export the fixture instead.
+                    raise SystemExit(
+                        f"asset {a['filename']!r} (provider={a['provider']!r}) has no "
+                        "source_url and is missing on disk - this is a human upload "
+                        "(M6.5, A8/A23), whose bytes cannot be re-downloaded from "
+                        "anywhere. The fixture round-trip does not support restoring "
+                        "uploaded assets; re-upload the file to the source project and "
+                        "re-export the fixture."
+                    )
                 path.write_bytes(await _download(a["source_url"], a["content_hash"]))
                 downloaded += 1
             model = AssetModel(

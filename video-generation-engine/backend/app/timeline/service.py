@@ -30,6 +30,21 @@ is a strictly more correct interpretation of "byte-identical" than a
 literal string comparison, since it can't be defeated by harmless
 key-order/formatting differences that never reached the actual planning
 content.
+
+## A25: a locked Shot is exempt from A20, in both directions
+
+A human override (`POST /projects/{id}/shots/{shot_id}/override`, A9/A24)
+sets `Shot.asset_locked` and is a direct, deliberate conflict with A20:
+its binding carries forward UNCONDITIONALLY, even across a version whose
+`prompt`/`asset_plan` would otherwise have dropped it - see
+`_carry_forward_bindings` below. The other half of that same decision
+lives in `append_version` itself: once a Shot is locked, no later version
+may change ITS `prompt` or `asset_plan` at all, ownership declarations
+notwithstanding - see `_reject_locked_shot_drift`. Together these make "my
+photo is always in the plan" literally true rather than merely detected
+after the fact: a re-plan cannot even produce a Timeline where a locked
+Shot's plan has drifted, so the mismatch A20 exists to catch can never
+arise for it in the first place.
 """
 
 import uuid
@@ -52,6 +67,35 @@ from app.schemas.timeline import (
 )
 from app.timeline.additive import find_additive_violations
 from app.timeline.diff import TimelineDiff, compute_diff
+
+
+def _reject_locked_shot_drift(old: Timeline, new: Timeline) -> list[str]:
+    """A25 (M6.5): a Shot with `asset_locked=True` may never have its
+    `prompt` or `asset_plan` change in a later version - deliberately NOT
+    expressible through `owns` (which grants blanket permission over a
+    whole top-level path such as "scenes"; `NarrationStep` owns exactly
+    that much to change `duration_s` freely). This check runs regardless
+    of what the caller declared ownership of, because the rule it
+    enforces is narrower than "may this path change at all" - it is "may
+    THIS shot's acquisition-relevant fields change, given it is locked".
+    A shot that disappears entirely between versions is a different,
+    larger problem than this check's concern (nothing here to compare).
+    """
+    old_shots = {shot.id: shot for shot in old.all_shots()}
+    new_shots = {shot.id: shot for shot in new.all_shots()}
+    violations: list[str] = []
+    for shot_id, old_shot in old_shots.items():
+        if not old_shot.asset_locked:
+            continue
+        new_shot = new_shots.get(shot_id)
+        if new_shot is None:
+            continue
+        if new_shot.prompt != old_shot.prompt or new_shot.asset_plan != old_shot.asset_plan:
+            violations.append(
+                f"shot {shot_id}: asset_locked - prompt/asset_plan may not change (A25)"
+            )
+    return violations
+
 
 # Fields the service itself owns and stamps on every write. These describe
 # *which version this is*, never planning content, so they are excluded
@@ -165,6 +209,18 @@ class TimelineService:
             )
 
         new_timeline = Timeline.model_validate(new_document)
+
+        # A25: enforced unconditionally, regardless of `owns` - see
+        # `_reject_locked_shot_drift`'s own docstring for why this is a
+        # separate, narrower check rather than folded into the additive
+        # check above.
+        locked_violations = _reject_locked_shot_drift(current, new_timeline)
+        if locked_violations:
+            raise PermanentError(
+                f"append_version rejected change(s) to locked shot(s) for project "
+                f"{project_id} (produced_by={produced_by.value}): {locked_violations}"
+            )
+
         await self._persist(pid, new_timeline, supersede_previous=True)
         return new_timeline
 
@@ -277,6 +333,15 @@ class TimelineService:
             new_shot = new_shots.get(binding.shot_id)
             if previous_shot is None or new_shot is None:
                 continue  # shot doesn't exist on one side - nothing to carry
+            # A25: a locked shot carries forward UNCONDITIONALLY - exempt
+            # from the prompt/asset_plan equality check below. This is
+            # belt-and-braces alongside `_reject_locked_shot_drift` (which
+            # makes prompt/asset_plan changing at all impossible for a
+            # locked shot): carry-forward does not rely on that other
+            # check having run first to be correct on its own terms.
+            if previous_shot.asset_locked or new_shot.asset_locked:
+                await binding_repo.carry_forward(binding, new_timeline_version=new_timeline.version)
+                continue
             if (
                 previous_shot.prompt != new_shot.prompt
                 or previous_shot.asset_plan != new_shot.asset_plan

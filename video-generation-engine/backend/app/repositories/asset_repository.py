@@ -34,6 +34,25 @@ class AssetRepository:
         )
         return set(result.scalars().all())
 
+    async def get_by_id(self, asset_id: uuid.UUID) -> AssetModel | None:
+        return await self._session.get(AssetModel, asset_id)
+
+    async def list_uploads_for_project(self, project_id: uuid.UUID) -> list[AssetModel]:
+        """Every asset this project already has under ladder rung 1 (M6.5,
+        A8/A23) - human uploads, whether they arrived through the general
+        upload endpoint or as the by-product of a per-shot override
+        (A9/A24 stores its file the same way). This is the candidate pool
+        `LocalProjectAssetProvider.search` hands back; matching happens
+        afterwards through the existing relevance gate, exactly like any
+        other provider's results - never here."""
+        result = await self._session.execute(
+            select(AssetModel).where(
+                AssetModel.project_id == project_id,
+                AssetModel.provider == "project_assets",
+            )
+        )
+        return list(result.scalars().all())
+
     async def insert(
         self,
         *,
@@ -46,6 +65,7 @@ class AssetRepository:
         attribution: str | None,
         content_hash: str,
         confidence: float,
+        description: str | None = None,
     ) -> AssetModel:
         model = AssetModel(
             project_id=project_id,
@@ -57,6 +77,7 @@ class AssetRepository:
             attribution=attribution,
             content_hash=content_hash,
             confidence=confidence,
+            description=description,
         )
         self._session.add(model)
         await self._session.flush()

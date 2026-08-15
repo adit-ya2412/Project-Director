@@ -1,31 +1,44 @@
 """Project, script, render, and workflow endpoints (docs/09_API_Specification.md).
 
 `POST /render` starts (or resumes) the workflow engine and returns
-whatever the pipeline reaches: `awaiting_approval`, `completed`, or
-`failed`. `POST /timeline/approve` approves the active timeline and
-resumes the same run - the human-in-the-loop gate (ADR-008) is a real
-stop between two separate HTTP calls, not a blocked coroutine.
+whatever the pipeline reaches: `awaiting_approval`, `awaiting_review`,
+`completed`, or `failed`. `POST /timeline/approve` approves the active
+timeline and resumes the same run - the human-in-the-loop gate (ADR-008)
+is a real stop between two separate HTTP calls, not a blocked coroutine.
+
+`POST /{id}/assets` (M6.5, A8/A23/A27) and
+`POST /{id}/shots/{shot_id}/override` (M6.5, A9/A10/A24/A25/A29) are the
+two human-media endpoints this phase adds - an optional upload matched to
+shots later by the existing relevance gate, and a per-shot override that
+bypasses every gate and locks that shot's asset. Neither one runs the
+workflow engine synchronously except the override, which resumes it
+(A26's only remedy for a shot stuck `failed` at the review gate).
 """
 
+import hashlib
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_repo, get_timeline_service, get_workflow_engine
 from app.assets.cost import estimate_project_cost_cents
+from app.assets.validation import validate_and_identify_image
+from app.core.config import settings
+from app.core.errors import PermanentError
 from app.db.session import get_db
 from app.models.asset import AssetModel
 from app.models.generated_clip import GeneratedClipModel
+from app.repositories.asset_repository import AssetRepository
 from app.repositories.generated_clip_repository import GeneratedClipRepository
 from app.repositories.project_repository import ProjectRepository
 from app.repositories.shot_binding_repository import ShotBindingRepository
 from app.repositories.workflow_repository import WorkflowRunRepository
 from app.schemas.project import Project, ProjectStatus
-from app.schemas.timeline import Timeline, TimelineStatus
+from app.schemas.timeline import ProducedBy, Timeline, TimelineStatus
 from app.timeline.service import TimelineService
 from app.workflow.engine import WorkflowEngine
 
@@ -36,6 +49,12 @@ _TERMINAL_SHOT_STATES = ("resolved", "generated")
 
 class CreateProjectRequest(BaseModel):
     name: str
+
+
+class UploadedAssetResult(BaseModel):
+    asset_id: str
+    filename: str
+    duplicate: bool
 
 
 class UploadScriptRequest(BaseModel):
@@ -89,6 +108,92 @@ async def get_script(project_id: str, repo: ProjectRepository = Depends(get_repo
     return {"project_id": project.id, "content": project.script}
 
 
+@router.post("/{project_id}/assets", response_model=list[UploadedAssetResult])
+async def upload_assets(
+    project_id: str,
+    files: list[UploadFile] = File(...),
+    descriptions: list[str] = Form(...),
+    repo: ProjectRepository = Depends(get_repo),
+    session: AsyncSession = Depends(get_db),
+) -> list[UploadedAssetResult]:
+    """M6.5, A8/A23/A27: media a human already has for this project,
+    supplied alongside the script - entirely optional; a project that
+    never calls this endpoint behaves exactly as it did before M6.5
+    (`LocalProjectAssetProvider.search` returns `[]` and the ladder falls
+    through unchanged). Each file carries its own short human-written
+    `description` - matching against a filename would be worthless (A23)
+    - and is validated and hashed on arrival (A27): the same
+    `validate_and_identify_image` path every searched asset already goes
+    through, so a file that claims to be an image and isn't fails HERE,
+    not inside ffmpeg during the render. Matching to a specific shot
+    happens later, automatically, through the existing relevance gate
+    (`app/assets/relevance.py`) the next time `resolve_assets_search`
+    runs - never here, and never through a planner (A3 stands)."""
+    await _get_project_or_404(project_id, repo)
+    if not files:
+        raise HTTPException(status_code=400, detail="at least one file is required")
+    if len(files) != len(descriptions):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{len(files)} file(s) but {len(descriptions)} description(s) - "
+            "exactly one description per file is required",
+        )
+
+    project_uuid = uuid.UUID(project_id)
+    asset_repo = AssetRepository(session)
+    assets_dir = settings.storage_root / project_id / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+
+    results: list[UploadedAssetResult] = []
+    for upload, description in zip(files, descriptions, strict=True):
+        if not description.strip():
+            raise HTTPException(
+                status_code=400,
+                detail=f"{upload.filename}: a description is required (A23) - matching "
+                "against a filename alone is not reliable",
+            )
+        content = await upload.read()
+        try:
+            ext, _width, _height = validate_and_identify_image(content)
+        except PermanentError as exc:
+            raise HTTPException(status_code=400, detail=f"{upload.filename}: {exc}") from exc
+
+        content_hash = hashlib.sha256(content).hexdigest()
+        existing = await asset_repo.get_by_content_hash(project_uuid, content_hash)
+        if existing is not None:
+            # Same bytes already on file for this project (M6, hash
+            # dedup) - not an error, just nothing new to store.
+            results.append(
+                UploadedAssetResult(
+                    asset_id=str(existing.id), filename=upload.filename or "", duplicate=True
+                )
+            )
+            continue
+
+        path = assets_dir / f"{content_hash}.{ext}"
+        path.write_bytes(content)
+        asset = await asset_repo.insert(
+            project_id=project_uuid,
+            provider="project_assets",
+            source_url=None,
+            type="image",
+            local_path=str(path),
+            licence="human_upload",
+            attribution=None,
+            content_hash=content_hash,
+            confidence=1.0,
+            description=description.strip(),
+        )
+        results.append(
+            UploadedAssetResult(
+                asset_id=str(asset.id), filename=upload.filename or "", duplicate=False
+            )
+        )
+
+    await session.commit()
+    return results
+
+
 @router.get("/{project_id}/timeline", response_model=Timeline)
 async def get_timeline(
     project_id: str,
@@ -132,6 +237,119 @@ async def approve_timeline(
     if active.status == TimelineStatus.APPROVED:
         raise HTTPException(status_code=400, detail="timeline is already approved")
     await timeline_service.approve(project_id, active.version)
+    return await engine.run()
+
+
+@router.post("/{project_id}/shots/{shot_id}/override", response_model=Project)
+async def override_shot_asset(
+    project_id: str,
+    shot_id: str,
+    file: UploadFile = File(...),
+    description: str = Form(""),
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    engine: WorkflowEngine = Depends(get_workflow_engine),
+    session: AsyncSession = Depends(get_db),
+) -> Project:
+    """M6.5, A9/A10/A24/A25/A29: a human names a shot directly and
+    supplies its media themselves. Bypasses relevance and licence gates
+    entirely (A24) - a human pointing at a specific shot has already made
+    the judgement those gates exist to approximate. Works on ANY shot,
+    not only a failed one (a Done-when criterion of this phase is "swap
+    or override any of them"), and is also the sole remedy for the A26
+    review gate when a shot ends `failed`.
+
+    Recorded as an `append_version` with `produced_by=HUMAN` that sets
+    `shot.asset_locked` (A10/A25) - once locked, no later version may
+    change that shot's `prompt`/`asset_plan` at all
+    (`TimelineService._reject_locked_shot_drift`), and its binding
+    carries forward unconditionally across every future version
+    (`TimelineService._carry_forward_bindings`). A29: this changes ONLY
+    the binding and the lock flag - `duration_s`, narration, framing,
+    camera and transitions are never touched, so an override is always a
+    free, instant swap, never a paid re-narration.
+
+    Validated and hashed on arrival exactly like the general upload
+    endpoint (A27). If the plan was already approved (or narration has
+    already run), the new locked version is immediately re-approved too -
+    the same "belt and braces" pattern `NarrationStep` already uses to
+    append-then-approve in two commits - so resuming via `POST /render`
+    below does not demand a redundant second human click for a decision
+    already made; a project that had never been approved yet is left in
+    DRAFT, so the human's first plan approval is still required as
+    normal.
+    """
+    await _get_project_or_404(project_id, repo)
+    active = await timeline_service.get_active(project_id)
+    if active is None:
+        raise HTTPException(status_code=400, detail="no timeline to override a shot on yet")
+    if shot_id not in {s.id for s in active.all_shots()}:
+        raise HTTPException(
+            status_code=404, detail=f"shot {shot_id} not found in the active timeline"
+        )
+
+    content = await file.read()
+    try:
+        ext, _width, _height = validate_and_identify_image(content)
+    except PermanentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    project_uuid = uuid.UUID(project_id)
+    asset_repo = AssetRepository(session)
+    content_hash = hashlib.sha256(content).hexdigest()
+    asset = await asset_repo.get_by_content_hash(project_uuid, content_hash)
+    if asset is None:
+        assets_dir = settings.storage_root / project_id / "assets"
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        path = assets_dir / f"{content_hash}.{ext}"
+        path.write_bytes(content)
+        asset = await asset_repo.insert(
+            project_id=project_uuid,
+            provider="project_assets",
+            source_url=None,
+            type="image",
+            local_path=str(path),
+            licence="human_override",
+            attribution=None,
+            content_hash=content_hash,
+            confidence=1.0,
+            description=description.strip() or None,
+        )
+
+    was_already_approved = active.status == TimelineStatus.APPROVED or (
+        active.produced_by == ProducedBy.NARRATION
+    )
+
+    def _lock_shot(base: Timeline) -> Timeline:
+        for scene in base.scenes:
+            for shot in scene.shots:
+                if shot.id == shot_id:
+                    shot.asset_locked = True
+        return base
+
+    new_timeline = await timeline_service.append_version(
+        project_id,
+        produced_by=ProducedBy.HUMAN,
+        transform=_lock_shot,
+        owns=frozenset({"scenes"}),
+    )
+
+    binding_repo = ShotBindingRepository(session)
+    binding = await binding_repo.get_or_create_pending(project_uuid, new_timeline.version, shot_id)
+    binding.asset_id = asset.id
+    binding.clip_id = None
+    binding.state = "resolved"
+    binding.rung = "project_assets"
+    binding.last_error = None
+    await session.flush()
+
+    if was_already_approved:
+        await timeline_service.approve(project_id, new_timeline.version)
+    await session.commit()
+
+    # An active timeline (checked above) implies a script already exists
+    # (`create_initial` requires one) - `engine.run()` always has
+    # something to resume from here.
     return await engine.run()
 
 
@@ -195,6 +413,12 @@ async def get_progress(
     # this shot rather than found or failed it). There is no frontend yet
     # (M9) - this is the API surface that stands in for "the human sees
     # the images": the resolved asset's provenance plus its path on disk.
+    # M6.5, A9/A10: whether a human already locked this shot's asset via
+    # the override endpoint - the other half of "a human can see, and
+    # swap or override, any shot's asset" (this phase's Done-when
+    # criterion): a locked shot's own state proves the override survives.
+    locked_by_shot = {s.id: s.asset_locked for s in timeline.all_shots()}
+
     shots_detail = []
     for b in sorted(bindings, key=lambda binding: binding.shot_id):
         asset_detail = None
@@ -225,6 +449,7 @@ async def get_progress(
                 "rung": b.rung,
                 "last_error": b.last_error,
                 "will_generate": b.state == "awaiting_generation",
+                "locked": locked_by_shot.get(b.shot_id, False),
                 "asset": asset_detail,
                 "clip": clip_detail,
             }

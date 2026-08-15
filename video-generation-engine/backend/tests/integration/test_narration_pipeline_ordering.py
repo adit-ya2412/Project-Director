@@ -64,6 +64,10 @@ def test_default_pipeline_runs_search_before_approval_and_generation_after_narra
         "await_approval",
         "narration",
         "resolve_assets_generate",
+        # M6.5, A15/A26/A28: the review gate sits between the generation
+        # pass and the renderer - a shot that ended `failed` must never
+        # reach `RenderStep`, not even as a placeholder.
+        "await_review",
         "render",
         "complete",
     ]
@@ -213,7 +217,7 @@ async def test_total_search_outage_still_reaches_the_approval_gate(project_id, m
     monkeypatch.setattr(
         resolve_assets_module,
         "_real_search_providers",
-        lambda: {
+        lambda **_kwargs: {
             strategy: _RaisingAssetProvider() for strategy in resolve_assets_module.SEARCH_RUNGS
         },
     )

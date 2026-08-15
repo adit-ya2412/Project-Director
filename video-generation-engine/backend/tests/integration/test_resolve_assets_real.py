@@ -14,6 +14,7 @@ ranking logic, not Wikimedia/Pexels's HTTP behaviour (that's covered by
 the MockTransport-based provider tests instead).
 """
 
+import hashlib
 import io
 import uuid as uuid_module
 
@@ -139,7 +140,7 @@ def _patch_providers(monkeypatch, historical_provider) -> None:
     monkeypatch.setattr(
         resolve_assets_module,
         "_real_search_providers",
-        lambda: {AssetStrategy.HISTORICAL_SEARCH: historical_provider},
+        lambda **_kwargs: {AssetStrategy.HISTORICAL_SEARCH: historical_provider},
     )
     # `run()` unconditionally constructs an `OpenAIPlanningProvider()` for
     # M6.5's vision constraint check whenever the pass permits generation
@@ -458,3 +459,75 @@ async def test_total_search_provider_failure_never_blocks_the_gate(project_id, m
     assert binding.state == "failed"
     assert binding.asset_id is None
     assert binding.clip_id is None
+
+
+# --- M6.5, A8/A23/A27: uploaded media as ladder rung 1 (`project_assets`) --
+
+
+async def test_uploaded_asset_matches_via_the_real_relevance_gate_and_skips_licence_gate(
+    project_id, monkeypatch
+):
+    """The real `LocalProjectAssetProvider` (not the `_FakeSearchProvider`
+    used everywhere else above) - proves A23 (an upload competes through
+    the SAME relevance gate any other candidate goes through, scored
+    against its own human-written `description`) and the licence-gate
+    exemption for this one rung (see resolve_assets.py's own comment on
+    why: `licence_requirements` is written with no visibility into
+    whether an upload even exists, A3). No monkeypatch of
+    `_real_search_providers` here - the real routing table is used, and
+    the shot's `fallback_chain` never reaches the other rungs, so nothing
+    else needs to be faked."""
+    monkeypatch.setattr(settings, "dry_run", False)
+    shot = Shot(
+        id="sh_01",
+        order=0,
+        intent=ShotIntent.EXPLAIN,
+        duration_s=3.0,
+        prompt="a shot of the Leuna Werke plant",
+        asset_plan=AssetPlan(
+            strategy=AssetStrategy.PROJECT_ASSETS,
+            search_queries=["Leuna Werke"],
+            preferred_type=PreferredMediaType.IMAGE,
+            fallback_chain=[AssetStrategy.PROJECT_ASSETS, AssetStrategy.GENERATE_IMAGE],
+            # Deliberately a licence NO uploaded photo could ever satisfy,
+            # to prove the bypass - written by the Asset Planner with no
+            # idea an upload exists at all (A3).
+            licence_requirements=["cc0"],
+        ),
+    )
+    await _seed_timeline(project_id, [shot])
+
+    # Real bytes on disk first, hashed exactly the way the upload endpoint
+    # itself would (M6.5, A27) - `fetch()` reads real bytes off
+    # `local_path`, and the resolve step re-hashes what it fetches, so the
+    # stored `content_hash` must be the real hash, not a placeholder, for
+    # the existing-asset short-circuit to recognise it as already stored.
+    content = _png_bytes((1, 2, 3))
+    content_hash = hashlib.sha256(content).hexdigest()
+    assets_dir = settings.storage_root / project_id / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    real_path = assets_dir / f"{content_hash}.png"
+    real_path.write_bytes(content)
+
+    async with async_session_factory() as session:
+        asset_repo = AssetRepository(session)
+        uploaded = await asset_repo.insert(
+            project_id=uuid_module.UUID(project_id),
+            provider="project_assets",
+            source_url=None,
+            type="image",
+            local_path=str(real_path),
+            licence="human_upload",  # not "cc0" - the licence gate must never see this
+            attribution=None,
+            content_hash=content_hash,
+            confidence=1.0,
+            description="Leuna Werke synthetic fuel plant, aerial view, 1943",
+        )
+        await session.commit()
+
+    await _run_step(project_id)
+
+    binding = await _binding(project_id, "sh_01")
+    assert binding.state == "resolved"
+    assert binding.rung == "project_assets"
+    assert binding.asset_id == uploaded.id

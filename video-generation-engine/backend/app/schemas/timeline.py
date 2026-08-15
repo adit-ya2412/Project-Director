@@ -163,6 +163,24 @@ class Shot(BaseModel):
     transition_out: Transition = Field(default_factory=Transition)
     prompt: str = ""
     asset_plan: AssetPlan | None = None
+    # A human override (M6.5, A9/A10/A24/A25) sets this via an
+    # `append_version` with `produced_by=HUMAN`. It lives on the Shot
+    # itself, not only on the ShotBinding, so it is part of the immutable
+    # decision record (I1/I2 - "this shot's asset is locked" is a
+    # creative decision, not media) and auditable from the Timeline
+    # alone. Two consequences, both required by A25 (decided by the
+    # user, 2026-08-15: "lock wins, my photo is always in the plan, and
+    # the plan should include it in the shot"):
+    #   1. `TimelineService._carry_forward_bindings` carries a locked
+    #      shot's binding forward UNCONDITIONALLY, exempting it from
+    #      A20's normal drop-on-change rule - see that module.
+    #   2. `TimelineService.append_version` refuses (raises
+    #      `PermanentError`) any later version that changes a locked
+    #      shot's `prompt` or `asset_plan` - "always in the plan" is made
+    #      literally true by making it impossible for a re-plan to drift
+    #      away from the image a human already chose, not merely
+    #      detected after the fact.
+    asset_locked: bool = False
 
 
 class Scene(BaseModel):

@@ -454,6 +454,134 @@ async def test_binding_does_not_carry_forward_when_asset_plan_changes(project_id
     assert carried is None  # must re-resolve against the new asset_plan
 
 
+# --- M6.5, A25: a locked shot is exempt from A20, in both directions ---
+
+
+async def test_locked_shot_binding_carries_forward_even_when_prompt_changes(project_id):
+    """A25's direct, deliberate conflict with A20: contrast this with
+    `test_binding_does_not_carry_forward_when_prompt_changes` above (the
+    UNlocked case, which correctly drops the binding) - same shape of
+    change, opposite outcome, because the lock wins."""
+    async with async_session_factory() as session:
+        service = TimelineService(session)
+        await service.create_initial(project_id, script="s")
+
+        def v2(base):
+            shot = _shot("sh_01_01", 0)
+            shot.prompt = "a coal mine"
+            shot.asset_locked = True
+            base.scenes = [_scene("sc_01", 0, [shot])]
+            return base
+
+        v2_result = await service.append_version(
+            project_id, produced_by=ProducedBy.HUMAN, transform=v2, owns=frozenset({"scenes"})
+        )
+        asset_id, _ = await _seed_resolved_binding(
+            session, project_id, v2_result.version, "sh_01_01"
+        )
+
+        # A locked shot's prompt/asset_plan can never actually change
+        # again (see test_append_version_rejects_prompt_change_on_locked_shot
+        # below) - narration reconciling `duration_s` is the one field a
+        # later version legitimately still touches, so that's what proves
+        # the unconditional carry here rather than the (impossible)
+        # prompt-change case.
+        def v3_duration_only(base):
+            base.scenes[0].shots[0].duration_s = 9.0
+            return base
+
+        v3_result = await service.append_version(
+            project_id,
+            produced_by=ProducedBy.NARRATION,
+            transform=v3_duration_only,
+            owns=frozenset({"scenes"}),
+        )
+
+        binding_repo = ShotBindingRepository(session)
+        carried = await binding_repo.get(uuid.UUID(project_id), v3_result.version, "sh_01_01")
+
+    assert carried is not None
+    assert carried.asset_id == asset_id
+    assert carried.state == "resolved"
+
+
+async def test_append_version_rejects_prompt_change_on_locked_shot(project_id):
+    """A25: "my photo is always in the plan" is enforced mechanically -
+    a later version literally cannot change a locked shot's prompt, not
+    merely detected and dropped at the binding level (contrast A20's
+    ordinary per-shot drop, which lets the prompt change and just
+    re-resolves)."""
+    async with async_session_factory() as session:
+        service = TimelineService(session)
+        await service.create_initial(project_id, script="s")
+
+        def v2(base):
+            shot = _shot("sh_01_01", 0)
+            shot.prompt = "a coal mine"
+            shot.asset_locked = True
+            base.scenes = [_scene("sc_01", 0, [shot])]
+            return base
+
+        await service.append_version(
+            project_id, produced_by=ProducedBy.HUMAN, transform=v2, owns=frozenset({"scenes"})
+        )
+
+        def v3_reprompt(base):
+            base.scenes[0].shots[0].prompt = "a different subject entirely"
+            return base
+
+        try:
+            await service.append_version(
+                project_id,
+                produced_by=ProducedBy.SHOT_PLANNER,
+                transform=v3_reprompt,
+                owns=frozenset({"scenes"}),  # ownership does not grant an exemption
+            )
+            raise AssertionError("expected PermanentError for a locked shot's prompt changing")
+        except PermanentError:
+            pass
+
+        latest = await service.get_active(project_id)
+    assert latest.version == 2  # the rejected write never created v3
+
+
+async def test_append_version_rejects_asset_plan_change_on_locked_shot(project_id):
+    async with async_session_factory() as session:
+        service = TimelineService(session)
+        await service.create_initial(project_id, script="s")
+
+        def v2(base):
+            shot = _shot("sh_01_01", 0)
+            shot.asset_locked = True
+            shot.asset_plan = AssetPlan(
+                strategy=AssetStrategy.HISTORICAL_SEARCH,
+                search_queries=["coal mine"],
+                fallback_chain=[AssetStrategy.HISTORICAL_SEARCH, AssetStrategy.GENERATE_IMAGE],
+                licence_requirements=["cc0"],
+            )
+            base.scenes = [_scene("sc_01", 0, [shot])]
+            return base
+
+        await service.append_version(
+            project_id, produced_by=ProducedBy.HUMAN, transform=v2, owns=frozenset({"scenes"})
+        )
+
+        def v3_replan(base):
+            base.scenes[0].shots[0].asset_plan.search_queries = ["Ruhr coal mine 1936"]
+            return base
+
+        try:
+            await service.append_version(
+                project_id,
+                produced_by=ProducedBy.ASSET_PLANNER,
+                transform=v3_replan,
+                owns=frozenset({"scenes"}),
+            )
+            raise AssertionError("expected PermanentError for a locked shot's asset_plan changing")
+        except PermanentError:
+            pass
+
+
 async def test_binding_does_not_carry_forward_when_the_shot_no_longer_exists(project_id):
     async with async_session_factory() as session:
         service = TimelineService(session)

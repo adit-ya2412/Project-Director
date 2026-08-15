@@ -12,10 +12,14 @@ from typing import Literal, Protocol
 
 from app.workflow.context import RunContext
 
-# Four outcomes, not three (contrast with Command/Result's three in
-# section 6.2): "awaiting_approval" is a deliberate pause, not a failure.
-# The engine treats it as "stop the run cleanly", never as an error.
-StepOutcome = Literal["ok", "retry", "failed", "awaiting_approval"]
+# Five outcomes, not three (contrast with Command/Result's three in
+# section 6.2): "awaiting_approval" and "awaiting_review" (M6.5, A26/A28)
+# are both deliberate pauses, not failures - the engine treats either as
+# "stop the run cleanly", never as an error. They are distinct because
+# they are different questions with different remedies (approve the
+# creative plan, versus fix a shot that failed generation) - see
+# `app/workflow/steps/await_review.py`.
+StepOutcome = Literal["ok", "retry", "failed", "awaiting_approval", "awaiting_review"]
 
 
 @dataclass
