@@ -1,9 +1,11 @@
-"""The M0 renderer: Timeline + resolved shot images -> MP4.
+"""The M0 renderer: Timeline + resolved shot images -> MP4 (silent).
 
-No audio yet (narration lands in M5, mixing in M8) — this proves the visual
-composition path: normalisation, crossfade transitions, and hard cuts,
-against real FFmpeg, on real Windows path handling, before four planners
-are built on top of an untested IR.
+Proves the visual composition path: normalisation, crossfade transitions,
+and hard cuts, against real FFmpeg, on real Windows path handling. Audio
+is deliberately NOT this module's job — `app/renderer/audio.py` mixes
+narration onto the finished output of `render_timeline` as a separate
+final pass (M8 step 3), so this file's graph stays exactly what it was
+when it was first proven, video-only.
 
 Determinism (Invariant I5): every ffmpeg invocation is built as an argument
 list (never a shell string — see security guidance in the implementation
@@ -30,7 +32,7 @@ class RenderSettings:
     ffprobe_binary: str = "ffprobe"
 
 
-async def _run_ffmpeg(args: list[str]) -> None:
+async def run_ffmpeg(args: list[str]) -> None:
     process = await asyncio.create_subprocess_exec(
         *args,
         stdout=asyncio.subprocess.PIPE,
@@ -104,7 +106,7 @@ async def _render_run(
         "+faststart",
         str(output_path),
     ]
-    await _run_ffmpeg(args)
+    await run_ffmpeg(args)
 
 
 async def render_timeline(
@@ -161,7 +163,7 @@ async def render_timeline(
         "+faststart",
         str(output_path),
     ]
-    await _run_ffmpeg(args)
+    await run_ffmpeg(args)
     return output_path
 
 
