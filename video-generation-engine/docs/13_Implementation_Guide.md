@@ -2536,6 +2536,26 @@ Simple, literal terms answer readily — `documentary music` → 102 results, to
 
 **M3 — a selection miss is permanent, and it should not be.** `SelectMusicStep.is_satisfied` returns true once `selection_attempted` is set, so a project that found nothing can never try again — not even after the two fixes above. The live project has that flag set and its jargon `search_terms` frozen into the Timeline, so it would render silent forever. A human needs a way to say "try again", optionally with their own terms. This is the same principle the rest of M6.5 rests on: an automated asset choice a human disagrees with must be correctable, and music is an asset choice like any other.
 
+## Music decisions M4–M7 — a curated local library replaces open-ended search (2026-08-15)
+
+Proposed by the user after M1–M3 were diagnosed. Adopted, because it does not merely work around the failure — it removes the failure class.
+
+**M4 — a hand-curated local library becomes the primary music source; search becomes the fallback.** The diagnosis in M1 was that the Director invented `investigative historical underscore` and got birdsong. The deeper problem is not the vocabulary but the *mechanism*: **open-ended search asks a language model to produce something deterministic**, which is the same mistake that caused cross-scene shot-id collisions (M5) and the narration-boundary failure that killed a live run. A closed set of moods removes it — picking from a menu is something a model is reliably good at, and guessing search vocabulary is not. Curation also gives what search cannot: tracks chosen **by ear**, licences verified once by a human rather than gated per result, no duration floor needed (nobody files a 2.5-second air horn under `documentary_dark/`), and determinism — I5 wants rendering to be a pure function, and today the same project can get different music on different days, or none.
+
+This needs **no pipeline change**. `MusicProvider` already exists as an interface, so this is a third implementation selected by `MUSIC_PROVIDER=local`. It is the exact analogue of `project_assets` as ladder rung 1 for images: human-curated content outranks search, which is the whole thesis of M6.5.
+
+Layout, as proposed: `assets/music/{documentary_dark,documentary_mystery,documentary_ambient,industrial,historical_epic,emotional}/`.
+
+**M5 — the manifest is committed; the audio is not.** `manifest.json` carries title, author, licence, source URL, mood, duration and content hash per track, and is committed. The audio files are gitignored like `storage/`. Without the manifest, CC-BY attribution obligations and provenance live only in someone's memory, and a fresh clone has no music with no explanation of why. The content hash also lets a track participate in the render fingerprint (M8 step 6) so music becomes part of what makes a render reproducible.
+
+**M6 — the Director selects a mood from the closed set; it no longer invents search terms for the local provider.** This is the change that actually fixes M1. Keep `search_terms` in `music_plan` for the fallback provider, but the local provider matches on the category.
+
+**M7 — a mood with no matching track degrades; it never forces a wrong pick.** If a script genuinely does not fit the six categories, fall back to the search provider, and past that to silence. Forcing a selection because an enum demanded one would reintroduce, by a different route, exactly the confidently-wrong behaviour A30a exists to prevent. **Attribution:** CC-BY requires credit, and where it appears (video, description, or both) should be decided before the renderer is built rather than retrofitted.
+
+**Sourcing:** Incompetech (Kevin MacLeod) is CC-BY, genuinely good documentary scoring, and already categorised close to these folder names; Free Music Archive and Jamendo's CC-BY subset fill gaps.
+
+**Sequencing:** land M1–M3 first (the retry endpoint is useful whatever the provider, and M2's duration floor protects the search fallback), render the pending video (re-rendering with music later is free — local ffmpeg, cached narration), then build `LocalMusicProvider`.
+
 ## Backlog — deferred, not blocking
 
 Raised during the first real Hinglish run (2026-08-15, project `194ad0e7`, fixture `hinglish_test_project`). Deliberately not fixed then, so the run could continue.
