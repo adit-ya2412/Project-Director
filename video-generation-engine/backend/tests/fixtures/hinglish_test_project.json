@@ -3,7 +3,7 @@
   "name": "Hinglish - Germany Coal to Fuel (run 2)",
   "script": "Bro, Germany ke paas oil tha hi nahi... phir bhi unke tanks chalte rahe. Kaise? Simple. Unke paas coal tha. Bohot saara coal. Toh scientists ne kuch aisa kiya jo impossible lagta hai - coal ko liquid fuel mein badal diya. Iska naam tha Fischer-Tropsch process. 1925 mein invent hua, aur 1940s tak Germany ki poori war machine isi pe chal rahi thi. Leuna-Werke jaisi factories din raat fuel bana rahi thi. Ab yahan twist hai. Yeh technology mari nahi. 1950s mein South Africa ne isse uthaya - apartheid ki wajah se unpe oil embargo laga tha. Toh unhone Sasol banaya, Secunda mein duniya ka sabse bada coal-to-liquid plant. Aaj bhi chal raha hai. Ek war-time jugaad, jo permanent solution ban gaya.",
   "language": "en",
-  "timeline_version": 6,
+  "timeline_version": 19,
   "timeline_document": {
     "scenes": [
       {
@@ -45,7 +45,7 @@
             },
             "duration_s": 2.4,
             "intent_text": "Establish Germany's apparent lack of domestic oil as the central paradox.",
-            "asset_locked": false,
+            "asset_locked": true,
             "narration_span": [
               0,
               39
@@ -90,7 +90,7 @@
             },
             "duration_s": 3.1,
             "intent_text": "Reveal the contradiction of German tanks continuing to operate despite the oil shortage, inviting the question of how.",
-            "asset_locked": false,
+            "asset_locked": true,
             "narration_span": [
               39,
               87
@@ -147,7 +147,7 @@
             },
             "duration_s": 2.3,
             "intent_text": "Establish the immense coal reserves that made the later transformation possible.",
-            "asset_locked": false,
+            "asset_locked": true,
             "narration_span": [
               0,
               38
@@ -192,7 +192,7 @@
             },
             "duration_s": 5.8,
             "intent_text": "Make the improbable conversion of solid coal into liquid fuel visually understandable.",
-            "asset_locked": false,
+            "asset_locked": true,
             "narration_span": [
               38,
               134
@@ -237,7 +237,7 @@
             },
             "duration_s": 2.4,
             "intent_text": "Land on Fischer-Tropsch as the name behind the coal-to-liquid breakthrough.",
-            "asset_locked": false,
+            "asset_locked": true,
             "narration_span": [
               134,
               173
@@ -294,7 +294,7 @@
             },
             "duration_s": 1.7,
             "intent_text": "Introduce the 1925 invention as the technical origin of the process.",
-            "asset_locked": false,
+            "asset_locked": true,
             "narration_span": [
               0,
               22
@@ -339,7 +339,7 @@
             },
             "duration_s": 4.3,
             "intent_text": "Reveal the immense dependence of Germany's wartime machine on synthetic fuel production.",
-            "asset_locked": false,
+            "asset_locked": true,
             "narration_span": [
               22,
               87
@@ -441,7 +441,7 @@
             },
             "duration_s": 2.4,
             "intent_text": "Reveal that the technology survived rather than disappearing.",
-            "asset_locked": false,
+            "asset_locked": true,
             "narration_span": [
               0,
               46
@@ -486,7 +486,7 @@
             },
             "duration_s": 2.1,
             "intent_text": "Introduce apartheid-era South Africa as the technology's new destination in the 1950s.",
-            "asset_locked": false,
+            "asset_locked": true,
             "narration_span": [
               46,
               85
@@ -531,7 +531,7 @@
             },
             "duration_s": 2.5,
             "intent_text": "Explain the oil embargo pressure that made domestic synthetic fuel strategically necessary.",
-            "asset_locked": false,
+            "asset_locked": true,
             "narration_span": [
               85,
               136
@@ -588,7 +588,7 @@
             },
             "duration_s": 4.3,
             "intent_text": "Introduce Sasol's immense coal-to-liquids complex in Secunda as the culmination of the industrial project.",
-            "asset_locked": false,
+            "asset_locked": true,
             "narration_span": [
               0,
               81
@@ -633,7 +633,7 @@
             },
             "duration_s": 1.5,
             "intent_text": "Emphasize that the Secunda plant remains operational in the present day.",
-            "asset_locked": false,
+            "asset_locked": true,
             "narration_span": [
               81,
               104
@@ -680,7 +680,7 @@
             },
             "duration_s": 2.7,
             "intent_text": "Reveal the sober irony that a wartime improvisation became a lasting solution.",
-            "asset_locked": false,
+            "asset_locked": true,
             "narration_span": [
               104,
               156
@@ -700,7 +700,7 @@
       }
     ],
     "status": "draft",
-    "version": 6,
+    "version": 19,
     "metadata": {
       "fps": 30,
       "language": "en",
@@ -712,7 +712,7 @@
       "aspect_ratio": "9:16",
       "total_duration_s": 36.2
     },
-    "created_at": "2026-08-15T15:27:36.776891Z",
+    "created_at": "2026-08-15T16:21:27.329622Z",
     "music_plan": {
       "mood": "Low-key investigative, mechanical, and increasingly sobering.",
       "tempo": "Slow-to-mid tempo, approximately 75–95 BPM; sparse enough to leave clear space for Hindi/Hinglish narration.",
@@ -732,9 +732,9 @@
       ]
     },
     "project_id": "194ad0e7-e545-4524-a597-59e4ff604ba2",
-    "produced_by": "music_selection",
+    "produced_by": "human",
     "timeline_id": "194ad0e7-e545-4524-a597-59e4ff604ba2",
-    "parent_version": 5,
+    "parent_version": 18,
     "schema_version": "1.0",
     "creative_context": {
       "tone": "Intrigued and explanatory at the hook, shifting into sober industrial-history revelation and morally alert geopolitical context.",
@@ -762,6 +762,16 @@
   },
   "assets": [
     {
+      "provider": "project_assets",
+      "source_url": null,
+      "type": "image",
+      "licence": "human_override",
+      "attribution": null,
+      "content_hash": "3d98abfccb174227d4efabc60ab962514b9c656aa4cfa7a94c2342734b01e9d9",
+      "confidence": 1.0,
+      "filename": "3d98abfccb174227d4efabc60ab962514b9c656aa4cfa7a94c2342734b01e9d9.jpg"
+    },
+    {
       "provider": "wikimedia",
       "source_url": "https://upload.wikimedia.org/wikipedia/commons/9/97/Sasol_CTL%2C_Secunda.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
       "type": "image",
@@ -770,6 +780,66 @@
       "content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6",
       "confidence": 0.5725,
       "filename": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6.jpg"
+    },
+    {
+      "provider": "project_assets",
+      "source_url": null,
+      "type": "image",
+      "licence": "human_override",
+      "attribution": null,
+      "content_hash": "50b1711421faa12e3f3910a91d9bc215199a8182ccc9cb853aa4535ad137d647",
+      "confidence": 1.0,
+      "filename": "50b1711421faa12e3f3910a91d9bc215199a8182ccc9cb853aa4535ad137d647.jpg"
+    },
+    {
+      "provider": "project_assets",
+      "source_url": null,
+      "type": "image",
+      "licence": "human_override",
+      "attribution": null,
+      "content_hash": "58d73059ec6ae0f8d7553ce5303d027e2eb4d9a8e39d9a6b8d7d0e2609aea20a",
+      "confidence": 1.0,
+      "filename": "58d73059ec6ae0f8d7553ce5303d027e2eb4d9a8e39d9a6b8d7d0e2609aea20a.jpg"
+    },
+    {
+      "provider": "project_assets",
+      "source_url": null,
+      "type": "image",
+      "licence": "human_override",
+      "attribution": null,
+      "content_hash": "70b58b32c56920d0b13addb9f0d1e6440262f9ce29d6b9db4cbac76716f8d6d5",
+      "confidence": 1.0,
+      "filename": "70b58b32c56920d0b13addb9f0d1e6440262f9ce29d6b9db4cbac76716f8d6d5.jpg"
+    },
+    {
+      "provider": "project_assets",
+      "source_url": null,
+      "type": "image",
+      "licence": "human_override",
+      "attribution": null,
+      "content_hash": "77e8051f1841027c8be1833fad2f505f16392a5317345adbbda283a01c486527",
+      "confidence": 1.0,
+      "filename": "77e8051f1841027c8be1833fad2f505f16392a5317345adbbda283a01c486527.jpg"
+    },
+    {
+      "provider": "project_assets",
+      "source_url": null,
+      "type": "image",
+      "licence": "human_override",
+      "attribution": null,
+      "content_hash": "901d746739984f433525500f36543e3203c661937a9d2a3215bd01692bf28d94",
+      "confidence": 1.0,
+      "filename": "901d746739984f433525500f36543e3203c661937a9d2a3215bd01692bf28d94.jpg"
+    },
+    {
+      "provider": "project_assets",
+      "source_url": null,
+      "type": "image",
+      "licence": "human_override",
+      "attribution": null,
+      "content_hash": "91b9149477d0e02ea7044bac4727e1d4b9401cd8cd40ed46a11da68288bde53d",
+      "confidence": 1.0,
+      "filename": "91b9149477d0e02ea7044bac4727e1d4b9401cd8cd40ed46a11da68288bde53d.jpg"
     },
     {
       "provider": "wikipedia_entity",
@@ -782,6 +852,26 @@
       "filename": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1.jpg"
     },
     {
+      "provider": "project_assets",
+      "source_url": null,
+      "type": "image",
+      "licence": "human_override",
+      "attribution": null,
+      "content_hash": "a36fc158422641cb35d9dc9b623cdc4c34332e8e08b57cafa21926a471c12331",
+      "confidence": 1.0,
+      "filename": "a36fc158422641cb35d9dc9b623cdc4c34332e8e08b57cafa21926a471c12331.jpg"
+    },
+    {
+      "provider": "project_assets",
+      "source_url": null,
+      "type": "image",
+      "licence": "human_override",
+      "attribution": null,
+      "content_hash": "a661796f3a18f906696f181136618d8cf96ebcc22b35cf8bdc0bbc503bf7a38b",
+      "confidence": 1.0,
+      "filename": "a661796f3a18f906696f181136618d8cf96ebcc22b35cf8bdc0bbc503bf7a38b.jpg"
+    },
+    {
       "provider": "pexels",
       "source_url": "https://images.pexels.com/photos/38343897/pexels-photo-38343897.jpeg",
       "type": "image",
@@ -790,6 +880,46 @@
       "content_hash": "adefe337bb0bb1b8ae55502bac44a56810535d0b27ab5673e6cd307b96767382",
       "confidence": 0.4665517241379311,
       "filename": "adefe337bb0bb1b8ae55502bac44a56810535d0b27ab5673e6cd307b96767382.jpg"
+    },
+    {
+      "provider": "project_assets",
+      "source_url": null,
+      "type": "image",
+      "licence": "human_override",
+      "attribution": null,
+      "content_hash": "b58584b6569214b4f696c711394be94dbef3926025d034a98890ccd777aa55ba",
+      "confidence": 1.0,
+      "filename": "b58584b6569214b4f696c711394be94dbef3926025d034a98890ccd777aa55ba.jpg"
+    },
+    {
+      "provider": "project_assets",
+      "source_url": null,
+      "type": "image",
+      "licence": "human_override",
+      "attribution": null,
+      "content_hash": "be8cb6651be8d160647f3a32062bd8f65a9ccf7a4b43e66d845fe2469eb00510",
+      "confidence": 1.0,
+      "filename": "be8cb6651be8d160647f3a32062bd8f65a9ccf7a4b43e66d845fe2469eb00510.jpg"
+    },
+    {
+      "provider": "project_assets",
+      "source_url": null,
+      "type": "image",
+      "licence": "human_override",
+      "attribution": null,
+      "content_hash": "c1b6d1ca52d54cda8765db07955912b048265f0934194d0830b8831064d6392d",
+      "confidence": 1.0,
+      "filename": "c1b6d1ca52d54cda8765db07955912b048265f0934194d0830b8831064d6392d.jpg"
+    },
+    {
+      "provider": "project_assets",
+      "source_url": null,
+      "type": "image",
+      "licence": "human_override",
+      "attribution": null,
+      "content_hash": "e636cfd931f72c39589e9606d767d76356324e2262b4f2b7793bd752479ec9ad",
+      "confidence": 1.0,
+      "filename": "e636cfd931f72c39589e9606d767d76356324e2262b4f2b7793bd752479ec9ad.jpg"
     }
   ],
   "bindings": [
@@ -802,10 +932,143 @@
     },
     {
       "shot_id": "sc_01_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 18,
+      "asset_content_hash": "58d73059ec6ae0f8d7553ce5303d027e2eb4d9a8e39d9a6b8d7d0e2609aea20a"
+    },
+    {
+      "shot_id": "sc_01_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 7,
+      "asset_content_hash": "58d73059ec6ae0f8d7553ce5303d027e2eb4d9a8e39d9a6b8d7d0e2609aea20a"
+    },
+    {
+      "shot_id": "sc_01_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 13,
+      "asset_content_hash": "58d73059ec6ae0f8d7553ce5303d027e2eb4d9a8e39d9a6b8d7d0e2609aea20a"
+    },
+    {
+      "shot_id": "sc_01_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 19,
+      "asset_content_hash": "58d73059ec6ae0f8d7553ce5303d027e2eb4d9a8e39d9a6b8d7d0e2609aea20a"
+    },
+    {
+      "shot_id": "sc_01_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 10,
+      "asset_content_hash": "58d73059ec6ae0f8d7553ce5303d027e2eb4d9a8e39d9a6b8d7d0e2609aea20a"
+    },
+    {
+      "shot_id": "sc_01_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 16,
+      "asset_content_hash": "58d73059ec6ae0f8d7553ce5303d027e2eb4d9a8e39d9a6b8d7d0e2609aea20a"
+    },
+    {
+      "shot_id": "sc_01_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 15,
+      "asset_content_hash": "58d73059ec6ae0f8d7553ce5303d027e2eb4d9a8e39d9a6b8d7d0e2609aea20a"
+    },
+    {
+      "shot_id": "sc_01_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 17,
+      "asset_content_hash": "58d73059ec6ae0f8d7553ce5303d027e2eb4d9a8e39d9a6b8d7d0e2609aea20a"
+    },
+    {
+      "shot_id": "sc_01_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 8,
+      "asset_content_hash": "58d73059ec6ae0f8d7553ce5303d027e2eb4d9a8e39d9a6b8d7d0e2609aea20a"
+    },
+    {
+      "shot_id": "sc_01_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 14,
+      "asset_content_hash": "58d73059ec6ae0f8d7553ce5303d027e2eb4d9a8e39d9a6b8d7d0e2609aea20a"
+    },
+    {
+      "shot_id": "sc_01_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 9,
+      "asset_content_hash": "58d73059ec6ae0f8d7553ce5303d027e2eb4d9a8e39d9a6b8d7d0e2609aea20a"
+    },
+    {
+      "shot_id": "sc_01_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 12,
+      "asset_content_hash": "58d73059ec6ae0f8d7553ce5303d027e2eb4d9a8e39d9a6b8d7d0e2609aea20a"
+    },
+    {
+      "shot_id": "sc_01_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 11,
+      "asset_content_hash": "58d73059ec6ae0f8d7553ce5303d027e2eb4d9a8e39d9a6b8d7d0e2609aea20a"
+    },
+    {
+      "shot_id": "sc_01_sh_01",
       "state": "awaiting_generation",
       "rung": null,
       "timeline_version": 6,
       "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_01_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 13,
+      "asset_content_hash": "be8cb6651be8d160647f3a32062bd8f65a9ccf7a4b43e66d845fe2469eb00510"
+    },
+    {
+      "shot_id": "sc_01_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 14,
+      "asset_content_hash": "be8cb6651be8d160647f3a32062bd8f65a9ccf7a4b43e66d845fe2469eb00510"
+    },
+    {
+      "shot_id": "sc_01_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 19,
+      "asset_content_hash": "be8cb6651be8d160647f3a32062bd8f65a9ccf7a4b43e66d845fe2469eb00510"
+    },
+    {
+      "shot_id": "sc_01_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 8,
+      "asset_content_hash": "be8cb6651be8d160647f3a32062bd8f65a9ccf7a4b43e66d845fe2469eb00510"
+    },
+    {
+      "shot_id": "sc_01_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 10,
+      "asset_content_hash": "be8cb6651be8d160647f3a32062bd8f65a9ccf7a4b43e66d845fe2469eb00510"
+    },
+    {
+      "shot_id": "sc_01_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 16,
+      "asset_content_hash": "be8cb6651be8d160647f3a32062bd8f65a9ccf7a4b43e66d845fe2469eb00510"
     },
     {
       "shot_id": "sc_01_sh_02",
@@ -822,6 +1085,125 @@
       "asset_content_hash": null
     },
     {
+      "shot_id": "sc_01_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 18,
+      "asset_content_hash": "be8cb6651be8d160647f3a32062bd8f65a9ccf7a4b43e66d845fe2469eb00510"
+    },
+    {
+      "shot_id": "sc_01_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 11,
+      "asset_content_hash": "be8cb6651be8d160647f3a32062bd8f65a9ccf7a4b43e66d845fe2469eb00510"
+    },
+    {
+      "shot_id": "sc_01_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 7,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_01_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 9,
+      "asset_content_hash": "be8cb6651be8d160647f3a32062bd8f65a9ccf7a4b43e66d845fe2469eb00510"
+    },
+    {
+      "shot_id": "sc_01_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 12,
+      "asset_content_hash": "be8cb6651be8d160647f3a32062bd8f65a9ccf7a4b43e66d845fe2469eb00510"
+    },
+    {
+      "shot_id": "sc_01_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 15,
+      "asset_content_hash": "be8cb6651be8d160647f3a32062bd8f65a9ccf7a4b43e66d845fe2469eb00510"
+    },
+    {
+      "shot_id": "sc_01_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 17,
+      "asset_content_hash": "be8cb6651be8d160647f3a32062bd8f65a9ccf7a4b43e66d845fe2469eb00510"
+    },
+    {
+      "shot_id": "sc_02_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 11,
+      "asset_content_hash": "50b1711421faa12e3f3910a91d9bc215199a8182ccc9cb853aa4535ad137d647"
+    },
+    {
+      "shot_id": "sc_02_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 9,
+      "asset_content_hash": "50b1711421faa12e3f3910a91d9bc215199a8182ccc9cb853aa4535ad137d647"
+    },
+    {
+      "shot_id": "sc_02_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 16,
+      "asset_content_hash": "50b1711421faa12e3f3910a91d9bc215199a8182ccc9cb853aa4535ad137d647"
+    },
+    {
+      "shot_id": "sc_02_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 8,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_02_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 17,
+      "asset_content_hash": "50b1711421faa12e3f3910a91d9bc215199a8182ccc9cb853aa4535ad137d647"
+    },
+    {
+      "shot_id": "sc_02_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 15,
+      "asset_content_hash": "50b1711421faa12e3f3910a91d9bc215199a8182ccc9cb853aa4535ad137d647"
+    },
+    {
+      "shot_id": "sc_02_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 10,
+      "asset_content_hash": "50b1711421faa12e3f3910a91d9bc215199a8182ccc9cb853aa4535ad137d647"
+    },
+    {
+      "shot_id": "sc_02_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 6,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_02_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 19,
+      "asset_content_hash": "50b1711421faa12e3f3910a91d9bc215199a8182ccc9cb853aa4535ad137d647"
+    },
+    {
+      "shot_id": "sc_02_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 14,
+      "asset_content_hash": "50b1711421faa12e3f3910a91d9bc215199a8182ccc9cb853aa4535ad137d647"
+    },
+    {
       "shot_id": "sc_02_sh_01",
       "state": "awaiting_generation",
       "rung": null,
@@ -830,10 +1212,80 @@
     },
     {
       "shot_id": "sc_02_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 13,
+      "asset_content_hash": "50b1711421faa12e3f3910a91d9bc215199a8182ccc9cb853aa4535ad137d647"
+    },
+    {
+      "shot_id": "sc_02_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 18,
+      "asset_content_hash": "50b1711421faa12e3f3910a91d9bc215199a8182ccc9cb853aa4535ad137d647"
+    },
+    {
+      "shot_id": "sc_02_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 12,
+      "asset_content_hash": "50b1711421faa12e3f3910a91d9bc215199a8182ccc9cb853aa4535ad137d647"
+    },
+    {
+      "shot_id": "sc_02_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 7,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_02_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 13,
+      "asset_content_hash": "b58584b6569214b4f696c711394be94dbef3926025d034a98890ccd777aa55ba"
+    },
+    {
+      "shot_id": "sc_02_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 17,
+      "asset_content_hash": "b58584b6569214b4f696c711394be94dbef3926025d034a98890ccd777aa55ba"
+    },
+    {
+      "shot_id": "sc_02_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 11,
+      "asset_content_hash": "b58584b6569214b4f696c711394be94dbef3926025d034a98890ccd777aa55ba"
+    },
+    {
+      "shot_id": "sc_02_sh_02",
       "state": "awaiting_generation",
       "rung": null,
       "timeline_version": 6,
       "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_02_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 15,
+      "asset_content_hash": "b58584b6569214b4f696c711394be94dbef3926025d034a98890ccd777aa55ba"
+    },
+    {
+      "shot_id": "sc_02_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 7,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_02_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 16,
+      "asset_content_hash": "b58584b6569214b4f696c711394be94dbef3926025d034a98890ccd777aa55ba"
     },
     {
       "shot_id": "sc_02_sh_02",
@@ -844,9 +1296,86 @@
     },
     {
       "shot_id": "sc_02_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 19,
+      "asset_content_hash": "b58584b6569214b4f696c711394be94dbef3926025d034a98890ccd777aa55ba"
+    },
+    {
+      "shot_id": "sc_02_sh_02",
       "state": "awaiting_generation",
       "rung": null,
-      "timeline_version": 6,
+      "timeline_version": 8,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_02_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 14,
+      "asset_content_hash": "b58584b6569214b4f696c711394be94dbef3926025d034a98890ccd777aa55ba"
+    },
+    {
+      "shot_id": "sc_02_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 9,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_02_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 18,
+      "asset_content_hash": "b58584b6569214b4f696c711394be94dbef3926025d034a98890ccd777aa55ba"
+    },
+    {
+      "shot_id": "sc_02_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 10,
+      "asset_content_hash": "b58584b6569214b4f696c711394be94dbef3926025d034a98890ccd777aa55ba"
+    },
+    {
+      "shot_id": "sc_02_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 12,
+      "asset_content_hash": "b58584b6569214b4f696c711394be94dbef3926025d034a98890ccd777aa55ba"
+    },
+    {
+      "shot_id": "sc_02_sh_03",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 8,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_02_sh_03",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 16,
+      "asset_content_hash": "e636cfd931f72c39589e9606d767d76356324e2262b4f2b7793bd752479ec9ad"
+    },
+    {
+      "shot_id": "sc_02_sh_03",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 7,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_02_sh_03",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 10,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_02_sh_03",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 5,
       "asset_content_hash": null
     },
     {
@@ -858,6 +1387,139 @@
     },
     {
       "shot_id": "sc_02_sh_03",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 13,
+      "asset_content_hash": "e636cfd931f72c39589e9606d767d76356324e2262b4f2b7793bd752479ec9ad"
+    },
+    {
+      "shot_id": "sc_02_sh_03",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 18,
+      "asset_content_hash": "e636cfd931f72c39589e9606d767d76356324e2262b4f2b7793bd752479ec9ad"
+    },
+    {
+      "shot_id": "sc_02_sh_03",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 12,
+      "asset_content_hash": "e636cfd931f72c39589e9606d767d76356324e2262b4f2b7793bd752479ec9ad"
+    },
+    {
+      "shot_id": "sc_02_sh_03",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 19,
+      "asset_content_hash": "e636cfd931f72c39589e9606d767d76356324e2262b4f2b7793bd752479ec9ad"
+    },
+    {
+      "shot_id": "sc_02_sh_03",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 17,
+      "asset_content_hash": "e636cfd931f72c39589e9606d767d76356324e2262b4f2b7793bd752479ec9ad"
+    },
+    {
+      "shot_id": "sc_02_sh_03",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 11,
+      "asset_content_hash": "e636cfd931f72c39589e9606d767d76356324e2262b4f2b7793bd752479ec9ad"
+    },
+    {
+      "shot_id": "sc_02_sh_03",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 9,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_02_sh_03",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 15,
+      "asset_content_hash": "e636cfd931f72c39589e9606d767d76356324e2262b4f2b7793bd752479ec9ad"
+    },
+    {
+      "shot_id": "sc_02_sh_03",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 14,
+      "asset_content_hash": "e636cfd931f72c39589e9606d767d76356324e2262b4f2b7793bd752479ec9ad"
+    },
+    {
+      "shot_id": "sc_03_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 16,
+      "asset_content_hash": "91b9149477d0e02ea7044bac4727e1d4b9401cd8cd40ed46a11da68288bde53d"
+    },
+    {
+      "shot_id": "sc_03_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 14,
+      "asset_content_hash": "91b9149477d0e02ea7044bac4727e1d4b9401cd8cd40ed46a11da68288bde53d"
+    },
+    {
+      "shot_id": "sc_03_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 8,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_03_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 13,
+      "asset_content_hash": "91b9149477d0e02ea7044bac4727e1d4b9401cd8cd40ed46a11da68288bde53d"
+    },
+    {
+      "shot_id": "sc_03_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 7,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_03_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 10,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_03_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 17,
+      "asset_content_hash": "91b9149477d0e02ea7044bac4727e1d4b9401cd8cd40ed46a11da68288bde53d"
+    },
+    {
+      "shot_id": "sc_03_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 19,
+      "asset_content_hash": "91b9149477d0e02ea7044bac4727e1d4b9401cd8cd40ed46a11da68288bde53d"
+    },
+    {
+      "shot_id": "sc_03_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 15,
+      "asset_content_hash": "91b9149477d0e02ea7044bac4727e1d4b9401cd8cd40ed46a11da68288bde53d"
+    },
+    {
+      "shot_id": "sc_03_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 12,
+      "asset_content_hash": "91b9149477d0e02ea7044bac4727e1d4b9401cd8cd40ed46a11da68288bde53d"
+    },
+    {
+      "shot_id": "sc_03_sh_01",
       "state": "awaiting_generation",
       "rung": null,
       "timeline_version": 5,
@@ -872,9 +1534,86 @@
     },
     {
       "shot_id": "sc_03_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 18,
+      "asset_content_hash": "91b9149477d0e02ea7044bac4727e1d4b9401cd8cd40ed46a11da68288bde53d"
+    },
+    {
+      "shot_id": "sc_03_sh_01",
       "state": "awaiting_generation",
       "rung": null,
-      "timeline_version": 5,
+      "timeline_version": 11,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_03_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 9,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_03_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 6,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_03_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 17,
+      "asset_content_hash": "70b58b32c56920d0b13addb9f0d1e6440262f9ce29d6b9db4cbac76716f8d6d5"
+    },
+    {
+      "shot_id": "sc_03_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 16,
+      "asset_content_hash": "70b58b32c56920d0b13addb9f0d1e6440262f9ce29d6b9db4cbac76716f8d6d5"
+    },
+    {
+      "shot_id": "sc_03_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 19,
+      "asset_content_hash": "70b58b32c56920d0b13addb9f0d1e6440262f9ce29d6b9db4cbac76716f8d6d5"
+    },
+    {
+      "shot_id": "sc_03_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 7,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_03_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 8,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_03_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 9,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_03_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 10,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_03_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 11,
       "asset_content_hash": null
     },
     {
@@ -886,10 +1625,136 @@
     },
     {
       "shot_id": "sc_03_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 18,
+      "asset_content_hash": "70b58b32c56920d0b13addb9f0d1e6440262f9ce29d6b9db4cbac76716f8d6d5"
+    },
+    {
+      "shot_id": "sc_03_sh_02",
       "state": "awaiting_generation",
       "rung": null,
-      "timeline_version": 6,
+      "timeline_version": 12,
       "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_03_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 13,
+      "asset_content_hash": "70b58b32c56920d0b13addb9f0d1e6440262f9ce29d6b9db4cbac76716f8d6d5"
+    },
+    {
+      "shot_id": "sc_03_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 14,
+      "asset_content_hash": "70b58b32c56920d0b13addb9f0d1e6440262f9ce29d6b9db4cbac76716f8d6d5"
+    },
+    {
+      "shot_id": "sc_03_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 15,
+      "asset_content_hash": "70b58b32c56920d0b13addb9f0d1e6440262f9ce29d6b9db4cbac76716f8d6d5"
+    },
+    {
+      "shot_id": "sc_03_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 18,
+      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
+    },
+    {
+      "shot_id": "sc_03_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 10,
+      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
+    },
+    {
+      "shot_id": "sc_03_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 19,
+      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
+    },
+    {
+      "shot_id": "sc_03_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 12,
+      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
+    },
+    {
+      "shot_id": "sc_03_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 16,
+      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
+    },
+    {
+      "shot_id": "sc_03_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 17,
+      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
+    },
+    {
+      "shot_id": "sc_03_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 7,
+      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
+    },
+    {
+      "shot_id": "sc_03_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 14,
+      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
+    },
+    {
+      "shot_id": "sc_03_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 11,
+      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
+    },
+    {
+      "shot_id": "sc_03_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 6,
+      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
+    },
+    {
+      "shot_id": "sc_03_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 8,
+      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
+    },
+    {
+      "shot_id": "sc_03_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 15,
+      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
+    },
+    {
+      "shot_id": "sc_03_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 13,
+      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
+    },
+    {
+      "shot_id": "sc_03_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 9,
+      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
     },
     {
       "shot_id": "sc_03_sh_03",
@@ -899,11 +1764,32 @@
       "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
     },
     {
-      "shot_id": "sc_03_sh_03",
+      "shot_id": "sc_04_sh_01",
       "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 6,
-      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
+      "rung": "project_assets",
+      "timeline_version": 15,
+      "asset_content_hash": "a661796f3a18f906696f181136618d8cf96ebcc22b35cf8bdc0bbc503bf7a38b"
+    },
+    {
+      "shot_id": "sc_04_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 8,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 16,
+      "asset_content_hash": "a661796f3a18f906696f181136618d8cf96ebcc22b35cf8bdc0bbc503bf7a38b"
+    },
+    {
+      "shot_id": "sc_04_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 14,
+      "asset_content_hash": "a661796f3a18f906696f181136618d8cf96ebcc22b35cf8bdc0bbc503bf7a38b"
     },
     {
       "shot_id": "sc_04_sh_01",
@@ -916,7 +1802,154 @@
       "shot_id": "sc_04_sh_01",
       "state": "awaiting_generation",
       "rung": null,
+      "timeline_version": 7,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 18,
+      "asset_content_hash": "a661796f3a18f906696f181136618d8cf96ebcc22b35cf8bdc0bbc503bf7a38b"
+    },
+    {
+      "shot_id": "sc_04_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 12,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
       "timeline_version": 5,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 19,
+      "asset_content_hash": "a661796f3a18f906696f181136618d8cf96ebcc22b35cf8bdc0bbc503bf7a38b"
+    },
+    {
+      "shot_id": "sc_04_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 10,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 11,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 17,
+      "asset_content_hash": "a661796f3a18f906696f181136618d8cf96ebcc22b35cf8bdc0bbc503bf7a38b"
+    },
+    {
+      "shot_id": "sc_04_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 9,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 13,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 16,
+      "asset_content_hash": "77e8051f1841027c8be1833fad2f505f16392a5317345adbbda283a01c486527"
+    },
+    {
+      "shot_id": "sc_04_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 11,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 13,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 10,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 19,
+      "asset_content_hash": "77e8051f1841027c8be1833fad2f505f16392a5317345adbbda283a01c486527"
+    },
+    {
+      "shot_id": "sc_04_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 9,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 14,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 5,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 18,
+      "asset_content_hash": "77e8051f1841027c8be1833fad2f505f16392a5317345adbbda283a01c486527"
+    },
+    {
+      "shot_id": "sc_04_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 8,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 15,
+      "asset_content_hash": "77e8051f1841027c8be1833fad2f505f16392a5317345adbbda283a01c486527"
+    },
+    {
+      "shot_id": "sc_04_sh_02",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 7,
       "asset_content_hash": null
     },
     {
@@ -928,10 +1961,115 @@
     },
     {
       "shot_id": "sc_04_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 17,
+      "asset_content_hash": "77e8051f1841027c8be1833fad2f505f16392a5317345adbbda283a01c486527"
+    },
+    {
+      "shot_id": "sc_04_sh_02",
       "state": "awaiting_generation",
       "rung": null,
-      "timeline_version": 5,
+      "timeline_version": 12,
       "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_04_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 11,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_04_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 7,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_04_sh_03",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 16,
+      "asset_content_hash": "a36fc158422641cb35d9dc9b623cdc4c34332e8e08b57cafa21926a471c12331"
+    },
+    {
+      "shot_id": "sc_04_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 8,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_04_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 14,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_04_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 9,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_04_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 10,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_04_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 13,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_04_sh_03",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 17,
+      "asset_content_hash": "a36fc158422641cb35d9dc9b623cdc4c34332e8e08b57cafa21926a471c12331"
+    },
+    {
+      "shot_id": "sc_04_sh_03",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 18,
+      "asset_content_hash": "a36fc158422641cb35d9dc9b623cdc4c34332e8e08b57cafa21926a471c12331"
+    },
+    {
+      "shot_id": "sc_04_sh_03",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 19,
+      "asset_content_hash": "a36fc158422641cb35d9dc9b623cdc4c34332e8e08b57cafa21926a471c12331"
+    },
+    {
+      "shot_id": "sc_04_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 12,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_04_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 5,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_04_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 15,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
     },
     {
       "shot_id": "sc_04_sh_03",
@@ -941,11 +2079,18 @@
       "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
     },
     {
-      "shot_id": "sc_04_sh_03",
-      "state": "resolved",
-      "rung": "historical_search",
+      "shot_id": "sc_05_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 8,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_05_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
       "timeline_version": 5,
-      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+      "asset_content_hash": null
     },
     {
       "shot_id": "sc_05_sh_01",
@@ -958,14 +2103,168 @@
       "shot_id": "sc_05_sh_01",
       "state": "awaiting_generation",
       "rung": null,
-      "timeline_version": 5,
+      "timeline_version": 7,
       "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_05_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 9,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_05_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 10,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_05_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 11,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_05_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 12,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_05_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 13,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_05_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 14,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_05_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 15,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_05_sh_01",
+      "state": "awaiting_generation",
+      "rung": null,
+      "timeline_version": 16,
+      "asset_content_hash": null
+    },
+    {
+      "shot_id": "sc_05_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 17,
+      "asset_content_hash": "c1b6d1ca52d54cda8765db07955912b048265f0934194d0830b8831064d6392d"
+    },
+    {
+      "shot_id": "sc_05_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 18,
+      "asset_content_hash": "c1b6d1ca52d54cda8765db07955912b048265f0934194d0830b8831064d6392d"
+    },
+    {
+      "shot_id": "sc_05_sh_01",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 19,
+      "asset_content_hash": "c1b6d1ca52d54cda8765db07955912b048265f0934194d0830b8831064d6392d"
     },
     {
       "shot_id": "sc_05_sh_02",
       "state": "resolved",
       "rung": "stock_search",
-      "timeline_version": 5,
+      "timeline_version": 16,
+      "asset_content_hash": "adefe337bb0bb1b8ae55502bac44a56810535d0b27ab5673e6cd307b96767382"
+    },
+    {
+      "shot_id": "sc_05_sh_02",
+      "state": "resolved",
+      "rung": "stock_search",
+      "timeline_version": 15,
+      "asset_content_hash": "adefe337bb0bb1b8ae55502bac44a56810535d0b27ab5673e6cd307b96767382"
+    },
+    {
+      "shot_id": "sc_05_sh_02",
+      "state": "resolved",
+      "rung": "stock_search",
+      "timeline_version": 14,
+      "asset_content_hash": "adefe337bb0bb1b8ae55502bac44a56810535d0b27ab5673e6cd307b96767382"
+    },
+    {
+      "shot_id": "sc_05_sh_02",
+      "state": "resolved",
+      "rung": "stock_search",
+      "timeline_version": 13,
+      "asset_content_hash": "adefe337bb0bb1b8ae55502bac44a56810535d0b27ab5673e6cd307b96767382"
+    },
+    {
+      "shot_id": "sc_05_sh_02",
+      "state": "resolved",
+      "rung": "stock_search",
+      "timeline_version": 12,
+      "asset_content_hash": "adefe337bb0bb1b8ae55502bac44a56810535d0b27ab5673e6cd307b96767382"
+    },
+    {
+      "shot_id": "sc_05_sh_02",
+      "state": "resolved",
+      "rung": "stock_search",
+      "timeline_version": 11,
+      "asset_content_hash": "adefe337bb0bb1b8ae55502bac44a56810535d0b27ab5673e6cd307b96767382"
+    },
+    {
+      "shot_id": "sc_05_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 19,
+      "asset_content_hash": "901d746739984f433525500f36543e3203c661937a9d2a3215bd01692bf28d94"
+    },
+    {
+      "shot_id": "sc_05_sh_02",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 18,
+      "asset_content_hash": "901d746739984f433525500f36543e3203c661937a9d2a3215bd01692bf28d94"
+    },
+    {
+      "shot_id": "sc_05_sh_02",
+      "state": "resolved",
+      "rung": "stock_search",
+      "timeline_version": 10,
+      "asset_content_hash": "adefe337bb0bb1b8ae55502bac44a56810535d0b27ab5673e6cd307b96767382"
+    },
+    {
+      "shot_id": "sc_05_sh_02",
+      "state": "resolved",
+      "rung": "stock_search",
+      "timeline_version": 9,
+      "asset_content_hash": "adefe337bb0bb1b8ae55502bac44a56810535d0b27ab5673e6cd307b96767382"
+    },
+    {
+      "shot_id": "sc_05_sh_02",
+      "state": "resolved",
+      "rung": "stock_search",
+      "timeline_version": 8,
+      "asset_content_hash": "adefe337bb0bb1b8ae55502bac44a56810535d0b27ab5673e6cd307b96767382"
+    },
+    {
+      "shot_id": "sc_05_sh_02",
+      "state": "resolved",
+      "rung": "stock_search",
+      "timeline_version": 7,
       "asset_content_hash": "adefe337bb0bb1b8ae55502bac44a56810535d0b27ab5673e6cd307b96767382"
     },
     {
@@ -974,6 +2273,41 @@
       "rung": "stock_search",
       "timeline_version": 6,
       "asset_content_hash": "adefe337bb0bb1b8ae55502bac44a56810535d0b27ab5673e6cd307b96767382"
+    },
+    {
+      "shot_id": "sc_05_sh_02",
+      "state": "resolved",
+      "rung": "stock_search",
+      "timeline_version": 5,
+      "asset_content_hash": "adefe337bb0bb1b8ae55502bac44a56810535d0b27ab5673e6cd307b96767382"
+    },
+    {
+      "shot_id": "sc_05_sh_02",
+      "state": "resolved",
+      "rung": "stock_search",
+      "timeline_version": 17,
+      "asset_content_hash": "adefe337bb0bb1b8ae55502bac44a56810535d0b27ab5673e6cd307b96767382"
+    },
+    {
+      "shot_id": "sc_05_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 16,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_05_sh_03",
+      "state": "resolved",
+      "rung": "project_assets",
+      "timeline_version": 19,
+      "asset_content_hash": "3d98abfccb174227d4efabc60ab962514b9c656aa4cfa7a94c2342734b01e9d9"
+    },
+    {
+      "shot_id": "sc_05_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 15,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
     },
     {
       "shot_id": "sc_05_sh_03",
@@ -986,7 +2320,77 @@
       "shot_id": "sc_05_sh_03",
       "state": "resolved",
       "rung": "historical_search",
+      "timeline_version": 14,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_05_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 18,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_05_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 9,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_05_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 13,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_05_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 17,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_05_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 12,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_05_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 8,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_05_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 11,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_05_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
       "timeline_version": 5,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_05_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 10,
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+    },
+    {
+      "shot_id": "sc_05_sh_03",
+      "state": "resolved",
+      "rung": "historical_search",
+      "timeline_version": 7,
       "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
     }
   ],

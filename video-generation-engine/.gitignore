@@ -86,3 +86,6 @@ desktop.ini
 !.vscode/settings.json.example
 *.swp
 *.swo
+
+# Local safety copies of storage/ taken during live tests - never committed
+backups/
