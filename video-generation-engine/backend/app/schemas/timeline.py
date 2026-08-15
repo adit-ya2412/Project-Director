@@ -216,6 +216,24 @@ class TimelineMetadata(BaseModel):
     # switching voices safe (the narration cache is keyed on voice_id
     # too, so a previously-used voice is never re-synthesised).
     voice_id: str | None = None
+    # Set once, permanently, by `NarrationStep`'s own reconciliation
+    # (never reset by anything downstream) the moment every shot's
+    # `duration_s` is replaced with a real, measured spoken duration
+    # rather than a planner's pre-audio estimate (M8 hardening,
+    # 2026-08-16 - "A26 is a deadlock in practice"). `Timeline
+    # .validate_constraints` reads this directly to decide whether
+    # `min_shot_duration_s`/`max_shot_duration_s` still apply - see that
+    # method's own docstring for why this is a persistent flag on the
+    # Timeline rather than a check against the CURRENT version's
+    # `produced_by`: `produced_by` only describes the version that JUST
+    # landed, so a later version (a human override, a music retry, a
+    # narration-voice retry - anything at all) would otherwise fall back
+    # out of the narration-produced case and get re-judged against
+    # planning heuristics that measured reality has no obligation to
+    # satisfy. This field is what makes the exemption survive every
+    # later version, forever, the same way `voice_id` survives past the
+    # version that set it.
+    narration_locked: bool = False
 
 
 class MusicTrackSelection(BaseModel):
@@ -312,6 +330,38 @@ class Timeline(BaseModel):
         return [shot.id for shot in self.all_shots()]
 
     # -- hard constraints (D7) --------------------------------------------
+    #
+    # Two categories, not one flat list (M8 hardening, 2026-08-16 - "A26
+    # is a deadlock in practice"):
+    #
+    # - STRUCTURAL INVARIANTS always hold, at every version, forever:
+    #   total video duration, scene/shot counts, duplicate ids. Nothing
+    #   about narration, a human override, or any other later version
+    #   ever has a legitimate reason to exceed these - they describe the
+    #   shape of a renderable Timeline, not a creative estimate.
+    # - PLANNING-TIME HEURISTICS are a different kind of thing:
+    #   `min_shot_duration_s`/`max_shot_duration_s` exist to keep a
+    #   PLANNER's pre-audio duration guesses inside a sane creative
+    #   range before any real narration exists to measure against. Once
+    #   `NarrationStep` has reconciled a shot's `duration_s` to real,
+    #   measured spoken time (D1 - narration is the master clock), that
+    #   number is a fact, not an estimate, and re-applying a planning
+    #   heuristic to it is a category error - "कैसे?" genuinely takes
+    #   0.615s to speak, and no amount of re-validation makes that
+    #   number wrong. The M8 build already reached exactly this
+    #   conclusion once (open decision: "let per-shot duration exceed
+    #   its cap - the cap is a planning heuristic, the narration is
+    #   real") but only wired the exemption into
+    #   `GenerateTimelineStep._is_fully_planned`'s own
+    #   `produced_by == NARRATION` check - which describes the version
+    #   that JUST landed, not the Timeline's own history, so ANY later
+    #   version (a human override, a music retry, a narration-voice
+    #   retry) fell straight back out of the exemption and re-failed
+    #   against measured reality. `self.metadata.narration_locked`
+    #   (persistent, set once by `NarrationStep`, never reset) is what
+    #   makes the exemption survive every later version instead of only
+    #   the one immediately after narration - see that field's own
+    #   docstring.
 
     def validate_constraints(
         self,
@@ -327,6 +377,29 @@ class Timeline(BaseModel):
         Deliberately returns errors rather than raising, so a caller (the
         planner repair loop) can decide what to do with them.
         """
+        errors: list[str] = []
+        errors.extend(
+            self._validate_structural_invariants(
+                max_video_duration_s=max_video_duration_s,
+                max_shots_per_project=max_shots_per_project,
+                max_scenes=max_scenes,
+            )
+        )
+        if not self.metadata.narration_locked:
+            errors.extend(
+                self._validate_planning_time_shot_bounds(
+                    min_shot_duration_s=min_shot_duration_s,
+                    max_shot_duration_s=max_shot_duration_s,
+                )
+            )
+        return errors
+
+    def _validate_structural_invariants(
+        self, *, max_video_duration_s: float, max_shots_per_project: int, max_scenes: int
+    ) -> list[str]:
+        """Always enforced, at every version, narration-locked or not -
+        these describe the shape of a renderable Timeline, never a
+        creative estimate a later measurement can legitimately override."""
         errors: list[str] = []
 
         if self.metadata.total_duration_s > max_video_duration_s:
@@ -344,15 +417,26 @@ class Timeline(BaseModel):
                 f"{len(shots)} shots exceeds max_shots_per_project {max_shots_per_project}"
             )
 
-        for shot in shots:
+        ids = self.shot_ids()
+        if len(ids) != len(set(ids)):
+            errors.append("duplicate shot ids found across scenes")
+
+        return errors
+
+    def _validate_planning_time_shot_bounds(
+        self, *, min_shot_duration_s: float, max_shot_duration_s: float
+    ) -> list[str]:
+        """Only meaningful before real narration exists to measure
+        against - skipped entirely once `self.metadata.narration_locked`
+        is set. Never called directly by anything outside
+        `validate_constraints` itself; kept as its own method so the
+        category split above is a real code boundary, not just a
+        comment."""
+        errors: list[str] = []
+        for shot in self.all_shots():
             if not (min_shot_duration_s <= shot.duration_s <= max_shot_duration_s):
                 errors.append(
                     f"shot {shot.id} duration_s={shot.duration_s} outside "
                     f"[{min_shot_duration_s}, {max_shot_duration_s}]"
                 )
-
-        ids = self.shot_ids()
-        if len(ids) != len(set(ids)):
-            errors.append("duplicate shot ids found across scenes")
-
         return errors

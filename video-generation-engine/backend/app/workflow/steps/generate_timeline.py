@@ -38,16 +38,6 @@ def _is_fully_planned(timeline: Timeline) -> bool:
         return False
     if any(shot.asset_plan is None for shot in shots):
         return False
-    if timeline.produced_by == ProducedBy.NARRATION:
-        # M8's NarrationStep runs after this one and may legitimately
-        # stretch a shot's reconciled duration past max_shot_duration_s -
-        # the cap is a planning heuristic, narration is real (M8 settled
-        # decision: "D7 caps vs. reality"). Without this check, the
-        # constraint re-validation below would fire against a version
-        # THIS step never produced, and a resume any time after narration
-        # has run would fail the whole pipeline over a cap this step was
-        # never responsible for enforcing in the first place.
-        return True
     # Structural completeness alone isn't enough: a timeline can be fully
     # populated (every scene has shots, every shot has an asset_plan) and
     # still violate a D7 constraint (e.g. duplicate shot ids across
@@ -57,6 +47,22 @@ def _is_fully_planned(timeline: Timeline) -> bool:
     # only calls step.run() when is_satisfied() is False - carrying the
     # broken timeline forward into asset resolution instead of failing
     # loudly again.
+    #
+    # No special-case for `produced_by == NARRATION` here (M8 hardening,
+    # 2026-08-16 - the fix for "A26 is a deadlock in practice"): that
+    # used to short-circuit straight to `True` because M8's NarrationStep
+    # may legitimately stretch a shot's reconciled duration past
+    # `max_shot_duration_s` (the cap is a planning heuristic, narration
+    # is real), but checking the CURRENT version's `produced_by` only
+    # ever protected the one version immediately after narration - any
+    # later version (a human override, a music retry, a narration-voice
+    # retry) fell straight back out of it and re-failed against measured
+    # reality. `validate_constraints` itself now reads
+    # `timeline.metadata.narration_locked` - a flag that survives every
+    # later version, not just this one - to decide whether shot-duration
+    # bounds still apply, so this call is correct uniformly, forever,
+    # without this function needing to know anything about narration at
+    # all.
     violations = timeline.validate_constraints(
         max_video_duration_s=settings.max_video_duration_s,
         max_shots_per_project=settings.max_shots_per_project,

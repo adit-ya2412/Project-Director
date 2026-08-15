@@ -1512,7 +1512,7 @@ Worse, the current design throws away the one asset we already have: **the plann
 | **A23** | **An upload supplied with the script carries a short human-written description, and is matched to shots by the existing rung-1 provider through the same relevance gate as any other candidate — not by a planner.** | A3 stands: planners get no tools and no visibility into the asset pool. The matching machinery already exists and is already measured by A17; reusing it means an upload competes on the same terms as a search result and needs no new scoring path. The description is what makes that possible — matching against a filename would be worthless. |
 | **A24** | **A per-shot override names its `shot_id` explicitly and bypasses relevance and licence gates entirely.** | A human pointing at a specific shot has already made the judgement those gates exist to approximate. Re-scoring it would let an automated heuristic overrule a person, which is the exact inversion this phase is correcting. Distinct from A23, where an upload arrives before shots exist and must be matched. |
 | **A25** | **A human override sets `asset_locked` on that Shot via an `append_version` with `produced_by=HUMAN`. A locked Shot is exempt from A20 — its binding carries forward unconditionally — AND every later planner pass must preserve that Shot's `prompt` and `asset_plan` verbatim instead of overwriting them.** | Decided by the user, 2026-08-15: "lock wins, my photo is always in the plan, and the plan should include it in the shot." This is a direct conflict with A20 and the lock must win — A20 drops a binding when acquisition-relevant fields change, which is right for machine-acquired assets and catastrophic for human-chosen ones. The second half is what makes "always in the plan" literally rather than approximately true: if a re-plan cannot rewrite a locked Shot's prompt, the plan can never drift away from the image the human chose, so the mismatch that would otherwise need flagging at the gate cannot arise at all. Putting the flag on the Shot rather than only on the binding keeps it in the immutable decision record (I1/I2 — "this shot's asset is locked" is a decision, not media) and makes the override auditable. |
-| **A26** | **The A15 gate fires after the generation pass whenever any shot ended `failed`, and has exactly ONE exit: resolve every failed shot. There is no "proceed anyway". A project cannot reach `completed` while any shot is failed.** | Decided by the user, 2026-08-15: "you should not be able to finish a video if we can't fix it." A button that ships a visibly broken video gets clicked reflexively, and generated media is the least reliable rung — the one most likely to be the thing failing. This is not a deadlock: the remedy is always available, because a per-shot upload (A24) bypasses every gate and always resolves. **Consequence, accepted deliberately:** an unattended run halts until a human acts, and a project with one unfixable shot stays unfinished rather than shipping with a placeholder. This overrides M7's "a 59-shot video with one gap is more useful than no video" **at the project level only** — per-shot isolation still holds during a pass (one shot failing never aborts the others), and the renderer still degrades gracefully; what changes is that the project is not marked complete. |
+| **A26** | **The A15 gate fires after the generation pass whenever any shot ended `failed`, and has exactly ONE exit: resolve every failed shot. There is no "proceed anyway". A project cannot reach `completed` while any shot is failed.** | Decided by the user, 2026-08-15: "you should not be able to finish a video if we can't fix it." A button that ships a visibly broken video gets clicked reflexively, and generated media is the least reliable rung — the one most likely to be the thing failing. ~~This is not a deadlock: the remedy is always available, because a per-shot upload (A24) bypasses every gate and always resolves.~~ **CORRECTED 2026-08-16 — this claim was wrong, and a live project proved it**: the override mechanism itself always resolves the FAILED SHOT, but the remedy path re-enters general Timeline validation (`GenerateTimelineStep`/`validate_constraints`), which independently rejected narration-measured shot durations the remedy's own version never claimed to produce — a genuine deadlock, not a hypothetical one. See "Constraint validation split" below for the fix (a persistent `narration_locked` flag) and the honest accounting of why "the mechanism resolves it" was not the same claim as "nothing downstream can still reject it." **Consequence, accepted deliberately:** an unattended run halts until a human acts, and a project with one unfixable shot stays unfinished rather than shipping with a placeholder. This overrides M7's "a 59-shot video with one gap is more useful than no video" **at the project level only** — per-shot isolation still holds during a pass (one shot failing never aborts the others), and the renderer still degrades gracefully; what changes is that the project is not marked complete. |
 | **A27** | **Uploaded bytes are validated and hashed on arrival, and stored under the project like any other asset.** | An upload is untrusted input reaching the renderer. It goes through the same `validate_and_identify_image` path that every searched asset already does — a file that claims to be a PNG and isn't must fail at the endpoint, not inside ffmpeg during the render. Hashing also makes it participate in the existing dedup. |
 | **A28** | **The A26 review gate gets its own project status, distinct from the plan-approval gate, and sits BEFORE render.** | A human arriving at a stopped project must be able to tell "approve this plan" from "fix these failed shots" — they are different questions with different remedies, and one status for both makes the API ambiguous. Placing it before render means a failed shot never renders a placeholder at all, so nothing half-finished lands on disk. |
 | **A25a** | **A25's "preserve verbatim" is implemented as *reject loudly*: `append_version` raises if any later version changes a locked Shot's `prompt`/`asset_plan`, rather than silently substituting the old values.** | Deviation from A25's wording, accepted deliberately. Silently preserving means a re-plan appears to succeed while quietly ignoring part of its own output — the kind of divergence that is discovered months later. Rejecting is unreachable today (no code path re-plans after an override: `GenerateTimelineStep.is_satisfied` short-circuits once planned, and narration changes only durations), so it costs nothing now and forces whoever builds re-planning to confront the question. **Known gap:** there is no unlock endpoint, so a shot locked by an override cannot currently be handed back to the planner. Add one when re-planning arrives, not before. |
@@ -3062,6 +3062,146 @@ table via `tests/conftest.py`'s autouse `clean_database` fixture.
 `ruff check backend`, `black --check backend` (1 file auto-reformatted),
 `mypy backend/app` all run normally (no database touched) and are
 clean.
+
+## Constraint validation split: planning heuristics vs. structural invariants (2026-08-16) — the A26 correction
+
+**A26's own claim, quoted above, is wrong, and this section says so
+plainly rather than quietly patching around it**: *"This is not a
+deadlock: the remedy is always available, because a per-shot upload
+(A24) bypasses every gate and always resolves."* A live project
+(`b0969377-...`) reached `awaiting_review` with one failed shot, and
+the prescribed remedy - `POST /shots/{id}/override` - itself failed:
+
+```
+POST /shots/sc_01_sh_02/override
+-> failed | timeline violates creative constraints:
+     ['shot sc_01_sh_03 duration_s=0.6150000000000002 outside [1.5, 8.0]',
+      'shot sc_04_sh_01 duration_s=1.498 outside [1.5, 8.0]']
+```
+
+The override appends its own `produced_by=HUMAN` version exactly as
+designed; the durations it got flagged for are ones NARRATION produced,
+long before this shot ever failed. There was no way to finish this
+project at all - a genuine deadlock, not the "always resolves" A26
+promised.
+
+### Why: the exemption was tied to the wrong thing
+
+`GenerateTimelineStep._is_fully_planned` already knew narration-
+reconciled durations must not be re-judged against
+`min_shot_duration_s`/`max_shot_duration_s` (M8's own settled open
+decision: "let per-shot duration exceed its cap - the cap is a planning
+heuristic, the narration is real"). But it encoded that as `if
+timeline.produced_by == ProducedBy.NARRATION: return True` - a check
+against the version that JUST landed, not against the Timeline's
+history. The moment ANY later version appends on top - a per-shot
+override, a music retry, a narration-voice retry, literally anything -
+`produced_by` is no longer `NARRATION`, the bypass stops firing, and
+`validate_constraints` re-applies planning-time bounds to numbers that
+were never planning estimates to begin with. `sc_04_sh_01` at 1.498s
+against a 1.5s floor is the sharpest illustration: two milliseconds of
+float noise, flagged as a creative violation, by a check that was never
+wrong about the NUMBER, only about which versions it was allowed to
+exempt.
+
+### The fix: the category is now explicit, not a special case on `produced_by`
+
+Decided over the coordinator's own candidates (their stated mild
+preference, adopted): **the distinction between "always-true structural
+invariant" and "planning-time heuristic" is now a real split inside
+`Timeline.validate_constraints` itself** (`app/schemas/timeline.py`),
+not a condition duplicated at every call site that happens to know
+about narration:
+
+- `_validate_structural_invariants` - total video duration, scene
+  count, shot count, duplicate shot ids. Always enforced, every
+  version, forever. Nothing about narration, an override, or any other
+  later version ever has a legitimate reason to exceed these - they
+  describe the shape of a renderable Timeline, not a creative estimate,
+  and `NarrationStep` itself already refuses to reconcile past the
+  video-duration cap (raises `PermanentError` before persisting
+  anything), so a timeline that passed through narration successfully
+  can never legitimately violate this half either.
+- `_validate_planning_time_shot_bounds` - the per-shot `duration_s`
+  bounds - skipped entirely whenever `self.metadata.narration_locked`
+  is set.
+- `Timeline.metadata.narration_locked: bool = False` - a new, PERSISTENT
+  field, set once by `NarrationStep`'s own reconciliation
+  (`app/workflow/steps/narration.py::_apply_durations`) and never reset
+  by anything downstream - it survives every later `append_version`
+  the same way `metadata.voice_id` already does, because nothing about
+  a later version's own `owns` set touches it unless that version
+  explicitly means to. This is what makes the exemption survive past
+  the one version immediately after narration, closing the exact gap
+  A26 hit.
+- `GenerateTimelineStep._is_fully_planned` **lost its `produced_by ==
+  NARRATION` special case entirely** - it now just calls
+  `validate_constraints` uniformly, the same way it always could have,
+  and gets the right answer for every version because the Timeline
+  itself now carries the fact that decides it. This is also why the
+  fix generalises: a third and fourth caller that need the identical
+  reasoning (the coordinator's own prediction: "there will be a third")
+  get it for free by calling the same method, rather than needing to
+  learn about `narration_locked` and duplicate the check themselves.
+
+**Not fixed by widening the bounds or adding a float epsilon** (both
+explicitly ruled out) - either would have quietly accepted the 1.498s
+case while leaving 0.615s exactly as broken as before, since 0.615 is
+nowhere near 1.5 by any reasonable epsilon. The fix is categorical, not
+numeric: a measured duration is not re-judged against a planning
+heuristic at all, regardless of by how much it misses the old bound.
+
+### Verified, not merely reasoned about
+
+Directly against the exact reported numbers (pure, no database): a
+0.615s shot on a NOT-narration-locked timeline still correctly fails
+(the planning-time case must keep working); the same shot on a
+narration-locked timeline produced by `NARRATION` itself passes (the
+case that already worked); the same shot on a narration-locked timeline
+produced by `HUMAN` - **the exact reported bug** - now passes too; the
+1.498s float-noise case passes; and duplicate shot ids / an inflated
+total duration / too many shots all still fail even when
+`narration_locked` is set, proving the exemption is exactly as narrow
+as intended. Then through the REAL mechanism end to end, on a
+throwaway project created and deleted the same way every other live
+measurement this session was (never touching any of the four live
+projects): seeded a `produced_by=NARRATION` timeline with a 0.615s shot
+and `narration_locked=True`, confirmed `GenerateTimelineStep
+.is_satisfied` reads `True`; appended a SECOND, `produced_by=HUMAN`
+version on top (mirroring the real override) that never touches
+`metadata` at all; confirmed `narration_locked` survived unchanged
+(`True`) and `is_satisfied` still reads `True` - the exact deadlock,
+reproduced and proven fixed through the real code path, not just the
+isolated validation function.
+
+7 new tests in `tests/unit/timeline/test_validate_constraints.py` (the
+still-fails-before-narration case, the works-on-the-narration-version-
+itself case, **the exact reported bug on a later HUMAN version**, the
+1.498s float-noise case, and three structural-invariants-still-enforced
+cases: duplicate ids, total duration, shot count) and 2 in
+`tests/integration/test_narration_locked_constraints.py` (the same
+proof through the real `TimelineService`/`GenerateTimelineStep`
+mechanism). `ruff check backend`, `black --check backend` (1 file
+auto-reformatted), `mypy backend/app` all clean from the repo root.
+**The suite itself was NOT run** - four live projects
+(`194ad0e7-...`, `2fa282b4-...`, `f64210fc-...`, `b0969377-...` - the
+last mid-run and stuck on exactly this bug) sit in the same shared dev
+Postgres.
+
+**The honest correction to A26 itself**: the decision's own text
+(above, in the M6.5 table) claims "this is not a deadlock" on the
+strength of the override endpoint always resolving a failed shot. That
+was true of the override's OWN logic, but false of the system as a
+whole, because the remedy path re-entered general Timeline validation
+that could independently reject the very state the remedy was trying
+to produce. A26 is not wrong about the override mechanism; it was wrong
+to declare the deadlock impossible without checking whether anything
+downstream of the override could reintroduce one. The lesson generalises
+past this one bug: a remedy that appends a new Timeline version is only
+as good as every check that version has to pass afterward, and each of
+those checks needs to be examined for the same "does this apply to
+MEASURED reality, not just planning estimates" question - not assumed
+clear because the immediate mechanism looks correct in isolation.
 
 ## S1 — the Shot Planner stops doing character arithmetic (2026-08-15)
 

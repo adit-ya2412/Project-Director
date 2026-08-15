@@ -230,6 +230,12 @@ class NarrationStep:
             # Recomputed via the one function that owns this arithmetic
             # (D5) - never by hand.
             base.metadata.total_duration_s = compute_timeline_duration(base.all_shots())
+            # Permanent, from here on (M8 hardening, 2026-08-16): every
+            # shot's duration_s is now a measured fact, not a planning
+            # estimate, and `Timeline.validate_constraints` reads this
+            # flag to stop re-applying min/max_shot_duration_s to it -
+            # forever, across every later version, not just this one.
+            base.metadata.narration_locked = True
             return base
 
         return await ctx.timeline_service.append_version(
