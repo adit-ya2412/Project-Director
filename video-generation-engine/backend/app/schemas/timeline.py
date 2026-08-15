@@ -232,15 +232,20 @@ class MusicPlan(BaseModel):
     energy_arc: EnergyArc = EnergyArc.FLAT
     search_terms: list[str] = Field(default_factory=list)
     licence_requirements: list[str] = Field(default_factory=list)
-    # Both fields below are set only by `SelectMusicStep`
+    # Both fields below are set to a real outcome only by `SelectMusicStep`
     # (`produced_by=MUSIC_SELECTION`), never by the Director (which only
-    # ever writes the fields above) or a human. `selected_track` is the
-    # decision itself (D6/I1 - the Timeline is the only source of truth
-    # for it); `selection_attempted` is what makes "no suitable track was
-    # found" a distinct, resumable state from "not yet tried" WITHOUT a
-    # side table (M8's own closed decision: the track lives in the
-    # Timeline, not a side table - and by the same reasoning, so does the
-    # fact that a search for one was made).
+    # ever writes the fields above). `selected_track` is the decision
+    # itself (D6/I1 - the Timeline is the only source of truth for it);
+    # `selection_attempted` is what makes "no suitable track was found" a
+    # distinct, resumable state from "not yet tried" WITHOUT a side table
+    # (M8's own closed decision: the track lives in the Timeline, not a
+    # side table - and by the same reasoning, so does the fact that a
+    # search for one was made). A human MAY reset both back to their
+    # "not yet tried" values (`POST /projects/{id}/music/retry`, M8
+    # hardening 2026-08-15) to request a fresh attempt - the same
+    # correctability principle every other automated asset choice in
+    # M6.5 already has - optionally overriding `search_terms` in the same
+    # call, since a miss is often the terms themselves being wrong.
     selected_track: MusicTrackSelection | None = None
     selection_attempted: bool = False
 

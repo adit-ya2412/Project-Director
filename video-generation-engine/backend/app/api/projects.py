@@ -62,6 +62,19 @@ class UploadedAssetResult(BaseModel):
     duplicate: bool
 
 
+class RetryMusicSelectionRequest(BaseModel):
+    # `None` (the default, and what an empty request body deserialises
+    # to) means "try again with the Director's own search_terms,
+    # unchanged" - e.g. after a code fix (M1's prompt vocabulary, M2's
+    # duration floor) that a human expects to help even without
+    # supplying anything themselves. A non-empty list overrides the
+    # Timeline's frozen `music_plan.search_terms` outright - the only way
+    # to escape terms that were bad from the start, since re-running
+    # unchanged terms against an unfixed vocabulary problem finds nothing
+    # new.
+    search_terms: list[str] | None = None
+
+
 class UploadScriptRequest(BaseModel):
     content: str
 
@@ -423,6 +436,83 @@ async def override_shot_asset(
     if was_already_approved:
         await timeline_service.approve(project_id, new_timeline.version)
     await session.commit()
+
+    # An active timeline (checked above) implies a script already exists
+    # (`create_initial` requires one) - `engine.run()` always has
+    # something to resume from here.
+    return await engine.run()
+
+
+@router.post("/{project_id}/music/retry", response_model=Project)
+async def retry_music_selection(
+    project_id: str,
+    body: RetryMusicSelectionRequest,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    engine: WorkflowEngine = Depends(get_workflow_engine),
+) -> Project:
+    """A selection miss is otherwise permanent: `SelectMusicStep.is_satisfied`
+    returns true once `music_plan.selection_attempted` is set, so a
+    project that found nothing suitable can never try again - not a bug
+    in that check (a plain re-run with the SAME search terms would just
+    fail the SAME way, wasting a real API round-trip to relearn nothing),
+    but a real gap once the terms themselves might be the problem. Music
+    is an asset choice like any other (M6.5's own principle): an
+    automated choice a human disagrees with, or that came back empty,
+    must be correctable - this is that correction, scoped to exactly this
+    and nothing more (no music upload endpoint - a per-shot-image-upload
+    analogue would fall out of this design if ever wanted, but was not
+    asked for here and is not built).
+
+    Resets `selected_track` to `None` and `selection_attempted` to
+    `False` via a normal `append_version` (I3 - never mutated in place),
+    optionally overriding the Timeline's own frozen `music_plan
+    .search_terms` with human-supplied ones in the SAME version (`body
+    .search_terms`, when given) - necessary because the existing terms
+    are exactly what a human is trying to escape; resuming the engine
+    with `is_satisfied` now false again re-runs `SelectMusicStep` for
+    real, against whichever terms this call left in place. A project
+    that has never yet attempted a selection is untouched by any of
+    this - `is_satisfied`'s own logic isn't changed here at all, only
+    reset to the same "nothing tried yet" state it already recognises.
+
+    Mirrors `override_shot_asset`'s own re-approval belt-and-braces
+    exactly: if the timeline was already approved (or narration already
+    ran), the new version is immediately re-approved too, so resuming
+    does not demand a redundant second human click for a correction
+    already requested. A never-approved project is left in DRAFT, same
+    as that endpoint.
+    """
+    await _get_project_or_404(project_id, repo)
+    active = await timeline_service.get_active(project_id)
+    if active is None:
+        raise HTTPException(status_code=400, detail="no timeline to retry music selection on yet")
+    if active.music_plan is None:
+        raise HTTPException(status_code=400, detail="this timeline has no music_plan to retry")
+    if body.search_terms is not None and not body.search_terms:
+        raise HTTPException(status_code=400, detail="search_terms, if supplied, must not be empty")
+
+    was_already_approved = active.status == TimelineStatus.APPROVED or (
+        active.produced_by == ProducedBy.NARRATION
+    )
+
+    def _reset_music_plan(base: Timeline) -> Timeline:
+        assert base.music_plan is not None
+        base.music_plan.selected_track = None
+        base.music_plan.selection_attempted = False
+        if body.search_terms is not None:
+            base.music_plan.search_terms = body.search_terms
+        return base
+
+    new_timeline = await timeline_service.append_version(
+        project_id,
+        produced_by=ProducedBy.HUMAN,
+        transform=_reset_music_plan,
+        owns=frozenset({"music_plan"}),
+    )
+
+    if was_already_approved:
+        await timeline_service.approve(project_id, new_timeline.version)
 
     # An active timeline (checked above) implies a script already exists
     # (`create_initial` requires one) - `engine.run()` always has

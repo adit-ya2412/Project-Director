@@ -158,7 +158,17 @@ class SelectMusicStep:
             for c in candidates
             if not plan.licence_requirements or c.licence in plan.licence_requirements
         ]
-        ranked = rank_music_candidates(eligible, query_terms=plan.search_terms)
+        ranked = rank_music_candidates(
+            eligible,
+            query_terms=plan.search_terms,
+            # Best current estimate of the finished video's length - the
+            # planner's own duration arithmetic, not yet narration-
+            # corrected at this point in the pipeline (SelectMusicStep
+            # runs before narration reconciliation). Good enough for a
+            # duration FLOOR (see music_ranking.py) - it only needs to be
+            # in the right ballpark, not exact.
+            video_duration_s=timeline.metadata.total_duration_s,
+        )
 
         clip_repo = GeneratedClipRepository(ctx.session)
         narration_repo = NarrationRepository(ctx.session)
