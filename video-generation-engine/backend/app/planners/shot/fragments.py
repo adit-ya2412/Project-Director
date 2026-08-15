@@ -95,6 +95,45 @@ by a separate check, that concatenating every fragment's own span
 exactly reproduces the scene's `narration_text` character for character,
 including all whitespace - which is what the Scene Planner's own
 verbatim-script check ultimately depends on staying true.
+
+## Whitespace-only fragments are merged, never emitted standalone (2026-08-16)
+
+A live run surfaced a second-order defect: the user's script has blank
+lines between stanzas, and the Scene Planner's own verbatim check means
+that whitespace has to live SOMEWHERE - it lands at the front of
+whichever scene comes next. The splitter above would then emit that
+leading blank run (`"\n\n"`) as its OWN fragment, and the Shot Planner -
+correctly following its own instructions to assign every fragment to
+some shot - gave it one: a shot whose entire narration is blank lines,
+still charged a slice of the video's duration and its own Ken Burns
+move for a beat of silence.
+
+**The fix: after splitting, any fragment whose content is entirely
+whitespace is merged into an ADJACENT fragment** (forward into the
+fragment that follows, since that is where the blank run's own
+sentence-final newline was already pointing; backward into the one
+before it only if the whitespace-only fragment is the LAST one and has
+no successor) **rather than ever being emitted as its own,
+independently-assignable fragment.** Merging is exact-span-preserving
+(removing the boundary BETWEEN two fragments, not discarding either
+one's characters), so tiling and lossless reconstruction both still
+hold without any special-casing - the merged fragment simply carries
+the blank run's characters as a leading (or trailing) part of its own
+span, the same way a fragment can already contain incidental whitespace
+around its own trimmed `text`.
+
+Fragments are renumbered 1..N after merging, since removing a fragment
+always changes how many exist.
+
+**The degenerate case - a scene whose ENTIRE narration is whitespace -
+is left as a single whitespace-only fragment, on purpose.** There is
+nothing else in the scene to merge it into. This module's job is to
+never emit a whitespace-only fragment ALONGSIDE real content; a scene
+with no real content at all is a planning-level defect (the Scene
+Planner should never hand a shot-less scene nothing to narrate), not
+something the fragmenter can conjure real words out of. Treated as an
+accepted, out-of-scope input here - not silently patched over by
+inventing content, and not crashing either.
 """
 
 from dataclasses import dataclass
@@ -145,16 +184,54 @@ def _find_split_points(text: str, *, split_chars: frozenset[str]) -> list[int]:
     return sorted(points)
 
 
+def _merge_whitespace_only_spans(text: str, starts: list[int]) -> list[int]:
+    """Removes fragment-start boundaries that would otherwise produce a
+    whitespace-only fragment, merging it into an adjacent one instead -
+    see the module docstring's own "Whitespace-only fragments" section
+    for why and the exact rule (forward, backward only if last).
+    Degenerate case (the WHOLE text is whitespace, `len(starts) <= 1`):
+    returned unchanged - there is nothing to merge a single fragment
+    into."""
+    if len(starts) <= 1:
+        return starts
+
+    starts = list(starts)
+    i = 0
+    while i < len(starts):
+        start = starts[i]
+        end = starts[i + 1] if i + 1 < len(starts) else len(text)
+        if text[start:end].strip() != "":
+            i += 1
+            continue
+        # This fragment is whitespace-only - merge it away by dropping
+        # whichever boundary combines it with its neighbour. Forward
+        # (drop the boundary that starts the NEXT fragment) is the
+        # default; if this is the LAST fragment, there is no next one,
+        # so merge backward instead (drop the boundary that starts THIS
+        # fragment, folding it into the one before it). `i` is not
+        # advanced after a merge - the fragment now occupying position
+        # `i` is different (and itself possibly still whitespace-only,
+        # e.g. two consecutive blank-line runs) and must be re-checked.
+        if i + 1 < len(starts):
+            del starts[i + 1]
+        else:
+            del starts[i]
+            i -= 1
+    return starts
+
+
 def split_narration_fragments(text: str) -> list[NarrationFragment]:
     """The whole fragmentation pass: primary split on sentence-enders
     and newlines, then a secondary split - applied only within whichever
     primary fragments are still longer than
-    `_LONG_FRAGMENT_THRESHOLD_CHARS` - on clause punctuation. See the
-    module docstring for why each threshold and character set was
-    chosen. Always returns at least one fragment (a scene with no
-    sentence-ending punctuation and no newlines is one whole fragment -
-    the "one fragment, several shots" case the Shot Planner's own
-    validator handles, not this function)."""
+    `_LONG_FRAGMENT_THRESHOLD_CHARS` - on clause punctuation, then a
+    merge pass that folds any whitespace-only fragment into an adjacent
+    one (see the module docstring's own section on why). See the module
+    docstring for why each threshold and character set was chosen.
+    Always returns at least one fragment (a scene with no sentence-
+    ending punctuation and no newlines is one whole fragment - the "one
+    fragment, several shots" case the Shot Planner's own validator
+    handles, not this function)."""
     if not text:
         return [NarrationFragment(index=1, start=0, end=0, text="")]
 
@@ -170,9 +247,12 @@ def split_narration_fragments(text: str) -> list[NarrationFragment]:
             # genuinely new interior ones are worth adding.
             all_starts.update(start + p for p in sub_points if p > 0)
 
-    starts = sorted(all_starts)
+    starts = _merge_whitespace_only_spans(text, sorted(all_starts))
     spans = zip(starts, starts[1:] + [len(text)], strict=True)
     return [
+        # Renumbered 1..N here unconditionally (`enumerate(..., start=1)`)
+        # - merging always changes how many fragments exist, so the
+        # index can never simply carry over from the pre-merge count.
         NarrationFragment(index=i, start=start, end=end, text=text[start:end].strip())
         for i, (start, end) in enumerate(spans, start=1)
     ]

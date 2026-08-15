@@ -128,3 +128,108 @@ def test_ellipsis_and_em_dash_followed_by_newline_are_left_alone():
         "And then, the turn no one expected—",
         "fuel from coal.",
     ]
+
+
+# --- Whitespace-only fragments (2026-08-16) ---
+#
+# A second-order defect the fragment redesign itself surfaced on a real
+# run: the user's script has blank lines between stanzas, and the Scene
+# Planner's own verbatim check means that whitespace has to live
+# somewhere - it lands at the front of the next scene's narration_text.
+# Before this fix, that leading blank run became its OWN fragment, and
+# the Shot Planner - correctly following its instructions to assign
+# every fragment - gave it a shot: a real image, a Ken Burns move, and a
+# slice of the video's duration, for a beat of silence. Two of the real
+# project's 24 shots were exactly this (3 of 48 seconds).
+
+
+def test_reported_scene_sc_03_no_longer_produces_a_blank_shot():
+    """The exact scene from the live bug report. Before this fix:
+    3 fragments, the first ('\\n\\n') entirely blank. After: the leading
+    blank run is folded forward into the first REAL fragment, and no
+    fragment is ever whitespace-only."""
+    text = "\n\nइसका नाम था Fischer-Tropsch process.\n\n1925 में invent हुआ,"
+    fragments = split_narration_fragments(text)
+    assert _reconstruct(text) == text
+    assert all(f.text != "" for f in fragments)  # no fragment is blank after .strip()
+    assert len(fragments) == 2
+    assert fragments[0].index == 1
+    assert fragments[1].index == 2
+    # The blank run is still THERE (lossless), just no longer its own
+    # fragment - it is a leading part of fragment 1's own span.
+    assert text[fragments[0].start : fragments[0].end].startswith("\n\n")
+    assert fragments[0].text == "इसका नाम था Fischer-Tropsch process."
+    assert fragments[1].text == "1925 में invent हुआ,"
+
+
+def test_reported_scene_sc_05_no_longer_produces_a_blank_shot():
+    """The second exact scene from the live bug report. Before this fix:
+    2 fragments, the first ('\\n\\n') entirely blank - which, being a
+    2-fragment scene, would have let the model give it its own shot
+    exactly as it did for real. After: the leading blank run merges
+    forward into the scene's one real sentence, leaving a single
+    fragment (correctly - a one-sentence scene has one natural unit of
+    content, whitespace notwithstanding)."""
+    text = "\n\nअब यहाँ twist है।"
+    fragments = split_narration_fragments(text)
+    assert _reconstruct(text) == text
+    assert all(f.text != "" for f in fragments)
+    assert len(fragments) == 1
+    assert fragments[0].index == 1
+    assert text[fragments[0].start : fragments[0].end].startswith("\n\n")
+    assert fragments[0].text == "अब यहाँ twist है।"
+
+
+def test_a_whitespace_only_fragment_in_the_middle_merges_forward():
+    """The general rule, not just the two reported edge cases: a blank
+    run anywhere in the interior merges into the fragment that follows
+    it, never staying independently assignable."""
+    text = "First sentence.\n\n\n\nSecond sentence."
+    fragments = split_narration_fragments(text)
+    assert _reconstruct(text) == text
+    assert all(f.text != "" for f in fragments)
+    assert len(fragments) == 2
+    assert fragments[0].text == "First sentence."
+    assert fragments[1].text == "Second sentence."
+    # The blank run merged FORWARD - it is a leading part of fragment 2.
+    assert text[fragments[1].start : fragments[1].end].startswith("\n\n\n\n")
+
+
+def test_a_trailing_whitespace_only_fragment_would_merge_backward():
+    """The "backward if it is last" half of the rule. In practice the
+    splitter never manufactures a TRAILING standalone whitespace
+    fragment on its own (trailing whitespace after the final split point
+    is simply absorbed into the previous fragment's own span, never
+    promoted to a new one) - this test pins that actual, simpler
+    behaviour down directly, since it is what makes the backward branch
+    unreachable via the splitter's own primary/secondary passes rather
+    than an assumption."""
+    text = "Real content here.\n\n   \n"
+    fragments = split_narration_fragments(text)
+    assert _reconstruct(text) == text
+    assert len(fragments) == 1
+    assert fragments[0].text == "Real content here."
+    assert fragments[0].end == len(text)  # trailing whitespace absorbed, not split off
+
+
+def test_degenerate_case_entirely_whitespace_narration_stays_one_blank_fragment():
+    """The explicit decision for a scene with NO real narration content
+    at all: left as a single whitespace-only fragment, since there is
+    nothing else to merge it into. Not silently patched with invented
+    content, and not a crash - an accepted, out-of-scope input (a scene
+    with zero real narration is a planning-level defect elsewhere, not
+    something this module can fix by producing words from nothing)."""
+    text = "\n\n   \n"
+    fragments = split_narration_fragments(text)
+    assert _reconstruct(text) == text
+    assert len(fragments) == 1
+    assert fragments[0].text == ""
+    assert fragments[0].start == 0
+    assert fragments[0].end == len(text)
+
+
+def test_degenerate_case_empty_narration_stays_one_blank_fragment():
+    fragments = split_narration_fragments("")
+    assert len(fragments) == 1
+    assert fragments[0].text == ""
+    assert fragments[0].start == fragments[0].end == 0
