@@ -1083,6 +1083,174 @@ output (rather than computing or correcting it directly) turns the
 model's ordinary imprecision into a hard, expensive failure. The fix
 belongs in code both times, not in a better-worded prompt.
 
+**Update (2026-08-16) — a THIRD occurrence, and this time the fix is not
+another patch: the Shot Planner stops asking for character offsets at
+all.** A live run on a real Hinglish script (7 scenes, 21 shots, mixed
+Devanagari/Latin) surfaced 6 of 21 shots with an INTERNAL boundary
+landing mid-word or mid-grapheme-cluster:
+
+```
+sc_04_sh_02  ends   ...'Germany की war machine\nइ'   | next starts 'ससे बने fuel'
+sc_04_sh_03  starts 'ससे बने fuel पर चल रही थी।\n\nL' | next starts 'euna-Werke'
+sc_04_sh_04  starts 'euna-Werke जैसी factories\nद'   | next starts 'िन-रात fuel'
+```
+
+`Leuna-Werke` split into `L` + `euna-Werke` at its own internal hyphen.
+`दिन` split into `द` + `िन` — separating a dependent Devanagari vowel
+sign from its base consonant, which is not merely truncated text, it is
+*malformed* text (a grapheme cluster is not the same kind of thing as a
+word, and splitting one is a different, worse failure than splitting
+the other).
+
+**The first fix attempted — snapping each internal boundary to the
+nearest legal word/grapheme boundary, extending `_snap_narration_
+boundaries` the same way it already handles the two outer edges — was
+built, then explicitly discarded before being committed.** The
+coordinator's own correction, quoted because it is the actual decision
+being recorded here: *"That is a patch on a bad interface... Models
+cannot count characters reliably. That is not a prompt-quality problem
+to be fixed with better instructions, and it is not a post-processing
+problem to be fixed with better snapping. It is the wrong job for the
+tool, and each patch has bought us one more round before the next
+variant appears."* Look at the pattern this project had hit three
+times by this point: a shot-id namespace collision, an outer-boundary
+character miss, and now an internal-boundary character miss — every one
+of them is a language model being asked to do character arithmetic,
+and every fix so far had corrected the SYMPTOM (a wrong offset) rather
+than removing the CAUSE (asking for an offset at all).
+
+**The actual fix: the Shot Planner is no longer asked for
+`narration_start`/`narration_end` character offsets.** New
+`app/planners/shot/fragments.py::split_narration_fragments` splits a
+scene's `narration_text` into an ordered list of numbered fragments,
+deterministically, in code, before the model ever sees the scene. The
+model is asked only for a CONTIGUOUS RANGE of fragment numbers per shot
+("fragments 1 to 2" — a natural judgement, not an arithmetic one), and
+`app/planners/shot/planner.py::_to_domain_shot` converts that range
+back into the exact character span `Shot.narration_span` has always
+stored. **Scope discipline honoured exactly as instructed**: nothing
+downstream changed at all — not `Shot.narration_span`'s type, not
+`narration_fit.py`, not the renderer, not any other planner. Only the
+Shot Planner's own schema (`fragment_start`/`fragment_end` replacing
+`narration_start`/`narration_end`), its prompt, its validator, and the
+new fragment splitter were touched.
+
+A mid-word or mid-grapheme split is now **structurally impossible**,
+not detected and corrected: every fragment boundary is, by construction,
+at a sentence end, a line break, or (for a long sentence) a clause
+break — never inside a word, and never inside a grapheme cluster,
+because a Devanagari dependent vowel sign never immediately follows
+whitespace or sentence-ending punctuation. Devanagari needed no
+special-case code anywhere in the splitter, which is itself evidence
+this is the right fix rather than a fourth patch.
+
+**Fragment granularity — argued, not assumed:**
+- **Primary split points: sentence-ending punctuation (`.` `!` `?` the
+  Devanagari danda `।` `…`) and newlines.** The user's own scripts are
+  written as short lines, so a newline is already a natural,
+  human-authored fragment boundary, not an invented rule.
+- **Secondary split points — comma, semicolon, colon, the em dash
+  `—` — apply ONLY inside a fragment still longer than
+  `_LONG_FRAGMENT_THRESHOLD_CHARS = 80` after the primary pass.**
+  Deliberately not the default: splitting on every comma would put
+  fragment granularity right back to "arbitrary boundaries", one notch
+  coarser than character offsets but the same failure. It exists only
+  for the opposite risk — one very long run-on sentence that would
+  otherwise be a single un-subdividable fragment, forcing every shot
+  touching it to include the whole sentence regardless of how long that
+  makes the shot. 80 characters is a judgement call between those two
+  risks, recorded as one, not derived.
+- **The plain hyphen `-` is deliberately excluded from every split set,
+  at either pass.** It is what let `Leuna-Werke` split in the first
+  place; a compound/hyphenated name must stay whole. The em dash `—`
+  (a different character, U+2014 vs U+002D) is a legitimate secondary
+  break.
+- **"A scene cannot have more shots than fragments" is not a new rule —
+  it falls out for free** from the same "fragment ranges tile 1..N with
+  no gap or overlap" invariant every other structural check already
+  needs: it is arithmetically impossible for more non-empty disjoint
+  ranges to exist than there are fragments to distribute them over. A
+  model that proposes more shots than a scene has fragments fails the
+  identical validation every other tiling violation already fails, fed
+  back for repair the same way — not new machinery. The prompt tells
+  the model the fragment count up front, so this is a rare repair, not
+  the common path. **Decided and tested for the edge case explicitly**:
+  a one-fragment scene with a correct single shot succeeds cleanly; a
+  one-fragment scene where the model insists on two shots fails (in
+  practice, because the outer-edge snap has already forced the second
+  shot's `fragment_end` down to the true count of 1, the actual
+  violation that surfaces is `fragment_end < fragment_start` on that
+  same shot — a different message than "count exceeded" but the
+  identical rejection; a second, dedicated test proves the "exceeds this
+  scene's fragment count" message directly, on a middle shot the outer
+  snap never touches).
+- **Lossless reconstruction is structural, not a separate check**: every
+  fragment's span is `[start, next_fragment.start)` (or `len(text)` for
+  the last), never a separately-tracked gap — concatenating every
+  fragment's own span always reproduces `narration_text` exactly,
+  including all whitespace, which is what the Scene Planner's own
+  verbatim-script check ultimately depends on staying true.
+- **The outer-edge snap (`_snap_narration_boundaries`'s successor,
+  `_snap_fragment_boundaries`) is kept, exactly as instructed** — "it
+  costs nothing, and it still defends against a malformed range" — now
+  operating on fragment indices (small integers) rather than character
+  offsets, with its own rescaled threshold
+  (`_LARGE_FRAGMENT_SNAP_THRESHOLD = 1`: a drift of 1 fragment is an
+  off-by-one about an inclusive range; 2 or more suggests the model
+  misread the fragment list).
+
+**Verified directly against the real reported bug text, live and pure
+(no database, no model, no pytest)**: the exact scene from the bug
+report — `"Germany की war machine\nइससे बने fuel पर चल रही थी।\n\n
+Leuna-Werke जैसी factories\nदिन-रात fuel बना रही थीं।"` — was run
+through the real `split_narration_fragments` and produced exactly the
+four natural, newline-delimited fragments, splitting neither
+`Leuna-Werke` nor `इससे` nor `दिन`, with lossless reconstruction
+confirmed by direct string equality. The planner's own validator was
+also exercised directly (not reimplemented) against every scenario in
+the test suite below, confirming the traced violation messages before
+trusting the test assertions — including the two-attempts-at-tracing
+correction on the one-fragment/two-shot case, where the FIRST guess at
+the resulting error message was wrong (assumed "exceeds fragment count",
+actually "fragment_end < fragment_start", because the outer snap fires
+first) and was caught by running the real code rather than reasoning
+about it in the abstract.
+
+New `tests/unit/planners/test_fragments.py` (9 cases: lossless
+reconstruction across five texts, the Latin hyphenated-name case, the
+Devanagari grapheme case, the exact reported bug scene, the long
+run-on-sentence subdivision, the short-sentence-stays-whole case, and
+the ellipsis/em-dash-plus-newline "leave it alone" case).
+`tests/unit/planners/test_shot_planner.py` rewritten for the new schema
+(fragment-index drift snaps, a genuine internal gap still failing, the
+one-fragment edge case both ways, the existing happy-path/looping/
+shot-cap tests). `tests/integration/test_generate_timeline_real.py`'s
+own canned fixture reduced from two shots to one per scene (each of its
+two scenes is a single plain sentence — exactly one fragment — so two
+shots was never valid under the new rule; the test's own purpose, the
+four-planner chain's crash-resumability, is unaffected by shot count).
+`ruff check backend`, `black --check backend` (1 file reformatted),
+`mypy backend/app` all clean from the repo root. **The suite itself was
+NOT run** — two live, human-driven projects (`194ad0e7-...`, rendered,
+13 irreplaceable uploads; `2fa282b4-...`, at the approval gate) sit in
+the same shared dev Postgres, and `pytest` truncates every table via
+`tests/conftest.py`'s autouse `clean_database` fixture.
+
+**The lesson, now cost three times, and this time answered differently
+than the first two**: the first two fixes corrected a wrong VALUE after
+the fact (snap the offset to what it must be). The third time, the
+right question turned out to be prior to that — not "how do we correct
+this model's arithmetic" but "should this have been arithmetic at all."
+Once character offsets were replaced with a judgement a model is
+actually good at (grouping natural, pre-cut fragments), the whole class
+of failure — mid-word, mid-grapheme, off-by-some-characters — stopped
+being a thing to detect and correct, because it stopped being
+representable in the schema at all. Deterministic structural facts
+belong in code; and when a model keeps getting the same KIND of thing
+wrong across multiple unrelated incidents, the question worth asking
+is not "how do we validate this better" but "was this the right thing
+to ask a model for in the first place."
+
 ---
 
 # Phase M6 — Asset Pipeline

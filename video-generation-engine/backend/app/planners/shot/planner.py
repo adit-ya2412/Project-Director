@@ -1,7 +1,18 @@
 """Shot Planner agent (M5, third link in the chain). Fills `shots` for
-every scene - one LLM call per scene, so the narration-span and duration-
+every scene - one LLM call per scene, so the fragment-range and duration-
 sum constraints stay scoped to something the model can actually reason
 about. See app/prompts/shot_planner/v1.md for the prompt specification.
+
+## Fragment ranges, not character offsets (M5 hardening, 2026-08-15)
+
+The model is asked for a CONTIGUOUS RANGE OF FRAGMENT INDICES per shot
+("fragments 1 to 2"), never a `narration_start`/`narration_end`
+character offset - see `app/planners/shot/fragments.py`'s own docstring
+for the full reasoning (three separate incidents of unreliable model
+character-arithmetic, one root cause). `_to_domain_shot` converts a
+shot's fragment range back into the exact character span
+`Shot.narration_span` has always stored; nothing downstream of this
+module changed.
 
 A crash mid-loop (after scene 3's shots landed, before scene 4's) is not
 separately resumable within this call - `GenerateTimelineStep` only
@@ -16,6 +27,7 @@ import uuid
 from app.core.errors import PermanentError
 from app.core.logging import get_logger
 from app.planners.repair import run_structured_with_repair
+from app.planners.shot.fragments import NarrationFragment, split_narration_fragments
 from app.planners.shot.schemas import ShotPlannerOutput, ShotPlanOutput
 from app.prompts.loader import load_prompt
 from app.providers.base import PlanningLLMProvider
@@ -24,78 +36,81 @@ from app.schemas.timeline import Camera, CreativeContext, Scene, Shot, Transitio
 
 logger = get_logger(__name__)
 
-# A model that is a handful of characters off the scene's true boundary is
-# being imprecise about a trailing space or a bit of punctuation (the real
-# case that motivated this: 144 vs 140, a trailing space before the
-# scene's final "hi. "). A model that is off by dozens of characters
-# instead genuinely misunderstood where the scene starts or ends - still
-# safe to snap (the boundary is a structural fact either way, not a
-# creative one), but worth a human noticing in the logs. 10 characters
-# sits strictly between those two observed cases.
-_LARGE_SNAP_THRESHOLD_CHARS = 10
+# Fragment counts per scene are small integers (typically well under 10),
+# unlike the character-offset drift this constant used to gate: a model
+# choosing from a short NUMBERED LIST is either right, off by one (a
+# fencepost mistake about whether a range is inclusive), or has
+# misunderstood the fragment list entirely. 1 sits exactly on that line.
+_LARGE_FRAGMENT_SNAP_THRESHOLD = 1
 
 
-def _snap_narration_boundaries(
-    shots: list[ShotPlanOutput], narration_len: int, *, scene_id: str
+def _snap_fragment_boundaries(
+    shots: list[ShotPlanOutput], fragment_count: int, *, scene_id: str
 ) -> None:
-    """The first shot's `narration_start` is always 0 and the last shot's
-    `narration_end` is always `narration_len` - these are structural facts
-    about the scene text the caller already knows, not creative decisions
-    the model is being asked to make, so they are corrected here rather
-    than validated and rejected. Demanding the model reproduce them
-    exactly and hard-failing the whole project over a four-character miss
-    is the same mistake the cross-scene shot-id collision already taught
-    once (implementation guide, M5 notes) - something deterministic was
-    being delegated to a language model.
+    """The first shot's `fragment_start` is always 1 and the last shot's
+    `fragment_end` is always `fragment_count` - structural facts the
+    caller already knows, not creative decisions - so they are corrected
+    here rather than validated and rejected, the same reasoning (and the
+    same function's own earlier life) as the character-offset version
+    this replaced. Kept explicitly as a backstop even though fragment
+    ranges make a large miss far less likely than raw character
+    offsets ever were: it costs nothing, and it still defends against a
+    malformed range at either end.
 
     Deliberately narrow: only the two OUTER boundaries are touched.
-    Internal gaps and overlaps between consecutive shots are genuine
-    structural errors and are still caught by the validation loop that
-    runs right after this - snapping the ends can only ever make that
-    loop's job easier (by removing the one violation the model cannot be
-    expected to hit exactly), never mask a real internal inconsistency."""
+    Internal gaps, overlaps, and an out-of-range fragment index are
+    genuine structural errors, still caught by the validation walk that
+    runs right after this."""
     if not shots:
         return
 
     first = shots[0]
-    if first.narration_start != 0:
-        drift = abs(first.narration_start)
-        log = logger.warning if drift > _LARGE_SNAP_THRESHOLD_CHARS else logger.info
+    if first.fragment_start != 1:
+        drift = abs(first.fragment_start - 1)
+        log = logger.warning if drift > _LARGE_FRAGMENT_SNAP_THRESHOLD else logger.info
         log(
-            "shot_planner.snapped_narration_start",
+            "shot_planner.snapped_fragment_start",
             extra={
                 "scene_id": scene_id,
-                "model_value": first.narration_start,
-                "snapped_to": 0,
-                "drift_chars": drift,
+                "model_value": first.fragment_start,
+                "snapped_to": 1,
+                "drift_fragments": drift,
             },
         )
-        first.narration_start = 0
+        first.fragment_start = 1
 
     last = shots[-1]
-    if last.narration_end != narration_len:
-        drift = abs(narration_len - last.narration_end)
-        log = logger.warning if drift > _LARGE_SNAP_THRESHOLD_CHARS else logger.info
+    if last.fragment_end != fragment_count:
+        drift = abs(fragment_count - last.fragment_end)
+        log = logger.warning if drift > _LARGE_FRAGMENT_SNAP_THRESHOLD else logger.info
         log(
-            "shot_planner.snapped_narration_end",
+            "shot_planner.snapped_fragment_end",
             extra={
                 "scene_id": scene_id,
-                "model_value": last.narration_end,
-                "snapped_to": narration_len,
-                "drift_chars": drift,
+                "model_value": last.fragment_end,
+                "snapped_to": fragment_count,
+                "drift_fragments": drift,
             },
         )
-        last.narration_end = narration_len
+        last.fragment_end = fragment_count
 
 
-def _build_user_content(scene: Scene, creative_context: CreativeContext) -> str:
+def _build_user_content(
+    scene: Scene, creative_context: CreativeContext, fragments: list[NarrationFragment]
+) -> str:
+    numbered_fragments = "\n".join(f"{f.index}. {f.text}" for f in fragments)
     return (
         f"Scene: {scene.title}\n"
         f"Narrative purpose: {scene.narrative_purpose}\n"
         f"Emotion: {scene.emotion}\n"
         f"Target scene duration_s: {scene.duration_s}\n"
-        f"Narration text for this scene (index shots against THIS exact string):\n"
-        f"{scene.narration_text}\n\n"
+        f"This scene's narration, split into {len(fragments)} numbered fragments:\n"
+        f"{numbered_fragments}\n\n"
+        f"Assign each shot a CONTIGUOUS RANGE of these fragment numbers via "
+        f"`fragment_start`/`fragment_end` (both inclusive) - never a character offset, "
+        f"and never split a single fragment between two shots. Every fragment from 1 to "
+        f"{len(fragments)} must be covered, in order, by exactly one shot. This scene can "
+        f"therefore have AT MOST {len(fragments)} shot(s).\n\n"
         "Director's creative context:\n"
         f"- historical_period: {creative_context.historical_period}\n"
         f"- visual_style: {creative_context.visual_style}\n"
@@ -103,8 +118,13 @@ def _build_user_content(scene: Scene, creative_context: CreativeContext) -> str:
     )
 
 
-def _make_validator(scene: Scene, min_shot_duration_s: float, max_shot_duration_s: float):
-    narration_len = len(scene.narration_text)
+def _make_validator(
+    scene: Scene,
+    fragments: list[NarrationFragment],
+    min_shot_duration_s: float,
+    max_shot_duration_s: float,
+):
+    fragment_count = len(fragments)
 
     def _validate(output: ShotPlannerOutput) -> list[str]:
         violations: list[str] = []
@@ -116,14 +136,13 @@ def _make_validator(scene: Scene, min_shot_duration_s: float, max_shot_duration_
 
         # Structural facts, not creative decisions - snapped before any
         # check runs, so a model that is merely imprecise about the exact
-        # scene-text boundary (a trailing space, a stray punctuation
-        # character) never fails the whole scene over it. See
-        # `_snap_narration_boundaries`'s own docstring for why this is
+        # outer fragment number never fails the whole scene over it. See
+        # `_snap_fragment_boundaries`'s own docstring for why this is
         # deliberately narrow: only the two outer edges are touched, and
-        # every check below - including the full internal tiling walk -
-        # still runs exactly as before, so a genuine gap or overlap
-        # anywhere else is still a hard failure.
-        _snap_narration_boundaries(shots, narration_len, scene_id=scene.id)
+        # every check below - including the full tiling walk - still
+        # runs exactly as before, so a genuine gap, overlap, or
+        # out-of-range fragment index is still a hard failure.
+        _snap_fragment_boundaries(shots, fragment_count, scene_id=scene.id)
 
         ids = [s.id for s in shots]
         if len(ids) != len(set(ids)):
@@ -133,20 +152,35 @@ def _make_validator(scene: Scene, min_shot_duration_s: float, max_shot_duration_
         if [s.order for s in shots] != expected_order:
             violations.append(f"shot order fields must be exactly {expected_order}, in list order")
 
-        cursor = 0
+        # Fragment-range tiling: replaces the old character-offset cursor
+        # walk. "A scene cannot have more shots than fragments" is not a
+        # separate rule - it falls out of this same walk for free, since
+        # it is arithmetically impossible for more non-empty disjoint
+        # ranges to exist than there are fragments to distribute them
+        # over (see app/planners/shot/fragments.py's own docstring).
+        cursor = 1
         for s in shots:
-            if s.narration_start != cursor:
+            if s.fragment_start != cursor:
                 violations.append(
-                    f"shot {s.id} narration_start ({s.narration_start}) must equal "
-                    f"{cursor} - spans must be contiguous with no gaps or overlaps"
+                    f"shot {s.id} fragment_start ({s.fragment_start}) must equal "
+                    f"{cursor} - fragment ranges must be contiguous with no gaps or "
+                    f"overlaps, covering fragments 1..{fragment_count}"
                 )
-            if s.narration_end <= s.narration_start:
-                violations.append(f"shot {s.id} narration_end must be greater than narration_start")
-            cursor = s.narration_end
-        if cursor != narration_len:
+            if s.fragment_end < s.fragment_start:
+                violations.append(
+                    f"shot {s.id} fragment_end ({s.fragment_end}) must be >= "
+                    f"fragment_start ({s.fragment_start})"
+                )
+            if s.fragment_end > fragment_count:
+                violations.append(
+                    f"shot {s.id} fragment_end ({s.fragment_end}) exceeds this scene's "
+                    f"fragment count ({fragment_count})"
+                )
+            cursor = s.fragment_end + 1
+        if cursor != fragment_count + 1:
             violations.append(
-                f"the last shot's narration_end ({cursor}) must equal the scene narration "
-                f"length ({narration_len}) - every character must be covered"
+                f"the last shot's fragment_end ({cursor - 1}) must equal this scene's "
+                f"fragment count ({fragment_count}) - every fragment must be covered"
             )
 
         for s in shots:
@@ -169,7 +203,9 @@ def _make_validator(scene: Scene, min_shot_duration_s: float, max_shot_duration_
     return _validate
 
 
-def _to_domain_shot(s: ShotPlanOutput, *, scene_id: str) -> Shot:
+def _to_domain_shot(
+    s: ShotPlanOutput, *, scene_id: str, fragments: list[NarrationFragment]
+) -> Shot:
     # Namespaced by scene_id, never s.id alone: the Shot Planner calls the
     # model once per scene with no visibility into other scenes, and the
     # model reliably reproduces the prompt's own example id verbatim (e.g.
@@ -178,12 +214,21 @@ def _to_domain_shot(s: ShotPlanOutput, *, scene_id: str) -> Shot:
     # unique (the Scene Planner plans every scene in one call and can see
     # the whole list), so prefixing with it makes cross-scene collisions
     # structurally impossible regardless of what the model returns.
+    #
+    # Fragment range -> character span: by validation time, fragment_start
+    # and fragment_end are guaranteed valid 1-indexed positions within
+    # `fragments` (checked above, before this ever runs), so the shot's
+    # own span is simply its first fragment's start joined to its last
+    # fragment's end - both fragment spans and shot-ranges tile losslessly
+    # (app/planners/shot/fragments.py), so the composition does too.
+    start = fragments[s.fragment_start - 1].start
+    end = fragments[s.fragment_end - 1].end
     return Shot(
         id=f"{scene_id}_{s.id}",
         order=s.order,
         intent=s.intent,
         intent_text=s.intent_text,
-        narration_span=(s.narration_start, s.narration_end),
+        narration_span=(start, end),
         duration_s=s.duration_s,
         framing=s.framing,
         camera=Camera(
@@ -220,6 +265,7 @@ class ShotPlanner:
         total_shots = 0
 
         for scene in scenes:
+            fragments = split_narration_fragments(scene.narration_text)
             output = await run_structured_with_repair(
                 provider=self._provider,
                 llm_call_repo=self._llm_call_repo,
@@ -227,9 +273,11 @@ class ShotPlanner:
                 agent=self.name,
                 prompt_version=self._PROMPT_VERSION,
                 system_prompt=system_prompt,
-                user_content=_build_user_content(scene, creative_context),
+                user_content=_build_user_content(scene, creative_context, fragments),
                 response_model=ShotPlannerOutput,
-                validate=_make_validator(scene, min_shot_duration_s, max_shot_duration_s),
+                validate=_make_validator(
+                    scene, fragments, min_shot_duration_s, max_shot_duration_s
+                ),
             )
             total_shots += len(output.shots)
             if total_shots > max_shots_per_project:
@@ -239,7 +287,12 @@ class ShotPlanner:
                 )
             planned_scenes.append(
                 scene.model_copy(
-                    update={"shots": [_to_domain_shot(s, scene_id=scene.id) for s in output.shots]}
+                    update={
+                        "shots": [
+                            _to_domain_shot(s, scene_id=scene.id, fragments=fragments)
+                            for s in output.shots
+                        ]
+                    }
                 )
             )
 

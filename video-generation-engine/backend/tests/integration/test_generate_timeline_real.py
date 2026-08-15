@@ -107,52 +107,45 @@ def _scene_output() -> ScenePlannerOutput:
 
 
 def _shot_output(scene_id: str, narration_text: str, duration_s: float) -> ShotPlannerOutput:
-    # Raw ids deliberately do NOT encode scene_id - this mirrors the real
-    # model, which reuses the same simple pattern every scene since each
-    # call only ever sees one scene. ShotPlanner namespaces by scene_id
-    # afterwards, so the final persisted id is f"{scene_id}_sh_01" etc -
-    # see _asset_output below, which must match that final id.
-    mid = len(narration_text) // 2
-    half = duration_s / 2
+    # Raw id deliberately does NOT encode scene_id - this mirrors the
+    # real model, which reuses the same simple pattern every scene since
+    # each call only ever sees one scene. ShotPlanner namespaces by
+    # scene_id afterwards, so the final persisted id is f"{scene_id}_sh_01"
+    # - see _asset_output below, which must match that final id.
+    #
+    # Exactly ONE shot, covering the scene's single fragment (M5
+    # hardening, 2026-08-15): each scene here is one plain sentence with
+    # no internal sentence-ending punctuation until its own final full
+    # stop, so `split_narration_fragments` produces exactly one fragment
+    # for it - and a fragment can never be split between two shots (see
+    # app/planners/shot/fragments.py's own docstring). This test is
+    # about the four-planner CHAIN's resumability, not shot count, so
+    # one shot per scene exercises it identically to two.
+    del narration_text  # unused now that shots are fragment-indexed, not character-indexed
     return ShotPlannerOutput(
         shots=[
             ShotPlanOutput(
                 id="sh_01",
                 order=0,
                 intent=ShotIntent.EXPLAIN,
-                intent_text="first half",
-                narration_start=0,
-                narration_end=mid,
-                duration_s=half,
+                intent_text="the whole scene",
+                fragment_start=1,
+                fragment_end=1,
+                duration_s=duration_s,
                 framing=Framing.WIDE,
                 camera=ShotCameraOutput(
                     movement=CameraMovement.SLOW_ZOOM, direction=CameraDirection.IN, intensity=0.15
                 ),
-                transition_out=ShotTransitionOutput(type=TransitionType.DISSOLVE, duration_s=0.4),
-                prompt="archival photograph, first half",
-            ),
-            ShotPlanOutput(
-                id="sh_02",
-                order=1,
-                intent=ShotIntent.EXPLAIN,
-                intent_text="second half",
-                narration_start=mid,
-                narration_end=len(narration_text),
-                duration_s=half,
-                framing=Framing.MEDIUM,
-                camera=ShotCameraOutput(
-                    movement=CameraMovement.STATIC, direction=CameraDirection.NONE, intensity=0.1
-                ),
                 transition_out=ShotTransitionOutput(type=TransitionType.CUT, duration_s=0.0),
-                prompt="archival photograph, second half",
+                prompt="archival photograph",
             ),
         ]
     )
 
 
 def _asset_output(scene_id: str) -> AssetPlannerOutput:
-    # Must match the shot ids ShotPlanner actually persists: scene_id,
-    # namespaced onto the raw "sh_01"/"sh_02" ids from _shot_output above.
+    # Must match the shot id ShotPlanner actually persists: scene_id,
+    # namespaced onto the raw "sh_01" id from _shot_output above.
     return AssetPlannerOutput(
         asset_plans=[
             AssetPlanShotOutput(
@@ -163,15 +156,6 @@ def _asset_output(scene_id: str) -> AssetPlannerOutput:
                 preferred_type=PreferredMediaType.IMAGE,
                 fallback_chain=[AssetStrategy.HISTORICAL_SEARCH, AssetStrategy.GENERATE_IMAGE],
                 licence_requirements=["public_domain"],
-            ),
-            AssetPlanShotOutput(
-                shot_id=f"{scene_id}_sh_02",
-                entity="",
-                strategy=AssetStrategy.PUBLIC_DOMAIN,
-                search_queries=["archival search term 2"],
-                preferred_type=PreferredMediaType.IMAGE,
-                fallback_chain=[AssetStrategy.PUBLIC_DOMAIN, AssetStrategy.GENERATE_IMAGE],
-                licence_requirements=["cc0"],
             ),
         ]
     )
@@ -231,7 +215,7 @@ async def test_real_chain_produces_a_fully_planned_timeline(project_id, monkeypa
     assert timeline.music_plan.energy_arc == EnergyArc.BUILD
     assert len(timeline.scenes) == 2
     all_shots = timeline.all_shots()
-    assert len(all_shots) == 4
+    assert len(all_shots) == 2  # one shot per scene - each scene is a single fragment
     assert all(shot.asset_plan is not None for shot in all_shots)
     assert timeline.metadata.total_duration_s > 0
 
