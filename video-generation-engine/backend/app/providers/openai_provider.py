@@ -32,7 +32,13 @@ from pydantic import BaseModel
 from app.core.config import settings
 from app.core.errors import PermanentError, TransientError
 from app.core.logging import get_logger
-from app.providers.base import ConstraintCheckRequest, ConstraintVerdict, StructuredCompletion
+from app.providers.base import (
+    ConstraintCheckRequest,
+    ConstraintVerdict,
+    DepictionCheckRequest,
+    DepictionVerdict,
+    StructuredCompletion,
+)
 
 logger = get_logger(__name__)
 
@@ -213,6 +219,85 @@ class OpenAIPlanningProvider:
                 "model": settings.openai_vision_model,
                 "shot_prompt": request.shot_prompt,
                 "constraints": request.constraints,
+            },
+            response=choice.message.model_dump(mode="json"),
+            input_tokens=usage.prompt_tokens if usage else None,
+            output_tokens=usage.completion_tokens if usage else None,
+        )
+
+    async def check_depiction(self, request: DepictionCheckRequest) -> StructuredCompletion:
+        """M6.5, A30 - `VisionConstraintProvider`'s other half. A genuinely
+        different question from `check_constraints`: not "does this
+        violate a fixed rule" but "does this image actually show the
+        subject a search was run for at all" - the top-ranked searched
+        candidate for a shot may have passed the text-based relevance
+        gate (`app/assets/relevance.py`) on term overlap alone and still
+        depict the wrong thing entirely (a real production failure this
+        exists to catch - see A17's regression table). Same model
+        (`settings.openai_vision_model`) and call shape as
+        `check_constraints`, deliberately its own prompt: asking this as
+        a negatively-phrased "constraint" would blur two different
+        questions into a prompt worded for the other one."""
+        image_b64 = base64.b64encode(request.image).decode("ascii")
+        data_url = f"data:{request.image_content_type};base64,{image_b64}"
+
+        system_message: ChatCompletionSystemMessageParam = {
+            "role": "system",
+            "content": (
+                "You check whether an image genuinely depicts a specific "
+                "real-world subject a search was run to find. Archive and "
+                "stock search engines often return images that share only "
+                "a keyword with the query, not the actual subject (e.g. a "
+                "search for a named chemical plant returning an unrelated "
+                "factory, or a search for a historical event returning a "
+                "generic stock photo of the same era). Say the image does "
+                "NOT depict the subject unless it plausibly, genuinely "
+                "shows it - a vague thematic resemblance is not enough."
+            ),
+        }
+        text_part: ChatCompletionContentPartTextParam = {
+            "type": "text",
+            "text": (
+                f"This image was found searching for: {request.search_subject}\n\n"
+                f"The shot it is meant to illustrate: {request.shot_prompt}\n\n"
+                "Does this image genuinely depict that subject?"
+            ),
+        }
+        image_part: ChatCompletionContentPartImageParam = {
+            "type": "image_url",
+            "image_url": {"url": data_url},
+        }
+        user_message: ChatCompletionUserMessageParam = {
+            "role": "user",
+            "content": [text_part, image_part],
+        }
+        messages: list[ChatCompletionMessageParam] = [system_message, user_message]
+        try:
+            completion = await self._client.chat.completions.parse(
+                model=settings.openai_vision_model,
+                messages=messages,
+                response_format=DepictionVerdict,
+            )
+        except _TRANSIENT_ERRORS as exc:
+            raise TransientError(f"openai depiction check transient error: {exc}") from exc
+        except OpenAIError as exc:
+            raise PermanentError(f"openai depiction check error: {exc}") from exc
+
+        choice = completion.choices[0]
+        if choice.message.refusal:
+            raise PermanentError(f"openai refused the depiction check: {choice.message.refusal}")
+        parsed = choice.message.parsed
+        if parsed is None:
+            raise PermanentError("openai did not return a parseable depiction verdict")
+
+        usage = completion.usage
+        return StructuredCompletion(
+            parsed=parsed,
+            model=completion.model,
+            request={
+                "model": settings.openai_vision_model,
+                "shot_prompt": request.shot_prompt,
+                "search_subject": request.search_subject,
             },
             response=choice.message.model_dump(mode="json"),
             input_tokens=usage.prompt_tokens if usage else None,

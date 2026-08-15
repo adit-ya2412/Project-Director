@@ -108,6 +108,17 @@ def test_script_to_video_end_to_end(client, tmp_path):
     assert all(s["asset"] is not None for s in progress["shots"])
     assert all(s["will_generate"] is False for s in progress["shots"])
 
+    # M8 step 4: music selection also runs before the approval gate
+    # (D6/21.2 - Pixabay search is free, so a human approving a video
+    # should hear what it will sound like) - the ACTIVE timeline by the
+    # time we reach the gate already carries a real selection, made via
+    # `FakeMusicProvider` (whose one canned candidate's "cc0" licence
+    # satisfies the fixture's own `music_plan.licence_requirements`).
+    assert timeline.music_plan is not None
+    assert timeline.music_plan.selection_attempted is True
+    assert timeline.music_plan.selected_track is not None
+    assert timeline.music_plan.selected_track.provider == "fake_music"
+
     timeline_resp = client.get(f"/api/v1/projects/{project_id}/timeline")
     assert timeline_resp.status_code == 200
     assert timeline_resp.json()["status"] == "draft"

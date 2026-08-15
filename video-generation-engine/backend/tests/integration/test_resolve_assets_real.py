@@ -23,7 +23,7 @@ from PIL import Image
 
 from app.core.config import settings
 from app.db.session import async_session_factory
-from app.providers.base import AssetBytes, AssetCandidate
+from app.providers.base import AssetBytes, AssetCandidate, DepictionVerdict
 from app.providers.fakes.vision import FakeVisionConstraintProvider
 from app.repositories.asset_repository import AssetRepository
 from app.repositories.project_repository import PostgresProjectRepository
@@ -531,3 +531,233 @@ async def test_uploaded_asset_matches_via_the_real_relevance_gate_and_skips_lice
     assert binding.state == "resolved"
     assert binding.rung == "project_assets"
     assert binding.asset_id == uploaded.id
+
+
+# --- M6.5, A16 -> A30: vision-verify the top searched candidate --------
+
+
+def _patch_two_rung_providers(monkeypatch, historical_provider, public_domain_provider) -> None:
+    monkeypatch.setattr(
+        resolve_assets_module,
+        "_real_search_providers",
+        lambda **_kwargs: {
+            AssetStrategy.HISTORICAL_SEARCH: historical_provider,
+            AssetStrategy.PUBLIC_DOMAIN: public_domain_provider,
+        },
+    )
+
+
+def _patch_vision_provider(monkeypatch, fake_provider) -> None:
+    # A zero-arg callable, matching how the real code constructs it
+    # (`OpenAIPlanningProvider()`, no arguments) - unlike `_patch_providers`
+    # above (which patches the CLASS to a default-verdict fake), these
+    # tests need a SPECIFIC scripted verdict sequence, so a lambda
+    # returning one pre-configured instance is used instead.
+    monkeypatch.setattr(resolve_assets_module, "OpenAIPlanningProvider", lambda: fake_provider)
+
+
+class _RaisingVisionProvider:
+    """Would raise if ever called - proves zero vision calls happened for
+    an entity-curated candidate (A2/A30), rather than merely asserting a
+    call count against a fake that happens not to mind."""
+
+    name = "raising_vision"
+
+    async def check_depiction(self, request):
+        raise AssertionError("check_depiction must not be called for an entity-curated candidate")
+
+    async def check_constraints(self, request):
+        raise AssertionError("check_constraints is not this pass's concern")
+
+
+async def test_depiction_check_drops_a_wrong_top_candidate_and_falls_through_to_the_next_rung(
+    project_id, monkeypatch
+):
+    """A30: the top-ranked candidate on rung 1 fails the depiction check -
+    the WHOLE rung is abandoned (not just re-ranked within it), and the
+    shot resolves from rung 2 instead, exactly like a licence/relevance
+    rejection already falls through."""
+    monkeypatch.setattr(settings, "dry_run", False)
+    shot = _shot("sh_01", licence_requirements=["cc0"])
+    shot.asset_plan.fallback_chain = [
+        AssetStrategy.HISTORICAL_SEARCH,
+        AssetStrategy.PUBLIC_DOMAIN,
+        AssetStrategy.GENERATE_IMAGE,
+    ]
+    await _seed_timeline(project_id, [shot])
+
+    wrong_provider = _FakeSearchProvider(
+        "wikimedia",
+        "historical_search",
+        candidates_by_shot={
+            "sh_01": [
+                AssetCandidate(
+                    source_id="wrong",
+                    source_url="http://example.test/wrong",
+                    title="an archival photo of a completely unrelated subject",
+                    licence="cc0",
+                    relevance=1.0,
+                    width=1080,
+                    height=1920,
+                )
+            ]
+        },
+        content_by_source_id={"wrong": _png_bytes((1, 1, 1))},
+    )
+    right_provider = _FakeSearchProvider(
+        "wikimedia",
+        "public_domain",
+        candidates_by_shot={
+            "sh_01": [
+                AssetCandidate(
+                    source_id="right",
+                    source_url="http://example.test/right",
+                    title="an archival photo of the real subject",
+                    licence="cc0",
+                    relevance=1.0,
+                    width=1080,
+                    height=1920,
+                )
+            ]
+        },
+        content_by_source_id={"right": _png_bytes((2, 2, 2))},
+    )
+    _patch_two_rung_providers(monkeypatch, wrong_provider, right_provider)
+    _patch_vision_provider(
+        monkeypatch,
+        FakeVisionConstraintProvider(
+            depiction_verdicts=[
+                DepictionVerdict(depicts=False, reason="wrong subject entirely"),
+                DepictionVerdict(depicts=True, reason="correct"),
+            ]
+        ),
+    )
+
+    await _run_step(project_id)
+    binding = await _binding(project_id, "sh_01")
+    assert binding.state == "resolved"
+    assert binding.rung == "public_domain"  # rung 1's pick was dropped, not just re-ranked
+
+
+async def test_entity_curated_candidate_is_never_vision_checked(project_id, monkeypatch):
+    monkeypatch.setattr(settings, "dry_run", False)
+    shot = _shot("sh_01", licence_requirements=["cc0"])
+    await _seed_timeline(project_id, [shot])
+
+    provider = _FakeSearchProvider(
+        "wikimedia",
+        "historical_search",
+        candidates_by_shot={
+            "sh_01": [
+                AssetCandidate(
+                    source_id="curated",
+                    source_url="http://example.test/curated",
+                    title="an archival photo, human-curated entity image",
+                    licence="cc0",
+                    relevance=1.0,
+                    width=1080,
+                    height=1920,
+                    entity_curated=True,
+                )
+            ]
+        },
+        content_by_source_id={"curated": _png_bytes((3, 3, 3))},
+    )
+    _patch_providers(monkeypatch, provider)
+    _patch_vision_provider(monkeypatch, _RaisingVisionProvider())
+
+    await _run_step(project_id)
+    binding = await _binding(project_id, "sh_01")
+    assert binding.state == "resolved"  # accepted without ever calling vision
+
+
+async def test_vision_check_skips_a_corrupt_top_candidate_and_checks_the_next_valid_one(
+    project_id, monkeypatch
+):
+    """A30's "top-ranked candidate" means the first one this loop would
+    actually accept - a candidate with corrupt bytes is skipped for free
+    (no vision call spent, `validate_and_identify_image` already rejects
+    it), and the one-call budget lands on the next, genuinely valid one."""
+    monkeypatch.setattr(settings, "dry_run", False)
+    shot = _shot("sh_01", licence_requirements=["cc0"])
+    await _seed_timeline(project_id, [shot])
+
+    provider = _FakeSearchProvider(
+        "wikimedia",
+        "historical_search",
+        candidates_by_shot={
+            "sh_01": [
+                AssetCandidate(
+                    source_id="corrupt",
+                    source_url="http://example.test/corrupt",
+                    title="archival photo one",
+                    licence="cc0",
+                    relevance=1.0,
+                    width=1080,
+                    height=1920,
+                ),
+                AssetCandidate(
+                    source_id="valid",
+                    source_url="http://example.test/valid",
+                    title="archival photo two",
+                    licence="cc0",
+                    relevance=0.9,
+                    width=1080,
+                    height=1920,
+                ),
+            ]
+        },
+        content_by_source_id={"corrupt": b"not a real image", "valid": _png_bytes((4, 4, 4))},
+    )
+    _patch_providers(monkeypatch, provider)
+    vision_provider = FakeVisionConstraintProvider()  # default: depicts=True
+    _patch_vision_provider(monkeypatch, vision_provider)
+
+    await _run_step(project_id)
+    binding = await _binding(project_id, "sh_01")
+    assert binding.state == "resolved"
+    assert len(vision_provider.depiction_calls) == 1
+    assert vision_provider.depiction_calls[0]  # sanity: the call carried real data
+
+
+async def test_depiction_check_rejection_on_the_last_rung_defers_to_generation(
+    project_id, monkeypatch
+):
+    """Same "defer, never fail the shot" behaviour as a licence/relevance
+    rejection on the last permitted rung (A5/A6/A21) - the search-only
+    pass leaves it `awaiting_generation` for the paid pass, never
+    `failed`."""
+    monkeypatch.setattr(settings, "dry_run", False)
+    shot = _shot("sh_01", licence_requirements=["cc0"])
+    await _seed_timeline(project_id, [shot])
+
+    provider = _FakeSearchProvider(
+        "wikimedia",
+        "historical_search",
+        candidates_by_shot={
+            "sh_01": [
+                AssetCandidate(
+                    source_id="wrong",
+                    source_url="http://example.test/wrong",
+                    title="an archival photo, confidently the wrong candidate",
+                    licence="cc0",
+                    relevance=1.0,
+                    width=1080,
+                    height=1920,
+                )
+            ]
+        },
+        content_by_source_id={"wrong": _png_bytes((5, 5, 5))},
+    )
+    _patch_providers(monkeypatch, provider)
+    _patch_vision_provider(
+        monkeypatch,
+        FakeVisionConstraintProvider(
+            depiction_verdicts=[DepictionVerdict(depicts=False, reason="not the right subject")]
+        ),
+    )
+
+    await _run_step(project_id)
+    binding = await _binding(project_id, "sh_01")
+    assert binding.state == "awaiting_generation"
+    assert binding.asset_id is None

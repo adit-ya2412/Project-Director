@@ -24,6 +24,26 @@ _EXTENSION_BY_FORMAT = {
     "BMP": "bmp",
     "TIFF": "tiff",
 }
+_MIME_BY_EXTENSION = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "webp": "image/webp",
+    "gif": "image/gif",
+    "bmp": "image/bmp",
+    "tiff": "image/tiff",
+}
+
+
+def mime_type_for_extension(extension: str) -> str:
+    """The one place a file extension maps to a MIME type - used wherever
+    validated image bytes need a real content-type for something other
+    than ffmpeg (e.g. a vision API's base64 data URL, M6.5 A30). Falls
+    back to `image/png` for anything not in the map rather than raising -
+    callers here already hold bytes `validate_and_identify_image` proved
+    are a real, supported image; an unrecognised extension at this point
+    is a gap in this table, not a reason to fail an otherwise-valid asset."""
+    return _MIME_BY_EXTENSION.get(extension.lower(), "image/png")
 
 
 def validate_and_identify_image(content: bytes) -> tuple[str, int, int]:

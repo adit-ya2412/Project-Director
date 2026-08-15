@@ -31,6 +31,13 @@ def estimate_project_cost_cents(timeline: Timeline) -> int:
             total += settings.fal_video_cost_cents_estimate
         elif strategy == AssetStrategy.GENERATE_IMAGE:
             total += settings.fal_image_cost_cents_estimate
+    # M8 step 4: folded in for the same reason the generation estimate is
+    # shown pre-approval at all - 0 by default (Pixabay search is free),
+    # but a project whose music_plan exists is always shown the true
+    # estimate for whatever provider is actually configured, never a
+    # number that quietly excludes an entire acquisition category.
+    if timeline.music_plan is not None:
+        total += settings.music_cost_cents_estimate
     return total
 
 
@@ -50,7 +57,17 @@ async def total_project_spend_cents(
     budget cap?" - yes; before this, `check_budget`'s callers only ever
     summed `generated_clip.cost_cents`, so a long, expensive script's TTS
     spend was invisible to the same cap that blocks a fourth generated
-    clip)."""
+    clip).
+
+    Music selection (M8 step 4) deliberately adds no third total here:
+    unlike generated media and narration, a chosen track has no
+    persisted `cost_cents` row anywhere - the Timeline records only its
+    provenance (`MusicTrackSelection`, D6/I1/I2), because Pixabay search
+    is genuinely free and there is nothing to bill. `SelectMusicStep`
+    still calls `check_budget` against this same total before every
+    fetch attempt (`settings.music_cost_cents_estimate`, 0 by default) -
+    the structural guarantee holds even though, today, music itself
+    never has anything real to add to it."""
     clip_total = await clip_repo.total_cost_cents_for_project(project_id)
     narration_total = await narration_repo.total_cost_cents_for_project(project_id)
     return clip_total + narration_total

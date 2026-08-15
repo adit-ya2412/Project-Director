@@ -2,8 +2,11 @@
 A18-A19 - see docs/13_Implementation_Guide.md, Phase M6.5). The vision
 model returns a verdict; this module and its caller (`ResolveAssetsStep`)
 decide what happens next - the model never touches state, IO, or money
-(I4). Generated media only: a searched asset never reaches this (A16
-defers vision-checking search results until A1/A2 are measured).
+(I4). Generated media only: a searched asset never reaches THIS check -
+it asks "does this violate a fixed constraint", a question that only
+makes sense for something the system itself produced. A searched asset
+gets its own, different vision check now (A16 resolved as A30 - "does
+this genuinely depict the subject") - see `app/assets/depiction_check.py`.
 
 Two independent ways to make zero calls, both legitimate:
 - `constraints` is empty - most projects' `creative_context.constraints`

@@ -37,6 +37,12 @@ class ProducedBy(StrEnum):
     ASSET_PLANNER = "asset_planner"
     NARRATION = "narration"
     HUMAN = "human"
+    # M8 step 4 (D6/I1): music selection is a deterministic acquisition
+    # step, not an AI planner's creative judgement (I4) and not a human
+    # action either - its own category, matching the precedent NARRATION
+    # already set (a step, not a planner or a person, can legitimately
+    # produce a Timeline version).
+    MUSIC_SELECTION = "music_selection"
 
 
 class ShotIntent(StrEnum):
@@ -204,12 +210,39 @@ class TimelineMetadata(BaseModel):
     voice_id: str | None = None
 
 
+class MusicTrackSelection(BaseModel):
+    """The chosen track's PROVENANCE, never its bytes (I2) - M8 D6/21.2.
+    Mirrors `Asset`'s own provenance fields exactly (provider, source_url,
+    licence, attribution, content_hash), so the same "record the
+    selection, never the media" discipline the visual asset ladder
+    already follows applies here too. The audio itself lives at
+    `storage/{project}/music/{content_hash}.mp3` (D3)."""
+
+    provider: str
+    track_id: str
+    source_url: str
+    licence: str
+    attribution: str = ""
+    content_hash: str
+
+
 class MusicPlan(BaseModel):
     mood: str = ""
     tempo: str = ""
     energy_arc: EnergyArc = EnergyArc.FLAT
     search_terms: list[str] = Field(default_factory=list)
     licence_requirements: list[str] = Field(default_factory=list)
+    # Both fields below are set only by `SelectMusicStep`
+    # (`produced_by=MUSIC_SELECTION`), never by the Director (which only
+    # ever writes the fields above) or a human. `selected_track` is the
+    # decision itself (D6/I1 - the Timeline is the only source of truth
+    # for it); `selection_attempted` is what makes "no suitable track was
+    # found" a distinct, resumable state from "not yet tried" WITHOUT a
+    # side table (M8's own closed decision: the track lives in the
+    # Timeline, not a side table - and by the same reasoning, so does the
+    # fact that a search for one was made).
+    selected_track: MusicTrackSelection | None = None
+    selection_attempted: bool = False
 
 
 class CreativeContext(BaseModel):

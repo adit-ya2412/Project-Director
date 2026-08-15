@@ -34,10 +34,13 @@ constructs a vision-constraint provider either (`None`, same idiom as
 `video_provider`) - the fake path never does real generation, so there is
 nothing to check (M6.5, A12); this is also what keeps the walking-
 skeleton e2e test passing with zero API keys. Each pass instance also
-only ever constructs the providers ITS OWN permitted rungs could need -
-the search-only pass never constructs `FalImageProvider`/
-`OpenAIPlanningProvider`, the generation-only pass never constructs the
-search/entity providers.
+only ever constructs the GENERATION providers its own permitted rungs
+could need - the search-only pass never constructs `FalImageProvider`,
+the generation-only pass never constructs the search/entity providers.
+`OpenAIPlanningProvider` (`vision_provider`) is the one exception (M6.5,
+A30): both passes now construct it whenever this is a real run, since
+both need vision verification for their own question - A30 in search,
+A12 in generation.
 
 DRY_RUN=false: real search (M6, rungs 1-4) walks the shot's full
 `asset_plan.fallback_chain`, restricted to whichever rungs THIS pass
@@ -61,7 +64,14 @@ against the Director's `creative_context.constraints` before it ships
 bounded-retrying a violation per A13/A18 and raising `PermanentError`
 (caught below, same as any other per-shot failure) if every attempt is
 still violating after `settings.max_generation_attempts_per_shot`
-attempts. Searched assets are never checked (A16 defers that).
+attempts. Searched assets get their OWN, narrower vision check (M6.5,
+A16 -> A30): the top-ranked candidate per rung only, skipped for an
+entity-curated hit, dropping the candidate (and the whole rung) on
+failure rather than retrying or failing the shot - a different question
+(`check_candidate_depicts_subject`, "does this depict X") from the
+generation-side one above (`check_generated_image_constraints`, "does
+this violate Y"), sharing only the provider and the `llm_call` audit
+mechanism. See `app/assets/depiction_check.py`.
 
 Per-shot failure isolation (Principle 10) is enforced throughout: one
 shot failing (or hitting the budget cap, or exhausting its constraint
@@ -84,9 +94,10 @@ from app.assets.constraint_check import (
     seed_for_attempt,
 )
 from app.assets.cost import check_budget, total_project_spend_cents
+from app.assets.depiction_check import check_candidate_depicts_subject
 from app.assets.ranking import rank_candidates
 from app.assets.relevance import candidate_relevance, passes_relevance_gate
-from app.assets.validation import validate_and_identify_image
+from app.assets.validation import mime_type_for_extension, validate_and_identify_image
 from app.core.config import settings
 from app.core.errors import PermanentError, TransientError
 from app.models.generated_clip import GeneratedClipModel
@@ -242,14 +253,17 @@ class ResolveAssetsStep:
             if (not settings.dry_run and self._search_permitted)
             else None
         )
-        # M6.5, A12: `None` in DRY_RUN, same idiom as every other real
-        # provider above - `check_generated_image_constraints` treats a
-        # `None` provider as "nothing to call", so DRY_RUN never
-        # constructs an OpenAI client and never needs an API key.
+        # M6.5, A12/A30: `None` in DRY_RUN, same idiom as every other real
+        # provider above - both `check_generated_image_constraints` (A12,
+        # generated media) and `check_candidate_depicts_subject` (A30,
+        # searched media) treat a `None` provider as "nothing to call".
+        # Unlike the generation-only providers below, this one is needed
+        # by BOTH passes now (A30 runs in the search pass, A12 in the
+        # generation pass), so it is no longer gated on
+        # `self._generation_permitted` - it is constructed whenever this
+        # is a real (non-DRY_RUN) run at all.
         vision_provider: VisionConstraintProvider | None = (
-            (None if settings.dry_run else OpenAIPlanningProvider())
-            if self._generation_permitted
-            else None
+            None if settings.dry_run else OpenAIPlanningProvider()
         )
         image_provider: ImageProvider | None = (
             (FakeImageProvider() if settings.dry_run else FalImageProvider())
@@ -543,6 +557,16 @@ class ResolveAssetsStep:
                 )
 
                 by_hash = {h: (c, content, attribution) for c, h, content, attribution in deduped}
+                # M6.5, A16 -> A30: at most one vision call per RUNG, ever
+                # - the first candidate this loop would otherwise accept
+                # (not necessarily ranked[0]; a corrupt-bytes candidate
+                # ahead of it is skipped for free, below). Verifying the
+                # rest of the same pool "multiplies cost for no extra
+                # signal" per A30's own reasoning, so once this slot is
+                # spent (checked or deliberately skipped for being
+                # entity-curated) no other candidate in THIS rung is
+                # considered at all - a rejection abandons the rung.
+                checked_top_candidate = False
                 for rank_result in ranked:
                     candidate, content, attribution = by_hash[rank_result.content_hash]
 
@@ -559,6 +583,31 @@ class ResolveAssetsStep:
                         ext, _width, _height = validate_and_identify_image(content)
                     except PermanentError:
                         continue  # this candidate's bytes are bad - try the next-ranked one
+
+                    if not checked_top_candidate:
+                        checked_top_candidate = True
+                        # A2/A30: entity-curated candidates are exempt - a
+                        # human already curated those; this check exists
+                        # to catch free-text search's honest mistakes, not
+                        # to second-guess a curation the same way A24
+                        # already refuses to let an automated heuristic
+                        # overrule a human override.
+                        if not candidate.entity_curated:
+                            verdict = await check_candidate_depicts_subject(
+                                provider=vision_provider,
+                                llm_call_repo=llm_call_repo,
+                                project_id=project_uuid,
+                                image=content,
+                                image_content_type=mime_type_for_extension(ext),
+                                shot_prompt=shot.prompt,
+                                search_subject=" / ".join(search_terms),
+                            )
+                            if not verdict.depicts:
+                                # Drops this candidate AND abandons this
+                                # rung - falls through to the next
+                                # strategy in the fallback chain, exactly
+                                # like a licence/relevance rejection.
+                                break
 
                     path = project_dir / "assets" / f"{rank_result.content_hash}.{ext}"
                     path.write_bytes(content)

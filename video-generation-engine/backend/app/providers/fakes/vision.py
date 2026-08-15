@@ -6,22 +6,38 @@ test double, same discipline as `FakeImageProvider`/`FakeAssetProvider`
 (implementation guide section 4.1: fake first, always - and keep it
 forever)."""
 
-from app.providers.base import ConstraintCheckRequest, ConstraintVerdict, StructuredCompletion
+from app.providers.base import (
+    ConstraintCheckRequest,
+    ConstraintVerdict,
+    DepictionCheckRequest,
+    DepictionVerdict,
+    StructuredCompletion,
+)
 
 _NOT_VIOLATED = ConstraintVerdict(violated=False, violated_constraint="", reason="")
+_DEPICTS = DepictionVerdict(depicts=True, reason="")
 
 
 class FakeVisionConstraintProvider:
     name = "fake_vision"
 
-    def __init__(self, verdicts: list[ConstraintVerdict] | None = None) -> None:
+    def __init__(
+        self,
+        verdicts: list[ConstraintVerdict] | None = None,
+        depiction_verdicts: list[DepictionVerdict] | None = None,
+    ) -> None:
         # Popped one per call, in submitted order, so a test can script an
         # exact sequence (e.g. [violated, violated, not_violated] to prove
         # a specific retry count) - the last entry repeats if a test calls
         # this more times than it scripted, rather than raising IndexError
-        # for tests that only care about the steady-state verdict.
+        # for tests that only care about the steady-state verdict. Same
+        # discipline for `depiction_verdicts` (M6.5, A30) - a separate
+        # list, since the two checks are unrelated questions with
+        # independent call counts.
         self._verdicts = list(verdicts) if verdicts else [_NOT_VIOLATED]
+        self._depiction_verdicts = list(depiction_verdicts) if depiction_verdicts else [_DEPICTS]
         self.calls: list[ConstraintCheckRequest] = []
+        self.depiction_calls: list[DepictionCheckRequest] = []
 
     async def check_constraints(self, request: ConstraintCheckRequest) -> StructuredCompletion:
         self.calls.append(request)
@@ -30,6 +46,25 @@ class FakeVisionConstraintProvider:
             parsed=verdict,
             model="fake-vision-model",
             request={"shot_prompt": request.shot_prompt, "constraints": request.constraints},
+            response=verdict.model_dump(mode="json"),
+            input_tokens=1,
+            output_tokens=1,
+        )
+
+    async def check_depiction(self, request: DepictionCheckRequest) -> StructuredCompletion:
+        self.depiction_calls.append(request)
+        verdict = (
+            self._depiction_verdicts.pop(0)
+            if len(self._depiction_verdicts) > 1
+            else self._depiction_verdicts[0]
+        )
+        return StructuredCompletion(
+            parsed=verdict,
+            model="fake-vision-model",
+            request={
+                "shot_prompt": request.shot_prompt,
+                "search_subject": request.search_subject,
+            },
             response=verdict.model_dump(mode="json"),
             input_tokens=1,
             output_tokens=1,

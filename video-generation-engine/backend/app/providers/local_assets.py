@@ -26,6 +26,12 @@ from app.core.errors import PermanentError
 from app.providers.base import AssetBytes, AssetCandidate, AssetQuery
 from app.repositories.asset_repository import AssetRepository
 
+# Deliberately a private copy, not imported from `app/assets/validation.py`:
+# the dependency rule (implementation guide section 5) is `assets ->
+# providers`, never the reverse - a provider must not import upward from
+# `assets/`. `app/assets/validation.mime_type_for_extension` is the
+# equivalent table for callers that already sit above `providers/` (e.g.
+# `app/workflow/steps/resolve_assets.py`, M6.5 A30).
 _CONTENT_TYPE_BY_EXTENSION = {
     "jpg": "image/jpeg",
     "jpeg": "image/jpeg",

@@ -170,8 +170,13 @@ async def test_awaiting_review_outcome_sets_distinct_status_and_stops_cleanly(pr
 async def test_resume_after_simulated_crash_does_not_redo_completed_steps(project_id, monkeypatch):
     """Simulates killing the process right after generate_timeline commits:
     a brand-new WorkflowEngine (fresh session, standing in for a fresh
-    process) must skip it via is_satisfied(), not re-run it - re-running
-    would call append_version again and bump the timeline to v3.
+    process) must skip it via is_satisfied(), not re-run it. A LEGITIMATE
+    v3 still gets appended by `SelectMusicStep` (M8 step 4) right
+    afterwards in the same resumed run - `produced_by` on the final
+    version, not the version NUMBER alone, is what actually proves
+    generate_timeline itself didn't re-run (re-running it would produce a
+    DIFFERENT v3, one re-planned from scratch, with `produced_by` from
+    the planning chain instead).
 
     Pinned to the fake planner path regardless of the ambient .env's
     DRY_RUN value - this test is about engine-level resumability, not
@@ -216,7 +221,16 @@ async def test_resume_after_simulated_crash_does_not_redo_completed_steps(projec
         )
         result = await WorkflowEngine(ctx).run()
 
-    assert result.timeline.version == 2  # unchanged - generate_timeline was skipped
+    # v3, not v2: generate_timeline was correctly skipped (it would have
+    # produced a DIFFERENT v3, re-planning from scratch) - the real v3
+    # here is `SelectMusicStep`'s own legitimate append_version (M8 step
+    # 4), which runs after generate_timeline and before the approval gate
+    # regardless. Distinguishing "skipped" from "re-ran" by version
+    # number alone stopped being enough the moment a second pre-approval
+    # step could also append a version - `produced_by` is what actually
+    # proves generate_timeline didn't re-run.
+    assert result.timeline.version == 3
+    assert result.timeline.produced_by == "music_selection"
 
     async with async_session_factory() as session:
         run_row = await WorkflowRunRepository(session).get_latest(uuid_module.UUID(project_id))

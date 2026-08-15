@@ -16,6 +16,16 @@ itself (`app/renderer/audio.py`) stays a pure function: this step reads
 narration from paths resolved here and passed in, the same contract
 `RenderStep` already has with `shot_images` - it never queries the
 database from inside `app/renderer/`.
+
+## Music (M8 step 4)
+
+A third, final pass: whatever the narration stage produced (narrated or
+silent) gets music mixed in - or doesn't - decided by
+`_resolve_music_track`, mirroring `_resolve_narration_audio`'s own
+DRY_RUN/no-op reasoning exactly. `app/renderer/music.py` stays a pure
+function too: it reads a video path, a music path, and (optionally) the
+same ordered narration paths this step already resolved - never the
+database.
 """
 
 import uuid as uuid_module
@@ -30,6 +40,7 @@ from app.models.asset import AssetModel
 from app.models.generated_clip import GeneratedClipModel
 from app.providers.elevenlabs import compute_narration_content_hash
 from app.renderer.audio import mux_narration
+from app.renderer.music import mux_music
 from app.renderer.placeholder import render_placeholder
 from app.renderer.slideshow import RenderSettings, render_timeline
 from app.renderer.still import ensure_still_image
@@ -124,15 +135,30 @@ class RenderStep:
         # `render_timeline`'s own graph (crossfades, hard cuts) is exactly
         # what it was before this step existed.
         silent_path = work_dir / "silent.mp4"
+        narrated_path = work_dir / "narrated.mp4"
         try:
             await render_timeline(
                 timeline, shot_images, render_settings, silent_path, work_dir=work_dir
             )
             narration_paths = await self._resolve_narration_audio(ctx.session, timeline)
             if narration_paths is None:
-                silent_path.replace(output_path)
+                silent_path.replace(narrated_path)
             else:
-                await mux_narration(silent_path, narration_paths, output_path, render_settings)
+                await mux_narration(silent_path, narration_paths, narrated_path, render_settings)
+
+            music_path = self._resolve_music_track(timeline, ctx.project_id)
+            if music_path is None:
+                narrated_path.replace(output_path)
+            else:
+                await mux_music(
+                    narrated_path,
+                    music_path,
+                    narration_paths,
+                    output_path,
+                    render_settings,
+                    bed_gain_db=settings.music_bed_gain_db,
+                    duck_gain_db=settings.music_duck_gain_db,
+                )
         except TransientError as exc:
             return StepResult(outcome="retry", error=str(exc))
         except EngineError as exc:
@@ -222,6 +248,46 @@ class RenderStep:
                 )
             paths.append(Path(row.local_path))
         return paths
+
+    @staticmethod
+    def _resolve_music_track(timeline: Timeline, project_id: str) -> Path | None:
+        """The chosen track's audio file, or `None` when there is nothing
+        to mux - mirrors `_resolve_narration_audio`'s own DRY_RUN/no-op
+        reasoning exactly (see that method's docstring for the general
+        shape of this argument).
+
+        - `settings.dry_run`: `SelectMusicStep` still runs and still
+          records a selection (`FakeMusicProvider` always "finds" a
+          canned track, exercising the real selection logic end to end),
+          but deliberately never writes its fake, undecodable bytes to
+          disk (same idiom as `FakeNarrationProvider`) - muxing it would
+          try to read a file that was never written, not degrade
+          gracefully. DRY_RUN's contract is "zero spend, always produces
+          something runnable"; skipping the mux satisfies that, trying to
+          read a missing file would not.
+        - `music_plan` absent, or present but `selected_track is None`:
+          a genuine, decided "no suitable track" (or no plan at all) -
+          not a fallback, the correct output for this step's own scope.
+
+        Past both of those checks, a selected track is supposed to have a
+        real file on disk (`SelectMusicStep` only ever records a
+        selection after successfully validating and writing it) - a
+        missing file here is a genuine data-integrity failure, not a case
+        to quietly degrade for, so it raises `PermanentError` rather than
+        silently rendering without music."""
+        if settings.dry_run:
+            return None
+        if timeline.music_plan is None or timeline.music_plan.selected_track is None:
+            return None
+
+        content_hash = timeline.music_plan.selected_track.content_hash
+        path = settings.storage_root / project_id / "music" / f"{content_hash}.mp3"
+        if not path.exists():
+            raise PermanentError(
+                f"timeline has a selected music track (content_hash {content_hash}) but its "
+                "audio file is missing on disk - cannot mux music that was never persisted"
+            )
+        return path
 
     @staticmethod
     async def _resolved_path(session, binding) -> Path | None:

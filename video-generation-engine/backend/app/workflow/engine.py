@@ -26,6 +26,7 @@ from app.workflow.steps.generate_timeline import GenerateTimelineStep
 from app.workflow.steps.narration import NarrationStep
 from app.workflow.steps.render import RenderStep
 from app.workflow.steps.resolve_assets import GENERATION_RUNGS, SEARCH_RUNGS, ResolveAssetsStep
+from app.workflow.steps.select_music import SelectMusicStep
 
 logger = get_logger(__name__)
 
@@ -62,9 +63,16 @@ logger = get_logger(__name__)
 # different, single exit: a human overrides the failed shot
 # (`POST /projects/{id}/shots/{shot_id}/override`, A9/A24), never
 # "proceed anyway" (A26) - see that step's own docstring.
+#
+# `SelectMusicStep` (M8 step 4, D6/21.2) runs right after the free search
+# pass and before the approval gate, for the identical reason
+# `resolve_assets_search` does: Pixabay search is free, so I6 permits it,
+# and a human approving a video should hear what it will sound like
+# before approving - see that step's own docstring for the rest.
 DEFAULT_PIPELINE: list[WorkflowStep] = [
     GenerateTimelineStep(),
     ResolveAssetsStep(name="resolve_assets_search", permitted_strategies=SEARCH_RUNGS),
+    SelectMusicStep(),
     AwaitApprovalStep(),
     NarrationStep(),
     ResolveAssetsStep(name="resolve_assets_generate", permitted_strategies=GENERATION_RUNGS),

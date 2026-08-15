@@ -1151,7 +1151,7 @@ provider proving separate-not-joined requests plus dedup; one on
 
 > **Goal:** make asset acquisition produce media that actually matches the script, and put a human in front of that step while fixing it is still free.
 >
-> **Status:** designed 2026-08-15 from two real runs. Sequenced after M8 steps 1–3 (narration, done) and interleaved with M8 steps 4–6.
+> **Status:** designed 2026-08-15 from two real runs. Sequenced after M8 steps 1–3 (narration, done) and interleaved with M8 steps 4–6. **All 5 build-order steps done as of 2026-08-15** - see the Build order and Done-when sections below and each step's own Implementation notes.
 
 ## Why this phase exists — the measured evidence
 
@@ -1208,6 +1208,7 @@ Worse, the current design throws away the one asset we already have: **the plann
 | **A28** | **The A26 review gate gets its own project status, distinct from the plan-approval gate, and sits BEFORE render.** | A human arriving at a stopped project must be able to tell "approve this plan" from "fix these failed shots" — they are different questions with different remedies, and one status for both makes the API ambiguous. Placing it before render means a failed shot never renders a placeholder at all, so nothing half-finished lands on disk. |
 | **A25a** | **A25's "preserve verbatim" is implemented as *reject loudly*: `append_version` raises if any later version changes a locked Shot's `prompt`/`asset_plan`, rather than silently substituting the old values.** | Deviation from A25's wording, accepted deliberately. Silently preserving means a re-plan appears to succeed while quietly ignoring part of its own output — the kind of divergence that is discovered months later. Rejecting is unreachable today (no code path re-plans after an override: `GenerateTimelineStep.is_satisfied` short-circuits once planned, and narration changes only durations), so it costs nothing now and forces whoever builds re-planning to confront the question. **Known gap:** there is no unlock endpoint, so a shot locked by an override cannot currently be handed back to the planner. Add one when re-planning arrives, not before. |
 | **A30** | **A16 is resolved YES, but narrowly: vision-verify only the TOP-ranked candidate per shot, and only when no entity-curated candidate won. One vision call per shot, maximum. A failure drops the candidate and the shot falls through the ladder.** | Decided against the evidence A16 asked for. Vision verification cannot conjure a better photograph — the 7 remaining failures are shots whose candidate pool contains nothing on-topic — so its value is **not** better retrieval. Its value is *detecting that the best thing found is still wrong*, so the shot falls through to generation or to the human instead of confidently displaying a Polish coal elevator for Leuna-Werke. That reframing is what makes it worth doing now: it converts a silent wrong answer into an honest miss. Scoped to the top candidate only because verifying a whole pool multiplies cost for no extra signal, and skipped for entity-curated candidates because a human already curated those (A2). Re-measure against A17 after. |
+| **A30a** | **A30's depiction check asks a question the model can actually answer: "could this plausibly illustrate the subject?", rejecting only confident mismatches — never "is this specifically Leuna-Werke?"** | Measured correction, 2026-08-15. A30 as first built cut the search pass from 8/11 resolved to 1/11: it removed all 5 unambiguously wrong picks (a Greek topographic map, 2016 reenactor photos, a burning ship, a Polish coal elevator) **but also dropped 2 genuinely correct ones** — a real Bundesarchiv Leuna photograph and a real Fischer–Tropsch diagram — because nothing in the pixels can confirm a specific named subject. That is an unanswerable question: one chemical plant looks like another, and the identity lives in the archive's catalogue metadata, which the model cannot see. Asking it anyway converts trustworthy Bundesarchiv provenance into a rejection. Calibrate to reject what is *confidently* something else, and let unverifiable specifics pass — the catalogue is the authority on identity, the pixels are the authority on subject matter. |
 | **A29** | **An override changes only the binding and `asset_locked`. It never changes `prompt`, `duration_s`, narration text, framing, camera, or transitions.** | Narration is the master clock (D1) — durations are derived from real spoken audio to the millisecond. If an upload could change a shot's duration, every later shot would shift and the audio would need re-synthesising, turning a free, instant swap into a paid re-narration. Decoupling "which picture" from "how long" is what makes curation cheap. A shot that genuinely needs different timing is a separate edit, behind its own decision. |
 
 ## Known gap, not yet scheduled
@@ -1222,13 +1223,15 @@ Preference order for motion, once this is addressed: **real archival footage > K
 2. ~~**Director-constraint enforcement at generation (A12, A13, A14).**~~ **Done** (`11ad0aa`). Small, and the only harm-relevant item here.
 3. ~~**Pipeline reorder (A5, A7) plus binding carry-forward (A11).**~~ **Done** (this step, A20-A22 closing the design questions it raised). The structural change that makes the step supervised.
 4. ~~**Upload endpoint and per-shot override (A8, A9, A10, A15).**~~ **Done** (this step, A23-A29 closing the design questions it raised). The remedy that makes the review gate a gate rather than a dead end.
-5. **Reassess vision verification for search (A16)** against whatever failures actually remain. Next.
+5. ~~**Reassess vision verification for search (A16)** against whatever failures actually remain.~~ **Done** (A16 resolved narrowly as A30). See this phase's Implementation notes for the measured result.
+
+**All five steps of this phase are now done.**
 
 **Caveat:** there is no frontend — M9 has not been built. "You see the images at approval" means, for now, an API exposing the resolved asset per shot plus files on disk. The full experience needs M9; the backend reordering is still worth doing first, so M9 is not built against the wrong pipeline shape.
 
 ## Done when
 
-- [ ] The A17 benchmark improves substantially and is re-measured after every retrieval change — **still not ticked, unaffected by this step.** Step 1 (`86d42e1`) moved it from 2 correct + 2 partial to 4 correct + 1 partial with zero regressions; steps 2-3 re-measured it unchanged (retrieval untouched). Step 4 adds upload-matching as ladder rung 1 and touches `app/workflow/steps/resolve_assets.py`, but the Hindi fixture (`tests/fixtures/hindi_test_project.json`) has no uploads, so `LocalProjectAssetProvider.search` returns `[]` for every one of its 11 shots exactly as the pre-step-4 stub did - by inspection, not re-measured, same reasoning as step 3's equivalent note (the changed code path is provably never reached by this benchmark). 4/11 means **7 shots are still wrong** by automated retrieval alone; step 4's answer for those is a human uploading the photo directly, which is a different mechanism than "improve the benchmark score" and does not move this number.
+- [ ] The A17 benchmark improves substantially and is re-measured after every retrieval change — **re-measured for step 5 (A30); deliberately still not ticked - the raw correct-count went DOWN, exactly the shape A30's own decision predicted was possible.** Steps 1-4: 2 correct + 2 partial → 4 correct + 1 partial → unchanged through step 4 (see each step's own notes). Step 5 (A30, vision-verify the top searched candidate): re-measured live against the real Hindi fixture with a real, isolated control run (identical code, vision check forced to always pass) to separate A30's own marginal effect from everything else. **Control (no A30): 8/11 shots resolve via free-text search** - hand-graded against the real downloaded images: 1 unambiguously correct (Sasol Secunda), 2 defensible/partial (a genuine Fischer-Tropsch process diagram; a real Bundesarchiv Leuna photo), 5 unambiguously WRONG (a Greek topographic map for a "German coalfields map" query, modern 2016 WWII-reenactors-on-motorcycles for "German tanks", a burning torpedoed ship for a "resource map", a derelict Polish coal elevator for the Leuna hydrogenation plant, generic modern depot buildings with no visible tanks for "oil storage tanks"). **With A30: 1/11 resolves** (Sasol only) - it correctly dropped all 5 unambiguously-wrong candidates (now honestly `awaiting_generation` instead of shipping confidently), but ALSO dropped both defensible ones. Read the model's own recorded reasoning (`llm_call` rows, `agent="depiction_check"`) for those two: both were rejected because nothing in the PIXELS themselves visually confirms the specific named subject (no visible label or landmark distinguishing "generic industrial towers and pipework" from "the Leuna plant specifically") - a real, principled limitation of vision-only verification, not an arbitrary model error: it cannot credit a catalog caption's claim it cannot see. **Net effect on this benchmark: -2 to -3 in raw correct-count, -5 in confidently-wrong-and-shipped.** Whether that net is an improvement depends on which failure mode a human values more; A30 is built exactly as decided (top candidate only, entity-curated exempt, drop-and-fall-through), and this is what it does on the one real benchmark this phase has. The 7 shots this benchmark could never resolve (the Done-when box below still not ticked for the same underlying reason as before) still need a human upload or generation - that mechanism (A8/A9, step 4) is unaffected by this measurement.
 - [x] A human can see real images per shot, and swap or override any of them, before anything expensive runs — **step 3 built "see"; step 4 built "swap or override", and both halves are now verified through the real HTTP API**, not just at the service layer: `tests/e2e/test_upload_and_override_api.py` creates a project, renders it (DRY_RUN, zero API keys) to the point every shot already has a real, visible asset via `GET /progress` (`asset`/`locked` fields), then calls `POST /{id}/shots/{shot_id}/override` with a real multipart file upload and confirms the shot's asset changes and `locked` flips to `true` in the same `GET /progress` response - all before the plan is even approved, i.e. before anything expensive has run.
 - [x] A human override survives re-resolution and version bumps — **verified in both directions**, per the coordinator's explicit instruction to test the interaction both ways rather than just the happy path: `tests/integration/test_timeline_service.py::test_locked_shot_binding_carries_forward_even_when_prompt_changes` (locked survives) sits directly alongside the pre-existing `test_binding_does_not_carry_forward_when_prompt_changes` (unlocked does not) - same shape of change, opposite, deliberate outcomes. `tests/e2e/test_upload_and_override_api.py::test_override_before_approval_locks_the_shot_but_still_requires_approval` additionally confirms the lock survives the real narration version bump through the full HTTP pipeline, not just inside `TimelineService` directly.
 - [x] No generated image ships that violates a Director constraint — step 2, below.
@@ -1691,6 +1694,229 @@ proof of the gate and the override endpoint acting as its remedy through
 the real HTTP surface - it is not a claim that DRY_RUN itself can
 produce a real generation failure end to end.
 
+## Implementation notes (2026-08-15) — step 5: vision-verify searched assets (A16 → A30)
+
+Built exactly A30's scope: the TOP-ranked candidate per rung only (never
+a whole pool), skipped entirely when that candidate is entity-curated
+(A2), one vision call maximum per rung reached, and a rejection drops
+the candidate and abandons the whole rung - falling through to the next
+rung in the fallback chain exactly like a licence or relevance rejection
+already does, never retried within the same pool.
+
+- **New module `app/assets/depiction_check.py`** - `check_candidate_depicts_subject`,
+  the searched-media sibling of `app/assets/constraint_check.py`'s
+  `check_generated_image_constraints`: same `None`-provider/DRY_RUN idiom
+  (zero calls when the provider is `None` or the search subject is
+  blank), same `llm_call` audit path, genuinely different question ("does
+  this depict X" vs "does this violate Y") and therefore its own verdict
+  type (`DepictionVerdict`, `app/providers/base.py`) rather than a
+  constraint-shaped workaround.
+- **`OpenAIPlanningProvider.check_depiction`** - a second method on the
+  same `VisionConstraintProvider` Protocol as `check_constraints` (M6.5
+  step 2), same model (`settings.openai_vision_model`), its own prompt.
+  One shared provider, two independent questions.
+- **`ResolveAssetsStep` changes, scoped tightly**: `vision_provider` is
+  now constructed whenever a real run is happening at all, not only when
+  `self._generation_permitted` (the search pass needs it for A30 now,
+  the generation pass still needs it for A12) - both docstring claims
+  this invalidated ("the search-only pass never constructs
+  `OpenAIPlanningProvider`") were corrected in place, not left stale.
+  Inside the per-rung ranked-candidate loop, a `checked_top_candidate`
+  flag ensures the vision call fires at most once per rung, on the FIRST
+  candidate that would otherwise be accepted (a candidate with corrupt
+  bytes is skipped for free by the existing validation step first, never
+  counted against the one-call budget - proven directly in
+  `test_vision_check_skips_a_corrupt_top_candidate_and_checks_the_next_valid_one`).
+- **The measurement (A17), done properly - a real control, not a guess**:
+  a throwaway script loaded the Hindi fixture's PLANNED timeline into a
+  fresh, disposable project and ran the real search-only pass twice -
+  once with A30 live, once with the vision check monkeypatched to always
+  pass (isolating everything ELSE - ranking, relevance, licence - held
+  exactly constant). See the phase's own Done-when box above for the
+  full numeric result and the hand-graded reasoning; the short version:
+  A30 eliminated 5 unambiguously wrong picks a human would have caught
+  immediately, at the real cost of 2 defensible/partial ones the vision
+  model could not visually confirm from pixels alone (their catalog
+  metadata claims a specific named subject; nothing in the image itself
+  proves it). **Both throwaway measurement projects and their storage
+  directories were deleted afterward** - the shared dev Postgres has only
+  the two real fixtures (`hindi_test_project`, `m8_test_project`) in it
+  again, verified by querying the `project` table directly after cleanup.
+- **Real cost incurred**: this measurement made real OpenAI vision calls
+  (`gpt-4o-mini`, the configured `openai_vision_model`) - roughly 16 calls
+  across the live A30 run (one per rung actually reached with a
+  licence-and-relevance-passing top candidate; some shots' rungs found
+  nothing at all and made zero calls). The control run made zero real
+  calls (vision check replaced with a local, free fake) and the
+  Wikimedia/Wikipedia calls in both runs are free per their own terms.
+  Cost is small (`gpt-4o-mini` vision pricing) but real, not zero -
+  stated plainly rather than glossed over.
+- Gate checks, run from the repo root as required: `ruff check backend`,
+  `black --check backend` (4 files auto-reformatted alongside the M8
+  step-4 changes below, full suite re-run afterward to confirm no
+  behavioural change), `mypy backend/app` all clean.
+- 15 new tests over the 227 from step 4: 3 in
+  `tests/unit/assets/test_depiction_check.py`, 4 in
+  `tests/unit/providers/test_openai_provider_depiction.py`, 4 in
+  `tests/integration/test_resolve_assets_real.py` (the wrong-top-candidate
+  falls-through-the-rung case, the entity-curated exemption proven with a
+  provider that raises if ever called, the corrupt-bytes-skipped-for-free
+  case, and rejection-on-the-last-rung deferring to generation, never
+  failing the shot).
+
+**What I verified by running it, versus what I reasoned about:** the
+one-call-per-rung cap, the entity-curated exemption, and the
+drop-and-fall-through behaviour were all run and watched passing against
+canned fakes. The A17 re-measurement is the one thing in this phase
+verified against the REAL live API end to end, both with and without
+A30, with the resulting images hand-inspected (not just their titles) -
+including reading the model's own recorded `reason` text for every
+rejection, not assuming the verdict was reasonable without checking it.
+
+## Implementation notes (2026-08-15) — M8 step 4: music and ducking (D6/21.2)
+
+Built the full pipeline: `MusicProvider` + a real (if currently
+non-functional - see below) Pixabay provider, a pre-approval selection
+step recording the choice in `Timeline.music_plan` via `append_version`,
+and a deterministic ducking mix in the renderer. No new dependencies, no
+real ElevenLabs or fal.ai calls.
+
+- **A verified, corrected factual error in the design decision - flagged,
+  not silently worked around.** D6/21.1 calls Pixabay Music "free,
+  permissive, a real public API." Checked directly against the live API
+  before writing a line of provider code (the same discipline A1/A2 used
+  for Wikipedia): `GET https://pixabay.com/api/?...` (images) and
+  `GET https://pixabay.com/api/videos/?...` (videos) both succeed with
+  the real key already in `.env`; `GET https://pixabay.com/api/music/`
+  returns 404, `GET https://pixabay.com/api/audio/` returns 403, and
+  Pixabay's own docs (`https://pixabay.com/api/docs/`) list exactly two
+  endpoints - Images and Videos. **Pixabay has no public Music/Audio
+  search API.** `app/providers/pixabay_music.py` is real,
+  `MusicProvider`-conformant scaffolding that says so explicitly - it
+  raises a `PermanentError` naming exactly this gap rather than guessing
+  at an undocumented endpoint or scraping the website. `SelectMusicStep`
+  catches that (and any other provider failure) the same way it catches
+  "found nothing suitable" - A22's precedent, extended - so this doesn't
+  block anything; it just means a real (non-DRY_RUN) run's music
+  selection degrades to silent-but-narrated today, until either Pixabay
+  ships a real API or a different provider is wired in behind the same
+  Protocol. `MUSIC_PROVIDER=pixabay` stays the default - changing it is a
+  separate decision this step does not make silently.
+- **The chosen track lives in `Timeline.music_plan`, never a side table**
+  (the newly-closed decision) - two new fields, `selected_track`
+  (`MusicTrackSelection`: provider, track id, source url, licence,
+  attribution, content hash - provenance only, I2) and
+  `selection_attempted` (a bool - what makes "looked, found nothing" a
+  distinct, resumable Timeline state from "haven't tried yet" WITHOUT a
+  side table, mirroring why `ShotBinding`'s `awaiting_generation` state
+  exists, but recorded in the Timeline itself here because the brief was
+  explicit that music's decision record lives there). A new `ProducedBy.
+  MUSIC_SELECTION` - neither an AI planner nor a human, a deterministic
+  acquisition step, same category `NARRATION` already established.
+- **`SelectMusicStep`** (`app/workflow/steps/select_music.py`) runs
+  between `resolve_assets_search` and `AwaitApprovalStep` - Pixabay
+  search is free, so A5 applies to music exactly as it does to visual
+  assets, and a human approving a video should hear what it will sound
+  like. Same hard licence gate as visual assets, ranking via
+  `app/assets/music_ranking.py` (reuses `app/assets/relevance.py`'s exact
+  term-overlap function against a track's title+tags, no separate
+  scoring algorithm). Every failure mode - provider outage, licence
+  rejection, failed audio validation, budget cap already exceeded -
+  converges on `selected_track=None, selection_attempted=True` and
+  `outcome="ok"`; this step never fails the run.
+- **Budget folded in, honestly**: `check_budget` is called before every
+  fetch attempt (`settings.music_cost_cents_estimate`, 0 by default,
+  since Pixabay search is genuinely free) - structurally identical to
+  narration/generation's own checks, even though there is, today,
+  nothing real for it to ever block. `total_project_spend_cents`
+  deliberately does NOT sum a third music total - there is no persisted
+  `cost_cents` row for a track selection (no side table, see above), and
+  its own docstring now says exactly why.
+- **The ducking mix is a static volume envelope, never a live sidechain
+  compressor** (I5) - `app/renderer/music.py`. Built as a CHAIN of
+  `volume` filters (`enable='between(t,start,end)'`) rather than a
+  single `if()` expression, specifically to avoid nested comma-escaping
+  in ffmpeg's filtergraph syntax as the number of narration intervals
+  grows. Two ffmpeg passes, not one: `build_ducked_bed` produces the
+  ducked, faded, video-length music track as its OWN file first;
+  `mux_music` then either maps it straight through (no narration) or
+  `amix`es it with the video's existing narration stream
+  (`duration=longest`, not `first` - a first draft used `first` and it
+  silently truncated the whole mixed output to narration's own shorter
+  length whenever narration ended before the video did; caught building
+  the test for it, fixed, and the fix is what `test_mux_music_combines_narration_and_ducked_bed_without_truncating`
+  now proves). Looping (`-stream_loop -1`) plus `atrim` to the video's
+  real length covers a track shorter OR longer than the video with the
+  same two options, so no duration-based preference was needed in
+  ranking.
+- **Proven with a real, isolated volume measurement, not just "ffmpeg
+  exits 0"** - a first-draft test measured the volume of the FULL mixed
+  (narration + ducked music) output and found the duck window
+  indistinguishable from the bed window, because narration's own
+  loudness swamped the reading; a mixed signal cannot tell "the music
+  got quieter" apart from "narration is simply loud". Refactored to test
+  `build_ducked_bed`'s output alone (no narration signal in it at all) -
+  `test_ducked_bed_is_quieter_during_the_speaking_interval` confirms a
+  >8dB measured gap against a 14dB configured one, comfortably outside
+  measurement noise.
+- **DRY_RUN preserved end to end** - `FakeMusicProvider` always "finds" a
+  canned candidate, so DRY_RUN exercises the real selection logic
+  (search, licence gate, ranking, recording the choice) fully, but its
+  audio is a literal fake byte string, same idiom as
+  `FakeNarrationProvider` - never written to disk, and `RenderStep._resolve_music_track`
+  returns `None` under DRY_RUN unconditionally, mirroring
+  `_resolve_narration_audio`'s own reasoning exactly. Verified via the
+  real walking-skeleton e2e test (`tests/e2e/test_skeleton.py`), which
+  now also asserts the active timeline carries a real selection
+  (`music_plan.selected_track.provider == "fake_music"`) before
+  approval - not just that the render still produces a video.
+- **`GET /progress` and the fixture round-trip need no changes at all** -
+  `music_plan` is part of the Timeline JSON document already, so
+  `scripts/export_test_project.py`/`seed_test_project.py` restore it for
+  free with zero code changes; there is no music-specific side table to
+  forget.
+- **A resumability wrinkle, caught and fixed in an existing test, not
+  silently left broken**: `test_resume_after_simulated_crash_does_not_redo_completed_steps`
+  asserted the active timeline stayed at v2 after a resumed run reached
+  the approval gate - true before this step, false now that
+  `SelectMusicStep` legitimately appends its own v3 in the same resumed
+  run. Fixed by asserting `produced_by == "music_selection"` on the
+  final version instead of a bare version number, which is what actually
+  proves `GenerateTimelineStep` itself didn't re-run (re-running it would
+  produce a DIFFERENT v3, with a different `produced_by`).
+- Gate checks: `ruff check backend`, `black --check backend` (4 files
+  reformatted), `mypy backend/app` all clean from the repo root. Full
+  suite: **254/254 passed**, watched directly in the foreground (ffmpeg
+  on `PATH`) - three times across this batch (once before, once after
+  black's auto-fixes, and once after fixing the resumability test above).
+  Both fixtures reseeded afterward; no new Alembic migration - music
+  selection lives entirely in the Timeline's JSONB document, no new
+  table or column.
+- 24 new tests over the 227+15 above (254 total): 4 in
+  `tests/unit/assets/test_music_ranking.py`, 8 in
+  `tests/integration/test_select_music.py` (no-plan no-op, DRY_RUN
+  records a real selection, `is_satisfied` resumability, the licence
+  gate, a matching candidate recorded with full provenance, total
+  provider failure degrades cleanly, the REAL `PixabayMusicProvider`'s
+  documented limitation exercised directly - not just a fake standing in
+  for it, and the budget cap blocking a fetch attempt), 4 in
+  `tests/integration/test_render_music_mix.py` (the isolated ducking
+  proof, the no-narration flat-bed case, a short track looped to cover
+  the full video, and the narration+music combined pass not truncating),
+  and the pipeline-shape/resumability updates to existing files.
+
+**What I verified by running it, versus what I reasoned about:** the
+Pixabay API gap is verified directly against the live endpoints (four
+real HTTP requests, recorded above), not inferred from the design doc's
+claim. The ducking envelope's actual effect on measured volume is
+verified with real ffmpeg output, isolated from narration specifically
+because a first attempt at that same proof was measuring the wrong
+signal - that dead end is recorded here rather than smoothed over. The
+full suite and gate checks were watched completing in the foreground.
+What is NOT verified: Pixabay Music actually returning a real track for
+a real project, since no such endpoint exists to call - this is stated
+as a known, documented gap, not a working feature.
+
 ---
 
 # Phase M7 — Media Generation
@@ -1852,7 +2078,7 @@ None of these are settled. Answer them before or during the build, and record th
 
 - [ ] Rendering the same project twice produces byte-identical output
 - [ ] Audio stays in sync from first frame to last on a full 90-second video
-- [ ] Music beds under narration and ducks cleanly; no clipping, no bed audible over the voice
+- [x] Music beds under narration and ducks cleanly; no clipping, no bed audible over the voice — step 4 (below): proven with a real, isolated volume measurement (`tests/integration/test_render_music_mix.py`), not just "ffmpeg exits 0" — a bed comfortably audible at `MUSIC_BED_GAIN_DB` measures roughly the configured gap quieter during a narration-speaking interval, confirmed on the ducked bed alone so narration's own loudness can't mask a false pass.
 - [ ] Draft and final modes both work
 - [ ] Mixed inputs (archival JPEG + stock 4K MP4 + generated clip + generated PNG) compose cleanly
 - [ ] A Hindi script produces natural-sounding Hindi narration, with every shot still synced to its own `narration_span`
@@ -2036,7 +2262,17 @@ Accepted trade-offs: an aggregator margin, and a dependency whose outage stops a
 
 > **`FAL_IMAGE_MODEL` and `FAL_VIDEO_MODEL` are deliberately unset in `.env.example`.** They are settled empirically in M7 by rendering the fixture through candidates and comparing output — not chosen here. Verify current model availability and pricing on fal's model pages before committing budget.
 
-**Music provider caveat.** D6 specified a stock music library, but Epidemic Sound's API is partner-gated and Artlist has no public API. v1 therefore ships against **Pixabay Music** (free, permissive, real public API), behind a `MusicProvider` interface so a licensed library drops in unchanged if partner access is obtained. `MUSIC_PROVIDER` in `.env` selects the implementation.
+**Music provider caveat.** D6 specified a stock music library, but Epidemic Sound's API is partner-gated and Artlist has no public API.
+
+~~v1 therefore ships against **Pixabay Music**~~ — **wrong, corrected 2026-08-15. Pixabay has no music or audio API at all.** Verified live against the real endpoints with a valid key: `/api/music/` returns **404**, `/api/audio/` returns **403**, and only `/api/` (images) and `/api/videos/` exist. The Pixabay docs list Images and Videos and nothing else. This claim sat in the guide unchallenged from M0 until someone tried to build against it — a reminder that "has a real public API" is a testable assertion and should have been tested when it was written.
+
+**v1 therefore ships against [Openverse](https://api.openverse.org/v1/audio/)** — free, no API key required, and it aggregates Jamendo and Freesound behind one search. Verified live: `q=documentary ambient` returns 240 results, of which **81 are `cc0`/`by`**.
+
+Two consequences that shape the implementation:
+- **The licence gate is load-bearing, not ceremonial.** Openverse's unfiltered results are dominated by `by-nc-nd`, which is unusable twice over: **NoDerivatives** conflicts with bedding and ducking a track under narration, and **NonCommercial** limits what the finished video can be used for. Filter to `cc0`/`by` at the query, and gate again on the response.
+- **The permissive pool is thin and uneven.** `documentary ambient` → 81 results; `tense drone` → 46; `historical documentary` → 2, and both of those are room-ambience field recordings rather than music. Freesound skews to sound effects, and the Jamendo material is mostly the `nc-nd` that gets filtered out. So a Director `music_plan` with narrow search terms (`sombre orchestral` returned **0**) will legitimately find nothing — graceful degradation to a silent-but-narrated render is a normal outcome here, not an error path.
+
+`MUSIC_PROVIDER` in `.env` selects the implementation, so a licensed library still drops in unchanged if partner access is obtained.
 
 **A note on image-generation quality.** `gpt-image-1` was the earlier choice mainly because it shared the planning account. FLUX-family models generally read more film-like for photoreal archival work. This matters less than it appears: [Principle 4](00_Creative_Philosophy.md) makes generated media the last fallback, and for historical content most shots should resolve from Wikimedia at rung 2. Image generation is the exception path, not the main one — do not over-invest in it.
 
@@ -2207,73 +2443,85 @@ Code                ████████████ M0 + M2 + M3 + M4 + M5 
                                  real end-to-end paid run — renderer (M8) is still the
                                  M0 slideshow renderer: no real narration, no audio
                                  mixing, no captions yet
-M8 Renderer        ██████░░░░░░ steps 1-3 done 2026-08-15 — ElevenLabs narration
+M8 Renderer        ████████░░░░ steps 1-4 done 2026-08-15 — ElevenLabs narration
                                  provider + content-hash cache, the master clock
                                  (character-level alignment reconciled into a new
-                                 Timeline version), and audio muxed onto the render
-                                 via the concat FILTER. Proven live end to end on a
-                                 real Hindi script: predicted 39.568s vs 39.5668s
-                                 actual audio, 1.2ms across five separately
-                                 synthesised segments. Steps 4-6 (music+ducking,
-                                 Ken Burns, determinism+draft) not started.
-                                 Captions deliberately out of scope this pass.
-M6.5 steps 1-4     ██████████░░ entity retrieval (`86d42e1`), Director-constraint
-  (of 5)                        enforcement at generation, the pipeline reorder +
-                                 binding carry-forward, and the upload endpoint + per-
-                                 shot override all done and tested (see that section's
-                                 Done-when + implementation notes for all four). Step 1:
-                                 2 correct + 2 partial → 4 correct + 1 partial on the
-                                 11-shot A17 benchmark, zero regressions (unaffected by
-                                 steps 2-4, confirmed by inspection - no file the
-                                 benchmark exercises has changed since). Step 2: vision
-                                 check + bounded regeneration (A12-A14, A18-A19). Step
-                                 3: one ResolveAssetsStep parameterised by permitted
-                                 ladder rungs, run twice (free search before approval,
-                                 paid generation after narration - A5-A7, A21);
-                                 ShotBinding carry-forward across narration's version
-                                 bump lives inside TimelineService._persist, not an
-                                 opt-in helper (A11/A20); a total search-provider outage
-                                 still reaches the approval gate (A22, tested at both
-                                 step and full-pipeline level); GET /progress now shows,
-                                 per shot, what was found (with source) vs what will be
-                                 generated. Step 4: project_assets (ladder rung 1) is
-                                 real - POST /projects/{id}/assets uploads media matched
-                                 to shots via the existing relevance gate, never a
-                                 planner (A8/A23/A27); POST /projects/{id}/shots/{id}/
-                                 override bypasses every gate and locks a shot's asset
-                                 via append_version(produced_by=HUMAN) (A9/A10/A24);
-                                 a locked shot's prompt/asset_plan can never change
-                                 again and its binding carries forward unconditionally
-                                 (A25, both halves enforced in TimelineService, tested
-                                 in both directions); the A15 review gate fires after
-                                 generation with exactly ONE exit - override, never
-                                 "proceed anyway" (A26, decided by the user 2026-08-15) -
-                                 and gets its own ProjectStatus.AWAITING_REVIEW, ahead of
-                                 RenderStep (A28); an override touches only the binding
-                                 and the lock, never duration_s or narration (A29).
-                                 227/227 suite green (211→227 across step 4's 16 new/
-                                 changed tests), both Done-when boxes about seeing and
-                                 overriding assets now genuinely ticked - verified
-                                 through the real HTTP API, not just the service layer.
-                                 Step 5 (reassess vision for search) not started.
-Next               M6.5 step 5 · Reassess vision verification for search (A16) against
-                                 whatever failures actually remain now that steps 1-4
-                                 are all in place - the 7 shots still wrong on the A17
-                                 benchmark are generic, no-entity shots free-text search
-                                 cannot fix and a human now has a real remedy for
-                                 (upload, or override once generation runs). Decide with
-                                 evidence: measure what's left before building a vision
-                                 check for searched assets, not on appetite. Then finish
-                                 M8 steps 4-6. Reuse projects
+                                 Timeline version), audio muxed onto the render via
+                                 the concat FILTER, and now music: a pre-approval
+                                 SelectMusicStep records a track's provenance in
+                                 Timeline.music_plan (never a side table, D6/21.2),
+                                 and a deterministic ducking mix (static volume
+                                 envelope, never a live sidechain compressor - I5)
+                                 bedded under narration. Real gap found and
+                                 documented, not silently patched around: Pixabay
+                                 has no public Music/Audio search API (verified live
+                                 against the real endpoints) - PixabayMusicProvider
+                                 says so explicitly and SelectMusicStep degrades to
+                                 silent-but-narrated, same as "no suitable track".
+                                 Narration proven live end to end on a real Hindi
+                                 script: predicted 39.568s vs 39.5668s actual audio,
+                                 1.2ms across five separately synthesised segments.
+                                 The ducking envelope proven with a real, isolated
+                                 volume measurement (not just "ffmpeg exits 0"):
+                                 >8dB measured against a 14dB configured gap.
+                                 Steps 5-6 (Ken Burns, determinism+draft) not
+                                 started. Captions deliberately out of scope.
+M6.5 all 5 steps   ████████████ entity retrieval (`86d42e1`), Director-constraint
+  — PHASE DONE                  enforcement at generation, the pipeline reorder +
+                                 binding carry-forward, the upload endpoint + per-
+                                 shot override, and vision-verifying searched assets
+                                 all done and tested (see that section's Done-when +
+                                 implementation notes for all five). Step 1: 2
+                                 correct + 2 partial → 4 correct + 1 partial on the
+                                 11-shot A17 benchmark. Step 2: vision check +
+                                 bounded regeneration (A12-A14, A18-A19). Step 3: one
+                                 ResolveAssetsStep parameterised by permitted ladder
+                                 rungs, run twice (free search before approval, paid
+                                 generation after narration - A5-A7, A21); ShotBinding
+                                 carry-forward lives inside TimelineService._persist
+                                 (A11/A20); a total search-provider outage still
+                                 reaches the approval gate (A22). Step 4:
+                                 project_assets (ladder rung 1) is real - uploads
+                                 matched via the existing relevance gate, never a
+                                 planner (A8/A23/A27); a per-shot override bypasses
+                                 every gate and locks a shot's asset
+                                 (A9/A10/A24/A25/A29); the A15 review gate fires
+                                 after generation with exactly ONE exit - override,
+                                 never "proceed anyway" (A26) - its own
+                                 ProjectStatus.AWAITING_REVIEW, ahead of RenderStep
+                                 (A28). Step 5: A16 resolved narrowly as A30 -
+                                 vision-verify the TOP searched candidate only,
+                                 skipped for entity-curated hits, drop-and-fall-
+                                 through on rejection. Measured live with a real
+                                 control (A30 on vs off, everything else identical):
+                                 eliminated 5 unambiguously wrong picks (a Greek map,
+                                 modern WWII-reenactor photos, a burning ship, a
+                                 derelict Polish coal elevator, generic depot
+                                 buildings) at the real, measured cost of 2
+                                 defensible ones a vision-only check cannot confirm
+                                 from pixels alone (a genuine Bundesarchiv Leuna
+                                 photo; a genuine Fischer-Tropsch diagram) - net
+                                 raw correct-count went DOWN (1/11), exactly the
+                                 shape the decision itself predicted was possible.
+                                 254/254 suite green, both Done-when boxes about
+                                 seeing and overriding assets genuinely ticked -
+                                 verified through the real HTTP API.
+Next               M8 steps 5-6 · Ken Burns (camera.movement/direction/intensity ->
+                                 zoompan/crop expressions, a pure renderer concern,
+                                 canon 3.1 - no planner changes) and determinism +
+                                 draft mode (populate render.fingerprint, skip-if-
+                                 unchanged, the 480p draft path). Reuse projects
                                  58f0a5e6-008d-468e-862a-e365e463878e (English) and
                                  35290b04-584d-415e-9816-ab6a8998b3e2 (Hindi, with
                                  real narration) via scripts/seed_test_project.py -
                                  their planning, assets and TTS are already paid for.
-                                 Neither fixture has any uploads, so the fixture
-                                 round-trip's new "fail loudly on an unrestorable
-                                 upload" branch (scripts/seed_test_project.py) is
-                                 unexercised by either reseed - documented, not silently
-                                 assumed safe.
+                                 Neither fixture has any uploads or a selected music
+                                 track, so two fixture round-trip branches
+                                 (seed_test_project.py's "fail loudly on an
+                                 unrestorable upload", and music_plan.selected_track
+                                 being restored for free as part of the Timeline
+                                 JSON) remain unexercised by either reseed -
+                                 documented, not silently assumed safe.
 ```
 
 ---

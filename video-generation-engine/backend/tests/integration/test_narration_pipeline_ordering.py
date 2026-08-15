@@ -61,6 +61,10 @@ def test_default_pipeline_runs_search_before_approval_and_generation_after_narra
     assert names == [
         "generate_timeline",
         "resolve_assets_search",
+        # M8 step 4 (D6/21.2): music selection runs alongside the free
+        # search pass, before the approval gate - a human should hear
+        # what the video will sound like before approving it.
+        "select_music",
         "await_approval",
         "narration",
         "resolve_assets_generate",

@@ -243,8 +243,10 @@ class ConstraintVerdict(BaseModel):
 @dataclass(frozen=True)
 class ConstraintCheckRequest:
     """Input to a vision constraint check (M6.5, A12). Generated media
-    only - a searched asset never reaches this (A16 defers that pending
-    evidence)."""
+    only - a searched asset never reaches this (it asks "does this
+    violate a fixed constraint", not "does this depict the subject" -
+    see `DepictionCheckRequest`/A30 for the searched-asset equivalent,
+    A16 resolved)."""
 
     image: bytes
     image_content_type: str
@@ -252,15 +254,113 @@ class ConstraintCheckRequest:
     constraints: list[str]
 
 
+class DepictionVerdict(BaseModel):
+    """Vision check verdict for whether a SEARCHED candidate genuinely
+    depicts what a shot asked for (M6.5, A16 -> A30) - a different
+    question from `ConstraintVerdict` ("does this violate a fixed list of
+    hard constraints") and deliberately its own type rather than a
+    constraint-shaped workaround: A30 is a positive-match question ("does
+    this image show X"), not a negative-avoidance one, and forcing it
+    through `ConstraintVerdict`'s shape would blur two genuinely
+    different checks into one prompt that was worded for the other one.
+    `reason` is always populated (unlike `ConstraintVerdict.reason`,
+    empty when not violated) - useful for understanding a miss either
+    way, and this check has no "steady state" where an empty reason is
+    the expected case."""
+
+    depicts: bool
+    reason: str
+
+
+@dataclass(frozen=True)
+class DepictionCheckRequest:
+    """Input to a depiction check (M6.5, A30). Searched candidates only -
+    the top-ranked candidate per rung a shot's ladder walk would
+    otherwise accept, never a generated image (that's `ConstraintCheckRequest`'s
+    job) and never a whole candidate pool (A30: one call, the top
+    candidate only)."""
+
+    image: bytes
+    image_content_type: str
+    shot_prompt: str
+    # What the candidate is being checked against - the shot's own
+    # search terms joined into one string, NOT the entity (A30 skips
+    # entity-curated candidates entirely, so this function never runs
+    # for those in the first place).
+    search_subject: str
+
+
 class VisionConstraintProvider(Protocol):
-    """Checks one generated image against a shot's constraints - vision-
-    capable structured output, the same call shape as
+    """Checks one image against either a fixed list of hard creative
+    constraints (`check_constraints`, M6.5 A12, generated media only) or
+    against whether it depicts a shot's search subject at all
+    (`check_depiction`, M6.5 A30, searched media only) - vision-capable
+    structured output, the same call shape as
     `PlanningLLMProvider.structured_complete` but with an image attached.
-    Kept as its own Protocol rather than a method added to
+    Kept as its own Protocol rather than methods added to
     `PlanningLLMProvider`: not every LLM swap needs vision, and not every
     planning call needs an image - a text-only provider would otherwise
-    have to stub out a method it can't implement."""
+    have to stub out methods it can't implement. Both methods share one
+    concrete provider (`OpenAIPlanningProvider`) and one `llm_call` audit
+    path (`app/assets/constraint_check.py`, `app/assets/depiction_check.py`)
+    - they ask genuinely different questions, so they get their own
+    prompt and verdict shape each, per A30's own scope."""
 
     name: str
 
     async def check_constraints(self, request: ConstraintCheckRequest) -> StructuredCompletion: ...
+    async def check_depiction(self, request: DepictionCheckRequest) -> StructuredCompletion: ...
+
+
+@dataclass(frozen=True)
+class MusicSearchQuery:
+    """The music-selection step's input (M8, D6/21.2) - the primitive
+    fields a search needs out of `Timeline.music_plan`, not the whole
+    Pydantic object. Mirrors `AssetQuery`'s own precedent of taking only
+    what a provider needs rather than a Timeline-shaped object, which
+    keeps `providers/` decoupled from IR schema churn (`music_plan` may
+    grow fields - e.g. `selected_track` - that a search call has no
+    business seeing)."""
+
+    mood: str
+    tempo: str
+    energy_arc: str
+    search_terms: list[str]
+
+
+@dataclass(frozen=True)
+class TrackCandidate:
+    """Search-result metadata only - no bytes yet, same split as
+    `AssetCandidate`/`AssetBytes` for visual assets. `relevance` is the
+    provider's own naive confidence (kept for logging/the fake path,
+    never what the real ranking gates or ranks on - see
+    `AssetCandidate`'s own docstring for why a provider's self-reported
+    relevance is not trustworthy)."""
+
+    source_id: str
+    source_url: str
+    title: str
+    licence: str
+    relevance: float = 0.5
+    author: str = ""
+    duration_s: float | None = None
+    tags: str = ""
+
+
+@dataclass(frozen=True)
+class AudioBytes:
+    content: bytes
+    content_type: str = "audio/mpeg"
+    attribution: str = ""
+
+
+class MusicProvider(Protocol):
+    """One background-music search+fetch (M8, D6) - the audio-track
+    equivalent of `AssetProvider`. Unlike the visual ladder, this is not
+    a rung with a fallback chain; one provider, selected via
+    `settings.music_provider`, either finds a track or it doesn't."""
+
+    name: str
+
+    async def search(self, query: MusicSearchQuery) -> list[TrackCandidate]: ...
+    async def fetch(self, candidate: TrackCandidate) -> AudioBytes: ...
