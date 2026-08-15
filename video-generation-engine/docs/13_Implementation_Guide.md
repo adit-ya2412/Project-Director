@@ -1251,6 +1251,67 @@ wrong across multiple unrelated incidents, the question worth asking
 is not "how do we validate this better" but "was this the right thing
 to ask a model for in the first place."
 
+**Update (2026-08-16) — the redesign verified live, and it surfaced one
+small second-order defect, fixed the same day.** A fresh real plan on
+the same script (project `f64210fc-...`, 7 scenes, 24 shots) confirmed
+the fix directly: **0 of 24 shots have a boundary inside a word**, down
+from 6 of 21 on the previous (character-offset) plan of the identical
+script — `Leuna-Werke`, `इससे`, `दिन`, `Fischer-Tropsch`, and `Secunda`
+all stayed intact, and `Leuna-Werke जैसी factories` is now one whole
+shot where the old design produced `L` + `euna-Werke`.
+
+That same run turned up a defect the redesign itself introduced: the
+user's script has blank lines between stanzas, and the Scene Planner's
+own verbatim check means that whitespace has to live somewhere - it
+lands at the front of whichever scene comes next. The splitter emitted
+that leading blank run as its OWN fragment, and the Shot Planner -
+correctly following its own instructions to assign every fragment to a
+shot - gave it one: 2 of 24 shots had narration consisting entirely of
+blank lines, still charged a real image, a Ken Burns move, and a slice
+of the video's duration (3 of 48 seconds) for a beat of silence.
+
+**Fixed by merging, never discarding**: `app/planners/shot/fragments.py`
+gained a post-processing pass (`_merge_whitespace_only_spans`) that
+folds any fragment whose content is entirely whitespace into an
+adjacent one - forward (into the fragment that follows) by default,
+backward only if the whitespace-only fragment is the last one with no
+successor. Merging removes the BOUNDARY between two fragments, never
+either fragment's characters, so tiling and lossless reconstruction
+both continue to hold without any special-casing - exactly the same
+"spans are `[start, next-start)`, never a tracked gap" property the
+rest of this module already rests on. Fragments are renumbered 1..N
+afterward, since merging always changes how many exist. **In practice,
+only the very first fragment can ever be whitespace-only** (every other
+split point the splitter finds is defined by skipping FORWARD to the
+next non-whitespace character, so every fragment but the first already
+starts on real content) - the "backward if last" branch is kept for
+genuine robustness against a future change to the splitting passes, not
+because it is reachable today; a dedicated test pins down the actual,
+simpler behaviour (trailing whitespace is absorbed into the previous
+fragment's own span, never promoted to a new one) rather than merely
+asserting the backward branch is unreachable.
+
+**The degenerate case - a scene whose narration is entirely whitespace -
+is left as a single whitespace-only fragment, decided explicitly**:
+there is nothing else in the scene to merge it into, and a scene with
+zero real narration content at all is a planning-level defect somewhere
+upstream, not something this module can fix by inventing words. Verified
+live and pure (no database, no model, no pytest) against the exact two
+reported scenes before writing the tests: `sc_03` (`"\n\nइसका नाम था
+Fischer-Tropsch process.\n\n1925 में invent हुआ,"`, a 3-fragment scene
+with a leading blank fragment) now produces exactly 2 fragments, neither
+blank; `sc_05` (`"\n\nअब यहाँ twist है।"`, a 2-fragment scene) now
+produces exactly 1, the blank run merged into the scene's one real
+sentence. 6 new tests in `tests/unit/planners/test_fragments.py`: the
+two exact reported scenes, a middle-of-text blank run merging forward,
+the trailing-whitespace-is-already-absorbed case, and both degenerate
+inputs (all-whitespace and empty). Scoped exactly as instructed - the
+Shot Planner's own prompt and schema were not touched, only which
+fragments the splitter emits. `ruff check backend`, `black --check
+backend`, `mypy backend/app` all clean from the repo root. **The suite
+was NOT run** - three live projects (`194ad0e7-...`, `2fa282b4-...`,
+`f64210fc-...`) now sit in the same shared dev Postgres.
+
 ---
 
 # Phase M6 — Asset Pipeline
