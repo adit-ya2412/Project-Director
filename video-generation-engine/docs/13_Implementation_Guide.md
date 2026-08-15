@@ -2707,6 +2707,18 @@ Layout, as proposed: `assets/music/{documentary_dark,documentary_mystery,documen
 
 **Sequencing:** land M1–M3 first (the retry endpoint is useful whatever the provider, and M2's duration floor protects the search fallback), render the pending video (re-rendering with music later is free — local ffmpeg, cached narration), then build `LocalMusicProvider`.
 
+## N1 — narration must be redoable with a different voice (2026-08-15)
+
+The first real render produced a voice the user judged badly wrong for Hinglish: `T3s9anIvGvoeogXyFyMt` is not an Indian-accent voice, so it read Romanised Hindi with English phonetics. Choosing a better one is not the problem — **re-running with it is.** `NarrationStep.is_satisfied` returns true whenever the active timeline is `produced_by == NARRATION`, so once narration has run, it can never run again. The voice is effectively frozen at the first attempt.
+
+This is the **third** instance of one pattern: an automated choice a human disagrees with, with no way to redo it. The first was a per-shot image (fixed by A24's override), the second was music (fixed by M3's retry endpoint), and this is narration. Each was discovered the same way — a real run, a human unhappy with the result, and no route back. Worth noticing as a design smell rather than patching a third time in isolation: **any step that makes a creative choice needs a human redo path, and that should be a default assumption when adding one, not a retrofit.**
+
+**The fix is small because the plumbing already exists.** `NarrationStep.run` reads `timeline.metadata.voice_id or settings.elevenlabs_voice_id`, so a per-project voice is already honoured — nothing reads it today because nothing writes it. So: an endpoint appends a `produced_by=HUMAN` version setting `metadata.voice_id`, which makes `is_satisfied` false (the active version is no longer NARRATION), so narration re-runs and picks up the new voice.
+
+Two properties fall out for free and are worth keeping:
+- **Switching back is free.** The narration cache is keyed on `hash(text + voice_id + model + output_format)`, so audio for a previously-used voice is still cached — trying three voices and returning to the first costs nothing the second time.
+- **Durations recompute correctly.** A different voice speaks at a different pace, narration is the master clock (D1), and its new version reconciles every shot boundary. Human-locked bindings carry forward across that bump (A11/A20/A25), which the first render already proved under real conditions.
+
 ## Backlog — deferred, not blocking
 
 Raised during the first real Hinglish run (2026-08-15, project `194ad0e7`, fixture `hinglish_test_project`). Deliberately not fixed then, so the run could continue.
