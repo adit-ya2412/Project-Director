@@ -1123,932 +1123,134 @@
       "shot_id": "sc_01_sh_01",
       "state": "generated",
       "rung": "generate_image",
-      "timeline_version": 8,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_01_sh_01",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 6,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_01_sh_01",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 11,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_01_sh_01",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 5,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_01_sh_01",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 7,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_01_sh_01",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 9,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_01_sh_01",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 10,
-      "asset_content_hash": null
+      "asset_content_hash": null,
+      "clip_prompt_hash": "954742047495988c639366f39327544d85efb854bfa22b8b1efe1feb5a2f1fdc"
     },
     {
       "shot_id": "sc_01_sh_02",
       "state": "resolved",
       "rung": "project_assets",
-      "timeline_version": 9,
-      "asset_content_hash": "be8cb6651be8d160647f3a32062bd8f65a9ccf7a4b43e66d845fe2469eb00510"
-    },
-    {
-      "shot_id": "sc_01_sh_02",
-      "state": "failed",
-      "rung": null,
-      "timeline_version": 8,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_01_sh_02",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 6,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_01_sh_02",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 7,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_01_sh_02",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 5,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_01_sh_02",
-      "state": "resolved",
-      "rung": "project_assets",
-      "timeline_version": 11,
-      "asset_content_hash": "be8cb6651be8d160647f3a32062bd8f65a9ccf7a4b43e66d845fe2469eb00510"
-    },
-    {
-      "shot_id": "sc_01_sh_02",
-      "state": "resolved",
-      "rung": "project_assets",
-      "timeline_version": 10,
-      "asset_content_hash": "be8cb6651be8d160647f3a32062bd8f65a9ccf7a4b43e66d845fe2469eb00510"
+      "asset_content_hash": "be8cb6651be8d160647f3a32062bd8f65a9ccf7a4b43e66d845fe2469eb00510",
+      "clip_prompt_hash": null
     },
     {
       "shot_id": "sc_01_sh_03",
       "state": "resolved",
       "rung": "historical_search",
-      "timeline_version": 11,
-      "asset_content_hash": "90ec1d0f2fa9a3382af2c3902feb87c244f5802fdd5acf75f8b021bfa86b544b"
-    },
-    {
-      "shot_id": "sc_01_sh_03",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 7,
-      "asset_content_hash": "90ec1d0f2fa9a3382af2c3902feb87c244f5802fdd5acf75f8b021bfa86b544b"
-    },
-    {
-      "shot_id": "sc_01_sh_03",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 10,
-      "asset_content_hash": "90ec1d0f2fa9a3382af2c3902feb87c244f5802fdd5acf75f8b021bfa86b544b"
-    },
-    {
-      "shot_id": "sc_01_sh_03",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 9,
-      "asset_content_hash": "90ec1d0f2fa9a3382af2c3902feb87c244f5802fdd5acf75f8b021bfa86b544b"
-    },
-    {
-      "shot_id": "sc_01_sh_03",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 8,
-      "asset_content_hash": "90ec1d0f2fa9a3382af2c3902feb87c244f5802fdd5acf75f8b021bfa86b544b"
-    },
-    {
-      "shot_id": "sc_01_sh_03",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 6,
-      "asset_content_hash": "90ec1d0f2fa9a3382af2c3902feb87c244f5802fdd5acf75f8b021bfa86b544b"
-    },
-    {
-      "shot_id": "sc_01_sh_03",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 5,
-      "asset_content_hash": "90ec1d0f2fa9a3382af2c3902feb87c244f5802fdd5acf75f8b021bfa86b544b"
+      "asset_content_hash": "90ec1d0f2fa9a3382af2c3902feb87c244f5802fdd5acf75f8b021bfa86b544b",
+      "clip_prompt_hash": null
     },
     {
       "shot_id": "sc_02_sh_01",
       "state": "generated",
       "rung": "generate_image",
-      "timeline_version": 10,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_02_sh_01",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 5,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_02_sh_01",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 9,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_02_sh_01",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 11,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_02_sh_01",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 7,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_02_sh_01",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 6,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_02_sh_01",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 8,
-      "asset_content_hash": null
+      "asset_content_hash": null,
+      "clip_prompt_hash": "967cc4b9d8ad6a73d3af19366a4fe8d2989e3dc78adb555e5a7d1024796e58f3"
     },
     {
       "shot_id": "sc_02_sh_02",
       "state": "generated",
       "rung": "generate_image",
-      "timeline_version": 8,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_02_sh_02",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 6,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_02_sh_02",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 5,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_02_sh_02",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 10,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_02_sh_02",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 9,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_02_sh_02",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 7,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_02_sh_02",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 11,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_02_sh_03",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 6,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_02_sh_03",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 5,
-      "asset_content_hash": null
+      "asset_content_hash": null,
+      "clip_prompt_hash": "6433ddcc44ef56b27ff1bbb1d6fa86d29e518eec1dcba291434d2247c4b9642c"
     },
     {
       "shot_id": "sc_02_sh_03",
       "state": "generated",
       "rung": "generate_image",
-      "timeline_version": 8,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_02_sh_03",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 9,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_02_sh_03",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 10,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_02_sh_03",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 11,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_02_sh_03",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 7,
-      "asset_content_hash": null
+      "asset_content_hash": null,
+      "clip_prompt_hash": "9744dab35fc40ed5f1003d3905a68db22c6866de9d3490a0dfa0f339caceb137"
     },
     {
       "shot_id": "sc_03_sh_01",
       "state": "resolved",
       "rung": "historical_search",
-      "timeline_version": 11,
-      "asset_content_hash": "73f1f972f58310008912bd348bae5a2fab9fbb0766489f2115b9f41cee8c98cc"
-    },
-    {
-      "shot_id": "sc_03_sh_01",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 8,
-      "asset_content_hash": "73f1f972f58310008912bd348bae5a2fab9fbb0766489f2115b9f41cee8c98cc"
-    },
-    {
-      "shot_id": "sc_03_sh_01",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 7,
-      "asset_content_hash": "73f1f972f58310008912bd348bae5a2fab9fbb0766489f2115b9f41cee8c98cc"
-    },
-    {
-      "shot_id": "sc_03_sh_01",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 9,
-      "asset_content_hash": "73f1f972f58310008912bd348bae5a2fab9fbb0766489f2115b9f41cee8c98cc"
-    },
-    {
-      "shot_id": "sc_03_sh_01",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 5,
-      "asset_content_hash": "73f1f972f58310008912bd348bae5a2fab9fbb0766489f2115b9f41cee8c98cc"
-    },
-    {
-      "shot_id": "sc_03_sh_01",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 10,
-      "asset_content_hash": "73f1f972f58310008912bd348bae5a2fab9fbb0766489f2115b9f41cee8c98cc"
-    },
-    {
-      "shot_id": "sc_03_sh_01",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 6,
-      "asset_content_hash": "73f1f972f58310008912bd348bae5a2fab9fbb0766489f2115b9f41cee8c98cc"
+      "asset_content_hash": "73f1f972f58310008912bd348bae5a2fab9fbb0766489f2115b9f41cee8c98cc",
+      "clip_prompt_hash": null
     },
     {
       "shot_id": "sc_03_sh_02",
       "state": "generated",
       "rung": "generate_image",
-      "timeline_version": 8,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_03_sh_02",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 5,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_03_sh_02",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 11,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_03_sh_02",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 6,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_03_sh_02",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 7,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_03_sh_02",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 10,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_03_sh_02",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 9,
-      "asset_content_hash": null
+      "asset_content_hash": null,
+      "clip_prompt_hash": "539bcc297c586af10a1af0ac2675ce21867731ecd1ab5df60c66d0bbb4f6d092"
     },
     {
       "shot_id": "sc_03_sh_03",
       "state": "resolved",
       "rung": "historical_search",
-      "timeline_version": 9,
-      "asset_content_hash": "e7c8c93a98b900918659ea6ccf0fb3f5360cea6c2bf06010ac2e6b527878a895"
-    },
-    {
-      "shot_id": "sc_03_sh_03",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 8,
-      "asset_content_hash": "e7c8c93a98b900918659ea6ccf0fb3f5360cea6c2bf06010ac2e6b527878a895"
-    },
-    {
-      "shot_id": "sc_03_sh_03",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 7,
-      "asset_content_hash": "e7c8c93a98b900918659ea6ccf0fb3f5360cea6c2bf06010ac2e6b527878a895"
-    },
-    {
-      "shot_id": "sc_03_sh_03",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 6,
-      "asset_content_hash": "e7c8c93a98b900918659ea6ccf0fb3f5360cea6c2bf06010ac2e6b527878a895"
-    },
-    {
-      "shot_id": "sc_03_sh_03",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 11,
-      "asset_content_hash": "e7c8c93a98b900918659ea6ccf0fb3f5360cea6c2bf06010ac2e6b527878a895"
-    },
-    {
-      "shot_id": "sc_03_sh_03",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 5,
-      "asset_content_hash": "e7c8c93a98b900918659ea6ccf0fb3f5360cea6c2bf06010ac2e6b527878a895"
-    },
-    {
-      "shot_id": "sc_03_sh_03",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 10,
-      "asset_content_hash": "e7c8c93a98b900918659ea6ccf0fb3f5360cea6c2bf06010ac2e6b527878a895"
+      "asset_content_hash": "e7c8c93a98b900918659ea6ccf0fb3f5360cea6c2bf06010ac2e6b527878a895",
+      "clip_prompt_hash": null
     },
     {
       "shot_id": "sc_03_sh_04",
       "state": "resolved",
       "rung": "historical_search",
-      "timeline_version": 7,
-      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
-    },
-    {
-      "shot_id": "sc_03_sh_04",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 8,
-      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
-    },
-    {
-      "shot_id": "sc_03_sh_04",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 11,
-      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
-    },
-    {
-      "shot_id": "sc_03_sh_04",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 9,
-      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
-    },
-    {
-      "shot_id": "sc_03_sh_04",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 5,
-      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
-    },
-    {
-      "shot_id": "sc_03_sh_04",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 10,
-      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
-    },
-    {
-      "shot_id": "sc_03_sh_04",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 6,
-      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1"
+      "asset_content_hash": "9646b739e78788a756c355ba115e7a2954b4005849eb318fc3fe22f33dd2a0c1",
+      "clip_prompt_hash": null
     },
     {
       "shot_id": "sc_04_sh_01",
       "state": "resolved",
       "rung": "historical_search",
-      "timeline_version": 7,
-      "asset_content_hash": "d984ffb1080af91ca5e9a1cab549e7634507df34ddbe14e5a6c30d257c4eec6e"
-    },
-    {
-      "shot_id": "sc_04_sh_01",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 10,
-      "asset_content_hash": "d984ffb1080af91ca5e9a1cab549e7634507df34ddbe14e5a6c30d257c4eec6e"
-    },
-    {
-      "shot_id": "sc_04_sh_01",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 6,
-      "asset_content_hash": "d984ffb1080af91ca5e9a1cab549e7634507df34ddbe14e5a6c30d257c4eec6e"
-    },
-    {
-      "shot_id": "sc_04_sh_01",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 8,
-      "asset_content_hash": "d984ffb1080af91ca5e9a1cab549e7634507df34ddbe14e5a6c30d257c4eec6e"
-    },
-    {
-      "shot_id": "sc_04_sh_01",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 9,
-      "asset_content_hash": "d984ffb1080af91ca5e9a1cab549e7634507df34ddbe14e5a6c30d257c4eec6e"
-    },
-    {
-      "shot_id": "sc_04_sh_01",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 11,
-      "asset_content_hash": "d984ffb1080af91ca5e9a1cab549e7634507df34ddbe14e5a6c30d257c4eec6e"
-    },
-    {
-      "shot_id": "sc_04_sh_01",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 5,
-      "asset_content_hash": "d984ffb1080af91ca5e9a1cab549e7634507df34ddbe14e5a6c30d257c4eec6e"
+      "asset_content_hash": "d984ffb1080af91ca5e9a1cab549e7634507df34ddbe14e5a6c30d257c4eec6e",
+      "clip_prompt_hash": null
     },
     {
       "shot_id": "sc_04_sh_02",
       "state": "resolved",
       "rung": "public_domain",
-      "timeline_version": 8,
-      "asset_content_hash": "8a224a184ce17bdb76de02547744ec5df3bbde723512fac60c271213574c96a7"
-    },
-    {
-      "shot_id": "sc_04_sh_02",
-      "state": "resolved",
-      "rung": "public_domain",
-      "timeline_version": 6,
-      "asset_content_hash": "8a224a184ce17bdb76de02547744ec5df3bbde723512fac60c271213574c96a7"
-    },
-    {
-      "shot_id": "sc_04_sh_02",
-      "state": "resolved",
-      "rung": "public_domain",
-      "timeline_version": 9,
-      "asset_content_hash": "8a224a184ce17bdb76de02547744ec5df3bbde723512fac60c271213574c96a7"
-    },
-    {
-      "shot_id": "sc_04_sh_02",
-      "state": "resolved",
-      "rung": "public_domain",
-      "timeline_version": 11,
-      "asset_content_hash": "8a224a184ce17bdb76de02547744ec5df3bbde723512fac60c271213574c96a7"
-    },
-    {
-      "shot_id": "sc_04_sh_02",
-      "state": "resolved",
-      "rung": "public_domain",
-      "timeline_version": 5,
-      "asset_content_hash": "8a224a184ce17bdb76de02547744ec5df3bbde723512fac60c271213574c96a7"
-    },
-    {
-      "shot_id": "sc_04_sh_02",
-      "state": "resolved",
-      "rung": "public_domain",
-      "timeline_version": 10,
-      "asset_content_hash": "8a224a184ce17bdb76de02547744ec5df3bbde723512fac60c271213574c96a7"
-    },
-    {
-      "shot_id": "sc_04_sh_02",
-      "state": "resolved",
-      "rung": "public_domain",
-      "timeline_version": 7,
-      "asset_content_hash": "8a224a184ce17bdb76de02547744ec5df3bbde723512fac60c271213574c96a7"
-    },
-    {
-      "shot_id": "sc_05_sh_01",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 7,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_05_sh_01",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 5,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_05_sh_01",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 6,
-      "asset_content_hash": null
+      "asset_content_hash": "8a224a184ce17bdb76de02547744ec5df3bbde723512fac60c271213574c96a7",
+      "clip_prompt_hash": null
     },
     {
       "shot_id": "sc_05_sh_01",
       "state": "generated",
       "rung": "generate_image",
-      "timeline_version": 8,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_05_sh_01",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 9,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_05_sh_01",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 10,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_05_sh_01",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 11,
-      "asset_content_hash": null
+      "asset_content_hash": null,
+      "clip_prompt_hash": "32132986581db1dcf2551f316f28dfb9d0dd1b48ec4f40a58c0a9d6a7767fcb4"
     },
     {
       "shot_id": "sc_05_sh_02",
       "state": "resolved",
       "rung": "historical_search",
-      "timeline_version": 7,
-      "asset_content_hash": "d35ac4d1c041b384823d58b82a410c4be317e2335b59ea3b7864a419f79c3c2d"
-    },
-    {
-      "shot_id": "sc_05_sh_02",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 8,
-      "asset_content_hash": "d35ac4d1c041b384823d58b82a410c4be317e2335b59ea3b7864a419f79c3c2d"
-    },
-    {
-      "shot_id": "sc_05_sh_02",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 9,
-      "asset_content_hash": "d35ac4d1c041b384823d58b82a410c4be317e2335b59ea3b7864a419f79c3c2d"
-    },
-    {
-      "shot_id": "sc_05_sh_02",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 6,
-      "asset_content_hash": "d35ac4d1c041b384823d58b82a410c4be317e2335b59ea3b7864a419f79c3c2d"
-    },
-    {
-      "shot_id": "sc_05_sh_02",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 10,
-      "asset_content_hash": "d35ac4d1c041b384823d58b82a410c4be317e2335b59ea3b7864a419f79c3c2d"
-    },
-    {
-      "shot_id": "sc_05_sh_02",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 11,
-      "asset_content_hash": "d35ac4d1c041b384823d58b82a410c4be317e2335b59ea3b7864a419f79c3c2d"
-    },
-    {
-      "shot_id": "sc_05_sh_02",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 5,
-      "asset_content_hash": "d35ac4d1c041b384823d58b82a410c4be317e2335b59ea3b7864a419f79c3c2d"
-    },
-    {
-      "shot_id": "sc_05_sh_03",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 6,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_05_sh_03",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 5,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_05_sh_03",
-      "state": "awaiting_generation",
-      "rung": null,
-      "timeline_version": 7,
-      "asset_content_hash": null
+      "asset_content_hash": "d35ac4d1c041b384823d58b82a410c4be317e2335b59ea3b7864a419f79c3c2d",
+      "clip_prompt_hash": null
     },
     {
       "shot_id": "sc_05_sh_03",
       "state": "generated",
       "rung": "generate_image",
-      "timeline_version": 8,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_05_sh_03",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 10,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_05_sh_03",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 11,
-      "asset_content_hash": null
-    },
-    {
-      "shot_id": "sc_05_sh_03",
-      "state": "generated",
-      "rung": "generate_image",
-      "timeline_version": 9,
-      "asset_content_hash": null
+      "asset_content_hash": null,
+      "clip_prompt_hash": "a1513b885530d586ce8fc48d0ca9efb531a85f825017a2c783b8154dd8bc8ac5"
     },
     {
       "shot_id": "sc_05_sh_04",
       "state": "resolved",
       "rung": "historical_search",
-      "timeline_version": 6,
-      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
-    },
-    {
-      "shot_id": "sc_05_sh_04",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 5,
-      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
-    },
-    {
-      "shot_id": "sc_05_sh_04",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 10,
-      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
-    },
-    {
-      "shot_id": "sc_05_sh_04",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 11,
-      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
-    },
-    {
-      "shot_id": "sc_05_sh_04",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 8,
-      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
-    },
-    {
-      "shot_id": "sc_05_sh_04",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 9,
-      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
-    },
-    {
-      "shot_id": "sc_05_sh_04",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 7,
-      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6",
+      "clip_prompt_hash": null
     },
     {
       "shot_id": "sc_06_sh_01",
       "state": "resolved",
       "rung": "historical_search",
-      "timeline_version": 9,
-      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
-    },
-    {
-      "shot_id": "sc_06_sh_01",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 8,
-      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
-    },
-    {
-      "shot_id": "sc_06_sh_01",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 5,
-      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
-    },
-    {
-      "shot_id": "sc_06_sh_01",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 11,
-      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
-    },
-    {
-      "shot_id": "sc_06_sh_01",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 6,
-      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
-    },
-    {
-      "shot_id": "sc_06_sh_01",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 7,
-      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
-    },
-    {
-      "shot_id": "sc_06_sh_01",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 10,
-      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6"
+      "asset_content_hash": "4363a4319390cdcda982d2b6bc684c8e3c6d1c28b8df3449b4fda68c72ee05e6",
+      "clip_prompt_hash": null
     },
     {
       "shot_id": "sc_06_sh_02",
       "state": "resolved",
       "rung": "historical_search",
-      "timeline_version": 10,
-      "asset_content_hash": "48ce0d630b3259b8b03c921bd2595f7f25fb3d4ebd520ba96de649ccb3549487"
-    },
-    {
-      "shot_id": "sc_06_sh_02",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 9,
-      "asset_content_hash": "48ce0d630b3259b8b03c921bd2595f7f25fb3d4ebd520ba96de649ccb3549487"
-    },
-    {
-      "shot_id": "sc_06_sh_02",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 8,
-      "asset_content_hash": "48ce0d630b3259b8b03c921bd2595f7f25fb3d4ebd520ba96de649ccb3549487"
-    },
-    {
-      "shot_id": "sc_06_sh_02",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 7,
-      "asset_content_hash": "48ce0d630b3259b8b03c921bd2595f7f25fb3d4ebd520ba96de649ccb3549487"
-    },
-    {
-      "shot_id": "sc_06_sh_02",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 11,
-      "asset_content_hash": "48ce0d630b3259b8b03c921bd2595f7f25fb3d4ebd520ba96de649ccb3549487"
-    },
-    {
-      "shot_id": "sc_06_sh_02",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 6,
-      "asset_content_hash": "48ce0d630b3259b8b03c921bd2595f7f25fb3d4ebd520ba96de649ccb3549487"
-    },
-    {
-      "shot_id": "sc_06_sh_02",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 5,
-      "asset_content_hash": "48ce0d630b3259b8b03c921bd2595f7f25fb3d4ebd520ba96de649ccb3549487"
+      "asset_content_hash": "48ce0d630b3259b8b03c921bd2595f7f25fb3d4ebd520ba96de649ccb3549487",
+      "clip_prompt_hash": null
     },
     {
       "shot_id": "sc_06_sh_03",
       "state": "resolved",
       "rung": "historical_search",
-      "timeline_version": 11,
-      "asset_content_hash": "27ac5d2191097dd2608ccc323b1f1b08ee0a754912e85cf51fa239bf51aee213"
-    },
-    {
-      "shot_id": "sc_06_sh_03",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 5,
-      "asset_content_hash": "27ac5d2191097dd2608ccc323b1f1b08ee0a754912e85cf51fa239bf51aee213"
-    },
-    {
-      "shot_id": "sc_06_sh_03",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 6,
-      "asset_content_hash": "27ac5d2191097dd2608ccc323b1f1b08ee0a754912e85cf51fa239bf51aee213"
-    },
-    {
-      "shot_id": "sc_06_sh_03",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 10,
-      "asset_content_hash": "27ac5d2191097dd2608ccc323b1f1b08ee0a754912e85cf51fa239bf51aee213"
-    },
-    {
-      "shot_id": "sc_06_sh_03",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 7,
-      "asset_content_hash": "27ac5d2191097dd2608ccc323b1f1b08ee0a754912e85cf51fa239bf51aee213"
-    },
-    {
-      "shot_id": "sc_06_sh_03",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 8,
-      "asset_content_hash": "27ac5d2191097dd2608ccc323b1f1b08ee0a754912e85cf51fa239bf51aee213"
-    },
-    {
-      "shot_id": "sc_06_sh_03",
-      "state": "resolved",
-      "rung": "historical_search",
-      "timeline_version": 9,
-      "asset_content_hash": "27ac5d2191097dd2608ccc323b1f1b08ee0a754912e85cf51fa239bf51aee213"
+      "asset_content_hash": "27ac5d2191097dd2608ccc323b1f1b08ee0a754912e85cf51fa239bf51aee213",
+      "clip_prompt_hash": null
     }
   ],
   "narrations": [
@@ -4229,6 +3431,78 @@
       },
       "character_count": 89,
       "cost_cents": 2
+    }
+  ],
+  "clips": [
+    {
+      "shot_id": "sc_01_sh_01",
+      "provider": "fal_image",
+      "model_id": "fal-ai/bytedance/seedream/v4/text-to-image",
+      "prompt": "Second World War era map of Germany and central Europe, restrained archival industrial documentary style, oil-field regions absent from Germany, muted monochrome cartographic texture, Archival industrial documentary: 1920s chemical-process diagrams and patent-era imagery, Second World War German refinery and coal-mining records, period maps, restrained factory photographs, South African Sasol and Secunda industrial imagery, and contemporary satellite views of coal-to-liquids infrastructure",
+      "prompt_hash": "954742047495988c639366f39327544d85efb854bfa22b8b1efe1feb5a2f1fdc",
+      "duration_s": null,
+      "cost_cents": 4,
+      "filename": "954742047495988c639366f39327544d85efb854bfa22b8b1efe1feb5a2f1fdc.jpg"
+    },
+    {
+      "shot_id": "sc_02_sh_01",
+      "provider": "fal_image",
+      "model_id": "fal-ai/bytedance/seedream/v4/text-to-image",
+      "prompt": "Second World War era coal mine in Germany, vast black coal seams and loaded mine carts, workers small against the industrial scale, restrained archival industrial documentary photograph, overcast light, monochrome texture, Archival industrial documentary: 1920s chemical-process diagrams and patent-era imagery, Second World War German refinery and coal-mining records, period maps, restrained factory photographs, South African Sasol and Secunda industrial imagery, and contemporary satellite views of coal-to-liquids infrastructure",
+      "prompt_hash": "967cc4b9d8ad6a73d3af19366a4fe8d2989e3dc78adb555e5a7d1024796e58f3",
+      "duration_s": null,
+      "cost_cents": 4,
+      "filename": "967cc4b9d8ad6a73d3af19366a4fe8d2989e3dc78adb555e5a7d1024796e58f3.jpg"
+    },
+    {
+      "shot_id": "sc_02_sh_02",
+      "provider": "fal_image",
+      "model_id": "fal-ai/bytedance/seedream/v4/text-to-image",
+      "prompt": "1925 Fischer–Tropsch patent-era chemical laboratory, scientists in white coats studying a coal conversion process diagram and glass apparatus, archival industrial documentary style, restrained monochrome tones, Archival industrial documentary: 1920s chemical-process diagrams and patent-era imagery, Second World War German refinery and coal-mining records, period maps, restrained factory photographs, South African Sasol and Secunda industrial imagery, and contemporary satellite views of coal-to-liquids infrastructure",
+      "prompt_hash": "6433ddcc44ef56b27ff1bbb1d6fa86d29e518eec1dcba291434d2247c4b9642c",
+      "duration_s": null,
+      "cost_cents": 4,
+      "filename": "6433ddcc44ef56b27ff1bbb1d6fa86d29e518eec1dcba291434d2247c4b9642c.jpg"
+    },
+    {
+      "shot_id": "sc_02_sh_03",
+      "provider": "fal_image",
+      "model_id": "fal-ai/bytedance/seedream/v4/text-to-image",
+      "prompt": "mid-century coal-to-liquids refinery, dark coal entering industrial processing equipment beside clear liquid fuel flowing into a collection vessel, German synthetic-fuel industry aesthetic, archival industrial documentary photograph, restrained factory atmosphere, Archival industrial documentary: 1920s chemical-process diagrams and patent-era imagery, Second World War German refinery and coal-mining records, period maps, restrained factory photographs, South African Sasol and Secunda industrial imagery, and contemporary satellite views of coal-to-liquids infrastructure",
+      "prompt_hash": "9744dab35fc40ed5f1003d3905a68db22c6866de9d3490a0dfa0f339caceb137",
+      "duration_s": null,
+      "cost_cents": 4,
+      "filename": "9744dab35fc40ed5f1003d3905a68db22c6866de9d3490a0dfa0f339caceb137.jpg"
+    },
+    {
+      "shot_id": "sc_03_sh_02",
+      "provider": "fal_image",
+      "model_id": "fal-ai/bytedance/seedream/v4/text-to-image",
+      "prompt": "1925 German chemical engineers in white laboratory coats examining an early synthetic-fuel processing apparatus, period industrial documentary imagery, monochrome archival texture, Archival industrial documentary: 1920s chemical-process diagrams and patent-era imagery, Second World War German refinery and coal-mining records, period maps, restrained factory photographs, South African Sasol and Secunda industrial imagery, and contemporary satellite views of coal-to-liquids infrastructure",
+      "prompt_hash": "539bcc297c586af10a1af0ac2675ce21867731ecd1ab5df60c66d0bbb4f6d092",
+      "duration_s": null,
+      "cost_cents": 4,
+      "filename": "539bcc297c586af10a1af0ac2675ce21867731ecd1ab5df60c66d0bbb4f6d092.jpg"
+    },
+    {
+      "shot_id": "sc_05_sh_01",
+      "provider": "fal_image",
+      "model_id": "fal-ai/bytedance/seedream/v4/text-to-image",
+      "prompt": "1950s South African industrial planning office, engineers studying coal-to-liquids process plans, restrained archival industrial documentary photograph, apartheid-era South Africa, muted monochrome tones, Archival industrial documentary: 1920s chemical-process diagrams and patent-era imagery, Second World War German refinery and coal-mining records, period maps, restrained factory photographs, South African Sasol and Secunda industrial imagery, and contemporary satellite views of coal-to-liquids infrastructure",
+      "prompt_hash": "32132986581db1dcf2551f316f28dfb9d0dd1b48ec4f40a58c0a9d6a7767fcb4",
+      "duration_s": null,
+      "cost_cents": 4,
+      "filename": "32132986581db1dcf2551f316f28dfb9d0dd1b48ec4f40a58c0a9d6a7767fcb4.jpg"
+    },
+    {
+      "shot_id": "sc_05_sh_03",
+      "provider": "fal_image",
+      "model_id": "fal-ai/bytedance/seedream/v4/text-to-image",
+      "prompt": "early Sasol coal-to-liquids plant in South Africa, factory administration building and processing equipment, restrained archival industrial documentary photograph, late twentieth-century industrial expansion, Archival industrial documentary: 1920s chemical-process diagrams and patent-era imagery, Second World War German refinery and coal-mining records, period maps, restrained factory photographs, South African Sasol and Secunda industrial imagery, and contemporary satellite views of coal-to-liquids infrastructure",
+      "prompt_hash": "a1513b885530d586ce8fc48d0ca9efb531a85f825017a2c783b8154dd8bc8ac5",
+      "duration_s": null,
+      "cost_cents": 4,
+      "filename": "a1513b885530d586ce8fc48d0ca9efb531a85f825017a2c783b8154dd8bc8ac5.jpg"
     }
   ]
 }

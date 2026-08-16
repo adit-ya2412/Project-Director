@@ -139,8 +139,23 @@ class Settings(BaseSettings):
     music_provider: str = "openverse"
     pixabay_api_key: str | None = None
     freesound_api_key: str | None = None
-    music_bed_gain_db: float = -22.0
-    music_duck_gain_db: float = -32.0
+    # Tuned live, 2026-08-16, against the restored `hinglish_final_project`
+    # fixture (R1 unblocked this - three independent re-renders, each free,
+    # to compare gains against real narration): the ORIGINAL -22.0/-32.0
+    # made the bed nearly inaudible under this script's near-continuous
+    # speech - measured -52.6dB mean on the ducked bed alone (isolated via
+    # `tests/integration/test_render_music_mix.py`'s own measurement
+    # approach), against a full-mix loudness of -26.4dB that never moved
+    # across any of the three renders (narration is unaffected by this
+    # setting - only the bed is). Raising bed/duck by 8dB moved the ducked
+    # bed to -46.6dB, still barely there; a second raise to these values
+    # reached -40.6dB - 12dB louder than the original, comfortably audible
+    # under the narrator without the bed ever competing with it. Do not
+    # "tidy" these back toward the old numbers without re-measuring: they
+    # were not a stylistic guess, they were the result of the bed being
+    # nearly silent.
+    music_bed_gain_db: float = -14.0
+    music_duck_gain_db: float = -20.0
     # Rough cost estimate in cents, folded into `check_budget` the same
     # way `fal_image_cost_cents_estimate`/narration are (M8 build order
     # item 4) - 0 by default because both Openverse and Pixabay search
