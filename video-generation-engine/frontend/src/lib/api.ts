@@ -1,0 +1,194 @@
+import type {
+  Project,
+  ProgressResponse,
+  Timeline,
+  UploadedAssetResult,
+} from './types'
+
+/**
+ * Base URL for the API. Defaults to a relative path so the SAME build
+ * works in both:
+ *  - production, where FastAPI serves the built static files and the API
+ *    from one origin, so `/api/v1/...` is correct as-is;
+ *  - dev, where Vite's dev server proxies `/api/*` to
+ *    `http://127.0.0.1:8000` (see vite.config.ts) — CORS is also already
+ *    configured backend-side, so `VITE_API_BASE` can point straight at the
+ *    backend instead if the proxy is ever inconvenient.
+ */
+const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? '/api/v1'
+
+export class ApiError extends Error {
+  status: number
+  detail: unknown
+
+  constructor(status: number, detail: unknown) {
+    super(typeof detail === 'string' ? detail : `request failed with status ${status}`)
+    this.status = status
+    this.detail = detail
+  }
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers:
+      init?.body && !(init.body instanceof FormData)
+        ? { 'Content-Type': 'application/json', ...(init.headers ?? {}) }
+        : init?.headers,
+    ...init,
+  })
+  if (!res.ok) {
+    let detail: unknown
+    try {
+      const body = await res.json()
+      detail = body?.detail ?? body
+    } catch {
+      detail = await res.text().catch(() => res.statusText)
+    }
+    throw new ApiError(res.status, detail)
+  }
+  if (res.status === 204) return undefined as T
+  return (await res.json()) as T
+}
+
+// -- Projects -----------------------------------------------------------
+
+export function listProjects(): Promise<Project[]> {
+  return request('/projects')
+}
+
+export function getProject(projectId: string): Promise<Project> {
+  return request(`/projects/${projectId}`)
+}
+
+export function createProject(name: string): Promise<Project> {
+  return request('/projects', { method: 'POST', body: JSON.stringify({ name }) })
+}
+
+export function uploadScript(projectId: string, content: string): Promise<Project> {
+  return request(`/projects/${projectId}/script`, {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  })
+}
+
+export interface AssetUpload {
+  file: File
+  description: string
+}
+
+export function uploadAssets(
+  projectId: string,
+  uploads: AssetUpload[],
+): Promise<UploadedAssetResult[]> {
+  const form = new FormData()
+  for (const u of uploads) {
+    form.append('files', u.file)
+    form.append('descriptions', u.description)
+  }
+  return request(`/projects/${projectId}/assets`, { method: 'POST', body: form })
+}
+
+// -- Timeline -------------------------------------------------------------
+
+export function getTimeline(projectId: string): Promise<Timeline> {
+  return request(`/projects/${projectId}/timeline`)
+}
+
+export function approveTimeline(projectId: string): Promise<Project> {
+  return request(`/projects/${projectId}/timeline/approve`, { method: 'POST' })
+}
+
+// -- Progress ---------------------------------------------------------------
+
+export function getProgress(projectId: string): Promise<ProgressResponse> {
+  return request(`/projects/${projectId}/progress`)
+}
+
+// -- Triggers (long-running; per F0a these should return 202 + run id soon.
+// Callers must never block navigation/UI on these settling — kick the
+// request off and poll `getProgress` separately.) ---------------------------
+
+export function renderProject(projectId: string): Promise<Project> {
+  return request(`/projects/${projectId}/render`, { method: 'POST' })
+}
+
+export function renderDraft(projectId: string): Promise<{
+  project_id: string
+  timeline_version: number
+  draft_path: string
+  expired_drafts_purged: number
+}> {
+  return request(`/projects/${projectId}/render/draft`, { method: 'POST' })
+}
+
+// -- Human corrections --------------------------------------------------
+
+export function overrideShot(
+  projectId: string,
+  shotId: string,
+  file: File,
+  description?: string,
+): Promise<Project> {
+  const form = new FormData()
+  form.append('file', file)
+  if (description) form.append('description', description)
+  return request(`/projects/${projectId}/shots/${shotId}/override`, {
+    method: 'POST',
+    body: form,
+  })
+}
+
+export function retryMusic(projectId: string, searchTerms?: string[]): Promise<Project> {
+  return request(`/projects/${projectId}/music/retry`, {
+    method: 'POST',
+    body: JSON.stringify(searchTerms ? { search_terms: searchTerms } : {}),
+  })
+}
+
+export function retryNarration(projectId: string, voiceId: string): Promise<Project> {
+  return request(`/projects/${projectId}/narration/retry`, {
+    method: 'POST',
+    body: JSON.stringify({ voice_id: voiceId }),
+  })
+}
+
+/**
+ * NOT a confirmed backend contract. F5c (Gate 2, editable-prompt
+ * regeneration) requires a per-shot "edit prompt and regenerate" endpoint
+ * that does not exist anywhere in the API today (checked the full route
+ * list in backend/app/api/projects.py) and was not listed among the
+ * endpoints "landing shortly." This guesses a path that follows the same
+ * shape as the sibling `.../shots/{shot_id}/override` endpoint so the
+ * frontend needs no change if the backend adds exactly this. Calling it
+ * today will 404 — see the frontend README for the flag this raises.
+ */
+export function regenerateShot(projectId: string, shotId: string, prompt: string): Promise<Project> {
+  return request(`/projects/${projectId}/shots/${shotId}/regenerate`, {
+    method: 'POST',
+    body: JSON.stringify({ prompt }),
+  })
+}
+
+// -- Media (bytes) --------------------------------------------------------
+//
+// F0b, "landing shortly" per the task brief: neither of these two GETs
+// exists on the backend yet (asset.local_path is a server filesystem path
+// today, so nothing can currently display an image). Building against the
+// agreed contract regardless — plain <img src=...> URLs, no fetch wrapper
+// needed since these return raw bytes, not JSON.
+
+export function shotAssetUrl(projectId: string, shotId: string): string {
+  return `${API_BASE}/projects/${projectId}/shots/${shotId}/asset`
+}
+
+export function projectThumbnailUrl(projectId: string): string {
+  return `${API_BASE}/projects/${projectId}/thumbnail`
+}
+
+export function videoUrl(projectId: string): string {
+  return `${API_BASE}/projects/${projectId}/video`
+}
+
+export function draftVideoUrl(projectId: string): string {
+  return `${API_BASE}/projects/${projectId}/video/draft`
+}
