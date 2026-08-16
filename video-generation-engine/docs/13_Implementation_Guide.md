@@ -3415,6 +3415,26 @@ Play (`GET /video`), download, and the three corrections that already exist as e
 - **Show total spend**, from `spent_cost_cents`.
 - Re-auditioning a voice is **free** after the first time (narration caches per `hash(text + voice + model + format)`), and re-rendering is free entirely — local ffmpeg. The screen should say so, because "try another voice" reads as expensive when it is not.
 
+### F7 — resolution warnings on human-supplied images (warn, never block)
+
+**The gap:** `_quality_score` (`app/assets/ranking.py`) already measures exactly this — linear upscale needed as `sqrt(target_area / source_area)`, full marks at ≤1.5×, sliding to a floor of 0.1 at ≥4× — but it is a **ranking term for searched candidates only**. Per-shot override deliberately bypasses relevance and licence gates (A24: a human pointing at a shot has already made that judgement), and quality was never checked in that path at all. A human can upload a 320×240 image today and it renders as a blurry mess with no warning at any point.
+
+**The degradation is real and compounds** from four sources: upscaling to 720×1280; Ken Burns zooming *into* the frame (a 1.2× move effectively demands ~864×1536); the 9:16 crop discarding most of a landscape image's width so its usable pixels are far fewer than its dimensions suggest; and H.264 with chroma subsampling handling archival grain poorly.
+
+**Warn, never block** — the same principle as F5a. A human's judgement about their own footage wins; the system's job is to make sure they are not surprised.
+
+| upscale needed | portrait source, roughly | verdict |
+|---|---|---|
+| ≤1.5× | ~590×1050 and larger | fine |
+| 1.5–2.5× | ~370×650 up | soft — visible on a large phone screen |
+| ≥4× | below ~180×320 | will look bad |
+
+Shown as a badge carrying the real numbers — *"480×640 → upscaled 1.7×, may look soft"* — at upload **and** again at Gate 1, never as a pass/fail.
+
+Two refinements that make the number honest rather than nominal:
+- **Account for that shot's actual Ken Burns zoom** rather than assuming 1×.
+- **Score the post-crop region**, not the full frame, since for a landscape source the crop is what actually gets rendered — this is the same tension already backlogged as landscape-versus-vertical.
+
 ## Implementation notes (2026-08-15) — folding shot semantics into `GET /progress`, ahead of the frontend
 
 No frontend exists yet (M9 proper hasn't started), but the gap this
