@@ -13,6 +13,10 @@ simple-literal terms (M1) and the real duration floor (M2) were verified
 live and separately (not through this suite - see the coordinator's
 report). Written but NOT run in this session - a live, human-driven
 project sits at the approval gate in the same shared dev Postgres.
+
+F0a (2026-08-16): `POST /music/retry` now returns `202` immediately - every
+assertion below that used to read the trigger's own response body now
+polls via `tests/e2e/_polling.py::trigger_and_wait` instead.
 """
 
 import asyncio
@@ -37,6 +41,8 @@ from app.schemas.timeline import (
     TransitionType,
 )
 from app.timeline.service import TimelineService
+
+from ._polling import trigger_and_wait
 
 _JARGON_TERMS = [
     "documentary industrial ambient",
@@ -112,11 +118,12 @@ def test_retry_overrides_frozen_search_terms_and_finds_a_track(client):
     project_id = _create_project(client)
     asyncio.run(_seed_stuck_music_plan(project_id, search_terms=_JARGON_TERMS))
 
-    resp = client.post(
+    trigger_and_wait(
+        client,
+        "post",
         f"/api/v1/projects/{project_id}/music/retry",
         json={"search_terms": ["documentary music", "ambient"]},
     )
-    assert resp.status_code == 200, resp.text
 
     async def _read_back() -> Timeline:
         async with async_session_factory() as session:
@@ -136,8 +143,7 @@ def test_retry_without_search_terms_keeps_the_existing_ones(client):
     project_id = _create_project(client)
     asyncio.run(_seed_stuck_music_plan(project_id, search_terms=_JARGON_TERMS))
 
-    resp = client.post(f"/api/v1/projects/{project_id}/music/retry", json={})
-    assert resp.status_code == 200, resp.text
+    trigger_and_wait(client, "post", f"/api/v1/projects/{project_id}/music/retry", json={})
 
     async def _read_back() -> Timeline:
         async with async_session_factory() as session:
@@ -195,9 +201,7 @@ def test_retry_re_approves_when_the_timeline_was_already_approved(client):
 
     asyncio.run(_approve_current())
 
-    resp = client.post(f"/api/v1/projects/{project_id}/music/retry", json={})
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
+    body = trigger_and_wait(client, "post", f"/api/v1/projects/{project_id}/music/retry", json={})
     # Approval survived the retry - the project did not fall back to
     # awaiting a redundant second approval for a correction already
     # requested.

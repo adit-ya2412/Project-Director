@@ -1,10 +1,11 @@
 """Project, script, render, and workflow endpoints (docs/09_API_Specification.md).
 
-`POST /render` starts (or resumes) the workflow engine and returns
-whatever the pipeline reaches: `awaiting_approval`, `awaiting_review`,
-`completed`, or `failed`. `POST /timeline/approve` approves the active
-timeline and resumes the same run - the human-in-the-loop gate (ADR-008)
-is a real stop between two separate HTTP calls, not a blocked coroutine.
+`POST /render` starts (or resumes) the workflow engine; `POST /render/only`
+(R3) invokes ONLY the render step, structurally unable to reach a paid
+provider (see `app/workflow/render_only.py`). `POST /timeline/approve`
+approves the active timeline and resumes the same run - the
+human-in-the-loop gate (ADR-008) is a real stop between two separate HTTP
+calls, not a blocked coroutine.
 
 `POST /{id}/assets` (M6.5, A8/A23/A27) and
 `POST /{id}/shots/{shot_id}/override` (M6.5, A9/A10/A24/A25/A29) are the
@@ -20,6 +21,31 @@ to music and narration respectively - both resume the engine too, and
 both share their common tail with `_resume_after_human_correction`
 (see that helper's own docstring for why the per-shot override above
 does NOT also use it).
+
+## F0a (2026-08-16): every trigger above returns immediately
+
+Every endpoint that used to `await engine.run()` inline - `render_project`,
+`approve_timeline`, `override_shot_asset`, `retry_music_selection`,
+`retry_narration_voice`, and the new `render_only` - now calls
+`app.workflow.trigger.start_workflow_run` instead, which claims (or joins)
+this project's `workflow_run` row and hands the actual pipeline execution
+to `BackgroundTasks`, returning a `WorkflowTriggerResult` (a run id to
+poll, not an outcome) with `202`. `GET /status`/`GET /progress` are the
+client's real answer to "what happened" - see `app/workflow/trigger.py`'s
+own module docstring for why `BackgroundTasks` over a queue, and how
+concurrent triggers on one project are prevented from starting two runs.
+
+## F0b (2026-08-16): serving image bytes
+
+`GET /{id}/shots/{shot_id}/asset` and `GET /{id}/thumbnail` are the first
+endpoints in this file that serve real media bytes rather than JSON or an
+already-finished file (`GET /video`/`GET /video/draft` stream a file
+directly too, but never need to CREATE one) - `asset.local_path`/
+`generated_clip.local_path`/`project.video_path` are all server
+filesystem paths a browser cannot load. Both lazily generate and cache a
+displayable image on disk, keyed on the source file's own mtime -
+`app/assets/thumbnails.py` owns that logic; see its module docstring for
+why mtime and not a content hash.
 """
 
 import hashlib
@@ -27,14 +53,15 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_repo, get_timeline_service, get_workflow_engine
+from app.api.deps import get_repo, get_timeline_service
 from app.assets.cost import estimate_project_cost_cents
-from app.assets.validation import validate_and_identify_image
+from app.assets.thumbnails import cached_resized_image, cached_video_frame, is_video_file
+from app.assets.validation import mime_type_for_extension, validate_and_identify_image
 from app.core.config import settings
 from app.core.errors import PermanentError
 from app.db.session import get_db
@@ -52,8 +79,9 @@ from app.schemas.timeline import ProducedBy, Timeline, TimelineStatus
 from app.timeline.duration import compute_shot_start_times
 from app.timeline.service import TimelineService
 from app.workflow.context import RunContext
-from app.workflow.engine import WorkflowEngine
+from app.workflow.render_only import RENDER_ONLY_STEPS, render_precondition_gap
 from app.workflow.steps.render import render_video
+from app.workflow.trigger import WorkflowTriggerResult, start_workflow_run
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -108,10 +136,11 @@ async def _resume_after_human_correction(
     active: Timeline,
     *,
     timeline_service: TimelineService,
-    engine: WorkflowEngine,
+    session: AsyncSession,
+    background_tasks: BackgroundTasks,
     transform: Callable[[Timeline], Timeline],
     owns: frozenset[str],
-) -> Project:
+) -> WorkflowTriggerResult:
     """The shared tail of "a human corrects an automated creative
     choice" - used by `retry_music_selection` (M3) and
     `retry_narration_voice` (N1) below: record the correction as a
@@ -140,9 +169,12 @@ async def _resume_after_human_correction(
     still does NOT use this helper**, and that is also a considered
     choice, not an oversight: it must create/populate a `ShotBinding` row
     using the NEW version's id, and that has to happen strictly BETWEEN
-    the `append_version` call and `engine.run()` - `engine.run()` reads
-    bindings for the active version immediately, so the binding must
-    already be flushed before it starts, or the override would appear to
+    the `append_version` call and `start_workflow_run` - the backgrounded
+    engine reads bindings for the active version as soon as it starts
+    (F0a schedules it on `BackgroundTasks`, which only run AFTER this
+    request's own session has committed, but the binding row still has
+    to exist in that commit), so the binding must already be flushed
+    before this function's own commit, or the override would appear to
     do nothing until a second, unrelated resume. Adding a mid-flow hook
     parameter to this helper just to fit that one case back in would
     reintroduce the exact "generic parameter bag" problem this function
@@ -162,9 +194,9 @@ async def _resume_after_human_correction(
         await timeline_service.approve(project_id, new_timeline.version)
 
     # An active timeline (checked by every caller before this) implies a
-    # script already exists (`create_initial` requires one) - `engine.run()`
-    # always has something to resume from here.
-    return await engine.run()
+    # script already exists (`create_initial` requires one) -
+    # `start_workflow_run` always has something to resume from here.
+    return await start_workflow_run(project_id, session, background_tasks)
 
 
 @router.post("", response_model=Project)
@@ -306,20 +338,64 @@ async def get_timeline(
     return active
 
 
-@router.post("/{project_id}/render", response_model=Project)
+@router.post("/{project_id}/render", status_code=202, response_model=WorkflowTriggerResult)
 async def render_project(
     project_id: str,
+    background_tasks: BackgroundTasks,
     repo: ProjectRepository = Depends(get_repo),
-    engine: WorkflowEngine = Depends(get_workflow_engine),
-) -> Project:
-    """Starts (or resumes) the workflow engine. Runs synchronously up to
-    whatever it reaches next - AWAITING_APPROVAL, COMPLETED, or FAILED.
-    A real task queue (background execution) is a later refinement; the
-    step contract underneath doesn't change when that lands."""
+    session: AsyncSession = Depends(get_db),
+) -> WorkflowTriggerResult:
+    """Starts (or resumes) the workflow engine in the background (F0a) -
+    returns immediately with a run id; poll `GET /status`/`GET /progress`
+    for what actually happens next (AWAITING_APPROVAL, AWAITING_REVIEW,
+    COMPLETED, or FAILED). This is the "advance the whole workflow"
+    trigger - it can plan, search, generate, AND render, in that order,
+    stopping at the first unsatisfied step. `POST /render/only` (R3) is
+    the narrower sibling that touches only the render step, structurally
+    unable to reach any of the paid steps this endpoint is allowed to
+    run."""
     project = await _get_project_or_404(project_id, repo)
     if not project.script:
         raise HTTPException(status_code=400, detail="upload a script before rendering")
-    return await engine.run()
+    return await start_workflow_run(project_id, session, background_tasks)
+
+
+@router.post("/{project_id}/render/only", status_code=202, response_model=WorkflowTriggerResult)
+async def render_only(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    session: AsyncSession = Depends(get_db),
+) -> WorkflowTriggerResult:
+    """R3: re-render without re-running the rest of the pipeline - the
+    endpoint that "changed the mix, want to hear it" is supposed to hit,
+    at zero risk of a paid provider call (see `app/workflow/render_only.py`
+    for exactly why that is a structural guarantee, not a policy one).
+
+    Fails loudly with `409` rather than silently advancing the workflow
+    when a render genuinely is not possible yet (plan unapproved,
+    narration never run, a shot still waiting on generation or review) -
+    `render_precondition_gap` names the first step still blocking it, so
+    the error tells a human what to do (usually: call `POST /render`
+    instead, which IS allowed to advance those steps)."""
+    project = await _get_project_or_404(project_id, repo)
+    if not project.script:
+        raise HTTPException(status_code=400, detail="upload a script before rendering")
+
+    ctx = RunContext(
+        project_id=project_id, session=session, repo=repo, timeline_service=timeline_service
+    )
+    blocking_step = await render_precondition_gap(ctx)
+    if blocking_step is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"project is not ready for a render-only pass yet - step "
+            f"'{blocking_step}' has not completed. Use POST /render to advance the "
+            "full workflow, or GET /progress to see what's outstanding.",
+        )
+
+    return await start_workflow_run(project_id, session, background_tasks, steps=RENDER_ONLY_STEPS)
 
 
 @router.post("/{project_id}/render/draft")
@@ -348,6 +424,16 @@ async def render_draft(
     D3) on every call - see `app/renderer/retention.py` for why a request-
     triggered sweep, rather than a scheduler, is the right amount of
     infrastructure here.
+
+    **Deliberately NOT backgrounded (F0a scope note, 2026-08-16)**: F0a's
+    own evidence (`POST /render` measured past 600s) is about the FULL
+    workflow - planning, paid search/generation, and render together -
+    never about this endpoint, which only ever calls `render_video`
+    directly (no planners, no providers) at a resolution chosen
+    specifically so iteration is fast (M8 Advice: "iteration at 8 seconds
+    beats iteration at 4 minutes"). Backgrounding it would add a poll
+    round-trip to the one render path meant to feel instant; revisit if a
+    real draft is ever measured taking long enough to need it.
     """
     await _get_project_or_404(project_id, repo)
     timeline = await timeline_service.get_active(project_id)
@@ -394,13 +480,16 @@ async def get_draft_video(
     return FileResponse(path, media_type="video/mp4", filename=f"{project.id}_draft.mp4")
 
 
-@router.post("/{project_id}/timeline/approve", response_model=Project)
+@router.post(
+    "/{project_id}/timeline/approve", status_code=202, response_model=WorkflowTriggerResult
+)
 async def approve_timeline(
     project_id: str,
+    background_tasks: BackgroundTasks,
     repo: ProjectRepository = Depends(get_repo),
     timeline_service: TimelineService = Depends(get_timeline_service),
-    engine: WorkflowEngine = Depends(get_workflow_engine),
-) -> Project:
+    session: AsyncSession = Depends(get_db),
+) -> WorkflowTriggerResult:
     await _get_project_or_404(project_id, repo)
     active = await timeline_service.get_active(project_id)
     if active is None:
@@ -408,20 +497,22 @@ async def approve_timeline(
     if active.status == TimelineStatus.APPROVED:
         raise HTTPException(status_code=400, detail="timeline is already approved")
     await timeline_service.approve(project_id, active.version)
-    return await engine.run()
+    return await start_workflow_run(project_id, session, background_tasks)
 
 
-@router.post("/{project_id}/shots/{shot_id}/override", response_model=Project)
+@router.post(
+    "/{project_id}/shots/{shot_id}/override", status_code=202, response_model=WorkflowTriggerResult
+)
 async def override_shot_asset(
     project_id: str,
     shot_id: str,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     description: str = Form(""),
     repo: ProjectRepository = Depends(get_repo),
     timeline_service: TimelineService = Depends(get_timeline_service),
-    engine: WorkflowEngine = Depends(get_workflow_engine),
     session: AsyncSession = Depends(get_db),
-) -> Project:
+) -> WorkflowTriggerResult:
     """M6.5, A9/A10/A24/A25/A29: a human names a shot directly and
     supplies its media themselves. Bypasses relevance and licence gates
     entirely (A24) - a human pointing at a specific shot has already made
@@ -519,19 +610,20 @@ async def override_shot_asset(
     await session.commit()
 
     # An active timeline (checked above) implies a script already exists
-    # (`create_initial` requires one) - `engine.run()` always has
+    # (`create_initial` requires one) - `start_workflow_run` always has
     # something to resume from here.
-    return await engine.run()
+    return await start_workflow_run(project_id, session, background_tasks)
 
 
-@router.post("/{project_id}/music/retry", response_model=Project)
+@router.post("/{project_id}/music/retry", status_code=202, response_model=WorkflowTriggerResult)
 async def retry_music_selection(
     project_id: str,
     body: RetryMusicSelectionRequest,
+    background_tasks: BackgroundTasks,
     repo: ProjectRepository = Depends(get_repo),
     timeline_service: TimelineService = Depends(get_timeline_service),
-    engine: WorkflowEngine = Depends(get_workflow_engine),
-) -> Project:
+    session: AsyncSession = Depends(get_db),
+) -> WorkflowTriggerResult:
     """A selection miss is otherwise permanent: `SelectMusicStep.is_satisfied`
     returns true once `music_plan.selection_attempted` is set, so a
     project that found nothing suitable can never try again - not a bug
@@ -583,20 +675,22 @@ async def retry_music_selection(
         project_id,
         active,
         timeline_service=timeline_service,
-        engine=engine,
+        session=session,
+        background_tasks=background_tasks,
         transform=_reset_music_plan,
         owns=frozenset({"music_plan"}),
     )
 
 
-@router.post("/{project_id}/narration/retry", response_model=Project)
+@router.post("/{project_id}/narration/retry", status_code=202, response_model=WorkflowTriggerResult)
 async def retry_narration_voice(
     project_id: str,
     body: RetryNarrationVoiceRequest,
+    background_tasks: BackgroundTasks,
     repo: ProjectRepository = Depends(get_repo),
     timeline_service: TimelineService = Depends(get_timeline_service),
-    engine: WorkflowEngine = Depends(get_workflow_engine),
-) -> Project:
+    session: AsyncSession = Depends(get_db),
+) -> WorkflowTriggerResult:
     """N1 (2026-08-15): narration is otherwise permanently frozen at
     whichever voice it first ran with - `NarrationStep.is_satisfied`
     returns true whenever the active version is `produced_by ==
@@ -664,7 +758,8 @@ async def retry_narration_voice(
         project_id,
         active,
         timeline_service=timeline_service,
-        engine=engine,
+        session=session,
+        background_tasks=background_tasks,
         transform=_set_voice,
         owns=frozenset({"metadata"}),
     )
@@ -830,6 +925,134 @@ async def get_video(project_id: str, repo: ProjectRepository = Depends(get_repo)
     if not path.exists():
         raise HTTPException(status_code=404, detail="rendered video file is missing on disk")
     return FileResponse(path, media_type="video/mp4", filename=f"{project_id}.mp4")
+
+
+async def _resolve_bound_media_path(session: AsyncSession, binding) -> Path | None:
+    """The shot's resolved media path, `asset_id` winning over `clip_id` -
+    the SAME resolution rule `app/workflow/steps/render.py
+    ::_resolved_path_and_hash` already applies for the renderer, kept as
+    its own two-line copy here rather than an import: that function also
+    returns a content hash for the render fingerprint, which this
+    endpoint has no use for, and the actual shared RULE is short enough
+    that importing it would trade one line of duplication for a real
+    cross-layer dependency (an API route reaching into a workflow step
+    module) neither side otherwise needs."""
+    if binding is None:
+        return None
+    if binding.asset_id is not None:
+        asset = await session.get(AssetModel, binding.asset_id)
+        return Path(asset.local_path) if asset is not None and asset.local_path else None
+    if binding.clip_id is not None:
+        clip = await session.get(GeneratedClipModel, binding.clip_id)
+        return Path(clip.local_path) if clip is not None and clip.local_path else None
+    return None
+
+
+@router.get("/{project_id}/shots/{shot_id}/asset")
+async def get_shot_asset(
+    project_id: str,
+    shot_id: str,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    session: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    """F0b: the image bound to this shot, for the approval screen -
+    `asset.local_path`/`generated_clip.local_path` are server filesystem
+    paths a browser cannot load directly. A plain image is streamed
+    straight from disk with no derived cache at all (nothing needs
+    generating); a bound GENERATED clip that is a video (rung 5,
+    image-to-video - `generated_clip.local_path` ending in `.mp4`) gets a
+    representative frame lazily extracted and cached instead, via the
+    exact same mechanism (and mtime invalidation) `GET /thumbnail` below
+    uses for a finished render."""
+    await _get_project_or_404(project_id, repo)
+    timeline = await timeline_service.get_active(project_id)
+    if timeline is None or shot_id not in {s.id for s in timeline.all_shots()}:
+        raise HTTPException(
+            status_code=404, detail=f"shot {shot_id} not found in the active timeline"
+        )
+
+    binding = await ShotBindingRepository(session).get(
+        uuid.UUID(project_id), timeline.version, shot_id
+    )
+    path = await _resolve_bound_media_path(session, binding)
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail=f"shot {shot_id} has no resolved media yet")
+
+    if is_video_file(path):
+        cache_path = settings.storage_root / project_id / "cache" / f"shot_{shot_id}.jpg"
+        served_path = await cached_video_frame(
+            path,
+            cache_path,
+            ffmpeg_binary=settings.ffmpeg_binary,
+            ffprobe_binary=settings.ffprobe_binary,
+        )
+        return FileResponse(served_path, media_type="image/jpeg")
+
+    return FileResponse(path, media_type=mime_type_for_extension(path.suffix.lstrip(".")))
+
+
+@router.get("/{project_id}/thumbnail")
+async def get_project_thumbnail(
+    project_id: str,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    session: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    """F0b/F1: one representative image per project, for the project-list
+    screen. Source order (F1, agreed with the user 2026-08-16):
+
+    1. `final.mp4` exists -> a frame roughly 10% in, clamped to
+       [0.5s, 3s] (never frame 0 - routinely a fade-in or a dark frame).
+    2. No video yet -> the FIRST shot's bound asset, in TIMELINE order
+       (scene order, then shot order - `timeline.all_shots()`, never
+       `shot_id` order, for the same reason `GET /progress` already
+       reorders: nothing enforces the two coinciding), resized.
+    3. Neither -> `404`, and the project-list card falls back to its
+       status chip (F1's own explicit fallback, not an error state).
+
+    Both real cases share one on-disk cache file, keyed on the real
+    source's own mtime (`app/assets/thumbnails.py`) - including across a
+    project moving from case 2 to case 1 the first time it renders: the
+    freshly-written `final.mp4` is newer than whatever was cached from
+    the shot asset, so the very next request regenerates from the video
+    without any special-cased "which source made the current cache"
+    bookkeeping.
+    """
+    project = await _get_project_or_404(project_id, repo)
+    cache_path = settings.storage_root / project_id / "cache" / "thumbnail.jpg"
+
+    if project.video_path:
+        video_path = Path(project.video_path)
+        if video_path.exists():
+            served_path = await cached_video_frame(
+                video_path,
+                cache_path,
+                ffmpeg_binary=settings.ffmpeg_binary,
+                ffprobe_binary=settings.ffprobe_binary,
+            )
+            return FileResponse(served_path, media_type="image/jpeg")
+
+    timeline = await timeline_service.get_active(project_id)
+    if timeline is not None and timeline.all_shots():
+        first_shot = timeline.all_shots()[0]
+        binding = await ShotBindingRepository(session).get(
+            uuid.UUID(project_id), timeline.version, first_shot.id
+        )
+        path = await _resolve_bound_media_path(session, binding)
+        if path is not None and path.exists():
+            if is_video_file(path):
+                served_path = await cached_video_frame(
+                    path,
+                    cache_path,
+                    ffmpeg_binary=settings.ffmpeg_binary,
+                    ffprobe_binary=settings.ffprobe_binary,
+                )
+            else:
+                served_path = cached_resized_image(path, cache_path)
+            return FileResponse(served_path, media_type="image/jpeg")
+
+    raise HTTPException(status_code=404, detail="no thumbnail available yet")
 
 
 @router.delete("/{project_id}")

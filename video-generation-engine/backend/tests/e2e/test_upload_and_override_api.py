@@ -13,6 +13,11 @@ tests/integration/test_resolve_assets_generation_real.py). The review
 gate test below manufactures a `failed` binding directly to exercise the
 gate itself over HTTP - it is not a claim that DRY_RUN can fail on its
 own.
+
+F0a (2026-08-16): every trigger below (`render`, `timeline/approve`,
+`shots/{id}/override`) now returns `202` immediately - call sites that
+used to read the trigger's own response body now poll via
+`tests/e2e/_polling.py::trigger_and_wait` instead.
 """
 
 import asyncio
@@ -27,6 +32,8 @@ from app.core.config import settings
 from app.db.session import async_session_factory
 from app.main import app
 from app.repositories.shot_binding_repository import ShotBindingRepository
+
+from ._polling import trigger_and_wait
 
 _SCRIPT = (
     "Germany possessed abundant coal, fueling its factories and its "
@@ -55,8 +62,8 @@ def _png_bytes(color: tuple[int, int, int] = (10, 20, 30)) -> bytes:
 def _create_and_render(client: TestClient) -> tuple[str, dict]:
     project_id = client.post("/api/v1/projects", json={"name": "M6.5 upload/override"}).json()["id"]
     client.post(f"/api/v1/projects/{project_id}/script", json={"content": _SCRIPT})
-    render_resp = client.post(f"/api/v1/projects/{project_id}/render")
-    return project_id, render_resp.json()
+    awaiting = trigger_and_wait(client, "post", f"/api/v1/projects/{project_id}/render")
+    return project_id, awaiting
 
 
 async def _flip_binding_to_failed(project_id: str, timeline_version: int, shot_id: str) -> None:
@@ -147,13 +154,13 @@ def test_override_before_approval_locks_the_shot_but_still_requires_approval(cli
     shot_id = awaiting["timeline"]["scenes"][0]["shots"][0]["id"]
     version_before = awaiting["timeline"]["version"]
 
-    override_resp = client.post(
+    overridden = trigger_and_wait(
+        client,
+        "post",
         f"/api/v1/projects/{project_id}/shots/{shot_id}/override",
         files={"file": ("override.png", _png_bytes((9, 9, 9)), "image/png")},
         data={"description": "a human-chosen photo for this exact shot"},
     )
-    assert override_resp.status_code == 200, override_resp.text
-    overridden = override_resp.json()
     assert overridden["status"] == "awaiting_approval"
     assert overridden["timeline"]["version"] > version_before
 
@@ -173,9 +180,7 @@ def test_override_before_approval_locks_the_shot_but_still_requires_approval(cli
     assert detail["locked"] is True
     assert detail["asset"]["provider"] == "project_assets"
 
-    approve_resp = client.post(f"/api/v1/projects/{project_id}/timeline/approve")
-    assert approve_resp.status_code == 200
-    completed = approve_resp.json()
+    completed = trigger_and_wait(client, "post", f"/api/v1/projects/{project_id}/timeline/approve")
     assert completed["status"] == "completed", completed.get("error")
 
     final_shot = next(
@@ -191,8 +196,7 @@ def test_override_after_completion_self_approves_and_preserves_duration_and_narr
     Narration is the master clock; an upload must be a free, instant
     swap, never a paid re-narration."""
     project_id, _awaiting = _create_and_render(client)
-    approve_resp = client.post(f"/api/v1/projects/{project_id}/timeline/approve")
-    completed = approve_resp.json()
+    completed = trigger_and_wait(client, "post", f"/api/v1/projects/{project_id}/timeline/approve")
     assert completed["status"] == "completed", completed.get("error")
     assert completed["timeline"]["produced_by"] == "narration"
 
@@ -200,13 +204,13 @@ def test_override_after_completion_self_approves_and_preserves_duration_and_narr
     duration_before = completed["timeline"]["scenes"][0]["shots"][0]["duration_s"]
     total_duration_before = completed["timeline"]["metadata"]["total_duration_s"]
 
-    override_resp = client.post(
+    result = trigger_and_wait(
+        client,
+        "post",
         f"/api/v1/projects/{project_id}/shots/{shot_id}/override",
         files={"file": ("override2.png", _png_bytes((3, 3, 3)), "image/png")},
         data={"description": "swapping the picture after the fact"},
     )
-    assert override_resp.status_code == 200, override_resp.text
-    result = override_resp.json()
     # A self-approving override resumes on its own - no separate call to
     # /timeline/approve needed once the plan was already approved.
     assert result["status"] == "completed", result.get("error")
@@ -227,8 +231,7 @@ def test_review_gate_blocks_completion_until_the_failed_shot_is_overridden(clien
     shot_id = awaiting["timeline"]["scenes"][0]["shots"][0]["id"]
     asyncio.run(_flip_binding_to_failed(project_id, version, shot_id))
 
-    approve_resp = client.post(f"/api/v1/projects/{project_id}/timeline/approve")
-    gated = approve_resp.json()
+    gated = trigger_and_wait(client, "post", f"/api/v1/projects/{project_id}/timeline/approve")
     # A28: a distinct status from awaiting_approval - the plan WAS
     # approved; what's blocking now is a failed shot, a different remedy.
     assert gated["status"] == "awaiting_review", gated.get("error")
@@ -238,16 +241,16 @@ def test_review_gate_blocks_completion_until_the_failed_shot_is_overridden(clien
 
     # Re-rendering without fixing anything is a clean no-op resume, not
     # progress - the gate does not wear down.
-    still_gated = client.post(f"/api/v1/projects/{project_id}/render").json()
+    still_gated = trigger_and_wait(client, "post", f"/api/v1/projects/{project_id}/render")
     assert still_gated["status"] == "awaiting_review"
 
-    override_resp = client.post(
+    fixed = trigger_and_wait(
+        client,
+        "post",
         f"/api/v1/projects/{project_id}/shots/{shot_id}/override",
         files={"file": ("fix.png", _png_bytes((4, 4, 4)), "image/png")},
         data={"description": "the human-supplied fix for the failed shot"},
     )
-    assert override_resp.status_code == 200, override_resp.text
-    fixed = override_resp.json()
     assert fixed["status"] == "completed", fixed.get("error")
 
 

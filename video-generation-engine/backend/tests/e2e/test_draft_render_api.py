@@ -7,6 +7,13 @@ The key property under test is that a draft is available BEFORE approval
 (the pre-approval search pass already resolves what it can - M6.5), and
 that it never disturbs the project's own `status`/`video_path`, which
 only `POST /render`'s own workflow progression controls.
+
+F0a (2026-08-16): `POST /render`/`POST /timeline/approve` now return
+`202` immediately - setup/assertion calls to either below now go through
+`tests/e2e/_polling.py::trigger_and_wait`. `POST /render/draft` itself is
+UNCHANGED and stays synchronous (see that endpoint's own docstring for
+why it was deliberately left out of F0a's scope) - this file's own core
+claim, that the draft path never touches workflow state, is unaffected.
 """
 
 import json
@@ -17,6 +24,8 @@ from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from app.main import app
+
+from ._polling import trigger_and_wait
 
 _SCRIPT = (
     "Germany possessed abundant coal, fueling its factories and its "
@@ -60,7 +69,7 @@ def _create_project_with_script(client: TestClient) -> str:
 
 def test_draft_available_before_approval_and_never_disturbs_project_status(client):
     project_id = _create_project_with_script(client)
-    awaiting = client.post(f"/api/v1/projects/{project_id}/render").json()
+    awaiting = trigger_and_wait(client, "post", f"/api/v1/projects/{project_id}/render")
     assert awaiting["status"] == "awaiting_approval", awaiting.get("error")
 
     draft_resp = client.post(f"/api/v1/projects/{project_id}/render/draft")
@@ -86,11 +95,10 @@ def test_draft_available_before_approval_and_never_disturbs_project_status(clien
 
 def test_draft_and_final_are_independent_files_at_independent_resolutions(client):
     project_id = _create_project_with_script(client)
-    client.post(f"/api/v1/projects/{project_id}/render")
+    trigger_and_wait(client, "post", f"/api/v1/projects/{project_id}/render")
     client.post(f"/api/v1/projects/{project_id}/render/draft")
 
-    approve_resp = client.post(f"/api/v1/projects/{project_id}/timeline/approve")
-    completed = approve_resp.json()
+    completed = trigger_and_wait(client, "post", f"/api/v1/projects/{project_id}/timeline/approve")
     assert completed["status"] == "completed", completed.get("error")
 
     final_resp = client.get(f"/api/v1/projects/{project_id}/video")
@@ -115,6 +123,6 @@ def test_draft_endpoint_requires_a_timeline(client):
 
 def test_video_draft_404s_when_no_draft_has_been_rendered(client):
     project_id = _create_project_with_script(client)
-    client.post(f"/api/v1/projects/{project_id}/render")
+    trigger_and_wait(client, "post", f"/api/v1/projects/{project_id}/render")
     resp = client.get(f"/api/v1/projects/{project_id}/video/draft")
     assert resp.status_code == 404

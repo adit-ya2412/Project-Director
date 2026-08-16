@@ -9,6 +9,10 @@ Written but NOT run in this session - a live, human-driven, now fully
 rendered project sits at the approval gate in the same shared dev
 Postgres; running pytest would truncate it via `tests/conftest.py`'s
 autouse `clean_database` fixture.
+
+F0a (2026-08-16): `POST /narration/retry` now returns `202` immediately -
+assertions below that used to read the trigger's own response body now
+poll via `tests/e2e/_polling.py::trigger_and_wait` instead.
 """
 
 import asyncio
@@ -34,6 +38,8 @@ from app.schemas.timeline import (
 from app.timeline.service import TimelineService
 from app.workflow.context import RunContext
 from app.workflow.steps.narration import NarrationStep
+
+from ._polling import trigger_and_wait
 
 _SCENE_TEXT = "Bro, Germany ke paas oil tha hi nahi."
 
@@ -134,10 +140,12 @@ def test_retry_sets_the_new_voice_and_resynthesises(client):
     assert before.produced_by == ProducedBy.NARRATION
     assert before.metadata.voice_id == "voice-A"
 
-    resp = client.post(
-        f"/api/v1/projects/{project_id}/narration/retry", json={"voice_id": "voice-B"}
+    trigger_and_wait(
+        client,
+        "post",
+        f"/api/v1/projects/{project_id}/narration/retry",
+        json={"voice_id": "voice-B"},
     )
-    assert resp.status_code == 200, resp.text
 
     after = asyncio.run(_read_active(project_id))
     # NarrationStep genuinely re-ran (DRY_RUN's fake still cycles
@@ -160,8 +168,10 @@ def test_retry_re_approves_when_the_timeline_was_already_approved(client):
 
     asyncio.run(_approve_current())
 
-    resp = client.post(
-        f"/api/v1/projects/{project_id}/narration/retry", json={"voice_id": "voice-B"}
+    body = trigger_and_wait(
+        client,
+        "post",
+        f"/api/v1/projects/{project_id}/narration/retry",
+        json={"voice_id": "voice-B"},
     )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["status"] != "draft"
+    assert body["status"] != "draft"

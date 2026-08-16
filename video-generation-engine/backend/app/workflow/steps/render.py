@@ -208,6 +208,13 @@ async def render_video(
         narration_content_hashes=narration_content_hashes,
         music_content_hash=music_content_hash,
         render_settings=render_settings,
+        # R2 (2026-08-16): these are read from config below, at mux time,
+        # exactly like `bed_gain_db=`/`duck_gain_db=` in the `mux_music`
+        # call further down - they belong in the fingerprint for the
+        # identical reason `render_settings` does, and until this fix
+        # they were the one real input this function didn't cover.
+        music_bed_gain_db=settings.music_bed_gain_db,
+        music_duck_gain_db=settings.music_duck_gain_db,
         ffmpeg_version=ffmpeg_version,
     )
 

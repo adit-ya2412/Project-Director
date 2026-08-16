@@ -81,7 +81,11 @@ DEFAULT_PIPELINE: list[WorkflowStep] = [
     CompleteStep(),
 ]
 
-_TERMINAL_RUN_STATES = frozenset({"completed", "failed"})
+# Not underscore-prefixed (unlike most module-private constants in this
+# codebase): F0a's `app/workflow/trigger.py` needs the identical set to
+# decide whether a `workflow_run` row represents a run still in flight -
+# one source of truth for "terminal", shared rather than duplicated.
+TERMINAL_RUN_STATES = frozenset({"completed", "failed"})
 
 
 class WorkflowEngine:
@@ -102,7 +106,7 @@ class WorkflowEngine:
         project_uuid = uuid_module.UUID(self._ctx.project_id)
 
         run_row = await self._workflow_repo.get_latest(project_uuid)
-        if run_row is None or run_row.state in _TERMINAL_RUN_STATES:
+        if run_row is None or run_row.state in TERMINAL_RUN_STATES:
             run_row = await self._workflow_repo.create(project_uuid)
             await self._events.emit(
                 project_uuid, "WorkflowStarted", {"workflow_run_id": str(run_row.id)}

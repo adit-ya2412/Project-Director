@@ -5,6 +5,14 @@ AWAITING_APPROVAL, ADR-008) -> approve -> download a real MP4 -- entirely
 on fakes, with zero API keys configured. This is the test referenced as
 M0's "done when" criterion in docs/13_Implementation_Guide.md, extended
 in M4 for the real human-approval gate.
+
+F0a (2026-08-16): `POST /render`/`POST /timeline/approve` now return
+`202` immediately and finish in the background - every place this test
+used to read the trigger's own response body now polls instead, via
+`tests/e2e/_polling.py::trigger_and_wait`. The pipeline's own behaviour
+under test (stops at the approval gate, resumes past it, produces a real
+narrated/rendered MP4) is unchanged; only how the test OBSERVES that
+behaviour changed.
 """
 
 import subprocess
@@ -16,6 +24,8 @@ from app.core.config import settings
 from app.main import app
 from app.schemas.timeline import Timeline
 from app.timeline.duration import compute_timeline_duration
+
+from ._polling import trigger_and_wait
 
 
 @pytest.fixture
@@ -82,9 +92,12 @@ def test_script_to_video_end_to_end(client, tmp_path):
     # approval gate (ADR-008). Nothing EXPENSIVE has happened yet - but
     # search has, and the whole point of moving it here is that the human
     # reaches this gate having already seen what was found.
-    render_resp = client.post(f"/api/v1/projects/{project_id}/render")
-    assert render_resp.status_code == 200
-    awaiting = render_resp.json()
+    #
+    # F0a: the trigger itself only ever returns a 202 + run id now -
+    # `trigger_and_wait` posts it and polls `GET /status` for the actual
+    # outcome, returning the same `Project` body this test used to read
+    # straight off the POST response.
+    awaiting = trigger_and_wait(client, "post", f"/api/v1/projects/{project_id}/render")
     assert awaiting["error"] is None, awaiting.get("error")
     assert awaiting["timeline"] is not None
 
@@ -125,14 +138,12 @@ def test_script_to_video_end_to_end(client, tmp_path):
 
     # Rendering again while awaiting approval is a no-op resume, not a
     # second pipeline run - it should land right back at the same gate.
-    render_again_resp = client.post(f"/api/v1/projects/{project_id}/render")
-    assert render_again_resp.json()["timeline"]["version"] == awaiting["timeline"]["version"]
+    render_again = trigger_and_wait(client, "post", f"/api/v1/projects/{project_id}/render")
+    assert render_again["timeline"]["version"] == awaiting["timeline"]["version"]
 
     # 4. Approve — resumes the same run: narration -> resolve_assets
     # (paid pass) -> render -> complete.
-    approve_resp = client.post(f"/api/v1/projects/{project_id}/timeline/approve")
-    assert approve_resp.status_code == 200
-    rendered = approve_resp.json()
+    rendered = trigger_and_wait(client, "post", f"/api/v1/projects/{project_id}/timeline/approve")
     assert rendered["status"] == "completed", rendered.get("error")
     assert rendered["timeline"]["status"] == "approved"
 

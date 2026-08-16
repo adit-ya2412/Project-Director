@@ -35,6 +35,8 @@ def _fingerprint(**overrides) -> str:
         "narration_content_hashes": ["narr-1"],
         "music_content_hash": "music-1",
         "render_settings": _SETTINGS,
+        "music_bed_gain_db": -14.0,
+        "music_duck_gain_db": -20.0,
         "ffmpeg_version": "ffmpeg version 9.0",
     }
     kwargs.update(overrides)
@@ -92,6 +94,19 @@ def test_different_fps_changes_the_fingerprint():
 
 def test_different_ffmpeg_version_changes_the_fingerprint():
     assert _fingerprint(ffmpeg_version="ffmpeg version 8.0") != _fingerprint()
+
+
+def test_different_bed_gain_changes_the_fingerprint():
+    """R2: `music_bed_gain_db` is read from config at mux time, not from
+    the Timeline - before this fix nothing here caught a change to it at
+    all, so raising the bed gain and re-rendering silently served the
+    OLD, quieter cached bytes back."""
+    assert _fingerprint(music_bed_gain_db=-8.0) != _fingerprint()
+
+
+def test_different_duck_gain_changes_the_fingerprint():
+    """R2, the other half of the same defect."""
+    assert _fingerprint(music_duck_gain_db=-26.0) != _fingerprint()
 
 
 def test_bookkeeping_fields_never_affect_the_fingerprint():

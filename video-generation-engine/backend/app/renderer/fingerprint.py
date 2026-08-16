@@ -15,11 +15,38 @@ identical bytes must fingerprint the same), the narration audio actually
 muxed in (if any), the music track actually muxed in (if any), the
 render settings that actually affect the output pixels (width, height,
 fps, pixel format - NOT `ffmpeg_binary`/`ffprobe_binary`, which are just
-executable paths on this machine, not inputs to the encode), and the
-installed ffmpeg's own version (a version bump can change encoder
-behaviour even given byte-identical inputs, so it must invalidate old
-cache entries rather than silently serving a render made by a different
-binary).
+executable paths on this machine, not inputs to the encode), the audio
+mix settings that actually affect the output SAMPLES (`music_bed_gain_db`/
+`music_duck_gain_db` - read straight from config at mux time by
+`app/renderer/music.py::mux_music`, never from the Timeline, so nothing
+else here would ever catch a change to them), and the installed ffmpeg's
+own version (a version bump can change encoder behaviour even given
+byte-identical inputs, so it must invalidate old cache entries rather
+than silently serving a render made by a different binary).
+
+**R2 (2026-08-16): the mix gains were missing entirely, and it cost
+real money.** `music_bed_gain_db`/`music_duck_gain_db` are read from
+config at mux time (see `RenderStep.render_video`'s call into
+`mux_music`) exactly like every other render setting above, but were
+never part of this function's payload - so raising the bed gain and
+re-rendering to listen returned the OLD, cached bytes at the OLD
+(quieter) gain, with no re-encode and no error. The two live-testing
+sessions this happened in only surfaced the bug at all because the
+previous `final.mp4` had separately been deleted, so the cache lookup
+missed on the absent file rather than on the fingerprint - the
+fingerprint match itself was silent and wrong. Fixed by adding both
+values to the payload below, unconditionally, the same way
+`music_content_hash` is always present (as `None` when there is no
+music) rather than only when relevant - I5's promise is "same
+fingerprint -> provably identical output", so a value that CAN affect
+output must be hashed even on a render where it happens not to (no
+music selected, so the gains are moot for that particular file): the
+cost of that is a possible false MISS on an unrelated config change,
+never a false HIT, which is exactly the tolerance this module's own
+closing paragraph already accepts for `music_plan`'s other fields. This
+invalidates every fingerprint computed before this fix - correct and
+harmless, since a cache MISS only ever means "render for real", not
+"produce wrong output".
 
 Bookkeeping fields (`version`, `parent_version`, `produced_by`, `status`,
 `created_at`, `timeline_id`, `project_id`, `schema_version`) are
@@ -106,6 +133,8 @@ def compute_render_fingerprint(
     narration_content_hashes: list[str],
     music_content_hash: str | None,
     render_settings: RenderSettings,
+    music_bed_gain_db: float,
+    music_duck_gain_db: float,
     ffmpeg_version: str,
 ) -> str:
     timeline_document = timeline.model_dump(mode="json")
@@ -126,6 +155,16 @@ def compute_render_fingerprint(
             "fps": render_settings.fps,
             "pixel_format": render_settings.pixel_format,
         },
+        # R2 (2026-08-16): read from config at mux time
+        # (`app/renderer/music.py::mux_music`), never from the Timeline -
+        # the only two render inputs that used to have nowhere to be
+        # caught by this function at all. Present unconditionally, same
+        # as `music_content_hash` above, even on a render with no music
+        # selected (where they happen not to affect this particular
+        # file's bytes) - see this module's own docstring for why that
+        # is a deliberately conservative choice, not an oversight.
+        "music_bed_gain_db": music_bed_gain_db,
+        "music_duck_gain_db": music_duck_gain_db,
         "ffmpeg_version": ffmpeg_version,
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
