@@ -7,12 +7,17 @@ about. See app/prompts/shot_planner/v1.md for the prompt specification.
 
 The model is asked for a CONTIGUOUS RANGE OF FRAGMENT INDICES per shot
 ("fragments 1 to 2"), never a `narration_start`/`narration_end`
-character offset - see `app/planners/shot/fragments.py`'s own docstring
+character offset - see `app/planners/fragments.py`'s own docstring
 for the full reasoning (three separate incidents of unreliable model
 character-arithmetic, one root cause). `_to_domain_shot` converts a
 shot's fragment range back into the exact character span
 `Shot.narration_span` has always stored; nothing downstream of this
 module changed.
+
+The splitter itself (`app/planners/fragments.py`) moved out of this
+package in S2 (2026-08-16): the Scene Planner needed the identical
+splitter for the identical reason, and there is nothing shot-specific
+left in it - both planners now import the one module.
 
 A crash mid-loop (after scene 3's shots landed, before scene 4's) is not
 separately resumable within this call - `GenerateTimelineStep` only
@@ -26,8 +31,8 @@ import uuid
 
 from app.core.errors import PermanentError
 from app.core.logging import get_logger
+from app.planners.fragments import NarrationFragment, split_narration_fragments
 from app.planners.repair import run_structured_with_repair
-from app.planners.shot.fragments import NarrationFragment, split_narration_fragments
 from app.planners.shot.schemas import ShotPlannerOutput, ShotPlanOutput
 from app.prompts.loader import load_prompt
 from app.providers.base import PlanningLLMProvider

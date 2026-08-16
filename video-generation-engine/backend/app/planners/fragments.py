@@ -1,4 +1,5 @@
-"""Deterministic narration fragmentation (M5 hardening, 2026-08-15).
+"""Deterministic narration fragmentation (M5 hardening, 2026-08-15;
+shared with the Scene Planner as of S2, 2026-08-16).
 
 ## Why this exists
 
@@ -37,6 +38,26 @@ Devanagari combining marks never immediately follow whitespace or
 sentence-ending punctuation. Devanagari needs no special-case handling
 anywhere in this module, which is itself evidence this is the right
 fix rather than another patch.
+
+## Shared with the Scene Planner (S2, 2026-08-16)
+
+The Scene Planner had the SAME defect, one level up: it was asked to
+retype the user's script verbatim into per-scene `narration_text`, and
+`app/planners/scene/planner.py` validated that concatenating those
+scenes reproduced the script's word content exactly - the identical
+"ask a model to reproduce deterministic text losslessly" mistake as the
+Shot Planner's character offsets, and it failed the same way (two
+back-to-back validation failures on a real run, burning a full planning
+call). The fix is the same fix: the Scene Planner is now handed the
+SCRIPT pre-split into these same numbered fragments and chooses a
+contiguous fragment-index range per SCENE, never retyping narration
+text. This module moved here (out of `app/planners/shot/`) because it
+is no longer shot-specific - it is the one deterministic splitter both
+planners that ever faced this problem now share. See the
+Implementation Guide's S2 section for the full reasoning, including why
+a scene boundary chosen this way is always also a valid shot-fragment
+boundary once the Shot Planner re-splits that scene's `narration_text`
+on its own turn.
 
 ## Fragment granularity - argued, not assumed
 
@@ -84,7 +105,9 @@ the same way (fed back and asked again) - not a new failure mode
 requiring new machinery. In practice this means: a short, single-
 sentence scene realistically gets ONE shot, and the Shot Planner prompt
 says so explicitly (it is told the fragment count before it plans),
-so a repair round is the rare exception, not the common path.
+so a repair round is the rare exception, not the common path. The same
+reasoning applies one level up: a script cannot have more scenes than
+it has fragments, for the identical arithmetic reason.
 
 ## Lossless reconstruction
 
@@ -92,21 +115,21 @@ Every fragment's span is `[start, end)` where `end` is the NEXT
 fragment's own `start` (or `len(text)` for the last fragment) - never a
 separately-tracked "gap". This guarantees, by construction rather than
 by a separate check, that concatenating every fragment's own span
-exactly reproduces the scene's `narration_text` character for character,
-including all whitespace - which is what the Scene Planner's own
-verbatim-script check ultimately depends on staying true.
+exactly reproduces the source text character for character, including
+all whitespace - which is what both the Scene Planner's and the Shot
+Planner's own tiling invariants ultimately depend on staying true.
 
 ## Whitespace-only fragments are merged, never emitted standalone (2026-08-16)
 
 A live run surfaced a second-order defect: the user's script has blank
-lines between stanzas, and the Scene Planner's own verbatim check means
-that whitespace has to live SOMEWHERE - it lands at the front of
-whichever scene comes next. The splitter above would then emit that
-leading blank run (`"\n\n"`) as its OWN fragment, and the Shot Planner -
-correctly following its own instructions to assign every fragment to
-some shot - gave it one: a shot whose entire narration is blank lines,
-still charged a slice of the video's duration and its own Ken Burns
-move for a beat of silence.
+lines between stanzas, and the Scene Planner's own (then verbatim)
+check meant that whitespace had to live SOMEWHERE - it landed at the
+front of whichever scene came next. The splitter above would then emit
+that leading blank run (`"\n\n"`) as its OWN fragment, and the Shot
+Planner - correctly following its own instructions to assign every
+fragment to some shot - gave it one: a shot whose entire narration is
+blank lines, still charged a slice of the video's duration and its own
+Ken Burns move for a beat of silence.
 
 **The fix: after splitting, any fragment whose content is entirely
 whitespace is merged into an ADJACENT fragment** (forward into the
@@ -121,6 +144,24 @@ hold without any special-casing - the merged fragment simply carries
 the blank run's characters as a leading (or trailing) part of its own
 span, the same way a fragment can already contain incidental whitespace
 around its own trimmed `text`.
+
+**In practice, only the very first fragment (the one starting at
+position 0) can ever be whitespace-only.** Every OTHER split point
+`_find_split_points` produces is, by construction, the position of a
+non-whitespace character - the first one found after skipping past the
+whitespace that followed whatever triggered the split - so a fragment
+starting at any such point already contains real content and can never
+be entirely blank. A blank run that follows a sentence (rather than
+opening the text) is therefore already trailing content of the
+PRECEDING fragment before this merge pass ever runs, not a standalone
+fragment for it to fold forward - confirmed by fuzzing this splitter
+across ~200k random combinations of sentence/clause/newline tokens
+(2026-08-16): not one produced an interior whitespace-only fragment.
+The forward/backward merge above exists for the one case that DOES
+reach it (leading whitespace, when the text itself opens with a blank
+run) and the whole-text-is-whitespace degenerate case below - not for
+an "interior" case that cannot arise through the primary or secondary
+split passes at all.
 
 Fragments are renumbered 1..N after merging, since removing a fragment
 always changes how many exist.
@@ -145,13 +186,14 @@ _LONG_FRAGMENT_THRESHOLD_CHARS = 80
 
 @dataclass(frozen=True)
 class NarrationFragment:
-    """One deterministically-split piece of a scene's `narration_text`.
-    `index` is 1-based (matching how the Shot Planner prompt numbers
-    fragments for the model - "fragment 3", never "fragment[2]").
-    `start`/`end` are the exact, lossless, 0-indexed half-open character
-    span into the scene's `narration_text` - `text` is the SAME span,
-    stripped, for display in the prompt only; span arithmetic always
-    uses `start`/`end`, never `text`, so trimming never loses a
+    """One deterministically-split piece of narration text (a scene's
+    `narration_text`, for the Shot Planner, or the whole script, for the
+    Scene Planner). `index` is 1-based (matching how both planners'
+    prompts number fragments for the model - "fragment 3", never
+    "fragment[2]"). `start`/`end` are the exact, lossless, 0-indexed
+    half-open character span into the source text - `text` is the SAME
+    span, stripped, for display in the prompt only; span arithmetic
+    always uses `start`/`end`, never `text`, so trimming never loses a
     character that matters for reconstruction."""
 
     index: int
@@ -228,9 +270,9 @@ def split_narration_fragments(text: str) -> list[NarrationFragment]:
     merge pass that folds any whitespace-only fragment into an adjacent
     one (see the module docstring's own section on why). See the module
     docstring for why each threshold and character set was chosen.
-    Always returns at least one fragment (a scene with no sentence-
-    ending punctuation and no newlines is one whole fragment - the "one
-    fragment, several shots" case the Shot Planner's own validator
+    Always returns at least one fragment (text with no sentence-ending
+    punctuation and no newlines is one whole fragment - the "one
+    fragment, several shots/scenes" case each caller's own validator
     handles, not this function)."""
     if not text:
         return [NarrationFragment(index=1, start=0, end=0, text="")]

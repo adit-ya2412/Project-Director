@@ -9,7 +9,7 @@ off by four characters killing a live run, and internal boundaries
 splitting mid-word/mid-grapheme-cluster) converged on one fix: the model
 is no longer asked for `narration_start`/`narration_end` character
 offsets at all. It is handed a scene's narration pre-split into numbered
-fragments (`app/planners/shot/fragments.py`) and asked only for a
+fragments (`app/planners/fragments.py`) and asked only for a
 CONTIGUOUS RANGE of fragment numbers per shot - a far more natural
 judgement, and one where a mid-word or mid-grapheme split is
 structurally impossible rather than something to detect and repair.
@@ -20,7 +20,7 @@ the model being off-by-one about an inclusive range, a large one
 suggests it misread the fragment list entirely), a genuine internal gap
 still failing loudly, and the new fragment-count-exceeded case (a scene
 cannot have more shots than fragments - see
-`app/planners/shot/fragments.py`'s own docstring for why that is not a
+`app/planners/fragments.py`'s own docstring for why that is not a
 new rule, just this same tiling check).
 
 `app/planners/shot/fragments.py`'s own tests
@@ -38,7 +38,7 @@ import pytest_asyncio
 from app.core.config import settings
 from app.core.errors import PermanentError
 from app.db.session import async_session_factory
-from app.planners.shot.fragments import split_narration_fragments
+from app.planners.fragments import split_narration_fragments
 from app.planners.shot.planner import ShotPlanner
 from app.planners.shot.schemas import (
     ShotCameraOutput,

@@ -1,14 +1,16 @@
-"""`app/planners/shot/fragments.py` (M5 hardening, 2026-08-15) - pure,
-fast, no network, no model. The actual fix for three incidents of the
-Shot Planner doing unreliable character arithmetic: a mid-word split
-("Leuna-Werke" -> "L" + "euna-Werke") and a mid-grapheme-cluster split
-("दिन" -> "द" + "िन") both become structurally impossible once shots are
-assigned whole fragments rather than raw character offsets - these
-tests prove that directly against the exact measured bug text, not
-merely against the algorithm's own internal logic.
+"""`app/planners/fragments.py` (M5 hardening, 2026-08-15; moved out of
+`app/planners/shot/` in S2, 2026-08-16, once the Scene Planner started
+sharing it) - pure, fast, no network, no model. The actual fix for three
+incidents of the Shot Planner doing unreliable character arithmetic: a
+mid-word split ("Leuna-Werke" -> "L" + "euna-Werke") and a
+mid-grapheme-cluster split ("दिन" -> "द" + "िन") both become
+structurally impossible once shots are assigned whole fragments rather
+than raw character offsets - these tests prove that directly against
+the exact measured bug text, not merely against the algorithm's own
+internal logic.
 """
 
-from app.planners.shot.fragments import split_narration_fragments
+from app.planners.fragments import split_narration_fragments
 
 
 def _reconstruct(text: str) -> str:
@@ -180,10 +182,33 @@ def test_reported_scene_sc_05_no_longer_produces_a_blank_shot():
     assert fragments[0].text == "अब यहाँ twist है।"
 
 
-def test_a_whitespace_only_fragment_in_the_middle_merges_forward():
-    """The general rule, not just the two reported edge cases: a blank
-    run anywhere in the interior merges into the fragment that follows
-    it, never staying independently assignable."""
+def test_a_blank_run_between_sentences_is_absorbed_by_the_preceding_fragment():
+    """This test used to claim (and assert) that a blank run BETWEEN two
+    sentences merges FORWARD into the fragment that follows it, by
+    analogy with the leading-blank-run cases below. That assertion was
+    never actually true of this input, and nothing had exercised it
+    (found by re-running the real splitter directly, not by reasoning
+    about the code in the abstract - the same way the fragment redesign
+    itself was verified).
+
+    The real behaviour: `_find_split_points` skips a trigger's trailing
+    whitespace when computing where the NEXT fragment starts, so that
+    whitespace already belongs to the END of the fragment BEFORE the
+    trigger - there is no separate whitespace-only fragment left for the
+    merge pass to fold forward. More generally, an INTERIOR (non-
+    leading) whitespace-only fragment cannot arise via the primary or
+    secondary split passes at all: every split point other than the
+    mandatory 0 is, by construction, the position of a non-whitespace
+    character, so a fragment starting there is never entirely blank.
+    Confirmed by fuzzing the real splitter across ~200k random
+    combinations of sentence/clause/newline tokens (2026-08-16): not one
+    produced an interior whitespace-only fragment. See
+    `app/planners/fragments.py`'s own docstring for the same argument.
+
+    The forward-merge rule this test used to (wrongly) assert on is real
+    but only ever fires for a LEADING blank run - see
+    `test_reported_scene_sc_03_no_longer_produces_a_blank_shot` and its
+    neighbour below, which exercise it on inputs that actually reach it."""
     text = "First sentence.\n\n\n\nSecond sentence."
     fragments = split_narration_fragments(text)
     assert _reconstruct(text) == text
@@ -191,8 +216,11 @@ def test_a_whitespace_only_fragment_in_the_middle_merges_forward():
     assert len(fragments) == 2
     assert fragments[0].text == "First sentence."
     assert fragments[1].text == "Second sentence."
-    # The blank run merged FORWARD - it is a leading part of fragment 2.
-    assert text[fragments[1].start : fragments[1].end].startswith("\n\n\n\n")
+    # The blank run is TRAILING content of fragment 1 (the fragment
+    # BEFORE it), not leading content of fragment 2 - the opposite of
+    # what this test used to assert.
+    assert text[fragments[0].start : fragments[0].end].endswith("\n\n\n\n")
+    assert not text[fragments[1].start : fragments[1].end].startswith("\n")
 
 
 def test_a_trailing_whitespace_only_fragment_would_merge_backward():

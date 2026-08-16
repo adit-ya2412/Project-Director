@@ -80,6 +80,12 @@ def _director_output() -> DirectorOutput:
 
 
 def _scene_output() -> ScenePlannerOutput:
+    # SCRIPT splits into exactly 2 fragments (verified directly against
+    # the real splitter - see test_scene_planner.py's own SCRIPT fixture,
+    # the identical text): "Germany possessed abundant coal. " and
+    # "But it lacked oil, and that would shape the war." - one fragment
+    # per scene (S2 hardening, 2026-08-16 - fragment_start/fragment_end
+    # replacing the old retyped narration_text).
     return ScenePlannerOutput(
         scenes=[
             ScenePlanOutput(
@@ -89,7 +95,8 @@ def _scene_output() -> ScenePlannerOutput:
                 summary="Germany had coal.",
                 emotion="curiosity",
                 narrative_purpose="setup",
-                narration_text="Germany possessed abundant coal.",
+                fragment_start=1,
+                fragment_end=1,
                 duration_s=4.0,
             ),
             ScenePlanOutput(
@@ -99,14 +106,15 @@ def _scene_output() -> ScenePlannerOutput:
                 summary="Germany lacked oil.",
                 emotion="tension",
                 narrative_purpose="conflict",
-                narration_text=" But it lacked oil, and that would shape the war.",
+                fragment_start=2,
+                fragment_end=2,
                 duration_s=5.0,
             ),
         ]
     )
 
 
-def _shot_output(scene_id: str, narration_text: str, duration_s: float) -> ShotPlannerOutput:
+def _shot_output(scene_id: str, duration_s: float) -> ShotPlannerOutput:
     # Raw id deliberately does NOT encode scene_id - this mirrors the
     # real model, which reuses the same simple pattern every scene since
     # each call only ever sees one scene. ShotPlanner namespaces by
@@ -118,10 +126,9 @@ def _shot_output(scene_id: str, narration_text: str, duration_s: float) -> ShotP
     # no internal sentence-ending punctuation until its own final full
     # stop, so `split_narration_fragments` produces exactly one fragment
     # for it - and a fragment can never be split between two shots (see
-    # app/planners/shot/fragments.py's own docstring). This test is
+    # app/planners/fragments.py's own docstring). This test is
     # about the four-planner CHAIN's resumability, not shot count, so
     # one shot per scene exercises it identically to two.
-    del narration_text  # unused now that shots are fragment-indexed, not character-indexed
     return ShotPlannerOutput(
         shots=[
             ShotPlanOutput(
@@ -166,8 +173,8 @@ def _full_response_queue() -> list:
     return [
         _director_output(),
         _scene_output(),
-        _shot_output(scenes[0].id, scenes[0].narration_text, scenes[0].duration_s),
-        _shot_output(scenes[1].id, scenes[1].narration_text, scenes[1].duration_s),
+        _shot_output(scenes[0].id, scenes[0].duration_s),
+        _shot_output(scenes[1].id, scenes[1].duration_s),
         _asset_output(scenes[0].id),
         _asset_output(scenes[1].id),
     ]
@@ -279,8 +286,8 @@ async def test_crash_mid_chain_resumes_at_the_next_planner_stage_only(project_id
     scenes = after_crash.scenes
     provider_holder["provider"] = FakePlanningProvider(
         responses=[
-            _shot_output(scenes[0].id, scenes[0].narration_text, scenes[0].duration_s),
-            _shot_output(scenes[1].id, scenes[1].narration_text, scenes[1].duration_s),
+            _shot_output(scenes[0].id, scenes[0].duration_s),
+            _shot_output(scenes[1].id, scenes[1].duration_s),
             _asset_output(scenes[0].id),
             _asset_output(scenes[1].id),
         ]
