@@ -3335,6 +3335,86 @@ Cards: **thumbnail**, name, status chip, shot count and duration where known, cr
 
 **Failed projects are listed prominently, not hidden** (user's explicit call, 2026-08-16). Live testing produced several dead ends — a Shot Planner span failure, a Scene Planner verbatim flake, a narration timing rejection — and each one was a thing the user needed to see and act on, not a record to tidy away. A failed project with a legible reason is the system telling the truth about itself.
 
+### F2 — new project (script, optional assets)
+
+`POST /projects` → `POST /{id}/script` → optionally `POST /{id}/assets` → trigger.
+
+**F2a — voice and music selection are deferred to a later version** (user's call, 2026-08-16). This screen **displays** which voice is configured, and does not offer a picker. Changing a voice after the fact already works (`POST /narration/retry`, N1) and re-auditioning is free because narration is cached per `hash(text + voice + model + format)`. Music selection likewise waits for the curated library (M4–M10).
+
+**F2b — upload descriptions are mandatory and must be 10–15 words**, and the screen must explain what they are for, because the mechanism is not what people assume.
+
+**They are matched by literal term overlap, not by a planner and not by any LLM.** `LocalProjectAssetProvider` puts the human's description into both `title` and `description` on the candidate; `candidate_relevance` then scores the shot's `search_queries` against that text via `term_overlap_relevance` — generic terms weighted a quarter — and `passes_relevance_gate` **discards** anything below `asset_relevance_threshold` (0.25) before it is ever ranked or downloaded. A3 stands: no planner ever sees these.
+
+Two consequences the UI must surface:
+
+- **Write concrete nouns in English** — places, objects, period. The Asset Planner writes its search queries in English because that is what Wikimedia searches, so an English description is what there is to overlap *with*, even when the script is Hindi or Hinglish.
+- **Prose and sentiment score zero.** Measured on the real run: descriptions of `"franz"` (×9), `"moving tanks"` (×3) and `"german_infantary"` matched **nothing** — every one of those uploads fell through the gate and had to be placed by hand through per-shot override instead. The feature silently did nothing, which is the worst possible failure mode for an optional input.
+
+Example, against a shot whose queries are *"Leuna-Werke synthetic fuel plant"* / *"German hydrogenation 1943"*:
+
+| description | result |
+|---|---|
+| `Leuna-Werke synthetic fuel plant, distillation towers, 1943 archival` | matches |
+| `my grandfather's old factory in East Germany` | ~0 |
+| `franz` | 0 |
+
+**F2c — script formatting is load-bearing and should be hinted.** Line breaks become fragment boundaries (S1/S2), which become shot boundaries. Short lines produce clean one-line-per-shot cuts. **And narration is the script verbatim** — the pipeline never rewrites it — so register and script choice are made here or not at all. Mixed-script Hinglish (Devanagari for Hindi, Latin for loanwords) measurably outperformed Romanised Hindi for TTS pronunciation.
+
+### F3 — progress
+
+Two different waits, wanting two different displays.
+
+**Before approval** (Director → Scene → Shot ×N → Asset ×N → free search → music): shots do not exist yet, so per-shot progress is meaningless. Stage-based, driven by `current_step`. Measured 5–15 minutes on real runs.
+
+**After approval** (narration → generation → render): `completed_shots / total_shots` is real and `spent_cost_cents` climbs per generated image. Per-shot, and where a progress bar earns its place.
+
+- **"Nothing spent yet" is a feature, not a blank.** I6 guarantees no money moves before approval, so pre-approval the screen states £0.00 rather than omitting it — that reassurance is the entire reason the gate exists.
+- **Do not display `estimated_cost_cents` — it is known-broken.** It read **0¢** with fifteen generations pending, because it counts only shots whose *primary* strategy is generation and misses everything that fell through the ladder (backlogged, `6902d6a`). Showing a number known to be wrong is worse than showing none.
+- **Errors must be translated.** This phase's Done-when already requires "errors are legible to a non-developer", and real failures were not: *"shot sc_03_sh_01's narration_span (0, 2) covers only whitespace - nothing is actually spoken, so it cannot be timed against narration"*. Show a plain sentence, the technical detail behind a disclosure, and **the action** where one exists — most real failures had one.
+- Polling every 2–3s is ample; individual planner stages take tens of seconds.
+- **Offer retry on a failed plan.** The Scene Planner flake succeeded on a second attempt with no code change, and the engine resumes from the failed stage rather than from scratch, so a retry costs one stage, not a whole plan.
+
+### F4 — Gate 1: asset review, before any money is spent
+
+**This replaces "approve the plan" with "approve the pictures".** Every shot, in playback order, in one list:
+
+- **Found** — the image search selected, shown, with that shot's `intent` and `prompt` beside it.
+- **Missing** — no image, but `intent` and `prompt` still shown, marked as headed for generation.
+
+**Insert or override on either kind.** The critical change: gaps are filled **before** generation rather than after it fails. Supply images for every missing shot and generation never runs and costs nothing.
+
+This is what the real run needed and could not do — 15 of 19 shots were headed for generation, the user had relevant archival photographs on disk, and the only route to using them was per-shot override *after* paying for generation, or bulk upload whose descriptions silently failed the relevance gate.
+
+### F5 — Gate 2: review of generated images (new, mandatory)
+
+A second gate after generation and before render. **Every generated image is shown for approval** — this is no longer a failure-only path.
+
+**F5a — the Director's constraints are demoted from blocker to flag** (user's explicit decision, 2026-08-16, deliberately reversing A26 and A12–A14's blocking behaviour).
+
+The real run showed why. The Director wrote *"No Nazi symbols used decoratively"*; generation produced German tanks bearing insignia; the vision check rejected three attempts and **killed the shot** — in a documentary where those tanks are the historical subject. An over-broad rule destroyed legitimate material and the human never saw it or got a say.
+
+**The check still runs and its verdict is still recorded — it simply stops deciding alone.** The generated image is kept and shown at Gate 2 with the objection attached (*"the vision check thinks this violates: no Nazi symbols used decoratively"*), and the human accepts, regenerates, or replaces it.
+
+This is **more** oversight than the current design, not less: today a machine decides unilaterally and the human sees neither the image nor the objection. Under F5 every generated image and every objection is reviewed by a person before it can reach a render.
+
+**F5b — no automatic retries.** Today generation silently burned three attempts at ~4¢ each trying to satisfy a rule that should not have applied. Generate once, show it with any flag, let the human choose. Cheaper and controllable.
+
+**F5c — the prompt is editable, and regeneration uses the edited prompt.** The prompt is what produced the wrong picture, so rewriting it beats re-rolling the same dice. The edit is a Timeline change (I2 — prompts are decisions) and so goes through `append_version` with `produced_by=HUMAN`, and must persist so a later pass cannot revert it. Regeneration costs money, so it needs explicit confirmation.
+
+**F5d — narration stays before generation.** They are independent — no image depends on a duration and no duration depends on an image — so the order is chosen on other grounds:
+- Narration is ~10¢ against ~60¢ for generation, and **fails earlier and cheaper**. The real whitespace-span failure hit at narration, before any image existed; generation-first would have burned 60¢ and then failed identically.
+- **Its result is stable under every Gate 2 decision**, because an override never changes timing (A29) — swapping an image changes which file plays, never for how long. So nothing done at Gate 2 invalidates it.
+- **It makes Gate 2 better:** with durations reconciled, Gate 2 shows how long each image is actually on screen. A busy, detailed image fails at 1.5s and works at 4.6s, and that judgement is impossible without the number.
+
+### F6 — result
+
+Play (`GET /video`), download, and the three corrections that already exist as endpoints: **different voice** (`POST /narration/retry`, N1), **different music** (`POST /music/retry`, M3), and re-render.
+
+- **Surface the music attribution — it is a legal obligation, not a credit roll.** Every track the permissive search can return is CC0 or CC-BY, and CC-BY *requires* attribution. The string is already generated and stored on `music_plan.selected_track.attribution` (e.g. *"Documentary Music Strings" by tyops is licensed under CC BY 4.0…*). It must be copyable from this screen, or the user publishes in breach without knowing. M7 left "video, description, or both" open — this screen is the minimum answer.
+- **Show what the video is made of**: how many shots came from archival search, entity retrieval, generation, and the user's own uploads. On the real run that was 8 Wikimedia / 3 Wikipedia-entity / 7 generated / 1 uploaded — the single number the user reacted to most, because generated images are where the piece loses credibility.
+- **Show total spend**, from `spent_cost_cents`.
+- Re-auditioning a voice is **free** after the first time (narration caches per `hash(text + voice + model + format)`), and re-rendering is free entirely — local ffmpeg. The screen should say so, because "try another voice" reads as expensive when it is not.
+
 ## Implementation notes (2026-08-15) — folding shot semantics into `GET /progress`, ahead of the frontend
 
 No frontend exists yet (M9 proper hasn't started), but the gap this
