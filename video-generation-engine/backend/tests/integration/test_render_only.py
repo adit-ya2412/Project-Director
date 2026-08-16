@@ -123,11 +123,14 @@ async def test_gap_is_resolve_assets_search_once_planned_but_unresolved(project_
     assert gap == "resolve_assets_search"
 
 
-async def test_gap_is_await_approval_once_search_and_music_are_done(project_id):
+async def test_gap_is_narration_once_search_and_music_are_done(project_id):
     """The free search pass resolved the one shot, and there is no
     `music_plan` at all (`SelectMusicStep.is_satisfied` treats "nothing
-    to select against" as satisfied, not blocking) - but a human never
-    approved the plan."""
+    to select against" as satisfied, not blocking) - but `NarrationStep`
+    never ran. Task 1 (2026-08-16): narration now runs BEFORE the
+    approval gate, so this is the first real gap reported here, not
+    `await_approval` - the plan being unapproved doesn't even come up yet
+    until narration itself is satisfied."""
     async with async_session_factory() as session:
         service = TimelineService(session)
         await service.create_initial(project_id, script="unused")
@@ -155,12 +158,67 @@ async def test_gap_is_await_approval_once_search_and_music_are_done(project_id):
 
     async with async_session_factory() as session:
         gap = await render_precondition_gap(_make_ctx(project_id, session))
+    assert gap == "narration"
+
+
+async def test_gap_is_await_approval_once_narrated_but_never_approved(project_id, monkeypatch):
+    """Task 1 (2026-08-16): with `NarrationStep` moved before
+    `AwaitApprovalStep`, this is the first scenario where `await_approval`
+    is genuinely the reported gap - search resolved, a REAL `NarrationStep
+    .run()` pass already reconciled durations (so `narration` itself is
+    satisfied), but nobody has approved the plan yet. `NarrationStep`
+    does not self-approve on this, its first pass for the project (see
+    that step's own docstring) - the version it produced is exactly what
+    a human is meant to review at the gate."""
+    monkeypatch.setattr(settings, "dry_run", True)
+    async with async_session_factory() as session:
+        service = TimelineService(session)
+        await service.create_initial(project_id, script="unused")
+
+        def _fill(base: Timeline) -> Timeline:
+            base.scenes = [_one_shot_scene()]
+            base.metadata.total_duration_s = 3.0
+            return base
+
+        appended = await service.append_version(
+            project_id,
+            produced_by=ProducedBy.ASSET_PLANNER,
+            transform=_fill,
+            owns=frozenset({"scenes", "metadata"}),
+        )
+        session.add(
+            ShotBindingModel(
+                project_id=uuid_module.UUID(project_id),
+                timeline_version=appended.version,
+                shot_id="sh_01",
+                state="resolved",
+            )
+        )
+        await session.commit()
+
+    async with async_session_factory() as session:
+        result = await NarrationStep().run(_make_ctx(project_id, session))
+        assert result.outcome == "ok", result.error
+        await session.commit()
+
+    async with async_session_factory() as session:
+        narrated = await TimelineService(session).get_active(project_id)
+    assert narrated.produced_by == ProducedBy.NARRATION
+    assert narrated.status.value == "draft"  # not self-approved - nobody has clicked approve
+
+    async with async_session_factory() as session:
+        gap = await render_precondition_gap(_make_ctx(project_id, session))
     assert gap == "await_approval"
 
 
 async def test_gap_is_narration_once_approved_but_never_narrated(project_id):
     """Approved, resolved, no music plan to worry about - but
-    `NarrationStep` never ran (`produced_by` is still `ASSET_PLANNER`)."""
+    `NarrationStep` never ran (`produced_by` is still `ASSET_PLANNER`).
+    Task 1: narration is checked before approval in pipeline order, so
+    this gaps at "narration" regardless of whether the plan happens to
+    already be approved (as here) or not (see the two tests above) -
+    approving early just isn't the normal path any more, since Task 2's
+    guard would refuse it directly through the API in this state anyway."""
     async with async_session_factory() as session:
         service = TimelineService(session)
         await service.create_initial(project_id, script="unused")

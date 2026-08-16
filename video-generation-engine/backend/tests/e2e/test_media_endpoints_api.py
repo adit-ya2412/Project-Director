@@ -90,6 +90,59 @@ def test_shot_asset_serves_a_real_decodable_image(client):
         image.verify()  # a real, structurally valid image - not a path or an error page
 
 
+def test_shot_asset_sets_no_cache_so_a_regenerate_is_never_served_stale(client):
+    """Task 7 (2026-08-16): this URL is stable per shot, but the bytes
+    behind it are not - a regenerate rebinds the same shot to a different
+    underlying file. Without `Cache-Control`, a browser may apply
+    heuristic freshness and never even ask the server again after the
+    first load, which is exactly the "stale picture" bug this closes.
+    `no-cache` forces revalidation on every load; `ETag`/`Last-Modified`
+    (set by Starlette's `FileResponse` from the file's own current
+    `os.stat`, not a fixed value) are what that revalidation actually
+    checks against."""
+    project_id, awaiting = _create_and_render(client)
+    shot_id = awaiting["timeline"]["scenes"][0]["shots"][0]["id"]
+
+    resp = client.get(f"/api/v1/projects/{project_id}/shots/{shot_id}/asset")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-cache"
+    assert resp.headers.get("etag")  # present and non-empty - real revalidation is possible
+    assert resp.headers.get("last-modified")
+
+
+def test_shot_asset_etag_and_bytes_change_after_an_override_at_the_same_url(client):
+    """The actual end-to-end proof behind Task 7, not just that headers
+    are present: the SAME URL, after a human swaps this shot's picture,
+    serves DIFFERENT bytes and a DIFFERENT `ETag` - so a client that
+    revalidates (as `no-cache` now forces) cannot mistake the new picture
+    for the old one."""
+    project_id, awaiting = _create_and_render(client)
+    shot_id = awaiting["timeline"]["scenes"][0]["shots"][0]["id"]
+
+    before = client.get(f"/api/v1/projects/{project_id}/shots/{shot_id}/asset")
+    assert before.status_code == 200
+
+    override_resp = trigger_and_wait(
+        client,
+        "post",
+        f"/api/v1/projects/{project_id}/shots/{shot_id}/override",
+        files={"file": ("override.png", _override_png_bytes(), "image/png")},
+        data={"description": "a different photo for this exact shot"},
+    )
+    assert override_resp["status"] in ("awaiting_approval", "completed"), override_resp.get("error")
+
+    after = client.get(f"/api/v1/projects/{project_id}/shots/{shot_id}/asset")
+    assert after.status_code == 200
+    assert after.content != before.content
+    assert after.headers["etag"] != before.headers["etag"]
+
+
+def _override_png_bytes() -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (640, 360), color=(200, 50, 90)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def test_thumbnail_404s_when_nothing_is_available_yet(client):
     project_id = client.post("/api/v1/projects", json={"name": "brand new"}).json()["id"]
     resp = client.get(f"/api/v1/projects/{project_id}/thumbnail")

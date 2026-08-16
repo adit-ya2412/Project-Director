@@ -96,6 +96,7 @@ from app.assets.constraint_check import (
     build_revised_prompt,
     check_generated_image_constraints,
     seed_for_attempt,
+    varied_seed,
 )
 from app.assets.cost import check_budget, total_project_spend_cents
 from app.assets.depiction_check import check_candidate_plausibility
@@ -182,6 +183,138 @@ def _styled_prompt(shot: Shot, creative_context: CreativeContext) -> str:
     if creative_context.visual_style:
         return f"{shot.prompt}, {creative_context.visual_style}"
     return shot.prompt
+
+
+async def generate_image_real(
+    shot: Shot,
+    binding,
+    *,
+    project_uuid: uuid_module.UUID,
+    project_dir,
+    image_provider: ImageProvider,
+    clip_repo: GeneratedClipRepository,
+    narration_repo: NarrationRepository,
+    creative_context: CreativeContext,
+) -> tuple[GeneratedClipModel, bool]:
+    """Module-level (not a step method) so both `ResolveAssetsStep` and
+    the per-shot `/generate` endpoint call the identical path - one
+    generation, no engine, no workflow trigger involved. Returns
+    `(clip, cache_hit)` so a caller (the endpoint, Task 6) can report
+    whether THIS call actually cost anything or reused an already-paid-for
+    image - the workflow step ignores both, same as it always has."""
+    prompt = _styled_prompt(shot, creative_context)
+    clip, cache_hit = await _generate_image_once(
+        shot,
+        base_prompt=prompt,
+        project_uuid=project_uuid,
+        project_dir=project_dir,
+        width=settings.render_width,
+        height=settings.render_height,
+        model_id=settings.fal_image_model,
+        image_provider=image_provider,
+        clip_repo=clip_repo,
+        narration_repo=narration_repo,
+    )
+    binding.clip_id = clip.id
+    # Task 4 (2026-08-16): `asset_id` is explicitly cleared here, mirroring
+    # `override_shot_asset`'s own symmetric clear of `clip_id` when IT
+    # writes a binding. Before "generate and override are peers" (this
+    # task), `generate_image_real` only ever ran against a binding that
+    # never had `asset_id` set in the first place (the automatic
+    # pipeline's own fallback-to-generation path, or a fresh `/generate`
+    # call before any override), so this line was a no-op. Now that
+    # `/shots/{id}/generate` may run on a shot a human previously
+    # overrode, leaving a stale `asset_id` behind would be a real, silent
+    # bug: `_resolve_bound_media_path` (and the identical rule in
+    # `RenderStep`) resolve `asset_id` BEFORE `clip_id`, so a binding with
+    # both set would keep serving the old overridden picture forever,
+    # making a "generate after override" click look like it did nothing.
+    binding.asset_id = None
+    binding.state = "generated"
+    binding.rung = AssetStrategy.GENERATE_IMAGE.value
+    return clip, cache_hit
+
+
+async def _generate_image_once(
+    shot: Shot,
+    *,
+    base_prompt: str,
+    project_uuid: uuid_module.UUID,
+    project_dir,
+    width: int,
+    height: int,
+    model_id: str,
+    image_provider: ImageProvider,
+    clip_repo: GeneratedClipRepository,
+    narration_repo: NarrationRepository,
+) -> tuple[GeneratedClipModel, bool]:
+    """Generates once - no retry, no constraint check. The human at the
+    one gate is the check now, not an automated vision call that used to
+    be able to kill a shot on a false positive (M6.5 -> gate redesign).
+    Returns `(clip, cache_hit)` - Task 6 (2026-08-16): `cache_hit` is
+    `True` exactly when the returned clip was already on file (a
+    `prompt_hash` cache hit, this call spent nothing), `False` when a
+    fresh paid generation happened. Callers that only care about the
+    clip (the automatic pipeline step) can ignore the second element;
+    `/shots/{id}/generate` uses it to report `cost_cents=0` on a cache
+    hit rather than the clip row's ORIGINAL charge, which would make a
+    free reuse look like a fresh spend.
+
+    Task 3 (2026-08-16): the seed folds in how many `GeneratedClip` rows
+    already exist for THIS shot (`GeneratedClipRepository.count_for_shot`),
+    not just the project's fixed seed - a human clicking
+    `POST /shots/{id}/generate` a second time on the same shot with an
+    unchanged prompt must actually re-roll the image, not silently hit
+    the cache (identical prompt + identical seed = identical
+    `prompt_hash`) and get back the same free result, which is exactly
+    what a "generate again" button must never do. Still fully
+    DETERMINISTIC (I5, and the render fingerprint depends on it) -
+    replaying the same sequence of clicks reproduces the same images,
+    every time: the FIRST attempt for a shot (no prior clips) uses the
+    bare project seed unchanged (matching A13's own attempt-0 convention
+    and preserving the existing cache/dedup behaviour for the ordinary
+    "generate once" case - most shots), and every attempt after that
+    uses `varied_seed` (A13's deterministic, never-`random` seed
+    variation - mirrored here rather than duplicated, see
+    `app/assets/constraint_check.py`) keyed on the attempt COUNT, never
+    on wall-clock time or `random`."""
+    project_seed = _project_seed(str(project_uuid))
+    attempt_index = await clip_repo.count_for_shot(project_uuid, shot.id)
+    seed = project_seed if attempt_index == 0 else varied_seed(project_seed, attempt_index)
+
+    prompt = base_prompt
+    prompt_hash = hashlib.sha256(f"{prompt}|{model_id}|{seed}".encode()).hexdigest()
+
+    cached = await clip_repo.get_by_prompt_hash(prompt_hash)
+    if cached is not None:
+        return cached, True
+
+    already_spent = await total_project_spend_cents(
+        clip_repo=clip_repo, narration_repo=narration_repo, project_id=project_uuid
+    )
+    check_budget(
+        already_spent_cents=already_spent,
+        additional_cents=settings.fal_image_cost_cents_estimate,
+    )
+
+    result = await image_provider.generate(
+        ImageRequest(prompt=prompt, width=width, height=height, shot_id=shot.id, seed=seed)
+    )
+    ext, _width_px, _height_px = validate_and_identify_image(result.content)
+    path = project_dir / "clips" / f"{prompt_hash}.{ext}"
+    path.write_bytes(result.content)
+    clip = await clip_repo.insert(
+        project_id=project_uuid,
+        shot_id=shot.id,
+        provider=image_provider.name,
+        model_id=model_id,
+        prompt=prompt,
+        prompt_hash=prompt_hash,
+        duration_s=None,
+        local_path=str(path),
+        cost_cents=settings.fal_image_cost_cents_estimate,
+    )
+    return clip, False
 
 
 class ResolveAssetsStep:
@@ -669,16 +802,14 @@ class ResolveAssetsStep:
                 creative_context=creative_context,
             )
         else:
-            await self._generate_image_real(
+            await generate_image_real(
                 shot,
                 binding,
                 project_uuid=project_uuid,
                 project_dir=project_dir,
                 image_provider=image_provider,
-                vision_provider=vision_provider,
                 clip_repo=clip_repo,
                 narration_repo=narration_repo,
-                llm_call_repo=llm_call_repo,
                 creative_context=creative_context,
             )
         return None
@@ -721,7 +852,7 @@ class ResolveAssetsStep:
         binding.state = "generated"
         binding.rung = AssetStrategy.GENERATE_IMAGE.value
 
-    async def _generate_image_real(
+    async def _generate_image_real_old(
         self,
         shot: Shot,
         binding,
@@ -735,6 +866,8 @@ class ResolveAssetsStep:
         llm_call_repo: LlmCallRepository,
         creative_context: CreativeContext,
     ) -> None:
+        # Superseded by module-level `generate_image_real` above, which
+        # `_resolve_one_real` now calls instead. Kept, unwired, not deleted.
         prompt = _styled_prompt(shot, creative_context)
         clip = await self._generate_checked_image(
             shot,
@@ -754,6 +887,66 @@ class ResolveAssetsStep:
         binding.clip_id = clip.id
         binding.state = "generated"
         binding.rung = AssetStrategy.GENERATE_IMAGE.value
+
+    async def _generate_checked_image_temp_old(
+        self,
+        shot: Shot,
+        *,
+        base_prompt: str,
+        project_uuid: uuid_module.UUID,
+        project_dir,
+        width: int,
+        height: int,
+        model_id: str,
+        image_provider: ImageProvider,
+        vision_provider: VisionConstraintProvider | None,
+        llm_call_repo: LlmCallRepository,
+        clip_repo: GeneratedClipRepository,
+        narration_repo: NarrationRepository,
+        constraints: list[str],
+    ) -> GeneratedClipModel:
+        """Superseded by module-level `_generate_image_once` above. Kept,
+        unwired, not deleted.
+
+        Generates once, at the project's fixed seed - no retry, no
+        constraint check. The human at the review gate is the check now,
+        not an automated vision call that used to be able to kill a shot
+        on a false positive (M6.5 -> gate redesign)."""
+        project_seed = _project_seed(str(project_uuid))
+        prompt = base_prompt
+        prompt_hash = hashlib.sha256(f"{prompt}|{model_id}|{project_seed}".encode()).hexdigest()
+
+        cached = await clip_repo.get_by_prompt_hash(prompt_hash)
+        if cached is not None:
+            return cached
+
+        already_spent = await total_project_spend_cents(
+            clip_repo=clip_repo, narration_repo=narration_repo, project_id=project_uuid
+        )
+        check_budget(
+            already_spent_cents=already_spent,
+            additional_cents=settings.fal_image_cost_cents_estimate,
+        )
+
+        result = await image_provider.generate(
+            ImageRequest(
+                prompt=prompt, width=width, height=height, shot_id=shot.id, seed=project_seed
+            )
+        )
+        ext, _width_px, _height_px = validate_and_identify_image(result.content)
+        path = project_dir / "clips" / f"{prompt_hash}.{ext}"
+        path.write_bytes(result.content)
+        return await clip_repo.insert(
+            project_id=project_uuid,
+            shot_id=shot.id,
+            provider=image_provider.name,
+            model_id=model_id,
+            prompt=prompt,
+            prompt_hash=prompt_hash,
+            duration_s=None,
+            local_path=str(path),
+            cost_cents=settings.fal_image_cost_cents_estimate,
+        )
 
     async def _generate_checked_image(
         self,

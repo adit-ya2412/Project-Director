@@ -48,6 +48,28 @@ class GeneratedClipRepository:
         )
         return result.scalar_one_or_none()
 
+    async def count_for_shot(self, project_id: uuid.UUID, shot_id: str) -> int:
+        """How many `GeneratedClip` rows already exist for this shot in
+        this project - regardless of status. Used (M9, Task 3) to derive
+        a per-attempt seed for `/shots/{id}/generate`: the Nth explicit
+        generation click for a shot must vary its seed from the (N-1)th,
+        or a human clicking "generate" again on an unchanged prompt would
+        just hit the SAME `prompt_hash` (project seed folded in
+        unchanged) and silently get the identical image back for free.
+        Deliberately COUNTS rather than looks up a max attempt index -
+        `status` (`"completed"`/`"rejected"`/`"failed"`) doesn't matter
+        here the way it does for the constraint-retry cache lookup
+        elsewhere: every row, of any status, represents an attempt
+        already made against fal.ai, and the next attempt must not reuse
+        any of their seeds."""
+        result = await self._session.execute(
+            select(func.count(GeneratedClipModel.id)).where(
+                GeneratedClipModel.project_id == project_id,
+                GeneratedClipModel.shot_id == shot_id,
+            )
+        )
+        return int(result.scalar_one())
+
     async def total_cost_cents_for_project(self, project_id: uuid.UUID) -> int:
         result = await self._session.execute(
             select(func.coalesce(func.sum(GeneratedClipModel.cost_cents), 0)).where(

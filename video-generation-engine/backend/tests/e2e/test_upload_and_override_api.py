@@ -222,28 +222,36 @@ def test_override_after_completion_self_approves_and_preserves_duration_and_narr
     assert result["timeline"]["metadata"]["total_duration_s"] == total_duration_before
 
 
-def test_review_gate_blocks_completion_until_the_failed_shot_is_overridden(client):
-    """A15/A26/A28: the ONLY exit is fixing the failed shot - there is no
-    "proceed anyway". A project cannot reach `completed` while any shot
-    is `failed` (A26); overriding the shot is what clears the gate."""
+def test_a_failed_shot_blocks_approval_and_override_clears_it(client):
+    """A15/A26/A28, and Task 2 (2026-08-16, the one-gate redesign): there
+    is no "proceed anyway" for a failed shot - overriding it is the only
+    remedy. This used to be caught at the (post-approval) `AwaitReviewStep`
+    gate; Task 2 moves the check EARLIER, to `POST /timeline/approve`
+    itself (A26's "you cannot finish with a gap" becomes "you cannot
+    APPROVE with a gap") - strictly better, since it is now impossible to
+    even approve a plan with a gap, rather than approving it and letting
+    `resolve_assets_generate` batch-generate the rest unattended before
+    the gap is discovered. `AwaitReviewStep` remains as a backstop (see
+    `app/workflow/engine.py`) for anything that reaches `failed` AFTER
+    approval - not exercised by this specific scenario, since the guard
+    below now catches it first."""
     project_id, awaiting = _create_and_render(client)
     version = awaiting["timeline"]["version"]
     shot_id = awaiting["timeline"]["scenes"][0]["shots"][0]["id"]
     asyncio.run(_flip_binding_to_failed(project_id, version, shot_id))
 
-    gated = trigger_and_wait(client, "post", f"/api/v1/projects/{project_id}/timeline/approve")
-    # A28: a distinct status from awaiting_approval - the plan WAS
-    # approved; what's blocking now is a failed shot, a different remedy.
-    assert gated["status"] == "awaiting_review", gated.get("error")
+    blocked = client.post(f"/api/v1/projects/{project_id}/timeline/approve")
+    assert blocked.status_code == 400
+    assert shot_id in blocked.json()["detail"]
 
+    # Still stuck at awaiting_approval - the guard rejected the request
+    # outright, it never touched the workflow at all.
     status_resp = client.get(f"/api/v1/projects/{project_id}/status").json()
-    assert status_resp["status"] == "awaiting_review"
+    assert status_resp["status"] == "awaiting_approval"
 
-    # Re-rendering without fixing anything is a clean no-op resume, not
-    # progress - the gate does not wear down.
-    still_gated = trigger_and_wait(client, "post", f"/api/v1/projects/{project_id}/render")
-    assert still_gated["status"] == "awaiting_review"
-
+    # The remedy: override the failed shot. Works on ANY binding state,
+    # not only a failed one (M6.5 Done-when) - this is the exact same
+    # override endpoint, unaffected by Task 2's approval-time guard.
     fixed = trigger_and_wait(
         client,
         "post",
@@ -251,7 +259,15 @@ def test_review_gate_blocks_completion_until_the_failed_shot_is_overridden(clien
         files={"file": ("fix.png", _png_bytes((4, 4, 4)), "image/png")},
         data={"description": "the human-supplied fix for the failed shot"},
     )
-    assert fixed["status"] == "completed", fixed.get("error")
+    # The override happened before the project's first approval, so (per
+    # its own docstring) it does not self-approve - a human still has to
+    # click approve once, same as `test_override_before_approval_locks_
+    # the_shot_but_still_requires_approval` above already proves for the
+    # non-failure case.
+    assert fixed["status"] == "awaiting_approval", fixed.get("error")
+
+    completed = trigger_and_wait(client, "post", f"/api/v1/projects/{project_id}/timeline/approve")
+    assert completed["status"] == "completed", completed.get("error")
 
 
 def test_override_on_unknown_shot_is_rejected(client):

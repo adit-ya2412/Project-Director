@@ -56,7 +56,13 @@ def _generation_step() -> ResolveAssetsStep:
     return ResolveAssetsStep(name="resolve_assets_generate", permitted_strategies=GENERATION_RUNGS)
 
 
-def test_default_pipeline_runs_search_before_approval_and_generation_after_narration():
+def test_default_pipeline_runs_narration_before_approval_and_generation_after():
+    """Task 1 (2026-08-16, the one-gate redesign): `NarrationStep` moved
+    from AFTER `AwaitApprovalStep` to BEFORE it - a deliberate, narrow I6
+    exception (narration costs ~10 cents and now runs pre-approval) so
+    the one gate shows REAL, narration-measured shot durations rather
+    than the planner's pre-audio guess. See `app/workflow/engine.py`'s
+    own module docstring for the full reasoning."""
     names = [step.name for step in DEFAULT_PIPELINE]
     assert names == [
         "generate_timeline",
@@ -65,12 +71,14 @@ def test_default_pipeline_runs_search_before_approval_and_generation_after_narra
         # search pass, before the approval gate - a human should hear
         # what the video will sound like before approving it.
         "select_music",
-        "await_approval",
         "narration",
+        "await_approval",
         "resolve_assets_generate",
         # M6.5, A15/A26/A28: the review gate sits between the generation
         # pass and the renderer - a shot that ended `failed` must never
-        # reach `RenderStep`, not even as a placeholder.
+        # reach `RenderStep`, not even as a placeholder. Under the
+        # one-gate design (Task 2's approval-time guard) this is largely
+        # a backstop now - see that guard's own docstring.
         "await_review",
         "render",
         "complete",
@@ -96,49 +104,73 @@ def _make_ctx(project_id: str, session) -> RunContext:
     )
 
 
-async def test_search_pass_resolves_before_approval_and_carries_forward_across_narration(
+async def test_search_pass_resolves_before_narration_and_carries_forward_across_it(
     project_id, monkeypatch
 ):
+    """Task 1 (2026-08-16): with `NarrationStep` moved before
+    `AwaitApprovalStep`, both the free search pass AND narration now run
+    within the SAME engine run, before a human ever approves anything -
+    proving A11/A20 carry-forward survives that version bump is no less
+    important than it was under the old order, just earlier."""
     monkeypatch.setattr(settings, "dry_run", True)
     monkeypatch.setattr(settings, "elevenlabs_voice_id", "voice_x")
     steps = [
         GenerateTimelineStep(),
         _search_step(),
-        AwaitApprovalStep(),
         NarrationStep(),
+        AwaitApprovalStep(),
         _generation_step(),
     ]
 
     # Run 1: generate_timeline fills v2 from the fixture, the free search
-    # pass resolves every shot (DRY_RUN's FakeAssetProvider always finds
-    # something, and every shot in the fixture plans a search-type
-    # strategy), then the engine stops cleanly at the still-unapproved
-    # approval gate - narration must not have run yet (I6).
+    # pass resolves every shot at v2 (DRY_RUN's FakeAssetProvider always
+    # finds something, and every shot in the fixture plans a search-type
+    # strategy), then - Task 1 - NarrationStep ALSO runs, before approval:
+    # it reconciles durations into v3 and, per A11/A20, must carry every
+    # binding search already found forward across that bump. The engine
+    # then stops cleanly at the still-unapproved gate - narration ran (the
+    # deliberate, narrow I6 exception - ~10 cents pre-approval), but
+    # nobody has approved anything yet, and generation (the expensive
+    # part) has not.
     async with async_session_factory() as session:
         await WorkflowEngine(_make_ctx(project_id, session), steps=steps).run()
 
     async with async_session_factory() as session:
-        pre_narration = await TimelineService(session).get_active(project_id)
-        pre_narration_bindings = await ShotBindingRepository(session).list_for_version(
-            uuid_module.UUID(project_id), pre_narration.version
+        narrated = await TimelineService(session).get_active(project_id)
+        search_only_bindings = await ShotBindingRepository(session).list_for_version(
+            uuid_module.UUID(project_id), narrated.version - 1
         )
-    assert pre_narration.status.value == "draft"
-    assert pre_narration.produced_by.value != "narration"
-    # A5's whole point: the human reaches the gate with shots the free
-    # pass ALREADY resolved, not empty ones.
-    assert len(pre_narration_bindings) == len(pre_narration.all_shots()) > 0
-    assert all(b.state == "resolved" for b in pre_narration_bindings)
-    pre_narration_asset_by_shot = {b.shot_id: b.asset_id for b in pre_narration_bindings}
-    assert all(asset_id is not None for asset_id in pre_narration_asset_by_shot.values())
+        narrated_bindings = await ShotBindingRepository(session).list_for_version(
+            uuid_module.UUID(project_id), narrated.version
+        )
 
-    # A human approves the pre-narration plan, exactly like the API does.
+    assert narrated.status.value == "draft"  # narration does not self-approve pre-approval
+    assert narrated.produced_by.value == "narration"
+
+    # A5's whole point: the search-only version already had every shot
+    # resolved - not empty ones - before narration (or approval) ever ran.
+    assert len(search_only_bindings) == len(narrated.all_shots()) > 0
+    assert all(b.state == "resolved" for b in search_only_bindings)
+    search_only_asset_by_shot = {b.shot_id: b.asset_id for b in search_only_bindings}
+    assert all(asset_id is not None for asset_id in search_only_asset_by_shot.values())
+
+    # The NARRATION version's own bindings reference the SAME assets -
+    # proof of carry-forward (A11/A20), not a coincidental re-search
+    # landing on the same fake result.
+    assert len(narrated_bindings) == len(narrated.all_shots()) > 0
+    assert all(b.state == "resolved" for b in narrated_bindings)
+    for b in narrated_bindings:
+        assert b.asset_id == search_only_asset_by_shot[b.shot_id]
+
+    # A human approves the narrated plan, exactly like the API does.
     async with async_session_factory() as session:
-        await TimelineService(session).approve(project_id, pre_narration.version)
+        await TimelineService(session).approve(project_id, narrated.version)
 
-    # Run 2: resumes past generate_timeline/search/await_approval, runs
-    # narration (appends + self-approves a new version, carrying bindings
-    # forward per A11/A20), then the paid generation pass - which must
-    # find every shot already resolved and do nothing.
+    # Run 2: resumes past every already-satisfied step (search, narration,
+    # approval), runs the paid generation pass - which must find every
+    # shot already resolved and do nothing. No further version bump: with
+    # narration already run BEFORE approval (Task 1), approving does not
+    # trigger a second narration pass the way it used to.
     async with async_session_factory() as session:
         await WorkflowEngine(_make_ctx(project_id, session), steps=steps).run()
 
@@ -148,23 +180,18 @@ async def test_search_pass_resolves_before_approval_and_carries_forward_across_n
             uuid_module.UUID(project_id), final_timeline.version
         )
         stale_bindings = await ShotBindingRepository(session).list_for_version(
-            uuid_module.UUID(project_id), pre_narration.version
+            uuid_module.UUID(project_id), narrated.version - 1
         )
 
-    assert final_timeline.produced_by.value == "narration"
-    assert final_timeline.version == pre_narration.version + 1
-    # Every shot has a binding at the NEW version too...
+    assert final_timeline.version == narrated.version  # no further version bump
     assert len(final_bindings) == len(final_timeline.all_shots()) > 0
     assert all(b.state == "resolved" for b in final_bindings)
-    # ...and it references the SAME asset each time (A20: carried
-    # forward, never re-resolved) - proving this is carry-forward, not a
-    # coincidental re-search landing on the same fake result.
     for b in final_bindings:
-        assert b.asset_id == pre_narration_asset_by_shot[b.shot_id]
-    # The pre-narration version's own bindings are untouched, not deleted
-    # - carry-forward copies, it never deletes (same immutability spirit
-    # as the Timeline versions themselves).
-    assert len(stale_bindings) == len(pre_narration_bindings)
+        assert b.asset_id == search_only_asset_by_shot[b.shot_id]
+    # The search-only version's own bindings are untouched, not deleted -
+    # carry-forward copies, it never deletes (same immutability spirit as
+    # the Timeline versions themselves).
+    assert len(stale_bindings) == len(search_only_bindings)
 
 
 async def test_narration_reconciliation_alone_does_not_change_acquisition_relevant_fields(
@@ -175,21 +202,22 @@ async def test_narration_reconciliation_alone_does_not_change_acquisition_releva
     (`_apply_durations`, which touches only `duration_s`/`metadata`)
     actually satisfies that rule for every shot the fixture has, which is
     what makes the carry-forward in the test above happen at all rather
-    than by coincidence."""
+    than by coincidence. Task 1: narration no longer needs approval to
+    run first, so this is provable in a single engine run."""
     monkeypatch.setattr(settings, "dry_run", True)
     monkeypatch.setattr(settings, "elevenlabs_voice_id", "voice_x")
-    steps = [GenerateTimelineStep(), _search_step(), AwaitApprovalStep(), NarrationStep()]
+    steps = [GenerateTimelineStep(), _search_step(), NarrationStep()]
 
     async with async_session_factory() as session:
         await WorkflowEngine(_make_ctx(project_id, session), steps=steps).run()
-    async with async_session_factory() as session:
-        pre_narration = await TimelineService(session).get_active(project_id)
-        await TimelineService(session).approve(project_id, pre_narration.version)
 
     async with async_session_factory() as session:
-        await WorkflowEngine(_make_ctx(project_id, session), steps=steps).run()
-    async with async_session_factory() as session:
-        final_timeline = await TimelineService(session).get_active(project_id)
+        service = TimelineService(session)
+        final_timeline = await service.get_active(project_id)
+        pre_narration = await service.get_version(project_id, final_timeline.version - 1)
+
+    assert final_timeline.produced_by.value == "narration"
+    assert pre_narration.produced_by.value != "narration"
 
     pre_shots = {s.id: s for s in pre_narration.all_shots()}
     for shot in final_timeline.all_shots():

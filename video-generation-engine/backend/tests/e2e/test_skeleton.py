@@ -104,7 +104,15 @@ def test_script_to_video_end_to_end(client, tmp_path):
     timeline = Timeline.model_validate(awaiting["timeline"])
     assert len(timeline.all_shots()) == 6
     assert timeline.status == "draft"
-    planned_duration = compute_timeline_duration(timeline.all_shots())
+    # Task 1 (2026-08-16): `NarrationStep` now runs BEFORE the approval
+    # gate (a deliberate, narrow I6 exception - see
+    # `app/workflow/engine.DEFAULT_PIPELINE`'s own docstring for why), so
+    # by the time a human reaches AWAITING_APPROVAL the durations shown
+    # are already the REAL, narration-measured ones (here, faked), not
+    # the planner's pre-audio guess - proof the reorder took effect, not
+    # just that the gate is still reached.
+    assert timeline.produced_by == "narration"
+    reconciled_duration = compute_timeline_duration(timeline.all_shots())
 
     progress_resp = client.get(f"/api/v1/projects/{project_id}/progress")
     assert progress_resp.status_code == 200
@@ -141,23 +149,22 @@ def test_script_to_video_end_to_end(client, tmp_path):
     render_again = trigger_and_wait(client, "post", f"/api/v1/projects/{project_id}/render")
     assert render_again["timeline"]["version"] == awaiting["timeline"]["version"]
 
-    # 4. Approve — resumes the same run: narration -> resolve_assets
-    # (paid pass) -> render -> complete.
+    # 4. Approve — resumes the same run: resolve_assets (paid pass) ->
+    # render -> complete. Narration already ran BEFORE this gate (Task
+    # 1), so approving does not append another narration version - the
+    # version approved here IS the narration-reconciled one already
+    # shown at the gate above (`NarrationStep.is_satisfied` is already
+    # true for it), which is exactly what makes it safe for a human to
+    # judge on-screen duration before clicking approve.
     rendered = trigger_and_wait(client, "post", f"/api/v1/projects/{project_id}/timeline/approve")
     assert rendered["status"] == "completed", rendered.get("error")
     assert rendered["timeline"]["status"] == "approved"
+    assert rendered["timeline"]["version"] == awaiting["timeline"]["version"]
 
-    # Narration is the master clock (D1): NarrationStep reconciled every
-    # shot's duration against the real (here, faked) spoken timings and
-    # appended a new version, so the FINAL timeline - not the one approved
-    # a moment ago - is what the renderer worked from. The rendered file is
-    # checked against that below; the planner's pre-narration estimate is
-    # expected to differ, and asserting they differ is what proves the
-    # master clock actually took effect rather than silently no-op'ing.
     final_timeline = Timeline.model_validate(rendered["timeline"])
     assert final_timeline.produced_by == "narration"
     expected_duration = compute_timeline_duration(final_timeline.all_shots())
-    assert abs(expected_duration - planned_duration) > 0.01
+    assert expected_duration == pytest.approx(reconciled_duration)
 
     final_progress = client.get(f"/api/v1/projects/{project_id}/progress").json()
     assert final_progress["workflow_state"] == "completed"

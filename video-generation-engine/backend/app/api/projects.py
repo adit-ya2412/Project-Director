@@ -45,7 +45,23 @@ directly too, but never need to CREATE one) - `asset.local_path`/
 filesystem paths a browser cannot load. Both lazily generate and cache a
 displayable image on disk, keyed on the source file's own mtime -
 `app/assets/thumbnails.py` owns that logic; see its module docstring for
-why mtime and not a content hash.
+why mtime and not a content hash. `GET /{id}/shots/{shot_id}/asset` also
+sets `Cache-Control: no-cache` (Task 7, 2026-08-16) so a browser always
+revalidates - a regenerate/override rebinds the same URL to a different
+underlying file, and Starlette's own `ETag`/`Last-Modified` (computed
+fresh per request from that file's current `os.stat`) only protect
+against staleness if the browser is actually forced to check them.
+
+## The one-gate redesign (2026-08-16) - see docs/13_Implementation_Guide.md
+
+`approve_timeline` now refuses (400) if any shot at the active version
+has no media yet (Task 2 - the money guard the one-gate design depends
+on), and `generate_shot_image` (`POST /shots/{id}/generate`) gained an
+optional edited `prompt` (Task 4 - a Timeline change, `append_version`d
+before generating) and reports `cache_hit`/an honest `cost_cents` (Task
+6). See each endpoint's own docstring for the full reasoning, and the
+implementation guide's "one-gate redesign" section for the whole picture
+across all seven tasks.
 """
 
 import hashlib
@@ -67,10 +83,13 @@ from app.core.errors import PermanentError
 from app.db.session import get_db
 from app.models.asset import AssetModel
 from app.models.generated_clip import GeneratedClipModel
+from app.providers.fakes.image import FakeImageProvider
+from app.providers.fal_image import FalImageProvider
 from app.renderer.retention import purge_expired_drafts
 from app.renderer.slideshow import RenderSettings
 from app.repositories.asset_repository import AssetRepository
 from app.repositories.generated_clip_repository import GeneratedClipRepository
+from app.repositories.narration_repository import NarrationRepository
 from app.repositories.project_repository import ProjectRepository
 from app.repositories.shot_binding_repository import ShotBindingRepository
 from app.repositories.workflow_repository import WorkflowRunRepository
@@ -81,6 +100,7 @@ from app.timeline.service import TimelineService
 from app.workflow.context import RunContext
 from app.workflow.render_only import RENDER_ONLY_STEPS, render_precondition_gap
 from app.workflow.steps.render import render_video
+from app.workflow.steps.resolve_assets import generate_image_real
 from app.workflow.trigger import WorkflowTriggerResult, start_workflow_run
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -181,9 +201,21 @@ async def _resume_after_human_correction(
     exists to avoid - three near-identical endpoints are clearer than one
     endpoint with a callback threaded through its middle.
     """
-    was_already_approved = active.status == TimelineStatus.APPROVED or (
-        active.produced_by == ProducedBy.NARRATION
-    )
+    # 2026-08-16 (Task 1): used to also treat `active.produced_by ==
+    # ProducedBy.NARRATION` as approval-equivalent here, which was safe
+    # ONLY under the OLD pipeline order (approve, then narrate) where
+    # narration could never produce a version except on an
+    # already-approved lineage. `NarrationStep` now runs BEFORE
+    # `AwaitApprovalStep` (see `app/workflow/engine.DEFAULT_PIPELINE`),
+    # so `produced_by == NARRATION` is routinely the ordinary, UNAPPROVED
+    # state a project sits in while a human is still deciding at the one
+    # gate - e.g. right after the very first narration pass, before
+    # anyone has clicked approve. Treating that as "already approved"
+    # here would self-approve (and then resume the engine into paid
+    # generation for) a project nobody has approved yet - a real I6
+    # violation, not a cosmetic one. `status == APPROVED` is now the only
+    # signal.
+    was_already_approved = active.status == TimelineStatus.APPROVED
     new_timeline = await timeline_service.append_version(
         project_id,
         produced_by=ProducedBy.HUMAN,
@@ -490,12 +522,70 @@ async def approve_timeline(
     timeline_service: TimelineService = Depends(get_timeline_service),
     session: AsyncSession = Depends(get_db),
 ) -> WorkflowTriggerResult:
+    """Approves the active timeline and resumes the engine (which, under
+    the one-gate redesign, runs straight through narration-review into
+    paid generation - see `app/workflow/engine.DEFAULT_PIPELINE`).
+
+    **Task 2 (2026-08-16, the one-gate redesign) - refuses with 400 if any
+    shot at the active version has no media bound yet.** A shot counts as
+    filled when its `ShotBinding.state` is `"resolved"` (found by search,
+    or supplied via override) or `"generated"` (already generated,
+    including via `POST /shots/{shot_id}/generate` before approval) -
+    the same `_TERMINAL_SHOT_STATES` `GET /progress` already reports
+    `completed_shots` against. Anything else - no binding row at all,
+    `"awaiting_generation"`, `"pending"`, `"failed"` - blocks approval and
+    names the specific shots, so a human knows exactly what to fix.
+
+    This is A26's "you cannot finish with a gap" moved EARLIER, to "you
+    cannot approve with a gap" - strictly better, since it is caught
+    before anything is spent rather than after a batch of unattended
+    generation has already run. It is also the actual money guard the
+    one-gate design depends on: without it, approving a plan with empty
+    shots would immediately let `resolve_assets_generate` batch-generate
+    every one of them unattended, right after this endpoint returns -
+    exactly the unsupervised spend this whole redesign exists to prevent.
+    A human is expected to have already looked at (or explicitly
+    generated, via the per-shot endpoint) every shot's picture before
+    ever calling this endpoint.
+
+    Consequence, worth being explicit about: `resolve_assets_generate`
+    does not stop being useful - a shot can still reach it in the
+    `awaiting_generation` state that this guard blocks on IF this guard
+    didn't exist, but since it does, every shot must already be
+    `resolved`/`generated` by the time approval succeeds, so that step
+    becomes a no-op safety net (nothing left for it to do) rather than
+    the thing that actually spends the project's money.
+    """
     await _get_project_or_404(project_id, repo)
     active = await timeline_service.get_active(project_id)
     if active is None:
         raise HTTPException(status_code=400, detail="no timeline to approve yet")
     if active.status == TimelineStatus.APPROVED:
         raise HTTPException(status_code=400, detail="timeline is already approved")
+
+    bindings_by_shot = {
+        b.shot_id: b
+        for b in await ShotBindingRepository(session).list_for_version(
+            uuid.UUID(project_id), active.version
+        )
+    }
+    unfilled_shot_ids = [
+        shot.id
+        for shot in active.all_shots()
+        if bindings_by_shot.get(shot.id) is None
+        or bindings_by_shot[shot.id].state not in _TERMINAL_SHOT_STATES
+    ]
+    if unfilled_shot_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "cannot approve - these shots have no image yet: "
+                f"{unfilled_shot_ids}. Upload one (POST /shots/{{shot_id}}/override) "
+                "or generate one (POST /shots/{shot_id}/generate) for each before "
+                "approving."
+            ),
+        )
+
     await timeline_service.approve(project_id, active.version)
     return await start_workflow_run(project_id, session, background_tasks)
 
@@ -578,9 +668,13 @@ async def override_shot_asset(
             description=description.strip() or None,
         )
 
-    was_already_approved = active.status == TimelineStatus.APPROVED or (
-        active.produced_by == ProducedBy.NARRATION
-    )
+    # See the identical comment in `_resume_after_human_correction` above
+    # for why `produced_by == ProducedBy.NARRATION` is no longer treated
+    # as approval-equivalent here (2026-08-16, Task 1) - narration now
+    # runs BEFORE the approval gate, so seeing it on the active version
+    # is routinely proof of nothing more than "narration has run once",
+    # not "a human already approved this".
+    was_already_approved = active.status == TimelineStatus.APPROVED
 
     def _lock_shot(base: Timeline) -> Timeline:
         for scene in base.scenes:
@@ -613,6 +707,168 @@ async def override_shot_asset(
     # (`create_initial` requires one) - `start_workflow_run` always has
     # something to resume from here.
     return await start_workflow_run(project_id, session, background_tasks)
+
+
+class GenerateShotImageRequest(BaseModel):
+    # Task 4 (2026-08-16): optional. `None` (the default, and what a
+    # bare `POST` with no body deserialises to) means "regenerate with
+    # the shot's EXISTING prompt, unchanged" - this endpoint's whole
+    # original contract. A non-blank value that differs from the shot's
+    # current `prompt` is treated as an edit - see the endpoint's own
+    # docstring for why that is a Timeline change, not a parameter.
+    prompt: str | None = None
+
+
+class GenerateShotImageResult(BaseModel):
+    shot_id: str
+    clip_id: str
+    # Task 6 (2026-08-16): what THIS call cost - always `0` on a cache
+    # hit, never the clip row's ORIGINAL charge (which may have been
+    # paid by an earlier click, or by the automatic pipeline). Before
+    # this field existed, a cache hit reported the original charge and a
+    # human clicking "generate" twice on an unchanged shot had no way to
+    # tell "just spent 4 cents" from "reused an existing image, free".
+    cost_cents: int
+    # Task 6: explicit, rather than making the caller infer it from
+    # `cost_cents == 0` (which is also true of a shot generation
+    # configured to cost nothing - not a real scenario today, but not a
+    # distinction this response should quietly rely on `cost_cents`
+    # alone to carry).
+    cache_hit: bool
+
+
+@router.post("/{project_id}/shots/{shot_id}/generate", response_model=GenerateShotImageResult)
+async def generate_shot_image(
+    project_id: str,
+    shot_id: str,
+    body: GenerateShotImageRequest = GenerateShotImageRequest(),
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    session: AsyncSession = Depends(get_db),
+) -> GenerateShotImageResult:
+    """A human, at the one asset-review gate, generates (or regenerates)
+    exactly one shot's image on demand - the endpoint the review-gate
+    redesign needed, since `resolve_assets_generate` only ever runs
+    unattended across every shot at once, after approval.
+
+    Deliberately synchronous, unlike every trigger above - no
+    `background_tasks`, no `start_workflow_run`. A human sitting at this
+    gate may click this several times across several shots before
+    approving anything; resuming the workflow engine on every click
+    would race the pipeline forward mid-review. Calls the exact same
+    `generate_image_real` the post-approval pass itself calls
+    (`app.workflow.steps.resolve_assets`), so a shot generated here and
+    a shot generated automatically after approval behave identically -
+    same cache key, same budget check, same clip record. Task 3
+    (2026-08-16): repeat clicks on the SAME prompt now actually re-roll
+    the image (`_generate_image_once`'s seed folds in how many clips
+    already exist for this shot) rather than silently re-serving the
+    first result for free - see that function's own docstring.
+
+    **Task 4 (2026-08-16): `body.prompt` lets a human edit the prompt AND
+    generate in one call.** Omitted, it behaves exactly as before -
+    regenerate with the shot's existing `prompt`. Supplied and DIFFERENT
+    from the shot's current `prompt`, it is a Timeline change (I2 -
+    prompts are creative decisions, never something an endpoint mutates
+    in place) and is recorded as its own `append_version(produced_by=
+    HUMAN)` - touching only `scenes` (that one shot's `prompt`, nothing
+    else) - BEFORE anything is generated; the freshly generated clip is
+    then bound at THIS new version, not the one the request started
+    against. The stored `shot.prompt` is the RAW edited text, exactly as
+    a planner's own prompt is stored - `_styled_prompt` (inside
+    `generate_image_real`) still layers `creative_context.visual_style`
+    on top at generation time for a human-edited prompt exactly as it
+    does for a planner-written one, so a human edit does not skip the
+    styling every other shot gets (decided by the user, 2026-08-16).
+    A29 holds: this transform touches only `prompt` on the one named
+    shot - `duration_s`, narration, framing, camera, and transitions on
+    EVERY shot (including this one) are untouched, so editing a prompt
+    never triggers a re-narration.
+
+    **This endpoint no longer refuses to run on an `asset_locked` shot**
+    (reversing the original per-shot-override-only reading; decided by
+    the user, 2026-08-16: generate and override are peers, either may
+    follow the other - a human may regenerate an AI alternative for a
+    shot they previously overrode, or override again after generating).
+    That symmetry has a real, surfaced limit, not a silently patched one:
+    `TimelineService._reject_locked_shot_drift` (A25) unconditionally
+    refuses ANY later version that changes a locked shot's `prompt`,
+    regardless of `produced_by` - so calling this endpoint on a LOCKED
+    shot WITHOUT an edited prompt still works (no Timeline change is
+    attempted at all), but supplying an edited prompt for a locked shot
+    raises here, translated to `400`, exactly like every other
+    `append_version` rejection this file already surfaces. There is
+    deliberately no bypass added for this - A25's own guarantee ("my
+    photo is always in the plan") is exactly what would break if a
+    locked shot's prompt could drift, and unlocking a shot is an
+    explicitly deferred, separate feature (see A25a's own "known gap" -
+    an unlock endpoint, not built here).
+    """
+    await _get_project_or_404(project_id, repo)
+    active = await timeline_service.get_active(project_id)
+    if active is None:
+        raise HTTPException(status_code=400, detail="no timeline to generate a shot image for yet")
+    shot = next((s for s in active.all_shots() if s.id == shot_id), None)
+    if shot is None:
+        raise HTTPException(
+            status_code=404, detail=f"shot {shot_id} not found in the active timeline"
+        )
+
+    edited_prompt = body.prompt.strip() if body.prompt is not None else None
+    if edited_prompt is not None and not edited_prompt:
+        raise HTTPException(status_code=400, detail="prompt, if supplied, must not be blank")
+
+    if edited_prompt is not None and edited_prompt != shot.prompt:
+
+        def _set_prompt(base: Timeline) -> Timeline:
+            for scene in base.scenes:
+                for sh in scene.shots:
+                    if sh.id == shot_id:
+                        sh.prompt = edited_prompt
+            return base
+
+        try:
+            active = await timeline_service.append_version(
+                project_id,
+                produced_by=ProducedBy.HUMAN,
+                transform=_set_prompt,
+                owns=frozenset({"scenes"}),
+            )
+        except PermanentError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        shot = next(s for s in active.all_shots() if s.id == shot_id)
+
+    project_uuid = uuid.UUID(project_id)
+    project_dir = settings.storage_root / project_id
+    (project_dir / "clips").mkdir(parents=True, exist_ok=True)
+
+    image_provider = FakeImageProvider() if settings.dry_run else FalImageProvider()
+    clip_repo = GeneratedClipRepository(session)
+    narration_repo = NarrationRepository(session)
+    binding_repo = ShotBindingRepository(session)
+    binding = await binding_repo.get_or_create_pending(project_uuid, active.version, shot_id)
+
+    try:
+        clip, cache_hit = await generate_image_real(
+            shot,
+            binding,
+            project_uuid=project_uuid,
+            project_dir=project_dir,
+            image_provider=image_provider,
+            clip_repo=clip_repo,
+            narration_repo=narration_repo,
+            creative_context=active.creative_context,
+        )
+    except PermanentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    await session.commit()
+    return GenerateShotImageResult(
+        shot_id=shot_id,
+        clip_id=str(clip.id),
+        cost_cents=0 if cache_hit else clip.cost_cents,
+        cache_hit=cache_hit,
+    )
 
 
 @router.post("/{project_id}/music/retry", status_code=202, response_model=WorkflowTriggerResult)
@@ -896,10 +1152,18 @@ async def get_progress(
             )
 
     # Estimated before generation runs (implementation guide, Phase M7
-    # advice: "estimate cost before the approval gate and show it") -
-    # counts only shots already planned to generate; a search-primary shot
-    # that later falls through to generation is not reflected here.
-    estimated_cost_cents = estimate_project_cost_cents(timeline)
+    # advice: "estimate cost before the approval gate and show it").
+    # Task 5 (2026-08-16): passes each shot's OWN binding state
+    # (`bindings_by_shot`, already built above for `shots_detail`) so the
+    # estimate counts every shot the search pass has already determined
+    # will fall through to generation (`"awaiting_generation"`), not only
+    # shots whose PLAN's primary strategy happens to already be a
+    # generation rung - see `estimate_project_cost_cents`'s own docstring
+    # for the real run this was measured against (10 of 14 shots
+    # generating, this number reading 0).
+    estimated_cost_cents = estimate_project_cost_cents(
+        timeline, {shot_id: b.state for shot_id, b in bindings_by_shot.items()}
+    )
     spent_cost_cents = await GeneratedClipRepository(session).total_cost_cents_for_project(
         uuid.UUID(project_id)
     )
@@ -964,7 +1228,27 @@ async def get_shot_asset(
     image-to-video - `generated_clip.local_path` ending in `.mp4`) gets a
     representative frame lazily extracted and cached instead, via the
     exact same mechanism (and mtime invalidation) `GET /thumbnail` below
-    uses for a finished render."""
+    uses for a finished render.
+
+    **Task 7 (2026-08-16): `Cache-Control: no-cache` on every response.**
+    This URL is stable per shot (`/shots/{shot_id}/asset`), but the bytes
+    behind it are not - a regenerate (`POST /shots/{shot_id}/generate`,
+    now producing a genuinely different image per Task 3) or an override
+    rebinds this shot to a DIFFERENT underlying file on the SAME URL.
+    Starlette's `FileResponse` already computes `ETag`/`Last-Modified`
+    fresh on every call from the file it is actually given (`os.stat` at
+    send time, keyed on that file's real mtime/size - never a stale,
+    reused value), so the validators themselves are already correct.
+    What was missing is `Cache-Control`: with none set, a browser applies
+    HEURISTIC freshness (RFC 7234 4.2.2) and may serve a PRIOR response
+    for this same URL from its own cache without even asking the server
+    again - the exact "stale picture after regenerating" bug. `no-cache`
+    (which, despite the name, still permits caching - it forbids using
+    the cached copy WITHOUT revalidating first) forces a conditional
+    request on every load, so the always-current `ETag`/`Last-Modified`
+    computed above is actually consulted rather than skipped. Fixed here,
+    not by asking the frontend to cache-bust the URL with a query
+    param - that would fix only clients that remember to do it."""
     await _get_project_or_404(project_id, repo)
     timeline = await timeline_service.get_active(project_id)
     if timeline is None or shot_id not in {s.id for s in timeline.all_shots()}:
@@ -979,6 +1263,7 @@ async def get_shot_asset(
     if path is None or not path.exists():
         raise HTTPException(status_code=404, detail=f"shot {shot_id} has no resolved media yet")
 
+    no_cache_headers = {"Cache-Control": "no-cache"}
     if is_video_file(path):
         cache_path = settings.storage_root / project_id / "cache" / f"shot_{shot_id}.jpg"
         served_path = await cached_video_frame(
@@ -987,9 +1272,13 @@ async def get_shot_asset(
             ffmpeg_binary=settings.ffmpeg_binary,
             ffprobe_binary=settings.ffprobe_binary,
         )
-        return FileResponse(served_path, media_type="image/jpeg")
+        return FileResponse(served_path, media_type="image/jpeg", headers=no_cache_headers)
 
-    return FileResponse(path, media_type=mime_type_for_extension(path.suffix.lstrip(".")))
+    return FileResponse(
+        path,
+        media_type=mime_type_for_extension(path.suffix.lstrip(".")),
+        headers=no_cache_headers,
+    )
 
 
 @router.get("/{project_id}/thumbnail")

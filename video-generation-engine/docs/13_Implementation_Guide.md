@@ -3489,6 +3489,245 @@ Two refinements that make the number honest rather than nominal:
 - **Account for that shot's actual Ken Burns zoom** rather than assuming 1×.
 - **Score the post-crop region**, not the full frame, since for a landscape source the crop is what actually gets rendered — this is the same tension already backlogged as landscape-versus-vertical.
 
+## The one-gate redesign (2026-08-16) — superseding F4/F5's two-gate plan
+
+**Decided by the user, 2026-08-16, after the F4/F5 screens above (and the
+frontend built against them) already existed.** F4/F5 split review into
+TWO gates: approve the plan (Gate 1, before any image work), then batch-
+generate every missing image UNATTENDED, then review the generated
+images (Gate 2, after they already exist). The new design collapses this
+to ONE gate: a human sees every shot's picture - found or missing - and,
+per shot, either keeps what search found, uploads their own
+(`POST /shots/{id}/override`, already existed), or generates one on
+demand (`POST /shots/{id}/generate`, new). They approve once, and the
+pipeline runs to completion with nothing left unattended between
+approval and a finished video.
+
+**Why:** Gate 2 under F4/F5 existed only to catch what unattended batch
+generation got wrong - but by the time a human saw it, the money was
+already spent. The one-gate design moves that judgement BEFORE any
+generation happens at all: nothing is generated unless a human explicitly
+asked for it (by clicking `/generate`) or the plan is fully filled by free
+search/uploads and gets approved. F5a/F5b/F5c's own reasoning (demote the
+Director-constraint check to a flag, no automatic retries, an editable
+prompt) all survive into this design, just folded into the ONE gate
+instead of a second one: `/generate` generates once, no verdict, no
+retry (F5b), and accepts an edited prompt (F5c, now Task 4 below).
+
+This section documents the backend consequences, task by task, exactly
+as they were decided and built - so they read as choices, not drift. The
+frontend (F1-F7, parked mid-build per the note below) was built against
+the SUPERSEDED F4/F5 plan and is not part of this redesign; backend work
+here does not touch it.
+
+### Task 1 — `NarrationStep` moved before `AwaitApprovalStep`
+
+Old pipeline order: `GenerateTimeline -> ResolveAssets(search) ->
+SelectMusic -> AwaitApproval -> Narration -> ResolveAssets(generate) ->
+AwaitReview -> Render -> Complete`. New order: `... -> SelectMusic ->
+Narration -> AwaitApproval -> ResolveAssets(generate) -> ...` -
+`NarrationStep` and `AwaitApprovalStep` swap.
+
+**Why:** narration is the master clock (D1) and produces REAL shot
+durations from ElevenLabs character-level alignment; until it runs,
+`duration_s` is only the Shot Planner's pre-audio estimate. The one gate
+must show how long each image is actually on screen - a busy, detailed
+image fails at 1.5s and works at 4.6s, and that judgement is impossible
+against a guess. Narration is also cheap (~10 cents) and fails earliest:
+a script whose narration span covers only whitespace, or whose
+reconciled duration blows the video-length cap, now fails BEFORE a human
+spends time reviewing a gate full of images for a script that could
+never ship.
+
+**This is a deliberate, narrow I6 exception** ("nothing expensive runs
+before approval") - accepted consciously, not silently: ~10 cents is now
+spent pre-approval, versus the alternative of gating on a number that
+isn't real yet.
+
+**What had to change, found by checking rather than assuming (both
+verified against the actual code, not inferred):**
+
+- `NarrationStep.is_satisfied` only ever checked `timeline.produced_by
+  == NARRATION` - genuinely independent of approval, so the reorder
+  needed no change there.
+- `NarrationStep.run()` used to self-approve its own appended version
+  UNCONDITIONALLY, and `AwaitApprovalStep` treated `produced_by ==
+  NARRATION` as approval-equivalent - both correct ONLY under the old
+  order, where narration could only ever run on an already-approved
+  lineage (a crash-window defence, closing the gap between
+  `append_version` and `approve`, two separate commits). Under the new
+  order this reasoning INVERTS: `produced_by == NARRATION` is now
+  routinely the ordinary, UNAPPROVED state a human is looking at while
+  deciding whether to approve (the version narration just produced IS
+  what the gate is waiting on). Keeping either shortcut would have made
+  the gate a silent no-op - the pipeline would sail through the instant
+  narration finished, nobody having clicked anything, which would also
+  have re-triggered the exact "produced_by==NARRATION implies approved"
+  short-circuit inside `override_shot_asset`'s and
+  `_resume_after_human_correction`'s own `was_already_approved` checks
+  in `app/api/projects.py`, both of which had to lose that clause too.
+  Fixed: `AwaitApprovalStep` now checks `status == APPROVED`, full stop;
+  `NarrationStep` now self-approves ONLY when the version it narrated
+  FROM was already approved (the N1 "redo narration with a different
+  voice" path, which runs well after a project's first approval) -
+  preserving `POST /narration/retry`'s "resume, no second click"
+  contract without reopening the first-approval gate narration now sits
+  in front of. See `app/workflow/engine.py`'s own module docstring and
+  `app/workflow/steps/narration.py`/`app/workflow/steps/await_approval.py`
+  for the full reasoning in place.
+- Every test asserting pipeline step order, or seeding an UNAPPROVED
+  timeline and expecting `NarrationStep` to self-approve regardless, had
+  to be found and updated (`test_narration_pipeline_ordering.py`,
+  `test_render_only.py`, `test_workflow_engine.py`,
+  `test_skeleton.py::test_script_to_video_end_to_end`) - tests that
+  instead seeded an ALREADY-APPROVED timeline before invoking
+  `NarrationStep` directly (`test_narration_step.py`,
+  `test_narration_voice_retry.py`, `test_narration_retry_api.py`) needed
+  no change at all, since the conditional self-approval reduces to the
+  old unconditional behaviour exactly when the prior version was already
+  approved - which is precisely what those fixtures set up.
+
+### Task 2 — approval blocked while any shot has no media
+
+`POST /timeline/approve` now refuses (400, naming the specific shots) if
+any shot at the active version has neither `asset_id` nor `clip_id`
+(`ShotBinding.state` not in `("resolved", "generated")`). Under the
+one-gate design this is the actual money guard: without it, approving a
+plan with empty shots would let `resolve_assets_generate` batch-generate
+every one of them unattended immediately afterward - exactly the
+unsupervised spend this whole redesign exists to prevent. This is A26's
+"you cannot finish with a gap" moved EARLIER, to "you cannot APPROVE with
+a gap" - strictly better, since it is caught before anything runs rather
+than after. Consequence: `resolve_assets_generate` becomes a no-op safety
+net (there is no longer any state it can legitimately find left to do)
+rather than the thing that actually spends money; `AwaitReviewStep`
+remains as a further backstop for anything that reaches `failed` AFTER
+approval regardless (kept, per the user's explicit instruction).
+
+### Task 3 — repeat generation actually produces a different image
+
+`_generate_image_once`'s seed used to be `_project_seed(project_id)`
+alone - fixed per project, so a second click on the same shot with the
+same prompt hit the SAME `prompt_hash` and returned the identical, free,
+first image. The seed now also folds in
+`GeneratedClipRepository.count_for_shot` (how many clips already exist
+for THIS shot): attempt 0 (no prior clips) still gets the bare project
+seed unchanged (preserving the ordinary "generate once" cache/dedup
+behaviour every other shot relies on), and every attempt after that
+varies deterministically via `varied_seed` (mirroring, not duplicating,
+A13's own prior art in `app/assets/constraint_check.py`) - never
+`random`, never wall-clock time, so replaying the same sequence of
+clicks reproduces the same images (I5, and the render fingerprint
+depend on it).
+
+### Task 4 — `/generate` accepts an edited prompt
+
+An optional `prompt` in the request body. Omitted, or unchanged from the
+shot's current `prompt`, behaves exactly as before. Supplied and
+different, it is a Timeline change (I2) and is recorded as its own
+`append_version(produced_by=HUMAN)`, touching only that one shot's
+`prompt` (`owns={"scenes"}`) - before anything is generated, and the
+fresh clip is bound at the NEW version. The stored value is the RAW
+edited text, exactly like a planner's own prompt - `_styled_prompt`
+still layers `creative_context.visual_style` on top at generation time
+for a human-edited prompt exactly as it does for a planner-written one
+(decided by the user: a human edit must not skip the styling every other
+shot gets).
+
+**Proven, not assumed, that this doesn't orphan every other shot's
+binding**: `TimelineService._carry_forward_bindings` (A20) carries a
+binding forward when the shot's `prompt`/`asset_plan` are unchanged from
+the previous version - true for every OTHER shot (only the edited one's
+prompt changed), so they carry; the edited shot's own OLD binding is
+correctly dropped (it needs re-acquisition, which the generate call
+immediately provides at the new version). Proven end-to-end over the
+real HTTP surface, not just reasoned about, in
+`tests/e2e/test_generate_shot_api.py
+::test_generate_with_edited_prompt_appends_a_new_version_and_carries_forward_other_bindings` -
+every OTHER shot's bound asset file is asserted byte-for-byte identical
+(same `local_path`) before and after the edit.
+
+**The highest-risk finding, surfaced rather than worked around**:
+`TimelineService._reject_locked_shot_drift` (A25) refuses ANY later
+version that changes a locked shot's `prompt`, unconditionally,
+regardless of `produced_by` - so editing the prompt of a shot a human
+previously overrode (`asset_locked=True`) RAISES `PermanentError`, caught
+and surfaced as `400` like any other `append_version` rejection this
+file already handles. This is deliberate, not a bug: A25's whole
+guarantee ("my photo is always in the plan") requires exactly this. No
+bypass or unlock mechanism was added - A25a's own entry above already
+documents an unlock endpoint as a deferred, not-yet-built gap, and this
+task does not change that. Generating WITHOUT an edited prompt still
+works on a locked shot (generate and override are peers, per the user's
+explicit decision) - only the PROMPT EDIT is refused, proven in
+`test_generate_shot_api.py
+::test_generate_peers_with_override_but_an_edited_prompt_on_a_locked_shot_is_refused`.
+A related, smaller fix the peer relationship exposed:
+`generate_image_real` did not clear `binding.asset_id` when writing a
+fresh `clip_id`, which was harmless while generation only ever ran on a
+binding that never had `asset_id` set - now that `/generate` may run on
+a previously-overridden binding, a stale `asset_id` would have kept
+`_resolve_bound_media_path`/`RenderStep` serving the OLD overridden
+picture forever (both resolve `asset_id` before `clip_id`). Fixed by
+clearing it explicitly, symmetric with `override_shot_asset`'s own clear
+of `clip_id`.
+
+### Task 5 — `estimate_project_cost_cents` counts what will actually generate
+
+Signature gained a second, optional parameter:
+`estimate_project_cost_cents(timeline, binding_states: dict[str, str] |
+None = None)`, mapping `shot_id -> ShotBinding.state` at the active
+version. The OLD estimate counted only shots whose PRIMARY
+`asset_plan.strategy` was already a generation rung - wrong the moment a
+search-primary shot falls through the ladder to generation, which after
+M6.5 is the NORMAL route, not an edge case (measured on a real run: 10 of
+14 shots queued to generate, estimate read 0). `binding_states` is what
+makes the fix possible: only the search pass's own verdict
+(`"awaiting_generation"`) actually knows a shot will reach generation
+regardless of its plan's primary label. A shot already `"resolved"` (free
+search, or a human's own override/upload) or `"generated"` (already
+billed, and already reflected in `spent_cost_cents`) is excluded
+outright, so nothing is double-counted. No binding yet (search hasn't
+reached this shot, or a total outage, A22) falls back to the OLD
+plan-only guess - unchanged, since there remains no reliable way to
+predict a search hit rate before it runs. `GET /progress` is the one
+real caller, and already builds the exact dict this needed for its own
+`shots` array, so passing it costs nothing extra there.
+
+### Task 6 — reporting a cache hit
+
+`GET/POST /shots/{id}/generate`'s response gained `cache_hit: bool`, and
+`cost_cents` now means what THAT call actually cost - `0` on a cache
+hit, never the clip row's ORIGINAL charge (which the field used to
+return unconditionally, making a free reuse indistinguishable from a
+fresh spend). Threaded up from `_generate_image_once` (which already
+had to decide this internally to know whether to call the paid provider
+at all) through `generate_image_real` as a `(clip, cache_hit)` tuple.
+True cache hits still happen under Task 3's new seed - most commonly
+two DIFFERENT shots in the same project sharing identical prompt text at
+their own first-ever attempt (attempt 0 always uses the bare, per-project
+seed, shared across every shot in that project by design) - proven in
+`test_generate_shot_api.py
+::test_generate_hits_the_cache_when_a_different_shot_shares_the_exact_prompt`.
+
+### Task 7 — no stale image after a regenerate
+
+`GET /shots/{id}/asset` now sets `Cache-Control: no-cache` on every
+response. The URL is stable per shot, but the underlying file behind it
+is not (a regenerate or an override rebinds the same shot to a different
+file) - without an explicit `Cache-Control`, a browser applies heuristic
+freshness (RFC 7234 §4.2.2) and may never even ask the server again
+after the first load. Starlette's `FileResponse` already computes
+`ETag`/`Last-Modified` FRESH on every call, from the actual file's
+current `os.stat` at send time - so the validators were already
+correct; `no-cache` (which still permits caching - it forbids using the
+cached copy WITHOUT revalidating first) is what makes the browser
+actually consult them on every load. Not solved by asking the frontend
+to cache-bust the URL with a query parameter - that only protects
+clients that remember to do it. Proven end-to-end (not just that the
+header is present) in `test_media_endpoints_api.py
+::test_shot_asset_etag_and_bytes_change_after_an_override_at_the_same_url`.
+
 ### Frontend build status (2026-08-16) — parked mid-build, committed deliberately
 
 All seven screens above (F1–F7) are built as real routes in `frontend/` — ~2,400 lines, no stubs. **The app does not compile and has never talked to the running backend.** Parked at the user's request to be resumed later; committed in that state rather than left uncommitted.

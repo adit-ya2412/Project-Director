@@ -221,16 +221,20 @@ async def test_resume_after_simulated_crash_does_not_redo_completed_steps(projec
         )
         result = await WorkflowEngine(ctx).run()
 
-    # v3, not v2: generate_timeline was correctly skipped (it would have
-    # produced a DIFFERENT v3, re-planning from scratch) - the real v3
-    # here is `SelectMusicStep`'s own legitimate append_version (M8 step
-    # 4), which runs after generate_timeline and before the approval gate
-    # regardless. Distinguishing "skipped" from "re-ran" by version
-    # number alone stopped being enough the moment a second pre-approval
-    # step could also append a version - `produced_by` is what actually
-    # proves generate_timeline didn't re-run.
-    assert result.timeline.version == 3
-    assert result.timeline.produced_by == "music_selection"
+    # v4, not v2: generate_timeline was correctly skipped (it would have
+    # produced a DIFFERENT v3, re-planning from scratch). The real v3 is
+    # `SelectMusicStep`'s own legitimate append_version (M8 step 4), which
+    # runs after generate_timeline and before the approval gate
+    # regardless; the real v4 is `NarrationStep`'s own reconciliation -
+    # Task 1 (2026-08-16) moved it BEFORE the approval gate too (the
+    # deliberate, narrow I6 exception - see `app/workflow/engine.py`'s
+    # own docstring), so it is now the last thing to run before the
+    # engine stops here. Distinguishing "skipped" from "re-ran" by
+    # version number alone stopped being enough the moment more than one
+    # pre-approval step could append a version - `produced_by` is what
+    # actually proves generate_timeline didn't re-run.
+    assert result.timeline.version == 4
+    assert result.timeline.produced_by == "narration"
 
     async with async_session_factory() as session:
         run_row = await WorkflowRunRepository(session).get_latest(uuid_module.UUID(project_id))

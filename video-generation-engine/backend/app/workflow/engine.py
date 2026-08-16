@@ -41,21 +41,59 @@ logger = get_logger(__name__)
 # moment fixing it is still free (A5). A shot it cannot resolve is left
 # `awaiting_generation`, not failed - the paid pass still owns it.
 #
-# `resolve_assets_generate` (rungs 5-6, paid) runs AFTER NarrationStep,
-# not directly after approval (A6/A7): narration is cheap (~9c) and is
-# what validates the real, spoken duration - a script that blows the 90s
-# cap must fail there, before dollars of generation are spent on a video
-# that can never ship. NarrationStep appends a NEW Timeline version
-# (reconciled durations, M8); ShotBinding rows are keyed by (project_id,
-# timeline_version, shot_id), so that version bump would orphan every
-# binding `resolve_assets_search` and a human just approved, forcing a
-# full, silent re-resolve (and re-pay for generation) of every shot - A11
-# is the hard prerequisite this depends on: `TimelineService` carries a
-# shot's binding forward across that exact version bump whenever the
-# shot's acquisition-relevant fields (`prompt`, `asset_plan`) are
-# unchanged (A20), which is true for every shot narration ever touches
-# (it only changes durations). See `app/timeline/service.py` for where
-# that carry-forward actually happens and why.
+# `resolve_assets_generate` (rungs 5-6, paid) runs AFTER `AwaitApprovalStep`
+# (A6) - it costs real money, and I6 forbids that before a human approves.
+#
+# ## Decision (2026-08-16): `NarrationStep` moved BEFORE `AwaitApprovalStep`
+#
+# The pipeline used to be `... -> AwaitApproval -> Narration ->
+# ResolveAssets(generate) -> ...` (A7's original reading: "post-approval
+# order is narrate -> generate -> render"). This reorders it to `...
+# -> Narration -> AwaitApproval -> ResolveAssets(generate) -> ...` -
+# narration now runs BEFORE the one gate, not after it. This is a
+# DELIBERATE, narrow exception to I6 ("nothing expensive runs before
+# approval"): narration costs real money (~10 cents via ElevenLabs), and
+# it now runs pre-approval. Recorded here, not left to read as drift:
+#
+# - **The one-gate redesign needs REAL durations to review, not
+#   planning estimates.** Under the one-gate design (superseding M6.5's
+#   two-gate plan and F4/F5's frontend split - see
+#   docs/13_Implementation_Guide.md), a human at the single approval gate
+#   is shown every shot's image alongside how long it stays on screen, so
+#   they can judge whether a busy, detailed picture works for its actual
+#   duration. Before narration runs, `duration_s` is only the Shot
+#   Planner's pre-audio guess - a number that routinely differs from the
+#   real, ElevenLabs-measured spoken time by seconds (D1: narration is the
+#   master clock). Gating approval on a guess and reconciling the real
+#   number afterward would mean the human approves a video whose timing
+#   they never actually saw.
+# - **Narration is the cheapest, earliest thing that can fail.** ~10 cents
+#   against image generation's ~4 cents PER SHOT across a whole script
+#   (commonly 60+ cents), and it fails FIRST: a narration-span that covers
+#   only whitespace, or a reconciled duration that blows
+#   `max_video_duration_s`, is now caught before a human spends review
+#   time on a gate full of pictures for a script that can never ship.
+#   Under the old order those same scripts reached generation (or even
+#   the human) before failing.
+# - **Narration's own result never changes under anything a human does at
+#   the gate.** A29 guarantees an override never changes `duration_s` - it
+#   only swaps which picture a shot uses - so nothing decided at approval
+#   can invalidate what narration already measured. Moving it earlier
+#   loses nothing that later human input could have informed.
+#
+# Consequence, not swept under the rug: `NarrationStep` and
+# `AwaitApprovalStep` themselves had to stop treating "the active version
+# is `produced_by == NARRATION`" as proof of approval (a shortcut that
+# was correct under the OLD order, where narration ran strictly after the
+# gate and could only ever exist on an already-approved lineage - see
+# each step's own docstring for why keeping it now would have made the
+# gate a silent no-op instead). `NarrationStep` now only self-approves
+# the version it appends when the version it narrated FROM was already
+# approved (the N1 "redo narration with a different voice" path, which
+# runs well after the project's first approval) - never on the very
+# first pass, which is exactly the DRAFT state a human is now looking at
+# while deciding whether to approve.
+#
 # A15/A26/A28 (M6.5): `AwaitReviewStep` runs after the generation pass and
 # BEFORE `RenderStep` - a shot that ended `failed` there must never reach
 # the renderer, not even as a placeholder. This is a different gate from
@@ -73,8 +111,8 @@ DEFAULT_PIPELINE: list[WorkflowStep] = [
     GenerateTimelineStep(),
     ResolveAssetsStep(name="resolve_assets_search", permitted_strategies=SEARCH_RUNGS),
     SelectMusicStep(),
-    AwaitApprovalStep(),
     NarrationStep(),
+    AwaitApprovalStep(),
     ResolveAssetsStep(name="resolve_assets_generate", permitted_strategies=GENERATION_RUNGS),
     AwaitReviewStep(),
     RenderStep(),

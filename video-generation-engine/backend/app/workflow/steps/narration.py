@@ -13,33 +13,58 @@ around it (provider call, cache, budget, `append_version`).
 `ShotBinding` rows are keyed by `(project_id, timeline_version, shot_id)`,
 and both `ResolveAssetsStep` and `RenderStep` look up bindings by the
 *active* timeline version. `ResolveAssetsStep` now runs TWICE (M6.5, A5/
-A21) - a free search-only pass BEFORE `AwaitApprovalStep`, and a paid
-generation-only pass after this step. This step's own `append_version`
-call (reconciled durations) bumps the version between those two passes,
-which would silently orphan every binding the search pass found (and a
-human just approved) if `TimelineService` didn't carry them forward
-(A11/A20 - see `app/timeline/service.py` for where that actually
-happens: every shot narration reconciles keeps its `prompt`/`asset_plan`
-byte-identical, since it only ever changes `duration_s`, so every
-binding carries). This step must run AFTER `AwaitApprovalStep` - TTS
-costs money, and I6 forbids anything expensive before approval - and
-BEFORE the generation-only `ResolveAssetsStep` pass, so that pass (and
-`RenderStep`) always bind against the FINAL, narration-corrected version.
-See `app/workflow/engine.DEFAULT_PIPELINE`.
+A21) - a free search-only pass BEFORE this step, and a paid
+generation-only pass after `AwaitApprovalStep`. This step's own `append_version`
+call (reconciled durations) bumps the version between the search pass and
+the approval gate, which would silently orphan every binding the search
+pass found if `TimelineService` didn't carry them forward (A11/A20 - see
+`app/timeline/service.py` for where that actually happens: every shot
+narration reconciles keeps its `prompt`/`asset_plan` byte-identical,
+since it only ever changes `duration_s`, so every binding carries).
 
-## Approval, and the crash window around it
+**This step runs BEFORE `AwaitApprovalStep` (decision, 2026-08-16 - see
+`app/workflow/engine.DEFAULT_PIPELINE`'s own module docstring for the
+full reasoning), a deliberate, narrow I6 exception**: narration costs
+real money (~10 cents) and now runs pre-approval, because the one-gate
+redesign needs the human to see REAL, measured shot durations at the
+gate, not the planner's pre-audio guess - a busy image that's fine on
+screen for 4.6s and wrong for 1.5s is not a judgement a human can make
+against an estimate. Narration is also the cheapest, earliest thing that
+can fail (~10c vs. tens of cents of generation, script-wide), so a script
+that can never ship is caught before a human's review time is spent on
+it. This step still runs BEFORE the generation-only `ResolveAssetsStep`
+pass, so that pass (and `RenderStep`) always bind against the FINAL,
+narration-corrected version.
+
+## Approval, and why this step does NOT always self-approve
 
 Narration reconciles durations; it does not re-open the creative plan for
 review (M8 open decision: "approval is of the creative plan, not of
-millisecond timings"). So the version this step appends is immediately
-marked approved too, via the same `TimelineService.approve` the API uses -
-`AwaitApprovalStep` never needs to know this step exists. Belt and braces
-against the crash window between `append_version` and `approve` (both are
-separate commits): `AwaitApprovalStep.is_satisfied`/`run` also treat
-`produced_by == NARRATION` as approval-equivalent on their own, so a crash
-in that exact window resumes by finishing the approval rather than making
-the engine demand a second human click for a version a human already
-approved.
+millisecond timings"). Under the OLD pipeline order (approve, then
+narrate) that meant the version this step appended was always
+immediately marked approved too - a human had already approved a prior
+version, and narration was never meant to demand a second click for a
+mere duration reconciliation.
+
+Under the NEW order, that is no longer universally true: the FIRST time
+this step ever runs for a project, it runs BEFORE the human has approved
+anything at all - the version it appends IS what `AwaitApprovalStep`
+(which runs immediately after this step now) is waiting for a human to
+approve. Self-approving unconditionally here would make that gate a
+silent no-op - the pipeline would sail straight through it the instant
+narration finished, with nobody having clicked anything.
+
+So this step only self-approves when the version it narrated FROM was
+ALREADY approved (`timeline.status == TimelineStatus.APPROVED`, checked
+at the top of `run()` before anything is appended) - which is exactly
+the N1 "redo narration with a different voice" path
+(`POST /narration/retry`): that endpoint's own `_resume_after_human_correction`
+re-approves its `produced_by=HUMAN` voice-change version before resuming
+the engine (since the project was already past its first approval by
+then), so when `NarrationStep` re-runs against it, the pre-narration
+timeline IS approved, and the freshly re-synthesized version is
+self-approved too - preserving N1's "resume, no second click" contract
+without reopening the FIRST-approval gate this step now sits in front of.
 
 ## Resumability (load-bearing - see the M4/M5 notes on this exact mistake)
 
@@ -78,7 +103,7 @@ from app.providers.elevenlabs import ElevenLabsNarrationProvider, compute_narrat
 from app.providers.fakes.narration import FakeNarrationProvider
 from app.repositories.generated_clip_repository import GeneratedClipRepository
 from app.repositories.narration_repository import NarrationRepository
-from app.schemas.timeline import ProducedBy, Timeline
+from app.schemas.timeline import ProducedBy, Timeline, TimelineStatus
 from app.timeline.duration import compute_timeline_duration
 from app.timeline.narration_fit import SceneAlignment, reconcile_timeline_durations
 from app.workflow.context import RunContext
@@ -126,6 +151,13 @@ class NarrationStep:
         # anything else - budget exceeded, corrupted alignment data, the
         # reconciled video running too long - is a clean, loud `failed`
         # rather than a raw exception escaping the step.
+        # Captured BEFORE anything is appended (see this module's own
+        # docstring, "Approval, and why this step does NOT always
+        # self-approve"): whether to self-approve the version this run
+        # produces depends on whether the version it narrated FROM was
+        # already approved, not on anything about the NEW version itself.
+        already_approved = timeline.status == TimelineStatus.APPROVED
+
         try:
             alignments = await self._synthesize_scene_alignments(ctx, timeline, voice_id=voice_id)
             new_timeline = await self._reconcile_and_append(ctx, timeline, alignments)
@@ -134,7 +166,16 @@ class NarrationStep:
         except PermanentError as exc:
             return StepResult(outcome="failed", error=str(exc))
 
-        await ctx.timeline_service.approve(ctx.project_id, new_timeline.version)
+        if already_approved:
+            # N1 (narration redo, e.g. a different voice): the project was
+            # already past its first approval, so this reconciliation is
+            # not reopening the creative plan for review - self-approve,
+            # same as the old unconditional behaviour. The FIRST pass on a
+            # fresh, unapproved project (narration now runs before
+            # `AwaitApprovalStep` - 2026-08-16) deliberately does NOT hit
+            # this branch: that version is exactly what the gate is
+            # waiting for a human to look at.
+            await ctx.timeline_service.approve(ctx.project_id, new_timeline.version)
         return StepResult(outcome="ok")
 
     async def _synthesize_scene_alignments(

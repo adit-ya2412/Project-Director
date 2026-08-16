@@ -26,6 +26,8 @@ from app.db.session import async_session_factory
 from app.main import app
 from app.models.shot_binding import ShotBindingModel
 from app.schemas.timeline import (
+    AssetPlan,
+    AssetStrategy,
     ProducedBy,
     Scene,
     Shot,
@@ -181,3 +183,92 @@ def test_progress_shots_are_in_timeline_order_with_full_semantics(client):
         }
         assert s["asset"] is None  # no binding.asset_id was set - unaffected
         assert s["clip"] is None
+
+
+async def _seed_mixed_generation_state_timeline(project_id: str) -> None:
+    """Task 5 (2026-08-16): one shot whose PLAN's primary strategy is a
+    search rung but whose binding is `awaiting_generation` (the search
+    pass's own verdict - it WILL be generated) - the exact case the old,
+    plan-only `estimated_cost_cents` silently reported as free."""
+    shot_will_generate = Shot(
+        id="sh_generate",
+        order=0,
+        intent=ShotIntent.EXPLAIN,
+        duration_s=3.0,
+        prompt="a coal mine",
+        asset_plan=AssetPlan(
+            strategy=AssetStrategy.HISTORICAL_SEARCH,
+            fallback_chain=[AssetStrategy.HISTORICAL_SEARCH, AssetStrategy.GENERATE_IMAGE],
+        ),
+        transition_out=Transition(type=TransitionType.CUT, duration_s=0.0),
+    )
+    shot_resolved = Shot(
+        id="sh_resolved",
+        order=1,
+        intent=ShotIntent.EXPLAIN,
+        duration_s=3.0,
+        prompt="an oil depot",
+        asset_plan=AssetPlan(
+            strategy=AssetStrategy.HISTORICAL_SEARCH,
+            fallback_chain=[AssetStrategy.HISTORICAL_SEARCH, AssetStrategy.GENERATE_IMAGE],
+        ),
+        transition_out=Transition(type=TransitionType.CUT, duration_s=0.0),
+    )
+    scene = Scene(
+        id="sc_01",
+        order=0,
+        title="Scene",
+        narration_text="unused",
+        duration_s=6.0,
+        shots=[shot_will_generate, shot_resolved],
+    )
+
+    async with async_session_factory() as session:
+        service = TimelineService(session)
+        await service.create_initial(project_id, script="unused")
+
+        def _fill(base):
+            base.scenes = [scene]
+            base.metadata.total_duration_s = 6.0
+            return base
+
+        appended = await service.append_version(
+            project_id,
+            produced_by=ProducedBy.ASSET_PLANNER,
+            transform=_fill,
+            owns=frozenset({"scenes", "metadata"}),
+        )
+
+        project_uuid = uuid_module.UUID(project_id)
+        session.add(
+            ShotBindingModel(
+                project_id=project_uuid,
+                timeline_version=appended.version,
+                shot_id="sh_generate",
+                state="awaiting_generation",
+            )
+        )
+        session.add(
+            ShotBindingModel(
+                project_id=project_uuid,
+                timeline_version=appended.version,
+                shot_id="sh_resolved",
+                state="resolved",
+            )
+        )
+        await session.commit()
+
+
+def test_progress_estimated_cost_counts_shots_awaiting_generation(client):
+    """The real, measured defect this fixes: both shots here PLAN a
+    search-primary strategy, so the OLD estimate (primary-strategy-only)
+    would read 0 - even though the search pass already determined
+    `sh_generate` WILL be generated. Only `sh_generate`'s cost should be
+    counted; `sh_resolved` was found for free and must not be."""
+    project_id = client.post(
+        "/api/v1/projects", json={"name": "progress cost estimate test"}
+    ).json()["id"]
+    asyncio.run(_seed_mixed_generation_state_timeline(project_id))
+
+    progress = client.get(f"/api/v1/projects/{project_id}/progress").json()
+    assert progress["estimated_cost_cents"] == settings.fal_image_cost_cents_estimate
