@@ -3254,6 +3254,22 @@ New `tests/unit/planners/test_scene_planner.py` (rewritten, 9 tests total): a sc
 
 Re-verified after both fixes: `ruff check backend`, `black --check backend`, `mypy backend/app` clean from the repo root, and the full suite green.
 
+## R1–R3 — three defects found while testing a two-line config change (2026-08-16)
+
+The intent was to raise `MUSIC_BED_GAIN_DB`/`MUSIC_DUCK_GAIN_DB` and listen. It cost real money and produced a broken video, and the three reasons are each worth fixing.
+
+**R1 — the fixture round-trip does not restore a working project, and this is the one that cost money.** `export_test_project.py` writes `shot_binding` rows carrying their **original** `timeline_version`, while `seed_test_project.py` recreates the timeline **renumbered**. Measured on a real restore: bindings landed at versions 5–11 while only versions 1–2 of the timeline existed, so the **active timeline had zero bindings**. Narration linkage and generated clips did not survive either — a render from the restored state produced no narration at all and 7 of 19 shots as placeholders.
+
+The consequence is worse than a broken render. `ResolveAssetsStep` saw no bindings at the active version, concluded nothing had been resolved, and **began resolving from scratch — including paid OpenAI vision calls.** The script exists precisely so that "planning is the expensive, non-deterministic part… snapshot it rather than re-buying it every time the shared dev database gets truncated". It silently re-buys it. **Every restore is currently a trap**, and no further live testing should lean on one until this is fixed.
+
+The fix must remap binding (and narration, and generated-clip) references onto the renumbered versions, and the round-trip needs a test that actually asserts a restored project is *renderable* — the existing check only asserts rows exist.
+
+**R2 — the render fingerprint omits the audio mix settings.** `compute_render_fingerprint` covers the timeline, asset/narration/music content hashes, `width`/`height`/`fps`/`pixel_format` and the ffmpeg version — but **not** `music_bed_gain_db`/`music_duck_gain_db`, which are read from config at mux time. I5 states the render is a pure function of its inputs; these are inputs. Change the mix and re-render and you get the **cached bytes back**, silently. The only reason this test rendered at all is that the previous `final.mp4` had been deleted, so the cache lookup missed on the absent file rather than on the fingerprint.
+
+**R3 — there is no render-only path.** `POST /render` is not a render command; it advances the entire workflow from the first unsatisfied step. For a step the documentation describes as a pure function of the timeline, having no way to invoke *only* it is wrong — and it is what turned "re-render to hear a mix change" into an unplanned paid run. A render-only endpoint (or an explicit `steps=` filter) would make re-rendering as cheap as it is supposed to be.
+
+**What did work:** the gain change itself, measured — the ducked bed moved from **-52.6 dB to -38.6 dB mean**, 14 dB louder, exactly as intended. The balance against narration remains unverified, because the restored project could not produce narration.
+
 ## Backlog — deferred, not blocking
 
 Raised during the first real Hinglish run (2026-08-15, project `194ad0e7`, fixture `hinglish_test_project`). Deliberately not fixed then, so the run could continue.
