@@ -3310,6 +3310,31 @@ Raised during the first real Hinglish run (2026-08-15, project `194ad0e7`, fixtu
 - [ ] Errors are legible to a non-developer
 - [ ] Regenerating one scene does not touch the others
 
+## Screen design, agreed with the user screen by screen (2026-08-16)
+
+### F0 — two blocking prerequisites, both backend
+
+**F0a — the trigger endpoints must stop blocking.** This phase's own Advice already says *"Long operations return `202` with a run ID. Never block an HTTP request on planning, generation, or rendering"* — and the implementation does exactly that. `POST /render` ran past **600 seconds** during live testing and had to be backgrounded from the tooling; a browser cannot wait that long. Redis is in `docker-compose.yml` but **nothing in `app/` uses it** — there is no queue, no `BackgroundTasks`, nothing. Triggers must return immediately and the UI polls `GET /status` / `GET /progress`. Nothing else in this phase can be built honestly until this is true.
+
+**F0b — nothing serves image bytes.** `asset.local_path` is a server filesystem path, so a browser cannot display any asset. Needed:
+- `GET /projects/{id}/shots/{shot_id}/asset` — the bound image, for the approval screen.
+- `GET /projects/{id}/thumbnail` — for the project list.
+
+Both are the same kind of work and should ship together. **Generate lazily and cache to disk, keyed on the source file's mtime** — not eagerly at render time. Lazy needs no pipeline change, wastes nothing on projects nobody opens, and handles both source cases through one path. The mtime key matters: `RenderStep` already shipped a stale-cache bug during this project (a cached render served after assets changed), and a thumbnail cache without invalidation would reproduce it — a re-render with a new voice would keep showing the old video's frame forever.
+
+Both tools are already dependencies: **Pillow** (already used by `app/assets/validation.py`) resizes stills, **ffmpeg** (already driving the renderer) extracts video frames.
+
+### F1 — the project list
+
+Cards: **thumbnail**, name, status chip, shot count and duration where known, created date. `GET /projects` supplies everything except the thumbnail.
+
+**Thumbnail source, in order:**
+1. `final.mp4` exists → extract a frame with ffmpeg. **Not frame 0** — that is routinely a fade-in or a dark frame. Take roughly 10% in, clamped to [0.5s, 3s] so short videos do not overshoot.
+2. No video yet → the **first shot's bound asset**, resized with Pillow. Projects sit at the approval gate longest, which is exactly when a thumbnail is most wanted, and a bound asset exists from the moment the free search pass finishes.
+3. Neither → 404, and the card shows a status chip instead.
+
+**Failed projects are listed prominently, not hidden** (user's explicit call, 2026-08-16). Live testing produced several dead ends — a Shot Planner span failure, a Scene Planner verbatim flake, a narration timing rejection — and each one was a thing the user needed to see and act on, not a record to tidy away. A failed project with a legible reason is the system telling the truth about itself.
+
 ## Implementation notes (2026-08-15) — folding shot semantics into `GET /progress`, ahead of the frontend
 
 No frontend exists yet (M9 proper hasn't started), but the gap this
