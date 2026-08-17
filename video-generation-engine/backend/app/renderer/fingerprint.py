@@ -48,6 +48,21 @@ invalidates every fingerprint computed before this fix - correct and
 harmless, since a cache MISS only ever means "render for real", not
 "produce wrong output".
 
+**Captions (2026-08-17), following the R2 pattern exactly.**
+`burn_captions`/`caption_font_hash`/`cue_list_hash` are the same shape of
+gap R2 fixed: `burn_captions`/`caption_font` are read from config at the
+same point `music_bed_gain_db`/`music_duck_gain_db` are (see
+`RenderStep.render_video`), and the actual cue text/timing depends on the
+Timeline's narration content in a way this function cannot derive from
+`timeline`/`narration_content_hashes` alone (those hash the AUDIO, not
+the derived cue list - a segmentation-rule change or a burn on/off
+toggle changes zero bytes of either). All three are present
+unconditionally, `caption_font_hash`/`cue_list_hash` as `None` when
+`burn_captions` is `False`, mirroring `music_content_hash`'s own "always
+present, `None` when moot" rule - a caption-off render and a caption-on
+render of the identical Timeline must never collide on one cache entry
+(docs/14_Captions_Plan.md §6/§8.5).
+
 Bookkeeping fields (`version`, `parent_version`, `produced_by`, `status`,
 `created_at`, `timeline_id`, `project_id`, `schema_version`) are
 EXCLUDED from the hashed Timeline content - the same set
@@ -135,6 +150,9 @@ def compute_render_fingerprint(
     render_settings: RenderSettings,
     music_bed_gain_db: float,
     music_duck_gain_db: float,
+    burn_captions: bool,
+    caption_font_hash: str | None,
+    cue_list_hash: str | None,
     ffmpeg_version: str,
 ) -> str:
     timeline_document = timeline.model_dump(mode="json")
@@ -165,6 +183,11 @@ def compute_render_fingerprint(
         # is a deliberately conservative choice, not an oversight.
         "music_bed_gain_db": music_bed_gain_db,
         "music_duck_gain_db": music_duck_gain_db,
+        # Captions (2026-08-17), same unconditional-presence rule as the
+        # gains above - see this module's own docstring.
+        "burn_captions": burn_captions,
+        "caption_font_hash": caption_font_hash,
+        "cue_list_hash": cue_list_hash,
         "ffmpeg_version": ffmpeg_version,
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()

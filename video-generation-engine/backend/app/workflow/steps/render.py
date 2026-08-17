@@ -65,8 +65,18 @@ from app.core.config import settings
 from app.core.errors import EngineError, PermanentError, TransientError
 from app.models.asset import AssetModel
 from app.models.generated_clip import GeneratedClipModel
+from app.models.narration import NarrationModel
 from app.providers.elevenlabs import compute_narration_content_hash
 from app.renderer.audio import mux_narration
+from app.renderer.captions import (
+    CaptionStyle,
+    FONT_DIR,
+    burn_captions as burn_captions_pass,
+    caption_font_content_hash,
+    cue_list_content_hash,
+    derive_caption_cues,
+    serialize_ass,
+)
 from app.renderer.fingerprint import compute_render_fingerprint, get_ffmpeg_version
 from app.renderer.music import mux_music
 from app.renderer.placeholder import render_placeholder
@@ -124,6 +134,7 @@ class RenderStep:
             pixel_format=settings.render_pixel_format,
             ffmpeg_binary=settings.ffmpeg_binary,
             ffprobe_binary=settings.ffprobe_binary,
+            burn_captions=settings.burn_captions,
         )
         try:
             output_path = await render_video(
@@ -191,14 +202,32 @@ async def render_video(
             )
         shot_images[shot.id] = path
 
-    narration_pairs = await _resolve_narration_audio(ctx.session, timeline)
-    narration_paths = [p for p, _ in narration_pairs] if narration_pairs else None
-    narration_content_hashes = [h for _, h in narration_pairs] if narration_pairs else []
+    narration_rows = await _resolve_narration_rows(ctx.session, timeline)
+    narration_paths = (
+        [Path(row.local_path) for row in narration_rows] if narration_rows is not None else None
+    )
+    narration_content_hashes = (
+        [row.content_hash for row in narration_rows] if narration_rows is not None else []
+    )
     music_path = _resolve_music_track(timeline, ctx.project_id)
     music_content_hash = (
         timeline.music_plan.selected_track.content_hash
         if music_path is not None and timeline.music_plan and timeline.music_plan.selected_track
         else None
+    )
+
+    # Captions (2026-08-17): mirrors the R2 gain pattern exactly (see
+    # fingerprint.py's own docstring) - cues are derived here, before the
+    # cache-hit check, purely so their hash can be fingerprinted; they are
+    # only actually serialised/burned below on a real cache MISS.
+    caption_cues = (
+        derive_caption_cues(timeline, narration_rows)
+        if render_settings.burn_captions and narration_rows is not None
+        else None
+    )
+    cue_hash = cue_list_content_hash(caption_cues) if caption_cues is not None else None
+    caption_font_hash = (
+        caption_font_content_hash(settings.caption_font) if render_settings.burn_captions else None
     )
 
     ffmpeg_version = await get_ffmpeg_version(render_settings.ffmpeg_binary)
@@ -215,6 +244,9 @@ async def render_video(
         # they were the one real input this function didn't cover.
         music_bed_gain_db=settings.music_bed_gain_db,
         music_duck_gain_db=settings.music_duck_gain_db,
+        burn_captions=render_settings.burn_captions,
+        caption_font_hash=caption_font_hash,
+        cue_list_hash=cue_hash,
         ffmpeg_version=ffmpeg_version,
     )
 
@@ -234,14 +266,34 @@ async def render_video(
         # (M8 steps 3-4). Either way `render_timeline`'s own graph
         # (crossfades, hard cuts, Ken Burns) is exactly what it always was.
         silent_path = work_dir / f"silent_{output_path.stem}.mp4"
+        captioned_path = work_dir / f"captioned_{output_path.stem}.mp4"
         narrated_path = work_dir / f"narrated_{output_path.stem}.mp4"
         await render_timeline(
             timeline, shot_images, render_settings, silent_path, work_dir=work_dir
         )
-        if narration_paths is None:
-            silent_path.replace(narrated_path)
+
+        if caption_cues is None:
+            silent_path.replace(captioned_path)
         else:
-            await mux_narration(silent_path, narration_paths, narrated_path, render_settings)
+            # The one pass in this pipeline that must re-encode video
+            # (subtitles= cannot run through -c:v copy) - done here, once,
+            # on the smaller silent file, before narration/music muxing
+            # (both of which stream-copy video and would otherwise force
+            # a second re-encode or have to run before this one).
+            ass_path = work_dir / f"{output_path.stem}.ass"
+            style = CaptionStyle(
+                resolution=(render_settings.width, render_settings.height),
+                font_family=settings.caption_font,
+            )
+            ass_path.write_text(serialize_ass(caption_cues, style), encoding="utf-8")
+            await burn_captions_pass(
+                silent_path, ass_path, FONT_DIR, captioned_path, render_settings
+            )
+
+        if narration_paths is None:
+            captioned_path.replace(narrated_path)
+        else:
+            await mux_narration(captioned_path, narration_paths, narrated_path, render_settings)
 
         if music_path is None:
             narrated_path.replace(output_path)
@@ -278,10 +330,26 @@ async def render_video(
 async def _resolve_narration_audio(
     session: AsyncSession, timeline: Timeline
 ) -> list[tuple[Path, str]] | None:
-    """Ordered per-scene `(narration audio path, content_hash)` pairs for
-    the active timeline, or `None` when this project has no real
-    narration to mux - the render then stays exactly the silent video it
-    already was.
+    """Thin wrapper over `_resolve_narration_rows` for callers that only
+    need the audio path/hash, not the full row (alignment included) -
+    kept so `mux_narration`'s own contract (ordered per-scene path/hash
+    pairs) doesn't change shape. See `_resolve_narration_rows` for the
+    actual resolution logic and why both `None` cases are correct."""
+    rows = await _resolve_narration_rows(session, timeline)
+    if rows is None:
+        return None
+    return [(Path(row.local_path), row.content_hash) for row in rows]
+
+
+async def _resolve_narration_rows(
+    session: AsyncSession, timeline: Timeline
+) -> list[NarrationModel] | None:
+    """Ordered per-scene narration rows for the active timeline, or
+    `None` when this project has no real narration to mux - the render
+    then stays exactly the silent video it already was. Also the single
+    source of correctly voice-matched rows for caption cue derivation
+    (`app/renderer/captions.py::derive_caption_cues`) - see that module's
+    own docstring for why it does not re-resolve voice selection itself.
 
     Two deliberately distinct "no narration" cases collapse to that same
     silent-render behaviour, and neither is a fallback for a missing
@@ -332,7 +400,7 @@ async def _resolve_narration_audio(
         )
 
     narration_repo = NarrationRepository(session)
-    pairs: list[tuple[Path, str]] = []
+    rows: list[NarrationModel] = []
     for scene in timeline.scenes:
         content_hash = compute_narration_content_hash(
             text=scene.narration_text,
@@ -347,8 +415,8 @@ async def _resolve_narration_audio(
                 f"scene {scene.id} (content_hash {content_hash}) - cannot mux audio "
                 "that was never persisted"
             )
-        pairs.append((Path(row.local_path), content_hash))
-    return pairs
+        rows.append(row)
+    return rows
 
 
 def _resolve_music_track(timeline: Timeline, project_id: str) -> Path | None:

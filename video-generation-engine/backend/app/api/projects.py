@@ -481,6 +481,9 @@ async def render_draft(
         pixel_format=settings.render_pixel_format,
         ffmpeg_binary=settings.ffmpeg_binary,
         ffprobe_binary=settings.ffprobe_binary,
+        # burn_captions deliberately omitted (defaults False) - drafts
+        # never burn captions regardless of settings.burn_captions
+        # (docs/14_Captions_Plan.md §4.3: "drafts get no captions").
     )
     ctx = RunContext(
         project_id=project_id, session=session, repo=repo, timeline_service=timeline_service

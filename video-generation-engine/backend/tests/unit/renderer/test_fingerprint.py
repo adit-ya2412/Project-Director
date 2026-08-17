@@ -37,6 +37,9 @@ def _fingerprint(**overrides) -> str:
         "render_settings": _SETTINGS,
         "music_bed_gain_db": -14.0,
         "music_duck_gain_db": -20.0,
+        "burn_captions": False,
+        "caption_font_hash": None,
+        "cue_list_hash": None,
         "ffmpeg_version": "ffmpeg version 9.0",
     }
     kwargs.update(overrides)
@@ -107,6 +110,30 @@ def test_different_bed_gain_changes_the_fingerprint():
 def test_different_duck_gain_changes_the_fingerprint():
     """R2, the other half of the same defect."""
     assert _fingerprint(music_duck_gain_db=-26.0) != _fingerprint()
+
+
+def test_burn_captions_toggle_changes_the_fingerprint():
+    """A caption-off and caption-on render of the identical Timeline must
+    never collide on one cache entry (docs/14_Captions_Plan.md §6/§8.5)."""
+    assert _fingerprint(burn_captions=True) != _fingerprint(burn_captions=False)
+
+
+def test_different_caption_font_changes_the_fingerprint():
+    """Swapping the vendored font file must invalidate the cache even
+    though nothing else about the render changed."""
+    assert _fingerprint(
+        burn_captions=True, caption_font_hash="font-hash-a"
+    ) != _fingerprint(burn_captions=True, caption_font_hash="font-hash-b")
+
+
+def test_different_cue_list_changes_the_fingerprint():
+    """Covers script edits, re-narration with a different voice, and any
+    segmentation-rule change in one value (doc §6) - none of which are
+    visible to `narration_content_hashes` (that hashes the AUDIO, not the
+    derived cue list)."""
+    assert _fingerprint(
+        burn_captions=True, cue_list_hash="cues-a"
+    ) != _fingerprint(burn_captions=True, cue_list_hash="cues-b")
 
 
 def test_bookkeeping_fields_never_affect_the_fingerprint():

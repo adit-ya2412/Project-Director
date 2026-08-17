@@ -175,7 +175,12 @@ class Settings(BaseSettings):
     draft_height: int = 854
     default_transition_duration_s: float = 0.4
     burn_captions: bool = True
-    caption_font: str = "Inter"
+    # Noto Sans Devanagari, not Inter (which has zero Devanagari coverage):
+    # docs/14_Captions_Plan.md §3.2/§8.4. Vendored at backend/vendor/fonts/
+    # (app/renderer/captions.py resolves the family name to that file), not
+    # host fontconfig - a fallback stack is disqualified under I5, since
+    # libass's fallback resolution is platform-dependent.
+    caption_font: str = "Noto Sans Devanagari"
 
     # --- Creative constraints (D7) ---
     max_video_duration_s: float = 90.0

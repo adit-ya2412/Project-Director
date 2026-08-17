@@ -48,6 +48,12 @@ class RenderSettings:
     pixel_format: str
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
+    # Unlike the music gains (read from config once, directly, since they
+    # never vary by call site), this DOES vary per call site - drafts
+    # never burn captions regardless of `settings.burn_captions`
+    # (docs/14_Captions_Plan.md §4.3), the same reason width/height are
+    # already here rather than read from config inside `render_video`.
+    burn_captions: bool = False
 
 
 async def run_ffmpeg(args: list[str]) -> None:
