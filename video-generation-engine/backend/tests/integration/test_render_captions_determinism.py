@@ -1,9 +1,9 @@
 """Real ffmpeg proof that burning captions doesn't break I5: the same
 Timeline + narration + cues must produce byte-identical output across two
 independent, from-scratch runs - exactly `test_render_determinism.py`'s
-own proof, extended to cover the one new pass (`app/renderer/
-captions.py::burn_captions`) that re-encodes video instead of stream-
-copying it.
+own proof, extended to cover the video filter pass (`app/renderer/
+video_filters.py::apply_video_filters`, fed a captions-only fragment
+here) that re-encodes video instead of stream-copying it.
 
 A real (if synthetic) MP3 is used for narration - not `FakeNarrationProvider`
 bytes, which aren't decodable media - following
@@ -24,8 +24,15 @@ from PIL import Image
 
 from app.core.config import settings
 from app.renderer.audio import mux_narration
-from app.renderer.captions import CaptionStyle, FONT_DIR, burn_captions, derive_caption_cues, serialize_ass
+from app.renderer.captions import (
+    CaptionStyle,
+    FONT_DIR,
+    derive_caption_cues,
+    serialize_ass,
+    subtitles_filter_fragment,
+)
 from app.renderer.slideshow import RenderSettings, render_timeline
+from app.renderer.video_filters import apply_video_filters
 from app.models.narration import NarrationModel
 from app.schemas.timeline import ProducedBy, Scene, Shot, ShotIntent, Timeline, TimelineStatus
 import uuid
@@ -134,7 +141,11 @@ async def _render_captioned_once(tmp_path: Path, suffix: str) -> Path:
     ass_path.write_text(serialize_ass(cues, style), encoding="utf-8")
 
     captioned_path = work_dir / "captioned.mp4"
-    await burn_captions(silent_path, ass_path, FONT_DIR, captioned_path, _RENDER_SETTINGS)
+    fragment = subtitles_filter_fragment("0:v", "out", ass_path, FONT_DIR)
+    await apply_video_filters(
+        silent_path, captioned_path, _RENDER_SETTINGS,
+        extra_inputs=[], filter_complex=fragment, output_label="out",
+    )
 
     output_path = tmp_path / f"final_{suffix}.mp4"
     await mux_narration(captioned_path, [narration_path], output_path, _RENDER_SETTINGS)

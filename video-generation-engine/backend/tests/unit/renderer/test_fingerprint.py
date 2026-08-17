@@ -40,6 +40,9 @@ def _fingerprint(**overrides) -> str:
         "burn_captions": False,
         "caption_font_hash": None,
         "cue_list_hash": None,
+        "watermark_enabled": False,
+        "watermark_asset_hash": None,
+        "watermark_params_hash": None,
         "ffmpeg_version": "ffmpeg version 9.0",
     }
     kwargs.update(overrides)
@@ -134,6 +137,30 @@ def test_different_cue_list_changes_the_fingerprint():
     assert _fingerprint(
         burn_captions=True, cue_list_hash="cues-a"
     ) != _fingerprint(burn_captions=True, cue_list_hash="cues-b")
+
+
+def test_watermark_toggle_changes_the_fingerprint():
+    """A watermark-off and watermark-on render of the identical Timeline
+    must never collide on one cache entry (watermark plan §4)."""
+    assert _fingerprint(watermark_enabled=True) != _fingerprint(watermark_enabled=False)
+
+
+def test_different_watermark_asset_changes_the_fingerprint():
+    """Swapping the vendored logo file must invalidate the cache even
+    though nothing else about the render changed - the exact R2 shape,
+    applied to the watermark instead of the music gains."""
+    assert _fingerprint(
+        watermark_enabled=True, watermark_asset_hash="logo-hash-a"
+    ) != _fingerprint(watermark_enabled=True, watermark_asset_hash="logo-hash-b")
+
+
+def test_different_watermark_params_changes_the_fingerprint():
+    """Covers position/margin/width/opacity changes in one value - a
+    watermark moved from bottom-right to top-right must invalidate the
+    cache even though the logo file itself didn't change."""
+    assert _fingerprint(
+        watermark_enabled=True, watermark_params_hash="params-a"
+    ) != _fingerprint(watermark_enabled=True, watermark_params_hash="params-b")
 
 
 def test_bookkeeping_fields_never_affect_the_fingerprint():

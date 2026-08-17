@@ -9,9 +9,13 @@ they're testable without rendering anything (doc §4.1):
   list[CaptionCue]`, in FINAL AUDIO-TRACK time (see "Which clock" below).
 - `serialize_ass`: `list[CaptionCue] -> str`, deterministic ASS text.
 
-`burn_captions` (the actual ffmpeg pass) is the one impure function here,
-mirroring `app/renderer/audio.py::mux_narration`'s own shape: pure
-derivation/serialisation upstream, a single ffmpeg invocation downstream.
+`subtitles_filter_fragment` builds this module's piece of the shared
+video filter pass (`app/renderer/video_filters.py`) as a `filter_complex`
+string fragment - it does no I/O itself. Originally this module ran its
+own standalone ffmpeg pass (`burn_captions`); that was generalised away
+when docs/plans/watermark_implementation_plan.md needed the SAME
+re-encode to also carry a watermark overlay, and two full re-encodes
+after composition was the one thing worth avoiding (§1 there).
 
 ## Which clock: audio-concat time, not `compute_shot_start_times`
 
@@ -49,7 +53,7 @@ from pathlib import Path
 
 from app.models.narration import NarrationModel
 from app.planners.fragments import split_narration_fragments
-from app.renderer.slideshow import RenderSettings, run_ffmpeg
+from app.renderer.video_filters import escape_ffmpeg_filter_path
 from app.schemas.timeline import Timeline
 
 MAX_CHARS_PER_CUE = 70
@@ -356,58 +360,18 @@ def serialize_ass(cues: list[CaptionCue], style: CaptionStyle) -> str:
     return "\n".join(lines) + "\n"
 
 
-def escape_ffmpeg_filter_path(path: Path) -> str:
-    """Windows path escaping for the `subtitles=`/`fontsdir=` filter
-    argument (doc §4.3's own flagged trap): forward-slash the path (ffmpeg
-    filter argument parsing chokes on backslashes) then escape the
-    drive-letter colon, which the filter's own `key=value` grammar would
-    otherwise read as a parameter separator - `C:/x` must become
-    `C\\:/x`. Verified empirically (not just per the docs) against a real
-    ffmpeg invocation: the escaped colon ALONE is not sufficient once a
-    second colon-bearing option (`fontsdir=`) is chained after it in the
-    same `-vf` string - the caller must also wrap each escaped path in
-    single quotes (`filename='C\\:/x':fontsdir='C\\:/y'`), or ffmpeg's
-    filtergraph parser misreads where the first value ends."""
-    posix = path.resolve().as_posix()
-    return posix.replace(":", "\\:")
-
-
-async def burn_captions(
-    video_path: Path,
-    ass_path: Path,
-    font_dir: Path,
-    output_path: Path,
-    settings: RenderSettings,
-) -> Path:
-    """The one impure pass this module owns: burns `ass_path`'s cues into
-    `video_path`'s frames. Must re-encode (`subtitles=` cannot run through
-    `-c:v copy`) - mirrors `slideshow.py::_render_run`'s exact deterministic
-    libx264 recipe (I5: `+bitexact`, single-threaded) since this is the
-    other place in the pipeline that re-encodes video."""
-    subtitles_filter = (
-        f"subtitles=filename='{escape_ffmpeg_filter_path(ass_path)}':"
-        f"fontsdir='{escape_ffmpeg_filter_path(font_dir)}'"
+def subtitles_filter_fragment(
+    input_label: str, output_label: str, ass_path: Path, font_dir: Path
+) -> str:
+    """One `filter_complex` fragment: burns `ass_path`'s cues onto whatever
+    video is at `input_label`, emitting `output_label`. Composed with the
+    watermark's own fragment (if any) by `app/workflow/steps/render.py`
+    into a single filter graph run through
+    `app/renderer/video_filters.py::apply_video_filters` - captions no
+    longer own their own ffmpeg invocation (docs/plans/
+    watermark_implementation_plan.md §1: one re-encode, not one per
+    filter)."""
+    return (
+        f"[{input_label}]subtitles=filename='{escape_ffmpeg_filter_path(ass_path)}':"
+        f"fontsdir='{escape_ffmpeg_filter_path(font_dir)}'[{output_label}]"
     )
-    args = [
-        settings.ffmpeg_binary,
-        "-y",
-        "-i",
-        str(video_path),
-        "-vf",
-        subtitles_filter,
-        "-fflags",
-        "+bitexact",
-        "-flags:v",
-        "+bitexact",
-        "-threads",
-        "1",
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        settings.pixel_format,
-        "-movflags",
-        "+faststart",
-        str(output_path),
-    ]
-    await run_ffmpeg(args)
-    return output_path

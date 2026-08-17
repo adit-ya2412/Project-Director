@@ -63,6 +63,16 @@ present, `None` when moot" rule - a caption-off render and a caption-on
 render of the identical Timeline must never collide on one cache entry
 (docs/14_Captions_Plan.md §6/§8.5).
 
+**Watermark (2026-08-17), same pattern again.**
+`watermark_enabled`/`watermark_asset_hash`/`watermark_params_hash`
+mirror the captions fields exactly, for the identical reason: the logo
+file's bytes and its position/size/opacity are real inputs to output
+pixels that nothing else in this payload can see. `watermark_asset_hash`
+is the vendored logo FILE's content hash, not its path (swapping the
+logo must invalidate the cache); `watermark_params_hash` folds
+position/margin/width/opacity into one value. Both `None` when
+`watermark_enabled` is `False`.
+
 Bookkeeping fields (`version`, `parent_version`, `produced_by`, `status`,
 `created_at`, `timeline_id`, `project_id`, `schema_version`) are
 EXCLUDED from the hashed Timeline content - the same set
@@ -153,6 +163,9 @@ def compute_render_fingerprint(
     burn_captions: bool,
     caption_font_hash: str | None,
     cue_list_hash: str | None,
+    watermark_enabled: bool,
+    watermark_asset_hash: str | None,
+    watermark_params_hash: str | None,
     ffmpeg_version: str,
 ) -> str:
     timeline_document = timeline.model_dump(mode="json")
@@ -188,6 +201,10 @@ def compute_render_fingerprint(
         "burn_captions": burn_captions,
         "caption_font_hash": caption_font_hash,
         "cue_list_hash": cue_list_hash,
+        # Watermark (2026-08-17), same unconditional-presence rule.
+        "watermark_enabled": watermark_enabled,
+        "watermark_asset_hash": watermark_asset_hash,
+        "watermark_params_hash": watermark_params_hash,
         "ffmpeg_version": ffmpeg_version,
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()

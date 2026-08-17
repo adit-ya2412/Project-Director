@@ -54,6 +54,9 @@ class RenderSettings:
     # (docs/14_Captions_Plan.md §4.3), the same reason width/height are
     # already here rather than read from config inside `render_video`.
     burn_captions: bool = False
+    # Same reasoning, same carve-out: drafts never get the watermark
+    # either (docs/plans/watermark_implementation_plan.md §5).
+    watermark_enabled: bool = False
 
 
 async def run_ffmpeg(args: list[str]) -> None:

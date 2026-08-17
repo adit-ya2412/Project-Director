@@ -71,17 +71,24 @@ from app.renderer.audio import mux_narration
 from app.renderer.captions import (
     CaptionStyle,
     FONT_DIR,
-    burn_captions as burn_captions_pass,
     caption_font_content_hash,
     cue_list_content_hash,
     derive_caption_cues,
     serialize_ass,
+    subtitles_filter_fragment,
 )
 from app.renderer.fingerprint import compute_render_fingerprint, get_ffmpeg_version
 from app.renderer.music import mux_music
 from app.renderer.placeholder import render_placeholder
 from app.renderer.slideshow import RenderSettings, probe_duration_seconds, render_timeline
 from app.renderer.still import ensure_still_image
+from app.renderer.video_filters import apply_video_filters
+from app.renderer.watermark import (
+    LOGO_PATH,
+    watermark_content_hash,
+    watermark_filter_fragment,
+    watermark_params_hash as compute_watermark_params_hash,
+)
 from app.repositories.narration_repository import NarrationRepository
 from app.repositories.render_repository import RenderRepository
 from app.repositories.shot_binding_repository import ShotBindingRepository
@@ -135,6 +142,7 @@ class RenderStep:
             ffmpeg_binary=settings.ffmpeg_binary,
             ffprobe_binary=settings.ffprobe_binary,
             burn_captions=settings.burn_captions,
+            watermark_enabled=settings.watermark_enabled,
         )
         try:
             output_path = await render_video(
@@ -230,6 +238,24 @@ async def render_video(
         caption_font_content_hash(settings.caption_font) if render_settings.burn_captions else None
     )
 
+    # Watermark (docs/plans/watermark_implementation_plan.md §4): same
+    # unconditional-presence rule as captions - both hashes are computed
+    # here, before the cache check, purely so they reach the fingerprint;
+    # the overlay itself is only actually built below on a real MISS.
+    watermark_asset_hash = (
+        watermark_content_hash() if render_settings.watermark_enabled else None
+    )
+    watermark_params_hash_value = (
+        compute_watermark_params_hash(
+            position=settings.watermark_position,
+            width_fraction=settings.watermark_width_fraction,
+            margin_fraction=settings.watermark_margin_fraction,
+            opacity=settings.watermark_opacity,
+        )
+        if render_settings.watermark_enabled
+        else None
+    )
+
     ffmpeg_version = await get_ffmpeg_version(render_settings.ffmpeg_binary)
     fingerprint = compute_render_fingerprint(
         timeline=timeline,
@@ -247,6 +273,9 @@ async def render_video(
         burn_captions=render_settings.burn_captions,
         caption_font_hash=caption_font_hash,
         cue_list_hash=cue_hash,
+        watermark_enabled=render_settings.watermark_enabled,
+        watermark_asset_hash=watermark_asset_hash,
+        watermark_params_hash=watermark_params_hash_value,
         ffmpeg_version=ffmpeg_version,
     )
 
@@ -272,22 +301,58 @@ async def render_video(
             timeline, shot_images, render_settings, silent_path, work_dir=work_dir
         )
 
-        if caption_cues is None:
-            silent_path.replace(captioned_path)
-        else:
-            # The one pass in this pipeline that must re-encode video
-            # (subtitles= cannot run through -c:v copy) - done here, once,
-            # on the smaller silent file, before narration/music muxing
-            # (both of which stream-copy video and would otherwise force
-            # a second re-encode or have to run before this one).
+        # The "video filter pass" (docs/plans/watermark_implementation_plan.md
+        # §1): captions and the watermark are two independent concerns that
+        # happen to share the one video re-encode neither can avoid
+        # (subtitles=/overlay= both require it). Composed as filter_complex
+        # FRAGMENTS chained through a running (label, extra-inputs) pair,
+        # never as two separate ffmpeg passes - done here, once, on the
+        # smaller silent file, before narration/music muxing (both of which
+        # stream-copy video and would otherwise force a second re-encode or
+        # have to run before this one).
+        filter_fragments: list[str] = []
+        extra_inputs: list[Path] = []
+        current_label = "0:v"
+
+        if caption_cues is not None:
             ass_path = work_dir / f"{output_path.stem}.ass"
             style = CaptionStyle(
                 resolution=(render_settings.width, render_settings.height),
                 font_family=settings.caption_font,
             )
             ass_path.write_text(serialize_ass(caption_cues, style), encoding="utf-8")
-            await burn_captions_pass(
-                silent_path, ass_path, FONT_DIR, captioned_path, render_settings
+            filter_fragments.append(
+                subtitles_filter_fragment(current_label, "captioned", ass_path, FONT_DIR)
+            )
+            current_label = "captioned"
+
+        if render_settings.watermark_enabled:
+            extra_inputs.append(LOGO_PATH)
+            logo_input_index = len(extra_inputs)  # video is always input 0
+            filter_fragments.append(
+                watermark_filter_fragment(
+                    current_label,
+                    "watermarked",
+                    logo_input_index,
+                    frame_width=render_settings.width,
+                    position=settings.watermark_position,
+                    width_fraction=settings.watermark_width_fraction,
+                    margin_fraction=settings.watermark_margin_fraction,
+                    opacity=settings.watermark_opacity,
+                )
+            )
+            current_label = "watermarked"
+
+        if not filter_fragments:
+            silent_path.replace(captioned_path)
+        else:
+            await apply_video_filters(
+                silent_path,
+                captioned_path,
+                render_settings,
+                extra_inputs=extra_inputs,
+                filter_complex=";".join(filter_fragments),
+                output_label=current_label,
             )
 
         if narration_paths is None:
