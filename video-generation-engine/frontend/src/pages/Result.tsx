@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
-import { useNavigate, useParams, Link } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
 import { Download, RefreshCw, Music2, Mic } from 'lucide-react'
-import { useProject, useProgress, useTimeline, useRetryMusic, useRetryNarration, useRenderProject } from '@/lib/queries'
+import { useProject, useProgress, useTimeline, useRetryMusic, useRetryNarration, useRenderOnly } from '@/lib/queries'
 import { videoUrl } from '@/lib/api'
 import { formatCostCents } from '@/lib/format'
 import { shotAssetSource } from '@/lib/asset-source'
@@ -18,19 +18,54 @@ import { ApiError } from '@/lib/api'
 
 const SOURCE_ORDER: AssetSource[] = ['archival', 'entity', 'generated', 'uploaded', 'unknown']
 
+// A correction trigger (voice/music/render) is fire-and-forget - it
+// navigates to /progress immediately, long before the actual redo
+// finishes, so a toast fired at click time can only ever say "started",
+// never "done". This label carries which correction is in flight as a
+// `?pending=` search param through the trigger -> `/progress` ->
+// (Progress.tsx's own redirect once `workflow_state` reaches `completed`)
+// -> back to `/result?corrected=` hop, so THIS screen can show a clear,
+// unmissable confirmation the moment the human actually lands back here
+// with the real result - not a fleeting toast that fired before the work
+// even started.
+const CORRECTION_LABEL: Record<string, string> = {
+  voice: 'Narration updated with the new voice.',
+  music: 'New music selected.',
+  render: 'Re-rendered.',
+}
+
 export function Result() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { toast } = useToast()
   const { data: project } = useProject(projectId)
   const { data: progress, isLoading } = useProgress(projectId)
   const { data: timeline } = useTimeline(projectId)
   const retryMusic = useRetryMusic(projectId ?? '')
   const retryNarration = useRetryNarration(projectId ?? '')
-  const renderProject = useRenderProject(projectId ?? '')
+  const renderOnly = useRenderOnly(projectId ?? '')
 
   const [voiceId, setVoiceId] = useState('')
   const [musicTerms, setMusicTerms] = useState('')
+
+  useEffect(() => {
+    const corrected = searchParams.get('corrected')
+    if (!corrected) return
+    toast({
+      title: 'Done',
+      description: CORRECTION_LABEL[corrected] ?? 'Your correction is applied.',
+      variant: 'success',
+    })
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.delete('corrected')
+        return next
+      },
+      { replace: true },
+    )
+  }, [searchParams, toast, setSearchParams])
 
   const sourceMix = useMemo(() => {
     const counts: Record<AssetSource, number> = { archival: 0, entity: 0, generated: 0, uploaded: 0, unknown: 0 }
@@ -62,7 +97,7 @@ export function Result() {
           variant: 'destructive',
         }),
     })
-    navigate(`/projects/${projectId}/progress`)
+    navigate(`/projects/${projectId}/progress?pending=voice`)
   }
 
   function handleRetryMusic() {
@@ -79,14 +114,20 @@ export function Result() {
           variant: 'destructive',
         }),
     })
-    navigate(`/projects/${projectId}/progress`)
+    navigate(`/projects/${projectId}/progress?pending=music`)
   }
 
   function handleRerender() {
-    renderProject.mutate(undefined, {
+    renderOnly.mutate(undefined, {
       onSuccess: () => toast({ title: 'Re-rendering…', description: 'Free — this runs locally with ffmpeg.' }),
+      onError: (err) =>
+        toast({
+          title: 'Could not re-render',
+          description: err instanceof ApiError ? String(err.detail) : 'Try again.',
+          variant: 'destructive',
+        }),
     })
-    navigate(`/projects/${projectId}/progress`)
+    navigate(`/projects/${projectId}/progress?pending=render`)
   }
 
   return (
@@ -98,7 +139,20 @@ export function Result() {
 
       <Card>
         <CardContent className="p-4">
-          <video controls className="mx-auto max-h-[70vh] w-full max-w-sm rounded-md bg-black" src={videoUrl(projectId)} />
+          {/* Keyed on `updated_at`, not just `videoUrl(projectId)` — the URL
+              is stable per project, but a re-render (new voice/music, a
+              corrected shot) overwrites the same file with different
+              bytes. An already-mounted `<video>` has no reason to
+              re-fetch an unchanged `src` string, so without this it kept
+              showing the OLD render until a hard refresh. `updated_at`
+              bumps on every project update, including the one `RenderStep`
+              makes when it writes a fresh `video_path`. */}
+          <video
+            key={project?.updated_at}
+            controls
+            className="mx-auto max-h-[70vh] w-full max-w-sm rounded-md bg-black"
+            src={videoUrl(projectId)}
+          />
           <div className="mt-3 flex justify-center gap-2">
             <Button asChild>
               <a href={videoUrl(projectId)} download={`${project?.name ?? projectId}.mp4`}>

@@ -249,6 +249,15 @@ class WorkflowEngine:
             try:
                 result = await step.run(self._ctx)
             except Exception as exc:  # noqa: BLE001 - a step must never crash the engine
+                # Diagnostic only (2026-08-17): `error=str(exc)` alone loses
+                # the traceback entirely - an empty message (e.g. a bare
+                # `assert`) becomes an undiagnosable `error: ""` on the
+                # project. Logging the traceback here doesn't change
+                # behaviour, only what shows up in server logs.
+                logger.exception(
+                    "workflow.step_crashed",
+                    extra={"project_id": self._ctx.project_id, "step": step.name},
+                )
                 result = StepResult(outcome="failed", error=str(exc))
 
             await self._workflow_repo.finish_attempt(

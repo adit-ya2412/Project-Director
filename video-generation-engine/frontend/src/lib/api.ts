@@ -1,8 +1,10 @@
 import type {
+  GenerateShotImageResult,
   Project,
   ProgressResponse,
   Timeline,
   UploadedAssetResult,
+  WorkflowTriggerResult,
 } from './types'
 
 /**
@@ -94,7 +96,7 @@ export function getTimeline(projectId: string): Promise<Timeline> {
   return request(`/projects/${projectId}/timeline`)
 }
 
-export function approveTimeline(projectId: string): Promise<Project> {
+export function approveTimeline(projectId: string): Promise<WorkflowTriggerResult> {
   return request(`/projects/${projectId}/timeline/approve`, { method: 'POST' })
 }
 
@@ -104,12 +106,20 @@ export function getProgress(projectId: string): Promise<ProgressResponse> {
   return request(`/projects/${projectId}/progress`)
 }
 
-// -- Triggers (long-running; per F0a these should return 202 + run id soon.
-// Callers must never block navigation/UI on these settling — kick the
-// request off and poll `getProgress` separately.) ---------------------------
+// -- Triggers (long-running, 202 + a run id to poll — F0a landed. Callers
+// must never block navigation/UI on these settling: fire the request and
+// poll `getProgress` separately; the response is a run id, not the
+// outcome.) ------------------------------------------------------------
 
-export function renderProject(projectId: string): Promise<Project> {
+export function renderProject(projectId: string): Promise<WorkflowTriggerResult> {
   return request(`/projects/${projectId}/render`, { method: 'POST' })
+}
+
+/** R3: re-render only — structurally unable to reach a paid step. What the
+ * result screen's free "re-render" action should call, never `renderProject`
+ * (which is also allowed to advance narration/generation). */
+export function renderOnly(projectId: string): Promise<WorkflowTriggerResult> {
+  return request(`/projects/${projectId}/render/only`, { method: 'POST' })
 }
 
 export function renderDraft(projectId: string): Promise<{
@@ -128,7 +138,7 @@ export function overrideShot(
   shotId: string,
   file: File,
   description?: string,
-): Promise<Project> {
+): Promise<WorkflowTriggerResult> {
   const form = new FormData()
   form.append('file', file)
   if (description) form.append('description', description)
@@ -138,14 +148,14 @@ export function overrideShot(
   })
 }
 
-export function retryMusic(projectId: string, searchTerms?: string[]): Promise<Project> {
+export function retryMusic(projectId: string, searchTerms?: string[]): Promise<WorkflowTriggerResult> {
   return request(`/projects/${projectId}/music/retry`, {
     method: 'POST',
     body: JSON.stringify(searchTerms ? { search_terms: searchTerms } : {}),
   })
 }
 
-export function retryNarration(projectId: string, voiceId: string): Promise<Project> {
+export function retryNarration(projectId: string, voiceId: string): Promise<WorkflowTriggerResult> {
   return request(`/projects/${projectId}/narration/retry`, {
     method: 'POST',
     body: JSON.stringify({ voice_id: voiceId }),
@@ -153,19 +163,24 @@ export function retryNarration(projectId: string, voiceId: string): Promise<Proj
 }
 
 /**
- * NOT a confirmed backend contract. F5c (Gate 2, editable-prompt
- * regeneration) requires a per-shot "edit prompt and regenerate" endpoint
- * that does not exist anywhere in the API today (checked the full route
- * list in backend/app/api/projects.py) and was not listed among the
- * endpoints "landing shortly." This guesses a path that follows the same
- * shape as the sibling `.../shots/{shot_id}/override` endpoint so the
- * frontend needs no change if the backend adds exactly this. Calling it
- * today will 404 — see the frontend README for the flag this raises.
+ * The one-gate redesign's Task 4: generate (or regenerate) one shot's
+ * image on demand, at the single asset-review gate, before approval.
+ * Deliberately synchronous on the backend (no `background_tasks`) so a
+ * human can click this several times across several shots mid-review
+ * without racing the workflow engine forward — unlike every function
+ * above, this resolves to the real result, not a run id to poll.
+ * `prompt` omitted (or unchanged) regenerates with the shot's existing
+ * prompt; a different, non-blank value edits it first (recorded as its
+ * own timeline version) and generates from the edit.
  */
-export function regenerateShot(projectId: string, shotId: string, prompt: string): Promise<Project> {
-  return request(`/projects/${projectId}/shots/${shotId}/regenerate`, {
+export function generateShotImage(
+  projectId: string,
+  shotId: string,
+  prompt?: string,
+): Promise<GenerateShotImageResult> {
+  return request(`/projects/${projectId}/shots/${shotId}/generate`, {
     method: 'POST',
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify(prompt !== undefined ? { prompt } : {}),
   })
 }
 

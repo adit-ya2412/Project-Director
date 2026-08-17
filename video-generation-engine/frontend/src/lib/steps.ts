@@ -38,3 +38,14 @@ export function stepIndex(step: string | null | undefined): number {
   if (!step) return -1
   return STEP_ORDER.indexOf(step as StepName)
 }
+
+const AWAIT_APPROVAL_INDEX = STEP_ORDER.indexOf('await_approval')
+
+/** True before (or still at) `await_approval` — `null`/unknown counts as
+ * pre-approval too, since that's the state before the engine has reported
+ * any step at all. Compares indices rather than `.includes()` on a plain
+ * `string`, which is what a `StepName[]` typed array can't accept directly. */
+export function isPreApproval(step: string | null | undefined): boolean {
+  const idx = stepIndex(step)
+  return idx === -1 || idx <= AWAIT_APPROVAL_INDEX
+}

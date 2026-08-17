@@ -1191,7 +1191,17 @@ async def get_video(project_id: str, repo: ProjectRepository = Depends(get_repo)
     path = Path(project.video_path)
     if not path.exists():
         raise HTTPException(status_code=404, detail="rendered video file is missing on disk")
-    return FileResponse(path, media_type="video/mp4", filename=f"{project_id}.mp4")
+    # Same fix as `GET /shots/{shot_id}/asset` (Task 7) and the identical
+    # reason: this URL is stable per project, but a re-render (new voice,
+    # new music, a corrected shot) overwrites the same `final.mp4` path
+    # with different bytes. Without `Cache-Control`, a browser can serve
+    # the OLD video from its own cache without ever asking again.
+    return FileResponse(
+        path,
+        media_type="video/mp4",
+        filename=f"{project_id}.mp4",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 async def _resolve_bound_media_path(session: AsyncSession, binding) -> Path | None:

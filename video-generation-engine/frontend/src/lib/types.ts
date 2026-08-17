@@ -196,9 +196,10 @@ export interface ProgressResponse {
   completed_shots: number
   failed_shots: number
   progress: number | null
-  // Deliberately NOT read anywhere in the UI — known broken (F3), reads 0
-  // with generations still pending. Kept in the type only so a stray
-  // reference is a compile error, not a silent typo.
+  // Fixed by Task 5 (2026-08-16, the one-gate redesign): now counts every
+  // shot the search pass has already deferred to generation
+  // (`awaiting_generation`), not only shots whose plan-primary strategy
+  // happens to be a generation rung — safe to display.
   estimated_cost_cents: number
   spent_cost_cents: number
   shots: ShotProgress[]
@@ -210,4 +211,22 @@ export interface UploadedAssetResult {
   asset_id: string
   filename: string
   duplicate: boolean
+}
+
+// -- Every 202 trigger (render, approve, override, retry*) ------------------
+
+export interface WorkflowTriggerResult {
+  project_id: string
+  workflow_run_id: string
+  state: string
+  joined_existing_run: boolean
+}
+
+// -- POST /projects/{id}/shots/{shot_id}/generate ----------------------------
+
+export interface GenerateShotImageResult {
+  shot_id: string
+  clip_id: string
+  cost_cents: number
+  cache_hit: boolean
 }

@@ -28,6 +28,15 @@ export function useProject(projectId: string | undefined) {
     queryKey: qk.project(projectId ?? ''),
     queryFn: () => api.getProject(projectId as string),
     enabled: !!projectId,
+    // Without this, a trigger mutation's one-time invalidation on
+    // settlement is the ONLY refetch this query ever gets - which fires
+    // immediately (long before a retry's re-render actually finishes),
+    // so `project.updated_at` (what Result.tsx keys its `<video>` on to
+    // detect a new render) never updates again while the page stays
+    // open. This is exactly why only a hard refresh surfaced a
+    // re-rendered video - a hard refresh rebuilds the query cache from
+    // scratch instead of relying on a stale one-shot fetch.
+    refetchInterval: PROGRESS_POLL_MS,
   })
 }
 
@@ -134,17 +143,30 @@ export function useRenderProject(projectId: string) {
   })
 }
 
+/** R3: the free re-render-only trigger — what the result screen's
+ * "re-render" action should use, never `useRenderProject`. */
+export function useRenderOnly(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.renderOnly(projectId),
+    onSettled: () => invalidateAfterTrigger(qc, projectId),
+  })
+}
+
 export function useRenderDraft(projectId: string) {
   return useMutation({
     mutationFn: () => api.renderDraft(projectId),
   })
 }
 
-export function useRegenerateShot(projectId: string) {
+/** Deliberately NOT `onSettled`-only like the triggers above: `/generate`
+ * is synchronous and resolves to a real result (`cost_cents`, `cache_hit`)
+ * worth reading directly in the caller's `onSuccess`. */
+export function useGenerateShotImage(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ shotId, prompt }: { shotId: string; prompt: string }) =>
-      api.regenerateShot(projectId, shotId, prompt),
+    mutationFn: ({ shotId, prompt }: { shotId: string; prompt?: string }) =>
+      api.generateShotImage(projectId, shotId, prompt),
     onSettled: () => invalidateAfterTrigger(qc, projectId),
   })
 }

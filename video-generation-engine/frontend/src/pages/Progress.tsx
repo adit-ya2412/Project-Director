@@ -1,8 +1,8 @@
 import { useEffect } from 'react'
-import { useNavigate, useParams, Link } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
 import { CheckCircle2, Circle, LoaderCircle, RotateCcw } from 'lucide-react'
 import { useProgress, useProject, useRenderProject } from '@/lib/queries'
-import { stepLabel, stepIndex, STEP_ORDER } from '@/lib/steps'
+import { stepLabel, stepIndex, isPreApproval, STEP_ORDER } from '@/lib/steps'
 import { formatCostCents, formatDuration } from '@/lib/format'
 import { translateError } from '@/lib/errors'
 import { ErrorNotice } from '@/components/ErrorNotice'
@@ -61,21 +61,45 @@ function StageList({ steps, currentStep }: { steps: readonly string[]; currentSt
 export function Progress() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { toast } = useToast()
   const { data: project } = useProject(projectId)
   const { data: progress, isLoading } = useProgress(projectId)
   const renderProject = useRenderProject(projectId ?? '')
+  // Carries which correction (voice/music/render) sent us here, if any -
+  // see `Result.tsx`'s own `CORRECTION_LABEL` for why: a trigger is
+  // fire-and-forget, so the only place that can show a truthful "done"
+  // confirmation is wherever the human actually lands once it's real.
+  const pendingCorrection = searchParams.get('pending')
 
   // The approval/review/result screens are where a human acts; once the
   // backend reaches one of those states, move there automatically rather
   // than leaving them stranded on a progress screen with nothing to poll
   // toward.
+  //
+  // Deliberately `workflow_state`, not `progress.status`: `project.status`
+  // is set to AWAITING_APPROVAL/AWAITING_REVIEW the moment either gate is
+  // first hit, but nothing resets it away again until the run reaches a
+  // LATER terminal state (RenderStep only sets RENDERING at the very end,
+  // after the slow ffmpeg work) - so it stays stuck reporting the gate a
+  // human already approved/fixed for the entire narration/generate/render
+  // window that follows. `workflow_state` (the workflow run's own state)
+  // doesn't have this gap: it flips back to "running" the instant a
+  // resume begins (`app/workflow/trigger.py`'s `_claim_or_join`), which is
+  // exactly why the engine's own code calls it "the source of truth in
+  // /progress" in its comment beside where AWAITING_APPROVAL is set.
+  // Without this fix, clicking Approve bounced straight back to /review
+  // (status still said "awaiting_approval") for the whole render.
   useEffect(() => {
     if (!progress || !projectId) return
-    if (progress.status === 'awaiting_approval') navigate(`/projects/${projectId}/review`, { replace: true })
-    else if (progress.status === 'awaiting_review') navigate(`/projects/${projectId}/generated-review`, { replace: true })
-    else if (progress.status === 'completed') navigate(`/projects/${projectId}/result`, { replace: true })
-  }, [progress, projectId, navigate])
+    if (progress.workflow_state === 'awaiting_approval' || progress.workflow_state === 'awaiting_review')
+      navigate(`/projects/${projectId}/review`, { replace: true })
+    else if (progress.workflow_state === 'completed')
+      navigate(
+        `/projects/${projectId}/result${pendingCorrection ? `?corrected=${pendingCorrection}` : ''}`,
+        { replace: true },
+      )
+  }, [progress, projectId, navigate, pendingCorrection])
 
   if (isLoading || !progress) {
     return (
@@ -86,8 +110,11 @@ export function Progress() {
     )
   }
 
-  const isPreApproval = !progress.current_step || PRE_APPROVAL_STEPS.includes(progress.current_step)
-  const isFailed = progress.status === 'failed'
+  const preApproval = isPreApproval(progress.current_step)
+  // Same reasoning as the redirect effect above: `workflow_state`, not the
+  // lagging `project.status`, is what actually reflects "still failed
+  // right now" once a human has resumed a fix.
+  const isFailed = progress.workflow_state === 'failed'
 
   function handleRetry() {
     renderProject.mutate(undefined, {
@@ -102,13 +129,13 @@ export function Progress() {
       <div>
         <h1 className="text-xl font-semibold">{project?.name ?? 'Project'}</h1>
         <p className="text-sm text-muted-foreground">
-          {isPreApproval ? 'Planning your video' : 'Generating your video'}
+          {preApproval ? 'Planning your video' : 'Generating your video'}
         </p>
       </div>
 
       {isFailed && (
         <ErrorNotice
-          message={project?.error ?? 'The pipeline stopped unexpectedly.'}
+          message={project?.error || 'The pipeline stopped unexpectedly.'}
           extraAction={
             <Button size="sm" className="mt-2" onClick={handleRetry}>
               <RotateCcw className="h-3.5 w-3.5" />
@@ -118,7 +145,7 @@ export function Progress() {
         />
       )}
 
-      {isPreApproval ? (
+      {preApproval ? (
         <Card>
           <CardHeader>
             <CardTitle>Building the plan</CardTitle>
@@ -187,9 +214,9 @@ export function Progress() {
         <Button asChild variant="ghost" size="sm">
           <Link to="/">Back to projects</Link>
         </Button>
-        {progress.status === 'awaiting_review' && (
+        {progress.workflow_state === 'awaiting_review' && (
           <Button asChild size="sm">
-            <Link to={`/projects/${projectId}/generated-review`}>Review now</Link>
+            <Link to={`/projects/${projectId}/review`}>Review now</Link>
           </Button>
         )}
       </div>

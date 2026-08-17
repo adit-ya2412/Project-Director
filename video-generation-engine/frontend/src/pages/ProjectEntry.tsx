@@ -3,16 +3,17 @@ import { useProject } from '@/lib/queries'
 import type { ProjectStatus } from '@/lib/types'
 import { Skeleton } from '@/components/ui/skeleton'
 
-/** Bare `/projects/:id` is a landing pad: figure out which of the four
- * screens (progress / gate 1 / gate 2 / result) applies right now and
- * redirect there, so links from the project list and elsewhere don't need
- * to know the state machine themselves. */
+/** Bare `/projects/:id` is a landing pad: figure out which of the three
+ * screens (progress / review / result) applies right now and redirect
+ * there, so links from the project list and elsewhere don't need to know
+ * the state machine themselves. `awaiting_review` shares the review
+ * screen with `awaiting_approval` — under the one-gate redesign it's the
+ * same screen's post-approval backstop, not a separate gate. */
 function targetFor(status: ProjectStatus): string {
   switch (status) {
     case 'awaiting_approval':
-      return 'review'
     case 'awaiting_review':
-      return 'generated-review'
+      return 'review'
     case 'completed':
       return 'result'
     case 'created':
