@@ -30,7 +30,7 @@ from app.schemas.timeline import Timeline
 
 
 class ProjectRepository(Protocol):
-    async def create(self, name: str) -> Project: ...
+    async def create(self, name: str, render_style: str | None = None) -> Project: ...
     async def get(self, project_id: str) -> Project | None: ...
     async def update(self, project: Project) -> Project: ...
     async def list_all(self) -> list[Project]: ...
@@ -41,8 +41,8 @@ class InMemoryProjectRepository:
         self._projects: dict[str, Project] = {}
         self._lock = asyncio.Lock()
 
-    async def create(self, name: str) -> Project:
-        project = Project(name=name)
+    async def create(self, name: str, render_style: str | None = None) -> Project:
+        project = Project(name=name, render_style=render_style)
         async with self._lock:
             self._projects[project.id] = project
         return project
@@ -69,8 +69,10 @@ class PostgresProjectRepository:
         self._session = session
         self._timeline_repo = TimelineVersionRepository(session)
 
-    async def create(self, name: str) -> Project:
-        model = ProjectModel(name=name, status=ProjectStatus.CREATED.value)
+    async def create(self, name: str, render_style: str | None = None) -> Project:
+        model = ProjectModel(
+            name=name, status=ProjectStatus.CREATED.value, render_style=render_style
+        )
         self._session.add(model)
         await self._session.commit()
         await self._session.refresh(model)
@@ -103,6 +105,12 @@ class PostgresProjectRepository:
         model.status = project.status.value
         model.error = project.error
         model.video_path = project.video_path
+        # Unconditional overwrite, unlike `script` below - `render_style`
+        # is pre-planning staging, not audit-trail content (Track B), so
+        # it needs no version history of its own; `None` here simply
+        # means the caller didn't touch it this call, not "clear it".
+        if project.render_style is not None:
+            model.render_style = project.render_style
 
         if project.script is not None:
             await self._append_script_if_changed(model.id, project.script)
@@ -153,6 +161,7 @@ class PostgresProjectRepository:
             name=model.name,
             status=ProjectStatus(model.status),
             script=script.content if script else None,
+            render_style=model.render_style,
             timeline=Timeline.model_validate(timeline_row.document) if timeline_row else None,
             video_path=model.video_path,
             error=model.error,

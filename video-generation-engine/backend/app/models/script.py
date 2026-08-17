@@ -22,6 +22,14 @@ class ScriptModel(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     language: Mapped[str] = mapped_column(String, nullable=False, default="en")
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # "user" | "rewritten" (script pre-flight, motion_new_styles_and_
+    # long_form_videos.md §3.5). This is the ONLY new column the feature
+    # needed - the rest of the design it originally called for
+    # (script_original/script_source on Project) turned out to duplicate
+    # this table's own versioning, which already gives full history
+    # ("the original" is simply version 1, already queryable) rather than
+    # the one-level-back the original design would have kept.
+    source: Mapped[str] = mapped_column(String, nullable=False, default="user")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

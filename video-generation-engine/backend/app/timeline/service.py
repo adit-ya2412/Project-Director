@@ -132,10 +132,24 @@ class TimelineService:
 
     # -- writes -------------------------------------------------------
 
-    async def create_initial(self, project_id: str, script: str) -> Timeline:
+    async def create_initial(
+        self, project_id: str, script: str, *, render_style: str | None = None
+    ) -> Timeline:
         """Bootstrap version 1: an empty Timeline, before any planner has
         run. Real content arrives via `append_version` (the Director's
-        first pass, in M5)."""
+        first pass, in M5).
+
+        `render_style` (Track B, 2026-08-17) is copied into `metadata`
+        exactly ONCE, here - this is the one point where the project's
+        own pre-planning `render_style` column becomes the Timeline's
+        frozen, versioned record (I1), the same one-time hand-off
+        `language` already does above. `None` (a project that never set
+        one) is stored as `None`, not resolved to a default here -
+        `app/script/styles.py::resolve_constraint_bundle` and the
+        prompt-fragment lookup both already treat `None` as "use
+        `settings.default_render_style`" wherever they read it, so
+        resolving it prematurely would just be a second place that
+        default could drift from the first."""
         pid = uuid.UUID(project_id)
         if await self._repo.get_latest(pid) is not None:
             raise PermanentError(f"project {project_id} already has a timeline")
@@ -148,7 +162,9 @@ class TimelineService:
             produced_by=ProducedBy.HUMAN,  # nothing AI-produced yet
             status=TimelineStatus.DRAFT,
             created_at=utcnow(),
-            metadata=TimelineMetadata(language=settings.default_language),
+            metadata=TimelineMetadata(
+                language=settings.default_language, render_style=render_style
+            ),
             creative_context=CreativeContext(),
             scenes=[],
         )

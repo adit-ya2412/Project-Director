@@ -3,7 +3,7 @@ real ffmpeg `zoompan` graph this feeds is proven separately, against a
 real render, in tests/integration/test_render_ken_burns.py.
 """
 
-from app.renderer.ken_burns import build_zoompan_expression
+from app.renderer.ken_burns import build_punch_in_expression, build_zoompan_expression
 from app.schemas.timeline import Camera, CameraDirection, CameraMovement
 
 
@@ -32,8 +32,27 @@ def test_zero_intensity_degrades_to_no_motion_for_every_movement():
         CameraMovement.SLOW_PUSH,
         CameraMovement.PULL_BACK,
         CameraMovement.PAN,
+        CameraMovement.PUNCH_IN,
     ):
         assert build_zoompan_expression(_camera(movement, intensity=0.0), frames=90) is None
+
+
+def test_punch_in_dispatch_matches_the_direct_function_call():
+    """`build_zoompan_expression` dispatches `PUNCH_IN` to
+    `build_punch_in_expression` exactly like any other movement -
+    promoted from a renderer-only spike to a real, planner-choosable
+    value 2026-08-17 (motion_new_styles_and_long_form_videos.md step 0 ->
+    Track B), verified pixel-correct against a real archival photo
+    before this promotion. `camera.direction` must NOT affect the
+    result, matching `SLOW_PUSH`/`PULL_BACK`'s own "the name already says
+    which way" pattern above."""
+    for direction in (CameraDirection.NONE, CameraDirection.IN, CameraDirection.OUT):
+        camera = _camera(CameraMovement.PUNCH_IN, direction, intensity=0.5)
+        via_dispatch = build_zoompan_expression(camera, frames=90)
+        direct = build_punch_in_expression(camera, frames=90)
+        assert via_dispatch == direct
+        assert via_dispatch is not None
+        assert "if(lt(on," in via_dispatch.zoom_expr  # a stepped, not a continuous, expression
 
 
 def test_slow_push_always_zooms_in_regardless_of_direction():

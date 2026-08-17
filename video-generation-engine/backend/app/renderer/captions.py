@@ -202,15 +202,23 @@ def _segment_span(
         return []
 
     merged = _merge_by_budget(
-        pieces, max_chars=max_chars, min_duration_s=min_duration_s,
-        char_starts=char_starts, char_ends=char_ends,
+        pieces,
+        max_chars=max_chars,
+        min_duration_s=min_duration_s,
+        char_starts=char_starts,
+        char_ends=char_ends,
     )
     result: list[tuple[int, int]] = []
     for start, end in merged:
         result.extend(
             _split_if_too_long(
-                text, start, end, max_chars=max_chars, max_duration_s=max_duration_s,
-                char_starts=char_starts, char_ends=char_ends,
+                text,
+                start,
+                end,
+                max_chars=max_chars,
+                max_duration_s=max_duration_s,
+                char_starts=char_starts,
+                char_ends=char_ends,
             )
         )
     return result
@@ -274,12 +282,22 @@ def _split_if_too_long(
         return [(start, end)]
 
     left_parts = _split_if_too_long(
-        text, start, split_at, max_chars=max_chars, max_duration_s=max_duration_s,
-        char_starts=char_starts, char_ends=char_ends,
+        text,
+        start,
+        split_at,
+        max_chars=max_chars,
+        max_duration_s=max_duration_s,
+        char_starts=char_starts,
+        char_ends=char_ends,
     )
     right_parts = _split_if_too_long(
-        text, split_at, end, max_chars=max_chars, max_duration_s=max_duration_s,
-        char_starts=char_starts, char_ends=char_ends,
+        text,
+        split_at,
+        end,
+        max_chars=max_chars,
+        max_duration_s=max_duration_s,
+        char_starts=char_starts,
+        char_ends=char_ends,
     )
     return left_parts + right_parts
 
@@ -303,7 +321,11 @@ def cue_list_content_hash(cues: list[CaptionCue]) -> str:
     return hashlib.sha256(digest_input).hexdigest()
 
 
-def _format_ass_time(seconds: float) -> str:
+def format_ass_time(seconds: float) -> str:
+    """Public since 2026-08-17 - `app/renderer/text_cards.py` needs the
+    identical ASS `H:MM:SS.CC` formatting and there is no captions-
+    specific logic here to duplicate, matching the S2 precedent (one
+    deterministic algorithm, one place it can be wrong)."""
     total_centiseconds = round(seconds * 100)
     centiseconds = total_centiseconds % 100
     total_seconds = total_centiseconds // 100
@@ -352,8 +374,8 @@ def serialize_ass(cues: list[CaptionCue], style: CaptionStyle) -> str:
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     for cue in cues:
-        start = _format_ass_time(cue.start_s)
-        end = _format_ass_time(cue.end_s)
+        start = format_ass_time(cue.start_s)
+        end = format_ass_time(cue.end_s)
         text = _escape_ass_text(cue.text)
         lines.append(f"Dialogue: 0,{start},{end},Caption,,0,0,0,,{text}")
 

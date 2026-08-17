@@ -69,8 +69,8 @@ from app.models.narration import NarrationModel
 from app.providers.elevenlabs import compute_narration_content_hash
 from app.renderer.audio import mux_narration
 from app.renderer.captions import (
-    CaptionStyle,
     FONT_DIR,
+    CaptionStyle,
     caption_font_content_hash,
     cue_list_content_hash,
     derive_caption_cues,
@@ -78,15 +78,24 @@ from app.renderer.captions import (
     subtitles_filter_fragment,
 )
 from app.renderer.fingerprint import compute_render_fingerprint, get_ffmpeg_version
+from app.renderer.grading import grade_filter_fragment
 from app.renderer.music import mux_music
 from app.renderer.placeholder import render_placeholder
 from app.renderer.slideshow import RenderSettings, probe_duration_seconds, render_timeline
 from app.renderer.still import ensure_still_image
+from app.renderer.text_cards import (
+    TextCardStyle,
+    derive_text_card_cues,
+    serialize_text_card_ass,
+    text_card_filter_fragment,
+)
 from app.renderer.video_filters import apply_video_filters
 from app.renderer.watermark import (
     LOGO_PATH,
     watermark_content_hash,
     watermark_filter_fragment,
+)
+from app.renderer.watermark import (
     watermark_params_hash as compute_watermark_params_hash,
 )
 from app.repositories.narration_repository import NarrationRepository
@@ -143,6 +152,7 @@ class RenderStep:
             ffprobe_binary=settings.ffprobe_binary,
             burn_captions=settings.burn_captions,
             watermark_enabled=settings.watermark_enabled,
+            burn_text_cards=settings.burn_text_cards,
         )
         try:
             output_path = await render_video(
@@ -242,9 +252,7 @@ async def render_video(
     # unconditional-presence rule as captions - both hashes are computed
     # here, before the cache check, purely so they reach the fingerprint;
     # the overlay itself is only actually built below on a real MISS.
-    watermark_asset_hash = (
-        watermark_content_hash() if render_settings.watermark_enabled else None
-    )
+    watermark_asset_hash = watermark_content_hash() if render_settings.watermark_enabled else None
     watermark_params_hash_value = (
         compute_watermark_params_hash(
             position=settings.watermark_position,
@@ -253,6 +261,20 @@ async def render_video(
             opacity=settings.watermark_opacity,
         )
         if render_settings.watermark_enabled
+        else None
+    )
+
+    # Text cards (motion_new_styles_and_long_form_videos.md §2.6, Tier 2,
+    # 2026-08-17): cues are derived here, before the cache check, same
+    # reasoning as captions above - the cue TEXT itself needs no separate
+    # fingerprint entry (see fingerprint.py's own comment for why: it is
+    # already fully determined by data already in `timeline`), but the
+    # font file and the `burn_text_cards` TOGGLE do, since neither lives
+    # in the Timeline.
+    text_card_cues = derive_text_card_cues(timeline) if render_settings.burn_text_cards else []
+    text_card_font_hash = (
+        caption_font_content_hash(settings.caption_font)
+        if render_settings.burn_text_cards
         else None
     )
 
@@ -276,6 +298,8 @@ async def render_video(
         watermark_enabled=render_settings.watermark_enabled,
         watermark_asset_hash=watermark_asset_hash,
         watermark_params_hash=watermark_params_hash_value,
+        burn_text_cards=render_settings.burn_text_cards,
+        text_card_font_hash=text_card_font_hash,
         ffmpeg_version=ffmpeg_version,
     )
 
@@ -310,9 +334,46 @@ async def render_video(
         # smaller silent file, before narration/music muxing (both of which
         # stream-copy video and would otherwise force a second re-encode or
         # have to run before this one).
+        #
+        # Grade (motion_new_styles_and_long_form_videos.md §2.4, Tier 1,
+        # 2026-08-17) joins the SAME pass, FIRST in the chain - text and
+        # the watermark sit crisp on top of the graded image, not graded
+        # themselves. See `app/renderer/grading.py`'s own docstring for
+        # why this needs no new fingerprint parameter: `render_style` is
+        # already part of `compute_render_fingerprint`'s payload via the
+        # timeline document dump, and the grade itself is a fixed
+        # code-level lookup, not an independently-tunable config value.
         filter_fragments: list[str] = []
         extra_inputs: list[Path] = []
         current_label = "0:v"
+
+        grade_fragment = grade_filter_fragment(
+            timeline.metadata.render_style, current_label, "graded"
+        )
+        if grade_fragment is not None:
+            filter_fragments.append(grade_fragment)
+            current_label = "graded"
+
+        # Text cards (§2.6, Tier 2) BEFORE captions: a title card is
+        # centered (ASS Alignment=5) and captions sit in the bottom band
+        # clear of platform UI (Alignment=2) - they occupy different
+        # areas of the frame in the normal case, so this ordering is
+        # about the rare overlap, not the common one: spoken captions
+        # stay legible on top if a text card and a caption ever do
+        # collide on the same frame.
+        if text_card_cues:
+            card_ass_path = work_dir / f"{output_path.stem}_card.ass"
+            card_style = TextCardStyle(
+                resolution=(render_settings.width, render_settings.height),
+                font_family=settings.caption_font,
+            )
+            card_ass_path.write_text(
+                serialize_text_card_ass(text_card_cues, card_style), encoding="utf-8"
+            )
+            filter_fragments.append(
+                text_card_filter_fragment(current_label, "carded", card_ass_path, FONT_DIR)
+            )
+            current_label = "carded"
 
         if caption_cues is not None:
             ass_path = work_dir / f"{output_path.stem}.ass"

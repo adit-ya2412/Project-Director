@@ -1,0 +1,89 @@
+"""Per-style colour grade (motion_new_styles_and_long_form_videos.md
+§2.4 Tier 1 - "the grade costs no extra encode... highest visual-impact-
+per-day item in the document").
+
+Joins the SAME video-filter pass captions and the watermark already share
+(`app/workflow/steps/render.py`) - one more `filter_complex` fragment on
+the one re-encode neither of those can avoid, never a second pass.
+Ordered FIRST in that chain (grade, then captions, then watermark): text
+and the logo should sit crisp on top of the graded image, not be graded
+themselves.
+
+## Fingerprint (I5) - deliberately NOT a new parameter, and here is why
+
+R2 (2026-08-16, `fingerprint.py`'s own docstring) is the standing lesson:
+a render input read from live config at render time, but never hashed,
+serves a stale cached render with no error. This module does not repeat
+that mistake, but it also does not need a new fingerprint parameter to
+avoid it: `STYLE_GRADES` below is a FIXED code-level lookup, not a
+`Settings` value - the grade for a given style can only change if the
+code itself changes (which invalidates test fixtures anyway) or if
+`Timeline.metadata.render_style` itself changes, and that field is
+ALREADY part of `compute_render_fingerprint`'s payload (via the whole
+timeline document dump, `render_style` is not in `_TIMELINE_BOOKKEEPING_
+FIELDS`) - verified directly, not assumed, before this module was
+written. **If grade parameters ever become independently tunable via
+`Settings`** (the way `music_bed_gain_db` is), THAT would need adding to
+the fingerprint explicitly, exactly like R2's own fix - this module
+would stop being safe by construction the moment that happens.
+"""
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class StyleGrade:
+    """ffmpeg `eq` filter parameters. `1.0`/`1.0`/`0.0` (contrast/
+    saturation/brightness) is the identity - a style with exactly these
+    values is treated as "no grade" (see `grade_filter_fragment`) so a
+    style added later with a deliberately neutral look never pays for a
+    no-op filter in the chain."""
+
+    contrast: float
+    saturation: float
+    brightness: float
+
+
+# Contrast/saturation/brightness only (no gamma, no tint) - the smallest
+# set of `eq` parameters that reads as a distinct look, chosen for this
+# first slice over `colorbalance`/gamma/vignette/grain (plan §2.4 groups
+# all of those under one Tier-1 item) to keep this change reviewable as
+# one coherent piece; the rest are a natural follow-up on the SAME
+# fragment-composition point, not a redesign. Keyed by the same style
+# names `STYLE_PACING_BANDS` (`app/script/styles.py`) uses - one
+# vocabulary, not two.
+STYLE_GRADES: dict[str, StyleGrade] = {
+    "documentary_archival": StyleGrade(contrast=1.05, saturation=0.85, brightness=0.0),
+    "retention_fast": StyleGrade(contrast=1.15, saturation=1.25, brightness=0.02),
+    "stillness": StyleGrade(contrast=0.95, saturation=0.75, brightness=-0.02),
+}
+
+
+def grade_filter_fragment(
+    render_style: str | None, input_label: str, output_label: str
+) -> str | None:
+    """`None` means "skip this fragment entirely" - three cases,
+    deliberately treated the same way rather than raising:
+
+    - `render_style is None` (a Timeline predating this field, or no
+      style chosen) - every existing render keeps its exact current
+      output, unchanged.
+    - An unrecognised style name - falls back the same way
+      `resolve_constraint_bundle` does (this runs deep in the render
+      pipeline, past every place a style name is validated at the API
+      boundary; raising here would surface as a confusing render
+      failure far from the actual mistake).
+    - A style whose grade is exactly the identity (`contrast=1.0,
+      saturation=1.0, brightness=0.0`) - not currently true of any
+      registered style, but kept as an explicit check so a future
+      deliberately-neutral style never pays for a no-op `eq` filter.
+    """
+    grade = STYLE_GRADES.get(render_style) if render_style else None
+    if grade is None:
+        return None
+    if grade.contrast == 1.0 and grade.saturation == 1.0 and grade.brightness == 0.0:
+        return None
+    return (
+        f"[{input_label}]eq=contrast={grade.contrast}:saturation={grade.saturation}:"
+        f"brightness={grade.brightness}[{output_label}]"
+    )

@@ -254,6 +254,24 @@ class ConstraintCheckRequest:
     constraints: list[str]
 
 
+class StyleSuitabilityVerdict(BaseModel):
+    """Suitability half of the script pre-flight
+    (motion_new_styles_and_long_form_videos.md §3.1, §3.7) - a judgement
+    call (subject/tone/style fit), deliberately NOT a boolean pass/fail
+    like a feasibility check: `suitable=False` alone is a wall with no
+    argument available, and the plan's own reasoning for WARNING here
+    rather than BLOCKING (unlike the feasibility check) is that a user
+    must be able to disagree with a reason, never merely be told no.
+
+    `suitable`/`reason` mirrors `DepictionVerdict.confidently_wrong`/
+    `reason`'s shape exactly - same discipline, a different question
+    (subject/tone fit for a whole SCRIPT against a STYLE, never a single
+    image against a fixed constraint list)."""
+
+    suitable: bool
+    reason: str
+
+
 class DepictionVerdict(BaseModel):
     """Vision check verdict for a SEARCHED candidate (M6.5, A16 -> A30 ->
     A30a) - a different question from `ConstraintVerdict` ("does this

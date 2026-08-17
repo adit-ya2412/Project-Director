@@ -34,7 +34,7 @@ from app.core.logging import get_logger
 from app.planners.fragments import NarrationFragment, split_narration_fragments
 from app.planners.repair import run_structured_with_repair
 from app.planners.shot.schemas import ShotPlannerOutput, ShotPlanOutput
-from app.prompts.loader import load_prompt
+from app.prompts.loader import load_prompt, load_style_fragment
 from app.providers.base import PlanningLLMProvider
 from app.repositories.llm_call_repository import LlmCallRepository
 from app.schemas.timeline import Camera, CreativeContext, Scene, Shot, Transition
@@ -264,8 +264,19 @@ class ShotPlanner:
         min_shot_duration_s: float,
         max_shot_duration_s: float,
         max_shots_per_project: int,
+        render_style: str | None = None,
     ) -> list[Scene]:
         system_prompt = load_prompt(self.name, self._PROMPT_VERSION)
+        # Track B (2026-08-17), plan §4.3: one base prompt plus one
+        # optional style fragment, composed here rather than as a second
+        # full prompt file per style - `load_style_fragment` returns
+        # `None` for a style with nothing planner-specific to say
+        # (`documentary_archival`, `stillness`, or no style at all),
+        # leaving `system_prompt` byte-identical to what every project
+        # before this field existed already received.
+        style_fragment = load_style_fragment(self.name, render_style)
+        if style_fragment:
+            system_prompt = f"{system_prompt}\n\n{style_fragment}"
         planned_scenes: list[Scene] = []
         total_shots = 0
 

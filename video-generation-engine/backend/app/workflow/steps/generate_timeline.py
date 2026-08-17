@@ -23,6 +23,7 @@ from app.providers.fakes.llm import FakeTimelinePlanner
 from app.providers.openai_provider import OpenAIPlanningProvider
 from app.repositories.llm_call_repository import LlmCallRepository
 from app.schemas.timeline import ProducedBy, Timeline
+from app.script.styles import resolve_constraint_bundle
 from app.timeline.duration import compute_timeline_duration
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
@@ -63,11 +64,24 @@ def _is_fully_planned(timeline: Timeline) -> bool:
     # bounds still apply, so this call is correct uniformly, forever,
     # without this function needing to know anything about narration at
     # all.
+    #
+    # `resolve_constraint_bundle` (Track B, 2026-08-17) replaces the flat
+    # `settings.*` reads that used to sit here directly - `style=None`
+    # (every Timeline predating this field) resolves to EXACTLY the same
+    # three numbers those flat reads always produced, verified directly
+    # against `settings` before this call site was touched. This is what
+    # closes the gap `app/script/preflight.py`'s own module docstring
+    # flagged: `retention_fast`'s shot-cap override is now the number
+    # actually enforced here, not merely the number a pre-flight check
+    # compared against.
+    min_shot_duration_s, max_shot_duration_s, max_shots_per_project = resolve_constraint_bundle(
+        timeline.metadata.render_style
+    )
     violations = timeline.validate_constraints(
         max_video_duration_s=settings.max_video_duration_s,
-        max_shots_per_project=settings.max_shots_per_project,
-        min_shot_duration_s=settings.min_shot_duration_s,
-        max_shot_duration_s=settings.max_shot_duration_s,
+        max_shots_per_project=max_shots_per_project,
+        min_shot_duration_s=min_shot_duration_s,
+        max_shot_duration_s=max_shot_duration_s,
         max_scenes=settings.max_scenes,
     )
     return not violations
@@ -92,7 +106,9 @@ class GenerateTimelineStep:
 
         try:
             if await ctx.timeline_service.get_active(ctx.project_id) is None:
-                await ctx.timeline_service.create_initial(ctx.project_id, project.script)
+                await ctx.timeline_service.create_initial(
+                    ctx.project_id, project.script, render_style=project.render_style
+                )
 
             if settings.dry_run:
                 await self._run_fake(ctx, script=project.script)
@@ -181,13 +197,17 @@ class GenerateTimelineStep:
             assert timeline is not None
 
         if any(not scene.shots for scene in timeline.scenes):
+            min_shot_duration_s, max_shot_duration_s, max_shots_per_project = (
+                resolve_constraint_bundle(timeline.metadata.render_style)
+            )
             planned_scenes = await ShotPlanner(provider, llm_call_repo).plan(
                 project_id=ctx.project_id,
                 scenes=timeline.scenes,
                 creative_context=timeline.creative_context,
-                min_shot_duration_s=settings.min_shot_duration_s,
-                max_shot_duration_s=settings.max_shot_duration_s,
-                max_shots_per_project=settings.max_shots_per_project,
+                min_shot_duration_s=min_shot_duration_s,
+                max_shot_duration_s=max_shot_duration_s,
+                max_shots_per_project=max_shots_per_project,
+                render_style=timeline.metadata.render_style,
             )
             total_duration_s = compute_timeline_duration(
                 [shot for scene in planned_scenes for shot in scene.shots]

@@ -43,6 +43,8 @@ def _fingerprint(**overrides) -> str:
         "watermark_enabled": False,
         "watermark_asset_hash": None,
         "watermark_params_hash": None,
+        "burn_text_cards": False,
+        "text_card_font_hash": None,
         "ffmpeg_version": "ffmpeg version 9.0",
     }
     kwargs.update(overrides)
@@ -124,9 +126,9 @@ def test_burn_captions_toggle_changes_the_fingerprint():
 def test_different_caption_font_changes_the_fingerprint():
     """Swapping the vendored font file must invalidate the cache even
     though nothing else about the render changed."""
-    assert _fingerprint(
-        burn_captions=True, caption_font_hash="font-hash-a"
-    ) != _fingerprint(burn_captions=True, caption_font_hash="font-hash-b")
+    assert _fingerprint(burn_captions=True, caption_font_hash="font-hash-a") != _fingerprint(
+        burn_captions=True, caption_font_hash="font-hash-b"
+    )
 
 
 def test_different_cue_list_changes_the_fingerprint():
@@ -134,9 +136,9 @@ def test_different_cue_list_changes_the_fingerprint():
     segmentation-rule change in one value (doc §6) - none of which are
     visible to `narration_content_hashes` (that hashes the AUDIO, not the
     derived cue list)."""
-    assert _fingerprint(
-        burn_captions=True, cue_list_hash="cues-a"
-    ) != _fingerprint(burn_captions=True, cue_list_hash="cues-b")
+    assert _fingerprint(burn_captions=True, cue_list_hash="cues-a") != _fingerprint(
+        burn_captions=True, cue_list_hash="cues-b"
+    )
 
 
 def test_watermark_toggle_changes_the_fingerprint():
@@ -149,18 +151,36 @@ def test_different_watermark_asset_changes_the_fingerprint():
     """Swapping the vendored logo file must invalidate the cache even
     though nothing else about the render changed - the exact R2 shape,
     applied to the watermark instead of the music gains."""
-    assert _fingerprint(
-        watermark_enabled=True, watermark_asset_hash="logo-hash-a"
-    ) != _fingerprint(watermark_enabled=True, watermark_asset_hash="logo-hash-b")
+    assert _fingerprint(watermark_enabled=True, watermark_asset_hash="logo-hash-a") != _fingerprint(
+        watermark_enabled=True, watermark_asset_hash="logo-hash-b"
+    )
 
 
 def test_different_watermark_params_changes_the_fingerprint():
     """Covers position/margin/width/opacity changes in one value - a
     watermark moved from bottom-right to top-right must invalidate the
     cache even though the logo file itself didn't change."""
-    assert _fingerprint(
-        watermark_enabled=True, watermark_params_hash="params-a"
-    ) != _fingerprint(watermark_enabled=True, watermark_params_hash="params-b")
+    assert _fingerprint(watermark_enabled=True, watermark_params_hash="params-a") != _fingerprint(
+        watermark_enabled=True, watermark_params_hash="params-b"
+    )
+
+
+def test_burn_text_cards_toggle_changes_the_fingerprint():
+    """A text-card-off and text-card-on render of the identical Timeline
+    must never collide on one cache entry (motion_new_styles_and_long_
+    form_videos.md §2.6, 2026-08-17) - `burn_text_cards` is a config
+    toggle, not Timeline content, exactly the R2 shape."""
+    assert _fingerprint(burn_text_cards=True) != _fingerprint(burn_text_cards=False)
+
+
+def test_different_text_card_font_changes_the_fingerprint():
+    """Swapping the vendored font file must invalidate the cache even
+    though nothing else about the render changed - same reasoning as
+    `test_different_caption_font_changes_the_fingerprint` above, applied
+    to the text-card font hash instead."""
+    assert _fingerprint(burn_text_cards=True, text_card_font_hash="font-hash-a") != _fingerprint(
+        burn_text_cards=True, text_card_font_hash="font-hash-b"
+    )
 
 
 def test_bookkeeping_fields_never_affect_the_fingerprint():

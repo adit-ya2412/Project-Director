@@ -57,6 +57,11 @@ class RenderSettings:
     # Same reasoning, same carve-out: drafts never get the watermark
     # either (docs/plans/watermark_implementation_plan.md §5).
     watermark_enabled: bool = False
+    # Same carve-out again, same reasoning (motion_new_styles_and_long_
+    # form_videos.md §2.6, Tier 2, 2026-08-17) - a draft is for spotting
+    # wrong-asset/wrong-order bugs quickly, not for reviewing a title
+    # card's own look.
+    burn_text_cards: bool = False
 
 
 async def run_ffmpeg(args: list[str]) -> None:

@@ -87,3 +87,41 @@ def test_last_shot_start_plus_its_own_duration_equals_the_timeline_total_for_one
 
 def test_empty_shot_list_returns_an_empty_mapping():
     assert compute_shot_start_times([]) == {}
+
+
+def test_wipe_left_and_dip_to_black_are_treated_as_non_cut_like_dissolve():
+    """New transitions (motion_new_styles_and_long_form_videos.md §2.6,
+    Tier 2, 2026-08-17) - `WIPE_LEFT`/`DIP_TO_BLACK` must overlap exactly
+    like `DISSOLVE` already does (D5), not be silently treated as hard
+    cuts. Verified against a real render too (a genuine ffmpeg xfade with
+    each transition name, and the full `render_timeline` pipeline mixing
+    both with a real hard cut) - this is the pure-arithmetic half of
+    that same check."""
+    from app.schemas.timeline import Transition, TransitionType
+    from app.timeline.duration import compute_timeline_duration, group_into_runs
+
+    shots = [
+        Shot(
+            id="sh_01",
+            order=0,
+            intent=ShotIntent.INTRODUCE,
+            duration_s=2.0,
+            transition_out=Transition(type=TransitionType.WIPE_LEFT, duration_s=0.5),
+        ),
+        Shot(
+            id="sh_02",
+            order=1,
+            intent=ShotIntent.EXPLAIN,
+            duration_s=2.0,
+            transition_out=Transition(type=TransitionType.DIP_TO_BLACK, duration_s=0.5),
+        ),
+        Shot(
+            id="sh_03",
+            order=2,
+            intent=ShotIntent.REVEAL,
+            duration_s=2.0,
+        ),
+    ]
+    runs = group_into_runs(shots)
+    assert len(runs) == 1  # both transitions are non-cut -> one continuous run
+    assert compute_timeline_duration(shots) == 5.0  # 6.0 raw - 0.5 - 0.5 overlap

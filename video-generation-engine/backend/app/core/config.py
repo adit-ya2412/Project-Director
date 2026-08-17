@@ -182,6 +182,15 @@ class Settings(BaseSettings):
     # libass's fallback resolution is platform-dependent.
     caption_font: str = "Noto Sans Devanagari"
 
+    # Text cards (motion_new_styles_and_long_form_videos.md §2.6, Tier 2,
+    # 2026-08-17) - a per-shot structural title/heading overlay, gated on
+    # `shot.text_card` being set (Timeline-level, per shot), not by this
+    # flag alone; this is a global kill switch (mirrors `watermark_
+    # enabled`'s own shape) for the rare case a bug is found in text-card
+    # rendering after real shots already carry one. Reuses `caption_font`
+    # - no separate vendored font asset for a v1 feature this small.
+    burn_text_cards: bool = True
+
     # Channel branding (docs/plans/watermark_implementation_plan.md).
     # Enabled 2026-08-17 after the real-render verification in §10.4.
     # Position/margin/width are fractions of frame dimensions, never
@@ -206,6 +215,32 @@ class Settings(BaseSettings):
     max_shot_duration_s: float = 8.0
     max_scenes: int = 12
     default_language: str = "en"
+
+    # --- Script pre-flight (motion_new_styles_and_long_form_videos.md
+    # §3, Track D) - estimates a script's spoken duration BEFORE any
+    # narration exists, from character count alone. Each constant is
+    # calibrated from exactly ONE real measured project per language
+    # (`m8_test_project`: 662 chars / 46.0s raw shot-duration sum =
+    # 14.4 chars/s; `hinglish_final_project`, ~39% Devanagari by
+    # character count: 686 chars / 53.07s = 12.9 chars/s) - a single
+    # data point, not a statistically robust sample. The margin below
+    # exists because of that, not because the arithmetic itself is
+    # uncertain: it only ever widens the estimate, and the pre-flight
+    # blocks (§3.1) only on an UNAMBIGUOUS mismatch, so a script within
+    # the margin of a style's band passes rather than getting a false
+    # block from calibration noise.
+    script_chars_per_second_en: float = 14.4
+    script_chars_per_second_hi: float = 12.9
+    script_preflight_margin_fraction: float = 0.2
+
+    # --- Render style (motion_new_styles_and_long_form_videos.md, Track
+    # B) - `documentary_archival` is today's existing behaviour, named
+    # rather than left implicit, so a project that never sets a style
+    # (every fixture and test predating this field) resolves to EXACTLY
+    # the constraint bundle and prompt it always used - see
+    # `app/script/styles.py::resolve_constraint_bundle`'s own docstring
+    # for the `None`-means-default reasoning this depends on.
+    default_render_style: str = "documentary_archival"
 
     # --- Cost control ---
     project_budget_cap_cents: int = 1000

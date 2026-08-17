@@ -69,6 +69,14 @@ class CameraMovement(StrEnum):
     PULL_BACK = "pull_back"
     PAN = "pan"
     SPLIT_FRAME = "split_frame"
+    # Hard, stepped zoom-in snaps rather than a continuous ramp -
+    # motion_new_styles_and_long_form_videos.md step 0 (2026-08-17):
+    # verified pixel-correct against a real archival photo and watched
+    # by a human against real production output before being promoted
+    # from a renderer-only spike to a real, planner-choosable movement
+    # (canon 3.1/§2.2 - camera decisions are written into the Timeline
+    # by the planner, never applied by the renderer from a style alone).
+    PUNCH_IN = "punch_in"
 
 
 class CameraDirection(StrEnum):
@@ -83,6 +91,18 @@ class TransitionType(StrEnum):
     CUT = "cut"
     DISSOLVE = "dissolve"
     FADE = "fade"
+    # Added 2026-08-17 (motion_new_styles_and_long_form_videos.md §2.6,
+    # Tier 2) - deliberately two, not the ~50 `xfade` actually supports
+    # (plan's own restraint principle: a documentary that whip-pans
+    # between archival photographs stops reading as a documentary).
+    # Values are real `xfade` transition names, verified directly against
+    # this ffmpeg build's own filter help output and a real render
+    # against real archival photos (a genuine wipe, a genuine dip through
+    # black), not assumed from memory - passed straight through
+    # unchanged at `slideshow.py`'s xfade call site, exactly like
+    # DISSOLVE/FADE above, so no renderer code changed to add these.
+    WIPE_LEFT = "wipeleft"
+    DIP_TO_BLACK = "fadeblack"
 
 
 class PreferredMediaType(StrEnum):
@@ -187,6 +207,20 @@ class Shot(BaseModel):
     #      away from the image a human already chose, not merely
     #      detected after the fact.
     asset_locked: bool = False
+    # Text card (motion_new_styles_and_long_form_videos.md §2.6, Tier 2,
+    # 2026-08-17) - a structural title/heading overlay for THIS shot,
+    # never dialogue captions (those come from narration timing, D2, and
+    # stay entirely separate - `app/renderer/captions.py`). `None`/empty
+    # means no card, the common case for almost every shot. A per-shot
+    # field, not a global render toggle: the planner's own decision to
+    # set text on a shot IS the toggle - matching how `prompt`/`camera`
+    # are already per-shot creative decisions (I1), not a channel-wide
+    # setting like the watermark. Shown for this shot's own on-screen
+    # window (`duration_s`, via `compute_shot_start_times` - the
+    # RENDERED-timeline clock, not narration timing, since a title card is
+    # tied to which shot is on screen, not to spoken words) with a fixed
+    # fade in/out - see `app/renderer/text_cards.py`.
+    text_card: str | None = None
 
 
 class Scene(BaseModel):
@@ -234,6 +268,19 @@ class TimelineMetadata(BaseModel):
     # later version, forever, the same way `voice_id` survives past the
     # version that set it.
     narration_locked: bool = False
+    # `None` means "no style chosen yet, or predates this field" - falls
+    # back to `settings.default_render_style` everywhere this is read
+    # (`app/script/styles.py::resolve_constraint_bundle`), so an existing
+    # Timeline (every fixture, every test written before 2026-08-17)
+    # resolves to EXACTLY the constraint bundle and prompt it always used
+    # (motion_new_styles_and_long_form_videos.md, Track B). Set once, at
+    # `TimelineService.create_initial` time, from `project.render_style`
+    # (itself set at project creation, before any planning starts) -
+    # never changed by a later version, the same "survives every later
+    # version, forever" shape `voice_id` and `narration_locked` already
+    # use above, because it must be known before the Shot Planner ever
+    # runs, not discovered mid-plan.
+    render_style: str | None = None
 
 
 class MusicTrackSelection(BaseModel):

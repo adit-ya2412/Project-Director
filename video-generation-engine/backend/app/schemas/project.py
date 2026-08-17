@@ -36,6 +36,10 @@ class Project(BaseModel):
     name: str
     status: ProjectStatus = ProjectStatus.CREATED
     script: str | None = None
+    # Pre-planning style staging (Track B, 2026-08-17) - see
+    # `ProjectModel.render_style`'s own docstring for the full contract;
+    # `None` means "use settings.default_render_style".
+    render_style: str | None = None
     timeline: Timeline | None = None
     video_path: str | None = None
     error: str | None = None

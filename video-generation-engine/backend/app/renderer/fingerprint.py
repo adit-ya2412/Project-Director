@@ -166,6 +166,8 @@ def compute_render_fingerprint(
     watermark_enabled: bool,
     watermark_asset_hash: str | None,
     watermark_params_hash: str | None,
+    burn_text_cards: bool,
+    text_card_font_hash: str | None,
     ffmpeg_version: str,
 ) -> str:
     timeline_document = timeline.model_dump(mode="json")
@@ -205,6 +207,23 @@ def compute_render_fingerprint(
         "watermark_enabled": watermark_enabled,
         "watermark_asset_hash": watermark_asset_hash,
         "watermark_params_hash": watermark_params_hash,
+        # Text cards (2026-08-17), same unconditional-presence rule as
+        # captions/watermark above - `burn_text_cards` is a `Settings`/
+        # `RenderSettings` toggle, not Timeline content, so two renders of
+        # the IDENTICAL Timeline with this flag on vs off must NOT
+        # fingerprint identically (the R2 shape: a config value that can
+        # change output bytes but has nowhere to be caught). Deliberately
+        # NO separate cue-list hash here, unlike captions'
+        # `cue_list_hash` - a text card's cue text, start, and end are
+        # ALL already fully determined by data already inside `timeline`
+        # above (`shot.text_card`, `duration_s`, `transition_out`), so
+        # hashing a second, derived copy of the same information would be
+        # redundant, not merely harmless. The one thing that legitimately
+        # needs its own hash is the font FILE (`text_card_font_hash`,
+        # mirroring `caption_font_hash`'s own reasoning exactly) -
+        # swapping the vendored file must invalidate this fingerprint too.
+        "burn_text_cards": burn_text_cards,
+        "text_card_font_hash": text_card_font_hash,
         "ffmpeg_version": ffmpeg_version,
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()

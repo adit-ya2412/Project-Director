@@ -85,16 +85,29 @@ from app.models.asset import AssetModel
 from app.models.generated_clip import GeneratedClipModel
 from app.providers.fakes.image import FakeImageProvider
 from app.providers.fal_image import FalImageProvider
+from app.providers.openai_provider import OpenAIPlanningProvider
 from app.renderer.retention import purge_expired_drafts
 from app.renderer.slideshow import RenderSettings
 from app.repositories.asset_repository import AssetRepository
 from app.repositories.generated_clip_repository import GeneratedClipRepository
+from app.repositories.llm_call_repository import LlmCallRepository
 from app.repositories.narration_repository import NarrationRepository
 from app.repositories.project_repository import ProjectRepository
 from app.repositories.shot_binding_repository import ShotBindingRepository
 from app.repositories.workflow_repository import WorkflowRunRepository
 from app.schemas.project import Project, ProjectStatus
+from app.schemas.script_preflight import (
+    BreakSuggestionOut,
+    FragmentEstimateOut,
+    ScriptPreflightRequest,
+    ScriptPreflightResponse,
+    StyleSuitabilityOut,
+)
 from app.schemas.timeline import ProducedBy, Timeline, TimelineStatus
+from app.script.preflight import check_feasibility
+from app.script.styles import STYLE_PACING_BANDS
+from app.script.suggestions import suggest_breaks
+from app.script.suitability import check_suitability
 from app.timeline.duration import compute_shot_start_times
 from app.timeline.service import TimelineService
 from app.workflow.context import RunContext
@@ -110,6 +123,14 @@ _TERMINAL_SHOT_STATES = ("resolved", "generated")
 
 class CreateProjectRequest(BaseModel):
     name: str
+    # `None` = "use settings.default_render_style" (Track B, 2026-08-17)
+    # - validated against `STYLE_PACING_BANDS` in `create_project` below,
+    # same as `set_render_style`'s own check.
+    render_style: str | None = None
+
+
+class SetRenderStyleRequest(BaseModel):
+    render_style: str
 
 
 class UploadedAssetResult(BaseModel):
@@ -236,7 +257,15 @@ async def create_project(
     body: CreateProjectRequest,
     repo: ProjectRepository = Depends(get_repo),
 ) -> Project:
-    return await repo.create(name=body.name)
+    if body.render_style is not None and body.render_style not in STYLE_PACING_BANDS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown style {body.render_style!r} - "
+                f"known styles: {sorted(STYLE_PACING_BANDS)}"
+            ),
+        )
+    return await repo.create(name=body.name, render_style=body.render_style)
 
 
 @router.get("", response_model=list[Project])
@@ -256,10 +285,37 @@ async def upload_script(
     project_id: str,
     body: UploadScriptRequest,
     repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
 ) -> Project:
+    """Persists the script `ScriptModel` already versions immutably
+    (`_append_script_if_changed`), the same discipline as
+    `TimelineService.append_version` (I3) - each real edit is a new,
+    permanent row, never an overwrite.
+
+    **Freeze check, added with the script pre-flight
+    (motion_new_styles_and_long_form_videos.md §3.5):** planning reads
+    this project's script to produce shots, narration spans, and asset
+    plans; a script edit AFTER a timeline exists would silently
+    invalidate every version already built on the old text, with nothing
+    to signal that any of it happened. Checked directly - no such guard
+    existed before this change, so the script could be (and was)
+    overwritten at any time regardless of pipeline state. `POST
+    /{project_id}/script/preflight` below is the intended way to try out
+    edits before this point; nothing here checks feasibility or
+    suitability, only whether it is still safe to persist at all.
+    """
     project = await _get_project_or_404(project_id, repo)
     if not body.content.strip():
         raise HTTPException(status_code=400, detail="script content must not be empty")
+    active = await timeline_service.get_active(project_id)
+    if active is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "script cannot be changed after planning has started - "
+                f"project {project_id} already has an active timeline"
+            ),
+        )
     project.script = body.content
     project.status = ProjectStatus.SCRIPT_UPLOADED
     return await repo.update(project)
@@ -269,6 +325,150 @@ async def upload_script(
 async def get_script(project_id: str, repo: ProjectRepository = Depends(get_repo)) -> dict:
     project = await _get_project_or_404(project_id, repo)
     return {"project_id": project.id, "content": project.script}
+
+
+@router.post("/{project_id}/style", response_model=Project)
+async def set_render_style(
+    project_id: str,
+    body: SetRenderStyleRequest,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+) -> Project:
+    """Sets (or changes) this project's pre-planning style choice
+    (motion_new_styles_and_long_form_videos.md, Track B) - separate from
+    `create_project`'s own `render_style` so a style picked at creation
+    can still be changed right up to the point planning starts (plan
+    §2.1: "style is freely changeable up to the gate and frozen after
+    it" - here, "the gate" is planning itself, not the later human-
+    approval gate, because style affects the Shot Planner's own
+    fragment-granularity decisions before any Timeline content exists to
+    approve).
+
+    **Same freeze check as `upload_script`, for the same reason**: once
+    `GenerateTimelineStep` has created the initial Timeline (copying this
+    field into `Timeline.metadata.render_style`, frozen from then on),
+    this project's OWN `render_style` column is never read again -
+    changing it here would silently do nothing rather than silently
+    invalidating anything, but refusing is still the honest answer
+    (a user who thinks they just changed the style deserves to be told
+    it is too late, not to have the request quietly no-op).
+    """
+    project = await _get_project_or_404(project_id, repo)
+    if body.render_style not in STYLE_PACING_BANDS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown style {body.render_style!r} - "
+                f"known styles: {sorted(STYLE_PACING_BANDS)}"
+            ),
+        )
+    active = await timeline_service.get_active(project_id)
+    if active is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "render style cannot be changed after planning has started - "
+                f"project {project_id} already has an active timeline"
+            ),
+        )
+    project.render_style = body.render_style
+    return await repo.update(project)
+
+
+@router.post("/{project_id}/script/preflight", response_model=ScriptPreflightResponse)
+async def preflight_script(
+    project_id: str,
+    body: ScriptPreflightRequest,
+    repo: ProjectRepository = Depends(get_repo),
+    session: AsyncSession = Depends(get_db),
+) -> ScriptPreflightResponse:
+    """Checks a candidate script against a style BEFORE it is persisted
+    and BEFORE planning ever runs (motion_new_styles_and_long_form_
+    videos.md, Track D) - not a workflow step, so the run keeps exactly
+    one gate (the 2026-08-16 one-gate redesign is not reopened here).
+
+    **Stateless by design (plan §3.5.3).** `body.script`/`body.style`
+    travel in the request, nothing is read from or written to this
+    project's persisted state - `POST /{project_id}/script` (above) is
+    the separate, deliberate act of persisting a script once the user is
+    done. This is what makes it safe for a frontend to call on every
+    keystroke or style change: a check here can never create a new
+    `ScriptModel` version, which would fight that table's own "append
+    only on a real, deliberate change" discipline.
+
+    Two checks, run in this order because the second is free only when
+    the first has already failed (plan §3.1, §3.2):
+    - **Feasibility** (`app/script/preflight.py`, deterministic, no LLM
+      call) - `passed=False` means an unambiguous mismatch between what
+      this script's punctuation can produce and what `style` needs.
+      `suggested_breaks` (level 2, `app/script/suggestions.py`) is only
+      populated in this case - a feasible script has nothing to suggest
+      breaking.
+    - **Suitability** (`app/script/suitability.py`, one LLM call) - a
+      judgement about subject/tone fit, always attempted regardless of
+      the feasibility verdict, and always advisory: `suitability` is
+      `None` only when no verdict was computed at all (DRY_RUN, or no
+      LLM provider configured), never a fabricated opinion. This
+      endpoint never blocks on it, unlike `passed` above - see
+      `StyleSuitabilityVerdict`'s own docstring for why.
+
+    `KeyError` from an unrecognised `style` is translated to `400` here
+    rather than letting a typo silently check against a default style's
+    band, which would produce a verdict that looks real but checks the
+    wrong thing.
+    """
+    await _get_project_or_404(project_id, repo)
+    if body.style not in STYLE_PACING_BANDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown style {body.style!r} - known styles: {sorted(STYLE_PACING_BANDS)}",
+        )
+
+    feasibility = check_feasibility(body.script, body.style)
+    suggestions = suggest_breaks(body.script, body.style) if not feasibility.passed else []
+
+    llm_provider = None if settings.dry_run else OpenAIPlanningProvider()
+    suitability = await check_suitability(
+        body.script,
+        body.style,
+        provider=llm_provider,
+        llm_call_repo=LlmCallRepository(session),
+        project_id=project_id,
+    )
+    if not settings.dry_run:
+        await session.commit()
+
+    return ScriptPreflightResponse(
+        style=body.style,
+        passed=feasibility.passed,
+        violations=feasibility.violations,
+        fragment_count=feasibility.fragment_count,
+        estimated_total_duration_s=feasibility.estimated_total_duration_s,
+        estimated_average_shot_duration_s=feasibility.estimated_average_shot_duration_s,
+        fragments=[
+            FragmentEstimateOut(
+                index=e.fragment.index,
+                text=e.fragment.text,
+                estimated_duration_s=e.estimated_duration_s,
+            )
+            for e in feasibility.fragment_estimates
+        ],
+        suggested_breaks=[
+            BreakSuggestionOut(
+                offset=s.offset,
+                mark=s.mark,
+                preview_before=s.preview_before,
+                preview_after=s.preview_after,
+                reason=s.reason,
+            )
+            for s in suggestions
+        ],
+        suitability=(
+            StyleSuitabilityOut(suitable=suitability.suitable, reason=suitability.reason)
+            if suitability is not None
+            else None
+        ),
+    )
 
 
 @router.post("/{project_id}/assets", response_model=list[UploadedAssetResult])

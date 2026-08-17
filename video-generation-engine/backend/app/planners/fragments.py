@@ -77,7 +77,7 @@ offsets. It exists only to solve the opposite, equally real risk: one
 very long run-on sentence that would otherwise be a single
 un-subdividable fragment, forcing every shot that touches it to include
 the ENTIRE sentence regardless of how long that makes the shot.
-`_LONG_FRAGMENT_THRESHOLD_CHARS = 80` is the line between those two
+`LONG_FRAGMENT_THRESHOLD_CHARS = 80` is the line between those two
 risks - long enough that an ordinary short line or sentence (the common
 case, per the user's own writing style) is never touched by it, short
 enough that a genuinely long sentence gets a chance to subdivide. It is
@@ -147,7 +147,7 @@ around its own trimmed `text`.
 
 **In practice, only the very first fragment (the one starting at
 position 0) can ever be whitespace-only.** Every OTHER split point
-`_find_split_points` produces is, by construction, the position of a
+`find_split_points` produces is, by construction, the position of a
 non-whitespace character - the first one found after skipping past the
 whitespace that followed whatever triggered the split - so a fragment
 starting at any such point already contains real content and can never
@@ -179,9 +179,9 @@ inventing content, and not crashing either.
 
 from dataclasses import dataclass
 
-_SENTENCE_END_CHARS = frozenset(".!?…।")  # "।" = Devanagari danda (full stop)
-_CLAUSE_SPLIT_CHARS = frozenset(",;:—")  # NOT "-" (hyphen) - see module docstring
-_LONG_FRAGMENT_THRESHOLD_CHARS = 80
+SENTENCE_END_CHARS = frozenset(".!?…।")  # "।" = Devanagari danda (full stop)
+CLAUSE_SPLIT_CHARS = frozenset(",;:—")  # NOT "-" (hyphen) - see module docstring
+LONG_FRAGMENT_THRESHOLD_CHARS = 80
 
 
 @dataclass(frozen=True)
@@ -202,7 +202,7 @@ class NarrationFragment:
     text: str
 
 
-def _find_split_points(text: str, *, split_chars: frozenset[str]) -> list[int]:
+def find_split_points(text: str, *, split_chars: frozenset[str]) -> list[int]:
     """Character offsets where a new fragment should start: immediately
     after any of `split_chars` or a newline, skipping the whitespace run
     that follows (if any) so a fragment never carries leading whitespace
@@ -266,7 +266,7 @@ def split_narration_fragments(text: str) -> list[NarrationFragment]:
     """The whole fragmentation pass: primary split on sentence-enders
     and newlines, then a secondary split - applied only within whichever
     primary fragments are still longer than
-    `_LONG_FRAGMENT_THRESHOLD_CHARS` - on clause punctuation, then a
+    `LONG_FRAGMENT_THRESHOLD_CHARS` - on clause punctuation, then a
     merge pass that folds any whitespace-only fragment into an adjacent
     one (see the module docstring's own section on why). See the module
     docstring for why each threshold and character set was chosen.
@@ -277,13 +277,13 @@ def split_narration_fragments(text: str) -> list[NarrationFragment]:
     if not text:
         return [NarrationFragment(index=1, start=0, end=0, text="")]
 
-    primary_starts = _find_split_points(text, split_chars=_SENTENCE_END_CHARS)
+    primary_starts = find_split_points(text, split_chars=SENTENCE_END_CHARS)
     primary_spans = list(zip(primary_starts, primary_starts[1:] + [len(text)], strict=True))
 
     all_starts = set(primary_starts)
     for start, end in primary_spans:
-        if end - start > _LONG_FRAGMENT_THRESHOLD_CHARS:
-            sub_points = _find_split_points(text[start:end], split_chars=_CLAUSE_SPLIT_CHARS)
+        if end - start > LONG_FRAGMENT_THRESHOLD_CHARS:
+            sub_points = find_split_points(text[start:end], split_chars=CLAUSE_SPLIT_CHARS)
             # sub_points are relative to text[start:end]; 0 is always
             # included (== start itself, already known) - only the
             # genuinely new interior ones are worth adding.
