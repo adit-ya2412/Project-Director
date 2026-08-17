@@ -190,3 +190,7 @@ Rendered two width variants (10% and 15%) against the real fixture `71e4758a` �
 **Decided: `watermark_width_fraction = 0.15`**, not the plan's originally-recommended 0.10 — set as the config default, confirmed by the user against the real rendered frames rather than assumed. Position (top-right), margin (3%), and opacity (0.65) all held at their originally-recommended values; only width changed.
 
 This closes out the plan. Remaining open item, unchanged from §7: the output matrix (YouTube/Instagram watermarked, Archive clean) stays deferred, its own future plan.
+
+### 10.5 Activated
+
+`watermark_enabled` flipped to `True` as the `config.py` default (not just this machine's `.env`) — a fresh clone, CI, or an undeployed prod config now renders with the watermark on unless something explicitly turns it off. `.env`/`.env.example` updated to match, so the template new setups copy from reflects the real default rather than contradicting it.

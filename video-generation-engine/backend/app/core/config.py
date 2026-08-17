@@ -182,15 +182,14 @@ class Settings(BaseSettings):
     # libass's fallback resolution is platform-dependent.
     caption_font: str = "Noto Sans Devanagari"
 
-    # Channel branding (docs/plans/watermark_implementation_plan.md). Off
-    # by default - unlike burn_captions (dead config from the start), this
-    # flips on behavior for every future render the moment it's true, so
-    # it starts False until deliberately enabled. Position/margin/width
-    # are fractions of frame dimensions, never absolute pixels (§3): the
-    # same proportions must hold regardless of render resolution. The
-    # logo file itself is vendored (backend/vendor/branding/logo.png),
-    # not a configurable path - one channel, one logo (§8.1).
-    watermark_enabled: bool = False
+    # Channel branding (docs/plans/watermark_implementation_plan.md).
+    # Enabled 2026-08-17 after the real-render verification in §10.4.
+    # Position/margin/width are fractions of frame dimensions, never
+    # absolute pixels (§3): the same proportions must hold regardless of
+    # render resolution. The logo file itself is vendored
+    # (backend/vendor/branding/logo.png), not a configurable path - one
+    # channel, one logo (§8.1).
+    watermark_enabled: bool = True
     watermark_position: str = "top_right"
     # 15%, not the sketch's 4% - verified against a real render (docs/
     # plans/watermark_implementation_plan.md §10.4): at 10% this specific
