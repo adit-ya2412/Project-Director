@@ -9,12 +9,15 @@ export function formatDuration(totalSeconds: number | null | undefined): string 
 }
 
 /**
- * £ display, per F3: "state £0.00 spent before approval as a
- * reassurance... £ is the currency used throughout the spec text.
+ * `$`, not the `£` the original F3 spec text said to use: `cost_cents`
+ * is real provider pricing (Fal AI, OpenAI, ElevenLabs), and all three
+ * bill in USD — showing `£0.04` for something that costs 4 real US
+ * cents states a different currency than the one actually being spent,
+ * not just a different symbol.
  */
 export function formatCostCents(cents: number | null | undefined): string {
   const value = ((cents ?? 0) / 100).toFixed(2)
-  return `£${value}`
+  return `$${value}`
 }
 
 export function formatDate(iso: string | null | undefined): string {

@@ -156,7 +156,7 @@ export function Progress() {
           <CardContent className="space-y-6">
             <StageList steps={PRE_APPROVAL_STEPS} currentStep={progress.current_step} />
             <div className="rounded-md border border-success/30 bg-success/10 p-3 text-sm">
-              <span className="font-medium text-success">£0.00 spent so far.</span>{' '}
+              <span className="font-medium text-success">$0.00 spent so far.</span>{' '}
               <span className="text-muted-foreground">
                 Nothing is generated and nothing is paid for until you approve the plan — that's the whole point of
                 the review gate coming up next.
