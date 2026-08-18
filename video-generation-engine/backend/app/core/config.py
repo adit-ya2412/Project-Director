@@ -133,10 +133,17 @@ class Settings(BaseSettings):
     # --- Music (M8+) ---
     # "pixabay" was the original spec pick; verified live 2026-08-15 that
     # Pixabay has no public Music/Audio search API at all (only Images
-    # and Videos - see app/providers/pixabay_music.py). "openverse" (no
-    # API key, aggregates Jamendo + Freesound, verified live the same
-    # day) is the real, working default now.
-    music_provider: str = "openverse"
+    # and Videos - see app/providers/pixabay_music.py). "openverse" was
+    # the real, working default for a while, but it depends on a live,
+    # thin, sometimes-empty third-party search (that module's own
+    # docstring: "a narrow music_plan legitimately finds nothing on a
+    # real search"). "local" (motion_new_styles_and_long_form_videos.md
+    # §11 step 6, 2026-08-18) is the curated 54-track library built to
+    # replace it - never empty, never rate-limited, no network call at
+    # fetch time - and is now the default. "openverse" stays registered
+    # and selectable via config, not removed.
+    music_provider: str = "local"
+    music_library_root: Path = Path("./storage/music_library")
     pixabay_api_key: str | None = None
     freesound_api_key: str | None = None
     # Tuned live, 2026-08-16, against the restored `hinglish_final_project`

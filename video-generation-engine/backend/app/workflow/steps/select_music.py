@@ -64,6 +64,7 @@ from app.core.config import settings
 from app.core.errors import PermanentError
 from app.providers.base import MusicProvider, MusicSearchQuery
 from app.providers.fakes.music import FakeMusicProvider
+from app.providers.local_music import LocalMusicProvider
 from app.providers.openverse_music import OpenverseMusicProvider
 from app.providers.pixabay_music import PixabayMusicProvider
 from app.renderer.slideshow import probe_duration_seconds
@@ -74,19 +75,22 @@ from app.workflow.context import RunContext
 from app.workflow.step import StepResult
 
 # `settings.music_provider` selects the implementation (M8, 21.1) -
-# "openverse" is the real, working default; "pixabay" is kept only as
-# honest, non-functional scaffolding (see that module's own docstring).
-# An unrecognised value falls back to the real one rather than raising -
-# a typo in config should degrade to "still tries to find music", not
-# crash the whole pipeline.
+# "local" (the curated library, §11 step 6) is the real, working default
+# now; "openverse" stays available and working, kept for whenever a
+# project needs something outside the curated library's 54 tracks;
+# "pixabay" is kept only as honest, non-functional scaffolding (see that
+# module's own docstring). An unrecognised value falls back to "local"
+# rather than raising - a typo in config should degrade to "still tries
+# to find music", not crash the whole pipeline.
 _PROVIDERS: dict[str, Callable[[], MusicProvider]] = {
+    "local": LocalMusicProvider,
     "openverse": OpenverseMusicProvider,
     "pixabay": PixabayMusicProvider,
 }
 
 
 def _real_music_provider() -> MusicProvider:
-    provider_cls = _PROVIDERS.get(settings.music_provider, OpenverseMusicProvider)
+    provider_cls = _PROVIDERS.get(settings.music_provider, LocalMusicProvider)
     return provider_cls()
 
 
