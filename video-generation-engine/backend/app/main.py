@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.projects import router as projects_router
 from app.core.config import settings
 from app.core.logging import configure_logging, get_logger
+from app.workflow.trigger import reclaim_orphaned_runs
 
 # frontend/dist, built via `npm run build`. Not present in a backend-only
 # dev checkout, so the mount below is skipped rather than crashing.
@@ -26,6 +27,14 @@ async def lifespan(app: FastAPI):
     # Repositories are constructed per-request via DI (app/api/deps.py) -
     # nothing to hold on app.state.
     logger.info("app.startup", extra={"dry_run": settings.dry_run})
+    # Orphan-run fix (motion_new_styles_and_long_form_videos.md §11): a
+    # workflow_run row left "running" by a process that died mid-run is
+    # provably orphaned at this exact point, before this process has
+    # served a single request - see app/workflow/trigger.py's own
+    # docstring for why.
+    reclaimed = await reclaim_orphaned_runs()
+    if reclaimed:
+        logger.warning("app.reclaimed_orphaned_runs", extra={"count": len(reclaimed)})
     yield
     logger.info("app.shutdown")
 

@@ -28,6 +28,18 @@ class WorkflowRunRepository:
         )
         return result.scalar_one_or_none()
 
+    async def list_running(self) -> list[WorkflowRunModel]:
+        """Every row still `state == "running"` right now. Under this
+        codebase's single-instance assumption, the only legitimate caller
+        is startup-time orphan reclaim (`app/workflow/trigger.py`) - a row
+        in this state while nothing has run a single step yet in the
+        current process can only be left over from a process that died
+        mid-run."""
+        result = await self._session.execute(
+            select(WorkflowRunModel).where(WorkflowRunModel.state == "running")
+        )
+        return list(result.scalars().all())
+
     async def create(self, project_id: uuid.UUID) -> WorkflowRunModel:
         run = WorkflowRunModel(project_id=project_id, state="running", progress=0.0)
         self._session.add(run)

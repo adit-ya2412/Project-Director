@@ -56,8 +56,27 @@ performed once, lock-guarded, and committed BEFORE the background task
 is scheduled, rather than racily inside it. The background task's own
 call into `engine.run()` re-derives the same row and finds it already
 "running" - a harmless no-op re-flip, not a second claim.
+
+## Orphan reclaim (2026-08-18, motion_new_styles_and_long_form_videos.md §11)
+
+`_claim_or_join`'s `state == "running"` check has a blind spot it cannot
+close from inside a single request: it assumes "running" always means
+some OTHER caller is currently executing the pipeline, which is true
+right up until that caller's process is hard-killed (Ctrl-C, a reboot,
+an OOM kill). After that, the row is stuck `"running"` forever - every
+future trigger sees it as busy and joins rather than resumes, and only
+editing Postgres by hand recovers the project. `WorkflowEngine.run()`
+itself has no trouble resuming a `"running"` row (it re-derives progress
+from `is_satisfied()`, not from anything stored); the gap is purely that
+nothing ever calls it again. `reclaim_orphaned_runs`, called once from
+`main.py`'s `lifespan` before the app accepts requests, closes this: under
+this codebase's single-instance assumption, any row still `"running"` at
+process startup cannot belong to a live execution - the process that
+would be running it is the one just starting - so it is provably
+orphaned, no heartbeat column or timeout threshold needed.
 """
 
+import asyncio
 import uuid as uuid_module
 
 from fastapi import BackgroundTasks
@@ -172,6 +191,36 @@ async def _execute_in_background(project_id: str, steps: list[WorkflowStep] | No
             if run_row is not None:
                 await workflow_repo.update_state(run_row, state="failed", completed=True)
             await session.commit()
+
+
+# Strong references to reclaim's own background tasks - `asyncio.create_task`
+# does not keep a task alive on its own (nothing else holds it once
+# `reclaim_orphaned_runs` returns), so a task could be garbage-collected
+# mid-run without this, exactly the kind of silent loss this module exists
+# to prevent.
+_reclaim_tasks: set[asyncio.Task] = set()
+
+
+async def reclaim_orphaned_runs() -> list[asyncio.Task]:
+    """Finds every `workflow_run` row left `state == "running"` by a
+    process that died before it could finish, and resumes each one the
+    same way a normal trigger would - scheduling `_execute_in_background`
+    directly, since we already know (see this module's own docstring)
+    that nothing else is currently executing them. Returns the scheduled
+    tasks so a caller (namely tests) can await them; production code
+    (`main.py`'s `lifespan`) does not need to."""
+    async with async_session_factory() as session:
+        orphaned = await WorkflowRunRepository(session).list_running()
+        project_ids = [str(run.project_id) for run in orphaned]
+
+    tasks: list[asyncio.Task] = []
+    for project_id in project_ids:
+        logger.warning("workflow.reclaiming_orphaned_run", extra={"project_id": project_id})
+        task = asyncio.create_task(_execute_in_background(project_id, None))
+        _reclaim_tasks.add(task)
+        task.add_done_callback(_reclaim_tasks.discard)
+        tasks.append(task)
+    return tasks
 
 
 async def start_workflow_run(

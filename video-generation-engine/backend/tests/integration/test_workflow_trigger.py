@@ -7,6 +7,7 @@ happens somewhere `WorkflowEngine.run()` itself, not a single step,
 raises from.
 """
 
+import asyncio
 import uuid as uuid_module
 
 import pytest_asyncio
@@ -17,7 +18,7 @@ from app.repositories.project_repository import PostgresProjectRepository
 from app.repositories.workflow_repository import WorkflowRunRepository
 from app.schemas.project import ProjectStatus
 from app.workflow.engine import WorkflowEngine
-from app.workflow.trigger import _claim_or_join, _execute_in_background
+from app.workflow.trigger import _claim_or_join, _execute_in_background, reclaim_orphaned_runs
 
 
 @pytest_asyncio.fixture
@@ -133,3 +134,60 @@ async def test_a_crash_inside_the_engine_itself_surfaces_through_status(project_
         assert run_row is not None
         assert run_row.state == "failed"
         assert run_row.completed_at is not None
+
+
+async def test_reclaim_resumes_a_run_orphaned_by_a_hard_kill(project_id, monkeypatch):
+    """The bug this closes: a process killed mid-run leaves its
+    `workflow_run` row `state == "running"` forever - `_claim_or_join`
+    treats that as proof another caller is already executing it, so
+    without reclaim, no future trigger would EVER resume this project.
+    Simulated the same way the crash test above does: claim the row (the
+    exact state a real in-flight execution, now dead, would leave behind),
+    then call `reclaim_orphaned_runs` as `main.py`'s `lifespan` would on
+    the next server start."""
+    project_uuid = uuid_module.UUID(project_id)
+    async with async_session_factory() as session:
+        run_row, claimed = await _claim_or_join(session, project_uuid)
+        assert claimed is True
+        assert run_row.state == "running"
+        await session.commit()
+
+    calls: list[str] = []
+
+    async def _fake_execute(pid: str, steps) -> None:
+        calls.append(pid)
+
+    monkeypatch.setattr("app.workflow.trigger._execute_in_background", _fake_execute)
+
+    tasks = await reclaim_orphaned_runs()
+    await asyncio.gather(*tasks)
+
+    assert calls == [project_id]
+
+
+async def test_reclaim_leaves_terminal_and_paused_runs_alone(project_id, monkeypatch):
+    """Only a genuinely stuck `"running"` row is a bug - a completed run
+    needs no resuming, and a paused one (`awaiting_approval`) is already
+    correctly resumable by its own next real trigger (see the paused-run
+    test above). Reclaim touching either would be new, unrequested
+    behaviour, not a fix."""
+    project_uuid = uuid_module.UUID(project_id)
+    async with async_session_factory() as session:
+        run_row, claimed = await _claim_or_join(session, project_uuid)
+        assert claimed is True
+        await WorkflowRunRepository(session).update_state(
+            run_row, state="completed", completed=True
+        )
+        await session.commit()
+
+    calls: list[str] = []
+
+    async def _fake_execute(pid: str, steps) -> None:
+        calls.append(pid)
+
+    monkeypatch.setattr("app.workflow.trigger._execute_in_background", _fake_execute)
+
+    tasks = await reclaim_orphaned_runs()
+    await asyncio.gather(*tasks)
+
+    assert calls == []

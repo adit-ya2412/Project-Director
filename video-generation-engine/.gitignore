@@ -60,6 +60,12 @@ pnpm-debug.log*
 
 # ---- Project storage (generated media, renders, downloads) ---------------
 storage/
+# `storage/` above prunes the whole directory from traversal, so re-including
+# a nested path needs every ancestor un-excluded in turn, not just the leaf -
+# git will not look inside a directory it has already excluded wholesale.
+!backend/storage/
+backend/storage/*
+!backend/storage/music_library/
 media/
 outputs/
 *.mp4
@@ -69,6 +75,10 @@ outputs/
 *.mp3
 !tests/fixtures/**/*.mp4
 !tests/fixtures/**/*.wav
+# The curated music library is tracked (via git-lfs for the mp3s) so a
+# fresh checkout on another machine has the real audio, not just code that
+# references it - everything else under storage/ stays generated/local-only.
+!backend/storage/music_library/**
 
 # ---- Logs & local databases ---------------------------------------------
 logs/
