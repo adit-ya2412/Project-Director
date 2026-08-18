@@ -34,6 +34,7 @@ class ProjectRepository(Protocol):
     async def get(self, project_id: str) -> Project | None: ...
     async def update(self, project: Project) -> Project: ...
     async def list_all(self) -> list[Project]: ...
+    async def append_rewritten_script(self, project_id: str, content: str) -> Project: ...
 
 
 class InMemoryProjectRepository:
@@ -60,6 +61,16 @@ class InMemoryProjectRepository:
     async def list_all(self) -> list[Project]:
         async with self._lock:
             return list(self._projects.values())
+
+    async def append_rewritten_script(self, project_id: str, content: str) -> Project:
+        # No version history here (this double doesn't model `ScriptModel`
+        # at all - it holds `Project.script` as a plain field) - good
+        # enough for the unit tests this class exists for, which never
+        # assert on script provenance/versioning.
+        async with self._lock:
+            project = self._projects[project_id]
+        project.script = content
+        return await self.update(project)
 
 
 class PostgresProjectRepository:
@@ -142,12 +153,32 @@ class PostgresProjectRepository:
         )
         return result.scalar_one_or_none()
 
-    async def _append_script_if_changed(self, project_id: uuid.UUID, content: str) -> None:
+    async def _append_script_if_changed(
+        self, project_id: uuid.UUID, content: str, *, source: str = "user"
+    ) -> None:
         existing = await self._latest_script(project_id)
         if existing is not None and existing.content == content:
             return
         next_version = (existing.version + 1) if existing else 1
-        self._session.add(ScriptModel(project_id=project_id, content=content, version=next_version))
+        self._session.add(
+            ScriptModel(project_id=project_id, content=content, version=next_version, source=source)
+        )
+
+    async def append_rewritten_script(self, project_id: str, content: str) -> Project:
+        """Persists a Track D level-3 rewrite result (plan §3.5) as a new
+        `ScriptModel` version with `source="rewritten"` - deliberately
+        NOT routed through `update()` above, which always writes
+        `source="user"` implicitly (the correct default for every other
+        caller). This is the one path that needs to say otherwise."""
+        model = await self._session.get(ProjectModel, uuid.UUID(project_id))
+        if model is None:
+            raise ValueError(f"project {project_id} does not exist")
+        await self._append_script_if_changed(model.id, content, source="rewritten")
+        await self._session.commit()
+        await self._session.refresh(model)
+        script = await self._latest_script(model.id)
+        timeline_row = await self._timeline_repo.get_latest(model.id)
+        return self._to_schema(model, script=script, timeline_row=timeline_row)
 
     @staticmethod
     def _to_schema(

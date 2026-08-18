@@ -31,6 +31,57 @@ from app.workflow.step import StepResult
 _FAKE_PLANNER_OWNS = frozenset({"metadata", "creative_context", "music_plan", "scenes"})
 
 
+def _validate_against_style(timeline: Timeline) -> list[str]:
+    """The ONE place this file resolves a style's bounds for validation
+    purposes - used by BOTH `_is_fully_planned` (the resume/idempotency
+    check) and `run()`'s own post-planning gate. Extracted as a single
+    shared function (R1 fix, motion_new_styles_and_long_form_videos.md
+    §13.1, 2026-08-18) after these two calls existed separately and
+    quietly disagreed: `run()` used to read the flat `settings.*` bounds
+    directly while this function already resolved style-derived ones via
+    `resolve_constraint_bundle` - so for `retention_fast`, the Shot
+    Planner was authorised (via this same function, through
+    `_is_fully_planned`'s reasoning) to emit shots as short as 0.8s or up
+    to 58 of them, and `run()`'s OWN separate flat-settings check
+    rejected exactly that timeline every time - a loud failure after the
+    Director, Scene Planner, and every Shot Planner call had already been
+    paid for. Two validators of one invariant must not be able to
+    diverge; a single function neither call site can bypass is what
+    makes that true, not just making both agree today.
+
+    `resolve_constraint_bundle` (Track B, 2026-08-17) replaces the flat
+    `settings.*` reads that used to sit here directly - `style=None`
+    (every Timeline predating this field) resolves to EXACTLY the same
+    three numbers those flat reads always produced, verified directly
+    against `settings` before this call site was touched.
+
+    No special-case for `produced_by == NARRATION` here (M8 hardening,
+    2026-08-16 - the fix for "A26 is a deadlock in practice"): that used
+    to short-circuit straight to `True` because M8's NarrationStep may
+    legitimately stretch a shot's reconciled duration past
+    `max_shot_duration_s` (the cap is a planning heuristic, narration is
+    real), but checking the CURRENT version's `produced_by` only ever
+    protected the one version immediately after narration - any later
+    version (a human override, a music retry, a narration-voice retry)
+    fell straight back out of it and re-failed against measured reality.
+    `validate_constraints` itself now reads
+    `timeline.metadata.narration_locked` - a flag that survives every
+    later version, not just this one - to decide whether shot-duration
+    bounds still apply, so this call is correct uniformly, forever,
+    without this function needing to know anything about narration at
+    all."""
+    min_shot_duration_s, max_shot_duration_s, max_shots_per_project = resolve_constraint_bundle(
+        timeline.metadata.render_style
+    )
+    return timeline.validate_constraints(
+        max_video_duration_s=settings.max_video_duration_s,
+        max_shots_per_project=max_shots_per_project,
+        min_shot_duration_s=min_shot_duration_s,
+        max_shot_duration_s=max_shot_duration_s,
+        max_scenes=settings.max_scenes,
+    )
+
+
 def _is_fully_planned(timeline: Timeline) -> bool:
     if not timeline.scenes:
         return False
@@ -48,43 +99,7 @@ def _is_fully_planned(timeline: Timeline) -> bool:
     # only calls step.run() when is_satisfied() is False - carrying the
     # broken timeline forward into asset resolution instead of failing
     # loudly again.
-    #
-    # No special-case for `produced_by == NARRATION` here (M8 hardening,
-    # 2026-08-16 - the fix for "A26 is a deadlock in practice"): that
-    # used to short-circuit straight to `True` because M8's NarrationStep
-    # may legitimately stretch a shot's reconciled duration past
-    # `max_shot_duration_s` (the cap is a planning heuristic, narration
-    # is real), but checking the CURRENT version's `produced_by` only
-    # ever protected the one version immediately after narration - any
-    # later version (a human override, a music retry, a narration-voice
-    # retry) fell straight back out of it and re-failed against measured
-    # reality. `validate_constraints` itself now reads
-    # `timeline.metadata.narration_locked` - a flag that survives every
-    # later version, not just this one - to decide whether shot-duration
-    # bounds still apply, so this call is correct uniformly, forever,
-    # without this function needing to know anything about narration at
-    # all.
-    #
-    # `resolve_constraint_bundle` (Track B, 2026-08-17) replaces the flat
-    # `settings.*` reads that used to sit here directly - `style=None`
-    # (every Timeline predating this field) resolves to EXACTLY the same
-    # three numbers those flat reads always produced, verified directly
-    # against `settings` before this call site was touched. This is what
-    # closes the gap `app/script/preflight.py`'s own module docstring
-    # flagged: `retention_fast`'s shot-cap override is now the number
-    # actually enforced here, not merely the number a pre-flight check
-    # compared against.
-    min_shot_duration_s, max_shot_duration_s, max_shots_per_project = resolve_constraint_bundle(
-        timeline.metadata.render_style
-    )
-    violations = timeline.validate_constraints(
-        max_video_duration_s=settings.max_video_duration_s,
-        max_shots_per_project=max_shots_per_project,
-        min_shot_duration_s=min_shot_duration_s,
-        max_shot_duration_s=max_shot_duration_s,
-        max_scenes=settings.max_scenes,
-    )
-    return not violations
+    return not _validate_against_style(timeline)
 
 
 class GenerateTimelineStep:
@@ -121,13 +136,12 @@ class GenerateTimelineStep:
 
         timeline = await ctx.timeline_service.get_active(ctx.project_id)
         assert timeline is not None
-        violations = timeline.validate_constraints(
-            max_video_duration_s=settings.max_video_duration_s,
-            max_shots_per_project=settings.max_shots_per_project,
-            min_shot_duration_s=settings.min_shot_duration_s,
-            max_shot_duration_s=settings.max_shot_duration_s,
-            max_scenes=settings.max_scenes,
-        )
+        # R1 fix (motion_new_styles_and_long_form_videos.md §13.1, 2026-08-18):
+        # now the SAME function `_is_fully_planned` uses, so this gate and
+        # the resume check can no longer disagree about what a style
+        # authorises - see `_validate_against_style`'s own docstring for
+        # the bug this closes.
+        violations = _validate_against_style(timeline)
         if violations:
             return StepResult(
                 outcome="failed", error=f"timeline violates creative constraints: {violations}"

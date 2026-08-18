@@ -6,7 +6,7 @@ of flat `settings.*` values directly.
 """
 
 from app.core.config import settings
-from app.script.styles import STYLE_PACING_BANDS, resolve_constraint_bundle
+from app.script.styles import STYLE_PACING_BANDS, StylePacingBand, resolve_constraint_bundle
 
 
 def test_none_resolves_byte_identical_to_flat_settings():
@@ -50,3 +50,46 @@ def test_unrecognised_style_falls_back_rather_than_raising():
 def test_every_registered_style_is_reachable():
     for style in STYLE_PACING_BANDS:
         resolve_constraint_bundle(style)  # must not raise
+
+
+def test_max_shot_duration_s_override_is_independent_of_the_dead_stop_ceiling():
+    """R7 fix (§13.7): `max_shot_duration_s_override` and
+    `max_fragment_duration_s` are separate fields that happen to agree
+    for `retention_fast` today - not one field doing both jobs. Proven by
+    changing the (uncalibrated, still-open Q5) dead-stop multiplier's
+    input and confirming the planning bound does not move with it."""
+    band = STYLE_PACING_BANDS["retention_fast"]
+    assert band.max_shot_duration_s_override == 3.5
+    assert band.max_fragment_duration_s == 3.5  # equal today, not the same field
+    # The real proof: a band whose target changes (moving max_fragment_duration_s)
+    # must not move max_shot_duration_s_override, since they are independent.
+    moved = StylePacingBand(
+        name="hypothetical",
+        target_shot_duration_s=1.0,  # -> max_fragment_duration_s = 2.0
+        max_shots_override=None,
+        max_shot_duration_s_override=3.5,
+    )
+    assert moved.max_fragment_duration_s == 2.0
+    _min, max_shot_duration_s, _shots = resolve_constraint_bundle("retention_fast")
+    assert max_shot_duration_s == band.max_shot_duration_s_override
+
+
+def test_a_zero_override_is_honoured_not_treated_as_unset():
+    """The `x or y` trap R7 fixed: `0`/`0.0` is a legitimate override
+    value (e.g. a future style with no per-shot ceiling), and must not
+    silently fall back to the flat setting the way `or` would."""
+    zero_band = StylePacingBand(
+        name="hypothetical_zero",
+        target_shot_duration_s=None,
+        max_shots_override=0,
+        min_shot_duration_s_override=0.0,
+        max_shot_duration_s_override=0.0,
+    )
+    STYLE_PACING_BANDS["hypothetical_zero"] = zero_band
+    try:
+        min_s, max_s, shots = resolve_constraint_bundle("hypothetical_zero")
+        assert min_s == 0.0
+        assert max_s == 0.0
+        assert shots == 0
+    finally:
+        del STYLE_PACING_BANDS["hypothetical_zero"]

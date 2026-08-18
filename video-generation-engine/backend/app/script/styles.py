@@ -46,15 +46,36 @@ class StylePacingBand:
     MEASURED durations from this bound regardless, so lowering it only
     affects the Shot Planner's pre-narration estimate, never real,
     reconciled shot lengths).
+
+    `max_shot_duration_s_override` is the Shot Planner's real validation
+    bound - a SEPARATE number from `max_fragment_duration_s` below, fixed
+    2026-08-18 (motion_new_styles_and_long_form_videos.md §13.7, "R7").
+    Before this field existed, `resolve_constraint_bundle` read
+    `max_fragment_duration_s` for this purpose - but that property is a
+    pre-flight DIAGNOSTIC (the §2.5.1 dead-stop ceiling for a single
+    narration FRAGMENT, derived from `_DEAD_STOP_CEILING_MULTIPLIER`,
+    which is explicitly uncalibrated - see that constant's own comment),
+    not a planning bound. Sharing one number meant Q5's still-open
+    calibration of the diagnostic would have silently retuned a real
+    planning constraint the moment someone adjusted the multiplier. The
+    two numbers happen to be equal for `retention_fast` today (3.5), but
+    are now two independent fields that merely agree, not one field
+    serving two purposes.
     """
 
     name: str
     target_shot_duration_s: float | None
     max_shots_override: int | None
     min_shot_duration_s_override: float | None = None
+    max_shot_duration_s_override: float | None = None
 
     @property
     def max_fragment_duration_s(self) -> float | None:
+        """Pre-flight ceiling ONLY (plan §2.5.1) - the ceiling a single
+        narration fragment must not exceed before it reads as a dead
+        stop, used by `preflight.py::check_feasibility`. NOT the Shot
+        Planner's validation bound - see `max_shot_duration_s_override`'s
+        own docstring for why those stopped being the same field (R7)."""
         if self.target_shot_duration_s is None:
             return None
         return self.target_shot_duration_s * _DEAD_STOP_CEILING_MULTIPLIER
@@ -72,11 +93,15 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
         # 90s / 1.75s/shot =~ 51 shots; budgeted to ~58 for headroom
         # (plan §4.2's "budget ~55-60"). Floor lowered to 0.8s (§2.5
         # Route 2) - a planning-time estimate only, per the docstring
-        # above.
+        # above. `max_shot_duration_s_override=3.5` matches
+        # `max_fragment_duration_s`'s current value (1.75 * 2.0) - same
+        # number today, independent field since R7 (see StylePacingBand's
+        # own docstring for why sharing one was the bug).
         name="retention_fast",
         target_shot_duration_s=1.75,
         max_shots_override=58,
         min_shot_duration_s_override=0.8,
+        max_shot_duration_s_override=3.5,
     ),
     "stillness": StylePacingBand(
         name="stillness",
@@ -116,7 +141,24 @@ def resolve_constraint_bundle(style: str | None) -> tuple[float, float, int]:
     band = STYLE_PACING_BANDS.get(style or settings.default_render_style)
     if band is None:
         band = STYLE_PACING_BANDS[settings.default_render_style]
-    min_shot_duration_s = band.min_shot_duration_s_override or settings.min_shot_duration_s
-    max_shot_duration_s = band.max_fragment_duration_s or settings.max_shot_duration_s
-    max_shots_per_project = band.max_shots_override or settings.max_shots_per_project
+    # `if ... is not None else`, not `x or y` (R7, §13.7): an `or` here
+    # would fall through to the flat setting for an override of `0`/`0.0`
+    # - unreachable with today's three styles, but a live trap for a
+    # future one (`stillness` is exactly the style that might legitimately
+    # want a `0.0` bound one day).
+    min_shot_duration_s = (
+        band.min_shot_duration_s_override
+        if band.min_shot_duration_s_override is not None
+        else settings.min_shot_duration_s
+    )
+    max_shot_duration_s = (
+        band.max_shot_duration_s_override
+        if band.max_shot_duration_s_override is not None
+        else settings.max_shot_duration_s
+    )
+    max_shots_per_project = (
+        band.max_shots_override
+        if band.max_shots_override is not None
+        else settings.max_shots_per_project
+    )
     return min_shot_duration_s, max_shot_duration_s, max_shots_per_project

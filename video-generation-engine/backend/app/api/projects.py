@@ -100,12 +100,16 @@ from app.schemas.project import Project, ProjectStatus
 from app.schemas.script_preflight import (
     BreakSuggestionOut,
     FragmentEstimateOut,
+    RewriteFeasibilityOut,
     ScriptPreflightRequest,
     ScriptPreflightResponse,
+    ScriptRewriteRequest,
+    ScriptRewriteResponse,
     StyleSuitabilityOut,
 )
 from app.schemas.timeline import ProducedBy, Timeline, TimelineStatus
 from app.script.preflight import check_feasibility
+from app.script.rewrite import rewrite_script
 from app.script.styles import STYLE_PACING_BANDS
 from app.script.suggestions import suggest_breaks
 from app.script.suitability import check_suitability
@@ -136,6 +140,13 @@ class CreateProjectRequest(BaseModel):
 
 class SetRenderStyleRequest(BaseModel):
     render_style: str
+
+
+class SetGradeRequest(BaseModel):
+    # `None` clears the override, reverting to whatever `render_style`'s
+    # own grade is - a real, useful reset case (R5, §13.5), not just a
+    # required-field placeholder.
+    grade_style: str | None
 
 
 class UploadedAssetResult(BaseModel):
@@ -380,6 +391,64 @@ async def set_render_style(
     return await repo.update(project)
 
 
+@router.post("/{project_id}/grade", response_model=Timeline)
+async def set_grade(
+    project_id: str,
+    body: SetGradeRequest,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+) -> Timeline:
+    """R5 fix (motion_new_styles_and_long_form_videos.md §13.5, "R5",
+    2026-08-18, user-confirmed scenario): the grade is the cheapest,
+    fastest-to-iterate knob in the whole style system (§9 - eyes-on grade
+    tuning against a real render is exactly the human time that does not
+    parallelise), and §2.1 promised it stays freely changeable
+    ("re-render is cheap") separately from the planner-facing levels
+    that freeze at planning start. Before this endpoint, there was only
+    `POST /{project_id}/style` above, which changes `render_style` and
+    IS frozen once planning starts - so the grade was, in practice, the
+    most locked knob instead of the most flexible one.
+
+    **Deliberately NOT behind the freeze check `POST /style` has.** That
+    check protects PLANNING inputs (a style change after planning starts
+    would need a re-plan to take effect for the Shot Planner/prompt
+    levels). The grade touches none of that - it only changes which `eq`
+    filter `RenderStep` applies - so this works at any time, including
+    after a project has already rendered. The caller still needs to
+    trigger a re-render (`POST /render` or `POST /render/only`) to
+    actually see the new look; this endpoint only records the decision.
+
+    `grade_style=None` clears the override, reverting to whatever
+    `render_style`'s own grade is - a deliberate reset, not just an
+    unset default.
+    """
+    await _get_project_or_404(project_id, repo)
+    if body.grade_style is not None and body.grade_style not in STYLE_PACING_BANDS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown style {body.grade_style!r} - known styles: {sorted(STYLE_PACING_BANDS)}"
+            ),
+        )
+    active = await timeline_service.get_active(project_id)
+    if active is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"project {project_id} has no timeline yet to set a grade override on",
+        )
+
+    def _apply_grade(base: Timeline) -> Timeline:
+        base.metadata.grade_style = body.grade_style
+        return base
+
+    return await timeline_service.append_version(
+        project_id,
+        produced_by=ProducedBy.HUMAN,
+        transform=_apply_grade,
+        owns=frozenset({"metadata.grade_style"}),
+    )
+
+
 @router.post("/{project_id}/script/preflight", response_model=ScriptPreflightResponse)
 async def preflight_script(
     project_id: str,
@@ -473,6 +542,92 @@ async def preflight_script(
             if suitability is not None
             else None
         ),
+    )
+
+
+@router.post("/{project_id}/script/rewrite", response_model=ScriptRewriteResponse)
+async def rewrite_script_endpoint(
+    project_id: str,
+    body: ScriptRewriteRequest,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    session: AsyncSession = Depends(get_db),
+) -> ScriptRewriteResponse:
+    """Level 3 of the script pre-flight (motion_new_styles_and_long_form_
+    videos.md §3.2/§3.3) - rephrases a script into more, shorter shots
+    when levels 1-2 (re-punctuation alone, `POST /script/preflight`'s
+    `suggested_breaks`) can't reach a fast style's pacing target.
+
+    **Stateless by default, like `POST /script/preflight`** - `body.script`
+    travels in the request rather than being read from the project, so a
+    rewrite can be tried against draft text before it's ever uploaded.
+    Nothing is persisted unless `body.persist=True`, and even then, only
+    when the rewrite passed every backstop in `app/script/rewrite.py`
+    (`accepted=True`) - a rejected rewrite (a changed number, a dropped
+    entity, or a no-op) is never persisted regardless of the flag, per
+    §3.3's own "reject it" language.
+
+    **Same freeze check as `upload_script`/`POST /style`, for the same
+    reason** - persisting a rewrite after planning has started would
+    silently invalidate everything already built on the old script text.
+    Checked only when `persist=True` actually reaches that branch, not
+    on every stateless "just show me the diff" call.
+    """
+    await _get_project_or_404(project_id, repo)
+    if body.style not in STYLE_PACING_BANDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown style {body.style!r} - known styles: {sorted(STYLE_PACING_BANDS)}",
+        )
+
+    llm_provider = None if settings.dry_run else OpenAIPlanningProvider()
+    result = await rewrite_script(
+        body.script,
+        body.style,
+        provider=llm_provider,
+        llm_call_repo=LlmCallRepository(session),
+        project_id=project_id,
+    )
+    if not settings.dry_run:
+        await session.commit()
+
+    if result is None:
+        return ScriptRewriteResponse(attempted=False)
+
+    persisted = False
+    if body.persist and result.accepted:
+        active = await timeline_service.get_active(project_id)
+        if active is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "script cannot be changed after planning has started - "
+                    f"project {project_id} already has an active timeline"
+                ),
+            )
+        await repo.append_rewritten_script(project_id, result.rewritten_script)
+        persisted = True
+
+    feasibility = result.feasibility
+    return ScriptRewriteResponse(
+        attempted=True,
+        accepted=result.accepted,
+        rejection_reasons=result.rejection_reasons,
+        rewritten_script=result.rewritten_script,
+        original_fragment_count=result.original_fragment_count,
+        rewritten_fragment_count=result.rewritten_fragment_count,
+        feasibility=(
+            RewriteFeasibilityOut(
+                passed=feasibility.passed,
+                violations=feasibility.violations,
+                fragment_count=feasibility.fragment_count,
+                estimated_total_duration_s=feasibility.estimated_total_duration_s,
+                estimated_average_shot_duration_s=feasibility.estimated_average_shot_duration_s,
+            )
+            if feasibility is not None
+            else None
+        ),
+        persisted=persisted,
     )
 
 
@@ -1675,6 +1830,72 @@ async def get_shot_asset(
         path,
         media_type=mime_type_for_extension(path.suffix.lstrip(".")),
         headers=no_cache_headers,
+    )
+
+
+@router.get("/{project_id}/shots/{shot_id}/clip")
+async def get_shot_clip(
+    project_id: str,
+    shot_id: str,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    session: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    """R10 fix (motion_new_styles_and_long_form_videos.md §13.10, 2026-08-18):
+    A1's own stated requirement - "the review screen must play a clip" -
+    was never actually met. `GET /shots/{shot_id}/asset` above
+    deliberately serves a cached representative STILL FRAME for a bound
+    video (the right thing for a grid of thumbnails), which means the
+    human at the one gate - the gate that, since the 2026-08-16 one-gate
+    redesign, IS the quality check that replaced the automated
+    constraint pass - was approving ~50c of generated motion by looking
+    at a single extracted frame of it. That specifically undermines any
+    judgement about whether synthetic motion reads as real (A8's own
+    bake-off question), which cannot be made from a still by
+    construction.
+
+    This endpoint is the other half: it streams the actual video bytes
+    for a shot bound to a generated clip, so a frontend can put it in a
+    `<video>` element instead. 404 for a shot with no binding, no
+    resolved media, or media that is not a video - `GET /asset` above
+    remains the right endpoint for a still image or a video's thumbnail;
+    this one is deliberately narrow rather than degrading to a frame,
+    since a caller that reaches for `/clip` specifically wants to judge
+    motion, and a silent frame fallback would defeat that.
+
+    Same `Cache-Control: no-cache` reasoning as `/asset` (Task 7): this
+    URL is stable per shot, but a regenerate or override rebinds it to
+    different bytes on the same URL.
+    """
+    await _get_project_or_404(project_id, repo)
+    timeline = await timeline_service.get_active(project_id)
+    if timeline is None or shot_id not in {s.id for s in timeline.all_shots()}:
+        raise HTTPException(
+            status_code=404, detail=f"shot {shot_id} not found in the active timeline"
+        )
+
+    binding = await ShotBindingRepository(session).get(
+        uuid.UUID(project_id), timeline.version, shot_id
+    )
+    path = await _resolve_bound_media_path(session, binding)
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail=f"shot {shot_id} has no resolved media yet")
+    if not is_video_file(path):
+        raise HTTPException(
+            status_code=404, detail=f"shot {shot_id}'s bound media is a still image, not a clip"
+        )
+
+    # `mime_type_for_extension` (used by `/asset` above) only knows IMAGE
+    # extensions and would silently mislabel this as `image/png` - never
+    # actually reached there because `/asset` intercepts video paths
+    # earlier, but reached here by construction. `video/mp4` matches
+    # `GET /video`'s own hardcoded type, for the same reason: every video
+    # this codebase produces or downloads is mp4 (validation.py's own
+    # module docstring).
+    return FileResponse(
+        path,
+        media_type="video/mp4",
+        headers={"Cache-Control": "no-cache"},
     )
 
 

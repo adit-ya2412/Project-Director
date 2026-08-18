@@ -6,23 +6,32 @@ to a real archival photo and visually inspected (2026-08-17), confirming
 muted than the unmodified original.
 """
 
+from app.core.config import settings
 from app.renderer.fingerprint import _TIMELINE_BOOKKEEPING_FIELDS
 from app.renderer.grading import STYLE_GRADES, grade_filter_fragment
 
 
-def test_no_grade_for_no_style():
-    """Every Timeline predating this field (`render_style=None`) gets
-    NO grade fragment at all - not an identity `eq=1.0:1.0:0.0`, no
-    filter step in the chain whatsoever - so its render output is
-    byte-for-byte what it always was."""
-    assert grade_filter_fragment(None, "0:v", "graded") is None
+def test_no_style_resolves_to_the_default_styles_real_grade():
+    """R6 fix (§13.6, 2026-08-18, user-confirmed): `render_style=None`
+    now resolves through `settings.default_render_style`
+    ("documentary_archival") exactly like `resolve_constraint_bundle`
+    already does - one sentinel, one meaning, everywhere. A style-less
+    project now gets `documentary_archival`'s real grade rather than no
+    grade at all; this is a deliberate output-bytes change, not a
+    regression."""
+    assert grade_filter_fragment(None, "0:v", "graded") == grade_filter_fragment(
+        settings.default_render_style, "0:v", "graded"
+    )
+    assert grade_filter_fragment(None, "0:v", "graded") is not None
 
 
-def test_no_grade_for_an_unrecognised_style():
+def test_an_unrecognised_style_falls_back_to_the_default_the_same_way():
     """Falls back the same way `resolve_constraint_bundle` does - this
     runs deep in the render pipeline, past every place a style name is
     validated at the API boundary."""
-    assert grade_filter_fragment("not_a_real_style", "0:v", "graded") is None
+    assert grade_filter_fragment("not_a_real_style", "0:v", "graded") == grade_filter_fragment(
+        settings.default_render_style, "0:v", "graded"
+    )
 
 
 def test_every_registered_style_produces_a_distinct_fragment():

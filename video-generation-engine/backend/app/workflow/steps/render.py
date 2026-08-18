@@ -342,8 +342,16 @@ async def render_video(
         extra_inputs: list[Path] = []
         current_label = "0:v"
 
+        # R5 fix (§13.5, 2026-08-18): `grade_style` overrides `render_style`
+        # for grading purposes ONLY, when a human has explicitly set one via
+        # `POST /{project_id}/grade` - the mutable knob that lets the grade
+        # be re-iterated after planning/rendering without touching anything
+        # planner-facing. `None` (the common case) falls through to
+        # `render_style` exactly as before this fix.
         grade_fragment = grade_filter_fragment(
-            timeline.metadata.render_style, current_label, "graded"
+            timeline.metadata.grade_style or timeline.metadata.render_style,
+            current_label,
+            "graded",
         )
         if grade_fragment is not None:
             filter_fragments.append(grade_fragment)

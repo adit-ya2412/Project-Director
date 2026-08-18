@@ -281,6 +281,27 @@ class TimelineMetadata(BaseModel):
     # use above, because it must be known before the Shot Planner ever
     # runs, not discovered mid-plan.
     render_style: str | None = None
+    # R5 fix (motion_new_styles_and_long_form_videos.md §13.5, "R5",
+    # 2026-08-18, user-confirmed scenario): §2.1's table promised the
+    # grade stays freely changeable ("re-render is cheap"), separately
+    # from the planner-facing levels that freeze at planning start - but
+    # the implementation had only ONE field (`render_style` above) and
+    # ONE freeze for all three levels, so the grade - the cheapest,
+    # fastest-to-iterate knob in the whole style system - was in practice
+    # the most locked. `grade_style` is that missing second, independent
+    # knob: `None` means "use whatever `render_style`'s own grade is"
+    # (the common case - most projects never touch this), a non-`None`
+    # value OVERRIDES the grade `app/renderer/grading.py::
+    # grade_filter_fragment` applies, without touching `render_style`
+    # itself or anything planner-facing. Settable via `POST
+    # /{project_id}/grade` at ANY time, including after planning and
+    # after a render - deliberately NOT behind the freeze check
+    # `render_style`/`script` have, since that check exists to protect
+    # planning inputs, and this is never one. Already covered by the
+    # render fingerprint (I5) the same way `render_style` is - part of
+    # `metadata`, which is not in `_TIMELINE_BOOKKEEPING_FIELDS` - so a
+    # grade change is correctly detected as needing a re-render.
+    grade_style: str | None = None
 
 
 class MusicTrackSelection(BaseModel):

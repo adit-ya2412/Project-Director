@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from app.script.preflight import check_feasibility, estimate_duration_s
-from app.script.styles import STYLE_PACING_BANDS
+from app.script.styles import STYLE_PACING_BANDS, StylePacingBand
 
 _FIXTURE = json.loads(
     (Path(__file__).resolve().parents[2] / "fixtures" / "m8_test_project.json").read_text(
@@ -73,6 +73,30 @@ def test_hindi_calibration_selected_for_a_mixed_devanagari_script():
     # Same rough length; a lower chars/sec constant means a LONGER
     # estimated duration for the same character count.
     assert mixed_duration / len(mixed_script) > english_duration / len(english_script)
+
+
+def test_a_zero_shot_cap_override_is_honoured_not_treated_as_unset():
+    """Found 2026-08-18 while reviewing R7 (§13.7): `styles.py`'s own
+    `resolve_constraint_bundle` was fixed to use `is not None` instead of
+    `or`, but this module had its own separate `or` read of the same
+    field, untouched by that fix - a future style setting
+    `max_shots_override = 0` as a deliberate sentinel would otherwise
+    silently fall through to `settings.max_shots_per_project` here."""
+    zero_band = StylePacingBand(
+        name="hypothetical_zero_cap",
+        target_shot_duration_s=None,
+        max_shots_override=0,
+    )
+    STYLE_PACING_BANDS["hypothetical_zero_cap"] = zero_band
+    try:
+        # `documentary_archival`'s own script has 13 fragments (measured
+        # above) - any positive shot cap easily contains that, so a real
+        # `0` cap failing here proves it was actually honoured, not that
+        # the script happens to be too long regardless.
+        result = check_feasibility(_SCRIPT, "hypothetical_zero_cap")
+        assert any("shot cap of 0" in v for v in result.violations)
+    finally:
+        del STYLE_PACING_BANDS["hypothetical_zero_cap"]
 
 
 def test_total_duration_check_is_not_margin_widened():

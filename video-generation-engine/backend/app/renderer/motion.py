@@ -132,11 +132,22 @@ def build_duration_fit_fragment(
     slowing down - looping reads as a glitch, and slow motion changes the
     footage's character while fighting fps normalisation. Put to the user
     with real numbers from the `m8_test_project` fixture rather than as
-    an abstract preference: because `fal_video.py` asks Kling for
-    `round(shot.duration_s)`, the gap this ever needs to cover is
-    mathematically bounded at +-0.5s, and measuring every shot in that
-    fixture found the worst case was +0.50s, with 6 of 8 affected shots'
-    held tails falling entirely inside their own outgoing dissolve.
+    an abstract preference.
+
+    **Corrected 2026-08-18 (motion_new_styles_and_long_form_videos.md
+    §13.3, "R3") - the bound below is NOT symmetric.** `fal_video.py`
+    clamps with `max(3, min(15, round(shot.duration_s)))`, so the HOLD
+    direction (a clip shorter than requested) really is bounded at
+    +0.5s - measuring every shot in `m8_test_project` found the worst
+    case was exactly +0.50s, with 6 of 8 affected shots' held tails
+    falling entirely inside their own outgoing dissolve. But the TRIM
+    direction is unbounded below the 3s API floor: any shot under 2.5s
+    asks Kling for a flat 3s regardless of how short the shot actually
+    is, so a `retention_fast` shot at its own 0.8s floor can see a gap of
+    up to -2.2s. This function's own `trim` branch already handles that
+    correctly (the emitted stream is still exactly `target_duration_s`,
+    so D5's `xfade` arithmetic stays safe) - the correction here is to
+    the DOCUMENTED bound, not to the code, which was never wrong.
 
     Either branch is built to emit EXACTLY `target_duration_s` seconds of
     output, so the caller's existing `xfade` offset arithmetic (D5) keeps

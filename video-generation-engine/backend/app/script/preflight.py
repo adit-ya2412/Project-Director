@@ -11,21 +11,20 @@ never FASTER than one fragment per shot. So a script imposes a hard
 FLOOR on pace, never a ceiling - only a FAST style's target can be
 infeasible; a slow style is always reachable by merging.
 
-**Known gap, not yet closed (see this module's own `check_feasibility`
-docstring): this check compares a script against a style's OWN
-`max_shots_override` (`app/script/styles.py`), but the actual
-enforcement points that would reject a real planning run
-(`app/workflow/steps/generate_timeline.py`,
-`app/planners/shot/planner.py`) still read the flat,
-non-style-aware `settings.max_shots_per_project` - they do not yet know
-`retention_fast` wants a higher cap. Building that (threading
-`metadata.render_style` into both real call sites) is Track B work.
-Until it lands, this check can report "feasible for retention_fast" for
-a script needing 41-58 shots that would still hard-fail for real during
-planning at the global default of 40. This is flagged here so it is not
-silently forgotten, not because the arithmetic below is wrong - it
-already checks the right number, `settings.max_shots_per_project` just
-is not that number yet everywhere it needs to be.**
+**Formerly a known gap, closed 2026-08-18 (motion_new_styles_and_
+long_form_videos.md §13.1, "R1"):** this check compares a script against
+a style's own `max_shots_override`, and for a while the real enforcement
+point (`app/workflow/steps/generate_timeline.py::GenerateTimelineStep
+.run()`) disagreed with it - it read the flat, non-style-aware
+`settings.max_shots_per_project` directly instead of the same
+`resolve_constraint_bundle` result `_is_fully_planned` (in that same
+file) already used, so a script this check certified as "feasible for
+retention_fast" could still hard-fail during real planning. Both call
+sites in `generate_timeline.py` now go through one shared function
+(`_validate_against_style`), so they cannot diverge again - see that
+function's own docstring for the full history. Recorded here as closed,
+not deleted outright, because the R1 review section (§13.1) that found
+it explicitly asked that this paragraph survive until the fix landed.
 """
 
 from dataclasses import dataclass, field
@@ -127,8 +126,9 @@ def check_feasibility(script: str, style: str) -> FeasibilityResult:
       since one long atomic fragment cannot be split by any later
       decision, only by adding punctuation to the script itself)
     - fragment count vs `band.max_shots_override or
-      settings.max_shots_per_project` (see this module's own top
-      docstring for the one gap in this specific check)
+      settings.max_shots_per_project` (matches what `generate_timeline
+      .py::_validate_against_style` actually enforces, since R1 - see
+      this module's own top docstring)
 
     A style with `target_shot_duration_s is None` (`documentary_archival`,
     `stillness`) skips the first two entirely - plan §3.1's own
@@ -167,6 +167,50 @@ def check_feasibility(script: str, style: str) -> FeasibilityResult:
                 f"average) - '{style}' wants ~{band.target_shot_duration_s:.2f}s/shot, which this "
                 "script cannot reach without more punctuation (see suggested breaks)"
             )
+        # ⚠ KNOWN RESIDUAL GAP, documented rather than closed (found
+        # 2026-08-18 while reviewing the R1 fix, sharpened the same day
+        # by a second reviewer - motion_new_styles_and_long_form_videos.md
+        # §13 addendum): `margin` widens THIS check (an estimate) but the
+        # real enforcement point (`generate_timeline.py::
+        # _validate_against_style`, via `resolve_constraint_bundle`)
+        # checks the SAME `max_fragment_duration_s`/
+        # `max_shot_duration_s_override` value with NO margin. For
+        # `retention_fast` (3.5s exact bound) that leaves a 0.7s band
+        # (3.5s-4.2s) where this function says "feasible" and real
+        # planning still fails on an ESTIMATE that lands there - the
+        # same shape of promise-the-enforcement-doesn't-honour bug R1
+        # fixed, just far narrower (a band, not an 18-shot gap).
+        #
+        # **The mechanism is sharper than "only an estimate is at risk"
+        # - a fragment landing in this band is ATOMIC** (`fragments.py`:
+        # "a fragment is the finest unit a shot may own" - the Shot
+        # Planner cannot split it into two shots or merge it away). The
+        # repair loop DOES see this bound (`shot/planner.py::
+        # _make_validator` checks `max_shot_duration_s` on every retry),
+        # but the model has no LEGAL move that actually shortens an
+        # atomic shot - only two things can happen when one lands in
+        # 3.5-4.2s:
+        #   1. the model UNDER-estimates `duration_s` (reports <=3.5s for
+        #      a fragment that will really take ~3.6s to narrate) -
+        #      passes planning, and `NarrationStep`'s real measurement
+        #      later corrects it under `narration_locked`'s exemption -
+        #      no harm to the FINISHED video, but only because the
+        #      wrong estimate was never true to begin with.
+        #   2. the model reports HONESTLY (~3.6s) - the repair loop
+        #      retries against a bound it cannot satisfy (the fragment
+        #      does not get shorter on retry), exhausts its attempts,
+        #      and the run dies - `PermanentError`, after the Director,
+        #      Scene Planner, and every prior Shot Planner call have
+        #      already been paid for. Exactly R1's own failure mode,
+        #      reached a different way.
+        # Which branch actually happens depends on the model CHOOSING to
+        # mis-estimate on that one shot, which is not a property this
+        # code controls or can rely on. Deliberately not closed by
+        # symmetrising the two checks: narrowing this margin would
+        # reintroduce false pre-flight rejections for estimates that are
+        # merely pessimistic (the margin's whole purpose); widening the
+        # real planning bound to match would weaken an actual creative
+        # ceiling for a reason unrelated to the style's own intent.
         assert band.max_fragment_duration_s is not None  # set whenever target is (styles.py)
         if longest.estimated_duration_s > band.max_fragment_duration_s * margin:
             violations.append(
@@ -176,12 +220,31 @@ def check_feasibility(script: str, style: str) -> FeasibilityResult:
                 "read as a dead stop regardless of how the rest of the script is cut"
             )
 
-    shot_cap = band.max_shots_override or settings.max_shots_per_project
+    # `if ... is not None else`, not `or` (same R7 trap as `styles.py`'s
+    # own `resolve_constraint_bundle`, found as a second copy 2026-08-18
+    # while reviewing that fix - this one was never touched by it since
+    # it lives in a different file): a future style setting
+    # `max_shots_override = 0` as a deliberate sentinel would otherwise
+    # silently fall through to the flat default here.
+    shot_cap = (
+        band.max_shots_override
+        if band.max_shots_override is not None
+        else settings.max_shots_per_project
+    )
     if fragment_count > shot_cap:
+        # R9 fix (§13.9, 2026-08-18): this used to say planning "would
+        # have to merge fragments, producing a slower cut... or fail
+        # outright" - §3.4 (corrected twice) established that the merge
+        # half of that sentence does not exist: `max_shots_per_project`
+        # is checked directly after `run_structured_with_repair` returns
+        # and raises `PermanentError` outright, with no repair-loop path
+        # that would ever ask the model to merge shots. This message now
+        # says what actually happens, not the retracted claim.
         violations.append(
             f"this script's {fragment_count} punctuation-based fragments exceed "
-            f"'{style}''s shot cap of {shot_cap} - planning would have to merge fragments, "
-            "producing a slower cut than intended, or fail outright"
+            f"'{style}''s shot cap of {shot_cap}. Planning would fail partway through, "
+            "after the Director and Scene Planner have already run. Add fewer breaks, "
+            "or choose a slower style."
         )
 
     return FeasibilityResult(
