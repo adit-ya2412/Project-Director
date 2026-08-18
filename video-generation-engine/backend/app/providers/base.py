@@ -158,6 +158,16 @@ class AssetCandidate:
     # relevance gate for it - relevant by construction, not by term
     # overlap (see app/providers/wikimedia.py:WikipediaEntityAssetProvider).
     entity_curated: bool = False
+    # "image" | "video" (A7, motion_new_styles_and_long_form_videos.md,
+    # 2026-08-18) - defaults to "image" so every EXISTING provider
+    # (Wikimedia, project uploads, entity retrieval - none of which serve
+    # video) needs no change at all. `PexelsAssetProvider` is the one
+    # provider that sets this to "video", and only when it actually
+    # searched its video endpoint - never inferred from the query's
+    # `preferred_type`, since a video-preferred shot's fallback_chain can
+    # still legitimately reach an IMAGE-only rung first (reuse-before-
+    # generate applies regardless of media type).
+    media_kind: str = "image"
 
 
 @dataclass(frozen=True)

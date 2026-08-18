@@ -8,7 +8,11 @@ by magic bytes here, never trusted from the provider's declared
 content-type or file extension - both are attacker/provider-controlled.
 """
 
+import asyncio
 import io
+import json
+import tempfile
+from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
 
@@ -69,3 +73,79 @@ def validate_and_identify_image(content: bytes) -> tuple[str, int, int]:
         raise PermanentError(f"unsupported image format {image_format!r}")
 
     return _EXTENSION_BY_FORMAT[image_format], width, height
+
+
+async def validate_and_identify_video(
+    content: bytes, *, ffprobe_binary: str = "ffprobe"
+) -> tuple[str, int, int]:
+    """Video counterpart to `validate_and_identify_image` (A7,
+    motion_new_styles_and_long_form_videos.md, 2026-08-18) - Pillow
+    cannot open a video container at all, so this shells out to ffprobe
+    instead, applying the same "positively confirm a real video stream
+    with a positive duration" discipline `app/renderer/motion.py::probe_
+    media` already established for A1 (a separate function, not reused
+    directly: that one classifies a file already resolved on disk against
+    a STILL/MOTION choice; this one validates freshly downloaded bytes
+    against a pass/fail choice, and needs width/height besides).
+
+    Returns `("mp4", width, height)` for genuinely valid video bytes;
+    raises `PermanentError` for anything else. `mp4` is hard-coded rather
+    than derived from ffprobe's own container name - every video source
+    this codebase downloads from today (Pexels, Kling) serves mp4, and
+    getting this wrong would only ever affect the file EXTENSION on disk,
+    never playback."""
+    if len(content) > settings.max_download_bytes:
+        raise PermanentError(
+            f"downloaded asset is {len(content)} bytes, exceeding the "
+            f"{settings.max_download_bytes} byte cap"
+        )
+
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = Path(tmp.name)
+
+    try:
+        args = [
+            ffprobe_binary,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=codec_type,duration,width,height:format=duration",
+            "-of",
+            "json",
+            str(tmp_path),
+        ]
+        process = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            raise PermanentError(
+                f"downloaded content is not a valid video: {stderr.decode(errors='replace')}"
+            )
+        try:
+            data = json.loads(stdout.decode())
+        except json.JSONDecodeError as exc:
+            raise PermanentError(f"downloaded content is not a valid video: {exc}") from exc
+
+        streams = data.get("streams") or []
+        if not streams or streams[0].get("codec_type") != "video":
+            raise PermanentError("downloaded content has no video stream")
+        stream = streams[0]
+
+        raw_duration = stream.get("duration") or (data.get("format") or {}).get("duration")
+        try:
+            duration = float(raw_duration) if raw_duration is not None else 0.0
+        except (TypeError, ValueError):
+            duration = 0.0
+        if duration <= 0:
+            raise PermanentError("downloaded video has no positive duration")
+
+        width, height = stream.get("width"), stream.get("height")
+        if not isinstance(width, int) or not isinstance(height, int):
+            raise PermanentError("downloaded video has no readable dimensions")
+        return "mp4", width, height
+    finally:
+        tmp_path.unlink(missing_ok=True)

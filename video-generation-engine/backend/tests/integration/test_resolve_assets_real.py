@@ -404,6 +404,95 @@ async def test_provenance_is_complete_on_a_stored_asset(project_id, monkeypatch)
     assert asset.local_path is not None and asset.local_path.endswith(".png")
 
 
+def _real_clip_bytes(duration_s: float = 2.0, size: str = "640x360") -> bytes:
+    """A genuine, decodable h264 clip - stands in for a downloaded Pexels
+    video without any network call (A7, motion_new_styles_and_long_form_
+    videos.md, 2026-08-18). `validate_and_identify_video` shells out to a
+    real ffprobe, so fake PNG bytes would not exercise it honestly."""
+    import subprocess
+
+    args = [
+        settings.ffmpeg_binary,
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        f"testsrc=duration={duration_s}:size={size}:rate=24",
+        "-pix_fmt",
+        "yuv420p",
+        "-f",
+        "mp4",
+        "-movflags",
+        "frag_keyframe+empty_moov",
+        "-",
+    ]
+    return subprocess.run(args, capture_output=True, check=True).stdout
+
+
+async def test_video_candidate_from_a_stock_search_rung_validates_and_binds_as_video(
+    project_id, monkeypatch
+):
+    """A7: a video-preferred shot's STOCK_SEARCH rung (Pexels) returns a
+    genuine video candidate - validated via ffprobe (Pillow cannot open
+    it at all), stored with `type="video"`, and bound without ever
+    reaching paid generation (canon 3.1's "reuse before generate",
+    proven here for motion the same way it already holds for stills)."""
+    monkeypatch.setattr(settings, "dry_run", False)
+    shot = Shot(
+        id="sh_01",
+        order=0,
+        intent=ShotIntent.EXPLAIN,
+        duration_s=3.0,
+        prompt="aerial view of a coastline",
+        asset_plan=AssetPlan(
+            strategy=AssetStrategy.STOCK_SEARCH,
+            search_queries=["aerial coastline"],
+            preferred_type=PreferredMediaType.VIDEO,
+            fallback_chain=[AssetStrategy.STOCK_SEARCH, AssetStrategy.GENERATE_IMAGE],
+            licence_requirements=["pexels_licence"],
+        ),
+    )
+    await _seed_timeline(project_id, [shot])
+
+    provider = _FakeSearchProvider(
+        "pexels",
+        "stock_search",
+        candidates_by_shot={
+            "sh_01": [
+                AssetCandidate(
+                    source_id="v1",
+                    source_url="http://example.test/v1.mp4",
+                    title="aerial coastline drone shot",
+                    licence="pexels_licence",
+                    relevance=1.0,
+                    media_kind="video",
+                )
+            ]
+        },
+        content_by_source_id={"v1": _real_clip_bytes()},
+    )
+    monkeypatch.setattr(
+        resolve_assets_module,
+        "_real_search_providers",
+        lambda **_kwargs: {AssetStrategy.STOCK_SEARCH: provider},
+    )
+    monkeypatch.setattr(
+        resolve_assets_module, "OpenAIPlanningProvider", FakeVisionConstraintProvider
+    )
+
+    await _run_step(project_id)
+
+    binding = await _binding(project_id, "sh_01")
+    assert binding.state == "resolved"
+    assert binding.rung == "stock_search"
+
+    async with async_session_factory() as session:
+        asset = await AssetRepository(session).get_by_id(binding.asset_id)
+
+    assert asset.type == "video"
+    assert asset.local_path is not None and asset.local_path.endswith(".mp4")
+
+
 async def test_defers_to_generation_when_every_rung_is_empty(project_id, monkeypatch):
     """M6.5, A5/A6: the search-only pass never generates - a shot every
     permitted rung came up empty for is left `awaiting_generation` for the

@@ -100,6 +100,114 @@ async def test_search_maps_5xx_to_transient_error(monkeypatch):
         await provider.search(_QUERY)
 
 
+def _pexels_video_response() -> dict:
+    return {
+        "videos": [
+            {
+                "id": 857195,
+                "width": 1920,
+                "height": 1080,
+                "url": "https://www.pexels.com/video/aerial-view-of-a-city-857195/",
+                "user": {"name": "Ruvim Miksanskiy"},
+                "video_files": [
+                    {
+                        "quality": "hd",
+                        "file_type": "video/mp4",
+                        "width": 1280,
+                        "height": 720,
+                        "link": "https://videos.pexels.com/video-files/857195/857195-hd.mp4",
+                    },
+                    {
+                        "quality": "sd",
+                        "file_type": "video/mp4",
+                        "width": 640,
+                        "height": 360,
+                        "link": "https://videos.pexels.com/video-files/857195/857195-sd.mp4",
+                    },
+                ],
+            },
+            {
+                "id": 857196,
+                "width": 1920,
+                "height": 1080,
+                "url": "https://www.pexels.com/video/some-other-clip-857196/",
+                "user": {"name": "Someone Else"},
+                # No mp4 rendition at all - must be skipped, not crash the search.
+                "video_files": [
+                    {
+                        "quality": "hd",
+                        "file_type": "video/webm",
+                        "link": "https://videos.pexels.com/video-files/857196/857196-hd.webm",
+                    }
+                ],
+            },
+        ]
+    }
+
+
+async def test_video_search_hits_the_videos_endpoint_and_picks_the_hd_rendition(monkeypatch):
+    monkeypatch.setattr(settings, "pexels_api_key", "fake-key")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert "/videos/search" in str(request.url)
+        return httpx.Response(200, json=_pexels_video_response())
+
+    provider = PexelsAssetProvider(transport=httpx.MockTransport(handler))
+    query = AssetQuery(search_terms=["aerial city"], preferred_type="video", shot_id="sh_01")
+    candidates = await provider.search(query)
+
+    # The webm-only video has no mp4 rendition and is dropped.
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.media_kind == "video"
+    assert candidate.source_url == "https://videos.pexels.com/video-files/857195/857195-hd.mp4"
+    assert candidate.width == 1280 and candidate.height == 720  # the HD file's own dimensions
+    assert candidate.title == "aerial view of a city"
+    assert candidate.author == "Ruvim Miksanskiy"
+    assert candidate.licence == "pexels_licence"
+
+
+async def test_image_search_never_touches_the_video_endpoint(monkeypatch):
+    monkeypatch.setattr(settings, "pexels_api_key", "fake-key")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert "/videos/search" not in str(request.url)
+        return httpx.Response(200, json=_pexels_response())
+
+    provider = PexelsAssetProvider(transport=httpx.MockTransport(handler))
+    candidates = await provider.search(_QUERY)  # preferred_type="image"
+    assert all(c.media_kind == "image" for c in candidates)
+
+
+async def test_video_title_falls_back_when_the_url_has_no_slug():
+    from app.providers.pexels import _video_title
+
+    assert _video_title({"id": 42, "url": ""}) == "pexels video 42"
+
+
+async def test_fetch_downloads_video_bytes_and_labels_attribution_as_video():
+    candidate = AssetCandidate(
+        source_id="857195",
+        source_url="https://videos.pexels.com/video-files/857195/857195-hd.mp4",
+        title="aerial view of a city",
+        licence="pexels_licence",
+        author="Ruvim Miksanskiy",
+        media_kind="video",
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=b"fake-video-bytes", headers={"content-type": "video/mp4"}
+        )
+
+    provider = PexelsAssetProvider(transport=httpx.MockTransport(handler))
+    result = await provider.fetch(candidate)
+
+    assert result.content == b"fake-video-bytes"
+    assert result.content_type == "video/mp4"
+    assert result.attribution == "Video by Ruvim Miksanskiy on Pexels"
+
+
 async def test_fetch_downloads_bytes_and_builds_attribution():
     candidate = AssetCandidate(
         source_id="42",

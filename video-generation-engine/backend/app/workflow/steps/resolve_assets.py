@@ -113,7 +113,11 @@ from app.assets.cost import check_budget, total_project_spend_cents
 from app.assets.depiction_check import check_candidate_plausibility
 from app.assets.ranking import rank_candidates
 from app.assets.relevance import candidate_relevance, passes_relevance_gate
-from app.assets.validation import mime_type_for_extension, validate_and_identify_image
+from app.assets.validation import (
+    mime_type_for_extension,
+    validate_and_identify_image,
+    validate_and_identify_video,
+)
 from app.core.config import settings
 from app.core.errors import PermanentError, TransientError
 from app.models.generated_clip import GeneratedClipModel
@@ -971,12 +975,27 @@ class ResolveAssetsStep:
                         binding.rung = strategy.value
                         return rank_result.content_hash
 
+                    is_video_candidate = candidate.media_kind == "video"
                     try:
-                        ext, _width, _height = validate_and_identify_image(content)
+                        if is_video_candidate:
+                            ext, _width, _height = await validate_and_identify_video(
+                                content, ffprobe_binary=settings.ffprobe_binary
+                            )
+                        else:
+                            ext, _width, _height = validate_and_identify_image(content)
                     except PermanentError:
                         continue  # this candidate's bytes are bad - try the next-ranked one
 
-                    if not checked_top_candidate:
+                    # A7 (2026-08-18): a searched VIDEO candidate skips the
+                    # plausibility check entirely, rather than inventing a
+                    # frame-extraction step to feed it to an image vision
+                    # API. This is not a lowered bar relative to what
+                    # generated video already gets - A5 already removed
+                    # every automated content check from a GENERATED
+                    # video's keyframe (the human at the gate is the check
+                    # now); a searched video getting the identical
+                    # treatment is consistent, not a new gap.
+                    if not checked_top_candidate and not is_video_candidate:
                         checked_top_candidate = True
                         # A2/A30: entity-curated candidates are exempt - a
                         # human already curated those; this check exists
@@ -1018,7 +1037,7 @@ class ResolveAssetsStep:
                         project_id=project_uuid,
                         provider=found_by,
                         source_url=candidate.source_url,
-                        type="image",
+                        type=candidate.media_kind,
                         local_path=str(path),
                         licence=candidate.licence,
                         attribution=attribution or candidate.author or None,
