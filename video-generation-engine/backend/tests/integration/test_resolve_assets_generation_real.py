@@ -5,14 +5,17 @@ cap. Director-constraint enforcement (a vision check, bounded
 regeneration on a violation, formerly A12/A13/A18, a terminal `failed`
 binding naming the constraint once every attempt is exhausted, A14/A19)
 was REMOVED from IMAGE generation in the M6.5 -> gate redesign
-(2026-08-16) - a human at the one review gate is the check now, see
+(2026-08-16), see
 `test_image_generation_never_checks_director_constraints_even_when_configured`
-below - but remains FULLY INTACT for VIDEO generation (out of scope for
-that redesign; `test_video_keyframe_is_checked_not_the_final_clip` is
-unchanged and still proves it). No real fal.ai/OpenAI call:
-`FalImageProvider`/`FalVideoProvider`/`OpenAIPlanningProvider` are
-monkeypatched to fakes with canned responses, the same pattern used for
-the M5 planners and the M6 search providers.
+below, and from the VIDEO keyframe in the same redesign's extension to
+video (motion_new_styles_and_long_form_videos.md Track A's A5,
+2026-08-18), see
+`test_video_keyframe_generation_never_checks_director_constraints_even_when_configured`
+- a human at the one review gate is the check now, for both media types.
+No real fal.ai/OpenAI call: `FalImageProvider`/`FalVideoProvider`/
+`OpenAIPlanningProvider` are monkeypatched to fakes with canned
+responses, the same pattern used for the M5 planners and the M6 search
+providers.
 """
 
 import hashlib
@@ -462,10 +465,11 @@ async def test_image_generation_never_checks_director_constraints_even_when_conf
     loop-specific tests this replaces (one retry same seed, a second
     violation varying the seed, a third exhausting the cap into
     `failed`) all asserted mechanism that no longer exists in the image
-    path; `test_video_keyframe_is_checked_not_the_final_clip` below is
-    the still-valid, still-untouched proof that the identical mechanism
-    remains fully intact for VIDEO generation, which this task does not
-    touch.
+    path; `test_video_keyframe_generation_never_checks_director_
+    constraints_even_when_configured` below proves the identical removal
+    for VIDEO generation's keyframe (Track A's A5, 2026-08-18 - the
+    mechanism WAS still fully intact for video until that date, which is
+    why this docstring used to say so).
     """
     monkeypatch.setattr(settings, "dry_run", False)
     shot = _shot("sh_01", preferred_type=PreferredMediaType.IMAGE)
@@ -504,8 +508,23 @@ async def test_image_generation_never_checks_director_constraints_even_when_conf
     assert spent == settings.fal_image_cost_cents_estimate  # exactly one attempt billed
 
 
-async def test_video_keyframe_is_checked_not_the_final_clip(project_id, monkeypatch):
-    """A12's own framing: 'check the keyframe, not the clip'."""
+async def test_video_keyframe_generation_never_checks_director_constraints_even_when_configured(
+    project_id, monkeypatch
+):
+    """Track A's A5 (motion_new_styles_and_long_form_videos.md,
+    2026-08-18): the video path's keyframe generation was brought onto
+    the same one-gate model the image path got in the 2026-08-16 gate
+    redesign - mirrors
+    `test_image_generation_never_checks_director_constraints_even_when_configured`
+    exactly, applied to the keyframe instead. Before this change, a video
+    shot's keyframe COULD still be killed outright by a constraint
+    violation (the exact German-tank-shot failure the image redesign
+    fixed) even though a standalone image shot could not - this proves
+    that gap is closed: with `creative_context.constraints` non-empty and
+    a real vision provider configured that would flag the keyframe as
+    violating them, generation still submits the video job on the FIRST
+    keyframe attempt, at the project's fixed seed, and the vision
+    provider is never consulted."""
     monkeypatch.setattr(settings, "dry_run", False)
     shot = _shot("sh_01", preferred_type=PreferredMediaType.VIDEO)
     await _seed_timeline(project_id, [shot], constraints=["no Nazi symbols"])
@@ -513,25 +532,19 @@ async def test_video_keyframe_is_checked_not_the_final_clip(project_id, monkeypa
     image_provider = _FakeImageProvider(
         results=[
             ImageResult(
-                content=b"rejected-keyframe",
+                content=b"a-keyframe",
                 content_type="image/jpeg",
-                hosted_url="http://fal.example/rejected.jpg",
-            ),
-            ImageResult(
-                content=b"good-keyframe",
-                content_type="image/jpeg",
-                hosted_url="http://fal.example/good.jpg",
-            ),
+                hosted_url="http://fal.example/keyframe.jpg",
+            )
         ]
     )
     vision_provider = FakeVisionConstraintProvider(
         verdicts=[
             ConstraintVerdict(
                 violated=True, violated_constraint="no Nazi symbols", reason="a swastika is visible"
-            ),
-            ConstraintVerdict(violated=False, violated_constraint="", reason=""),
+            )
         ]
-    )
+    )  # would fail the keyframe immediately if ever actually consulted
     video_provider = _FakeVideoProvider(submit_job_id="job-checked")
     _patch_providers(
         monkeypatch,
@@ -545,11 +558,11 @@ async def test_video_keyframe_is_checked_not_the_final_clip(project_id, monkeypa
     binding = await _binding(project_id, "sh_01")
     assert binding.state == "pending"  # fresh video submission - not terminal yet
 
-    assert len(image_provider.calls) == 2  # the rejected keyframe attempt, then the good one
-    # The video job was only ever submitted with the PASSING keyframe's URL -
-    # the rejected keyframe never reached Kling.
+    assert len(image_provider.calls) == 1  # exactly one keyframe attempt - no retry loop
+    assert image_provider.calls[0].seed == _project_seed(project_id)
+    assert vision_provider.calls == []  # never consulted at all for the keyframe
     assert len(video_provider.submit_calls) == 1
-    assert video_provider.submit_calls[0].image_url == "http://fal.example/good.jpg"
+    assert video_provider.submit_calls[0].image_url == "http://fal.example/keyframe.jpg"
 
     async with async_session_factory() as session:
         from sqlalchemy import select
@@ -567,11 +580,11 @@ async def test_video_keyframe_is_checked_not_the_final_clip(project_id, monkeypa
             .scalars()
             .all()
         )
-    # One rejected keyframe row (billed on its own) plus one submitted video
-    # row (which bundles the passing keyframe's cost - see
-    # `_generate_checked_keyframe`'s docstring for why that one isn't a
-    # separate row).
-    assert sorted(c.status for c in clips) == ["rejected", "submitted"]
+    # Exactly one row: the submitted video job, which bundles the
+    # keyframe's cost (see `_generate_keyframe_once`'s docstring for why
+    # a passing keyframe is never its own row) - no rejected row, because
+    # nothing ever checks or retries it any more.
+    assert [c.status for c in clips] == ["submitted"]
 
 
 async def test_repeated_explicit_generation_varies_the_seed_and_produces_a_new_clip(

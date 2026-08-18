@@ -82,7 +82,6 @@ from app.renderer.grading import grade_filter_fragment
 from app.renderer.music import mux_music
 from app.renderer.placeholder import render_placeholder
 from app.renderer.slideshow import RenderSettings, probe_duration_seconds, render_timeline
-from app.renderer.still import ensure_still_image
 from app.renderer.text_cards import (
     TextCardStyle,
     derive_text_card_cues,
@@ -210,14 +209,10 @@ async def render_video(
             path.write_bytes(
                 render_placeholder(shot.id, render_settings.width, render_settings.height)
             )
-        else:
-            # An animated asset (Commons serves plenty of GIF maps and
-            # diagrams) cannot be `-loop`ed as a still, and ffmpeg aborts
-            # the ENTIRE render over one such input rather than failing
-            # just that shot - see app/renderer/still.py.
-            path = await ensure_still_image(
-                path, shot_id=shot.id, work_dir=work_dir, settings=render_settings
-            )
+        # Classification (still vs a real motion clip, A1) and the
+        # GIF-flatten gate this comment used to describe both now live in
+        # `render_timeline` itself - the one place that needs to make
+        # that decision - see that function's own docstring.
         shot_images[shot.id] = path
 
     narration_rows = await _resolve_narration_rows(ctx.session, timeline)

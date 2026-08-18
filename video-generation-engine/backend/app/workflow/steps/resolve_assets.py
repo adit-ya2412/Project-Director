@@ -38,9 +38,12 @@ only ever constructs the GENERATION providers its own permitted rungs
 could need - the search-only pass never constructs `FalImageProvider`,
 the generation-only pass never constructs the search/entity providers.
 `OpenAIPlanningProvider` (`vision_provider`) is the one exception (M6.5,
-A30): both passes now construct it whenever this is a real run, since
-both need vision verification for their own question - A30 in search,
-A12 in generation.
+A30): both passes construct it whenever this is a real run, since the
+search pass needs it for its own question (A30, `check_candidate_
+plausibility`) - the generation pass no longer has a live use for it
+(motion_new_styles_and_long_form_videos.md Track A's A5, 2026-08-18: see
+the note below), but is never permitted to search in the first place, so
+this costs nothing there either.
 
 DRY_RUN=false: real search (M6, rungs 1-4) walks the shot's full
 `asset_plan.fallback_chain`, restricted to whichever rungs THIS pass
@@ -58,13 +61,21 @@ the video job itself uses a real submit-once/poll-once-per-attempt
 pattern so an in-flight job survives a process restart rather than being
 resubmitted (implementation guide, Phase M7 advice).
 
-Every generated image (standalone, or a video's keyframe) is checked
-against the Director's `creative_context.constraints` before it ships
-(M6.5, A12) - `_generate_checked_image`/`_generate_checked_keyframe`,
-bounded-retrying a violation per A13/A18 and raising `PermanentError`
-(caught below, same as any other per-shot failure) if every attempt is
-still violating after `settings.max_generation_attempts_per_shot`
-attempts. Searched assets get their OWN, narrower vision check (M6.5,
+Neither a standalone generated image nor a video's keyframe is checked
+against the Director's `creative_context.constraints` any more - the
+one-gate model (M6.5 gate redesign, 2026-08-16, extended to video by
+motion_new_styles_and_long_form_videos.md Track A's A5 on 2026-08-18):
+the human at the review gate is the check now, not an
+automated vision call that could kill a shot outright on a false
+positive (`generate_image_real`/`_generate_image_once` for images,
+`_generate_keyframe_once` for a video's keyframe - both a single,
+unchecked generate call, no retry). The OLD constraint-checked path
+(`_generate_checked_image`/`_generate_checked_keyframe`,
+bounded-retrying a violation per A13/A18 and raising `PermanentError` if
+every attempt was still violating after
+`settings.max_generation_attempts_per_shot` attempts) is kept, unwired,
+not deleted - see those functions' own docstrings. Searched assets get
+their OWN, narrower vision check (M6.5,
 A16 -> A30 -> A30a): the top-ranked candidate per rung only, skipped for
 an entity-curated hit, dropping the candidate (and the whole rung) when
 it is CONFIDENTLY a different kind of subject entirely - never merely
@@ -315,6 +326,250 @@ async def _generate_image_once(
         cost_cents=settings.fal_image_cost_cents_estimate,
     )
     return clip, False
+
+
+async def _generate_keyframe_once(
+    shot: Shot,
+    *,
+    base_prompt: str,
+    project_uuid: uuid_module.UUID,
+    width: int,
+    height: int,
+    model_id: str,
+    image_provider: ImageProvider,
+    clip_repo: GeneratedClipRepository,
+    narration_repo: NarrationRepository,
+) -> ImageResult:
+    """The video path's keyframe generation, brought onto the one-gate
+    model (motion_new_styles_and_long_form_videos.md Track A's A5,
+    2026-08-18): a single, unchecked generate call - no constraint check, no bounded
+    retry - mirroring `_generate_image_once` above exactly, the identical
+    treatment the standalone image path already got in the 2026-08-16
+    gate redesign. Before this change a video shot's keyframe could still
+    be killed outright by a constraint violation (the exact German-tank-
+    shot failure that motivated the redesign in the first place) even
+    though the standalone image path could not; this closes that gap
+    rather than inventing a third behaviour for video specifically. The
+    human at the review gate is the check now, for a keyframe exactly as
+    it already is for a standalone image.
+
+    Unlike `_generate_image_once`, a passing keyframe is still never
+    persisted as its own `GeneratedClip` row - its cost is folded into
+    the video job's own bundled estimate exactly as before this change
+    (see `_generate_video_real`), so nothing double-counts."""
+    project_seed = _project_seed(str(project_uuid))
+    already_spent = await total_project_spend_cents(
+        clip_repo=clip_repo, narration_repo=narration_repo, project_id=project_uuid
+    )
+    check_budget(
+        already_spent_cents=already_spent,
+        additional_cents=settings.fal_image_cost_cents_estimate,
+    )
+    return await image_provider.generate(
+        ImageRequest(
+            prompt=base_prompt, width=width, height=height, shot_id=shot.id, seed=project_seed
+        )
+    )
+
+
+async def poll_video_job(
+    shot: Shot,
+    binding,
+    *,
+    project_uuid: uuid_module.UUID,
+    project_dir,
+    video_provider: VideoProvider,
+    clip_repo: GeneratedClipRepository,
+) -> GeneratedClipModel | None:
+    """Poll the in-flight video job for this shot exactly once - the
+    submit-and-poll resume path M7 already built (`get_in_flight_for_
+    shot` -> `poll` -> `in_progress`/`failed`/`completed`), extracted as
+    its own module-level function (Track A's A6, motion_new_styles_and_
+    long_form_videos.md, 2026-08-18) so both `ResolveAssetsStep`'s
+    automatic pass (via `generate_video_real` below) and `GET /{project_
+    id}/shots/{shot_id}/generate/video` call the IDENTICAL logic - never
+    two implementations of "what does polling mean" drifting apart.
+
+    `None` means there is nothing in flight for this shot at all - the
+    workflow step's own caller falls through to `submit_video_generation`
+    in that case (nothing submitted yet is exactly when a fresh
+    submission is correct there); the GET endpoint's caller must NOT do
+    that (a GET must never have the side effect of a fresh, paid
+    submission - that is what POST is for) and 404s instead."""
+    in_flight = await clip_repo.get_in_flight_for_shot(project_uuid, shot.id)
+    if in_flight is None:
+        return None
+
+    assert in_flight.job_id is not None
+    status = await video_provider.poll(in_flight.job_id)
+    if status.state == "in_progress":
+        return in_flight  # still going - binding stays "pending", a later call polls again
+    if status.state == "failed":
+        await clip_repo.mark_failed(in_flight, error=status.error or "video generation failed")
+        binding.state = "failed"
+        binding.last_error = status.error or "video generation failed"
+        return in_flight
+
+    assert status.content is not None
+    path = project_dir / "clips" / f"{in_flight.prompt_hash}.mp4"
+    path.write_bytes(status.content)
+    await clip_repo.mark_completed(
+        in_flight, local_path=str(path), duration_s=shot.duration_s, cost_cents=in_flight.cost_cents
+    )
+    binding.clip_id = in_flight.id
+    binding.state = "generated"
+    binding.rung = AssetStrategy.GENERATE_VIDEO.value
+    return in_flight
+
+
+async def submit_video_generation(
+    shot: Shot,
+    binding,
+    *,
+    project_uuid: uuid_module.UUID,
+    project_dir,
+    image_provider: ImageProvider,
+    video_provider: VideoProvider,
+    clip_repo: GeneratedClipRepository,
+    narration_repo: NarrationRepository,
+    creative_context: CreativeContext,
+) -> tuple[GeneratedClipModel, bool]:
+    """`POST /{project_id}/shots/{shot_id}/generate/video`'s own logic
+    (Track A's A6, 2026-08-18), module-level so the endpoint calls it
+    directly - one generation, no engine, no workflow trigger involved,
+    mirroring `generate_image_real`'s own reasoning exactly (a human at
+    the review gate may click across several shots before approving
+    anything; resuming the engine on each click would race the pipeline
+    forward mid-review).
+
+    Idempotent by construction rather than by a special case bolted on
+    for the endpoint: a completed cache hit or an already-in-flight job
+    for this shot is returned as-is - never a double submission, the
+    same M7 invariant `poll_video_job` depends on - and only a shot with
+    neither generates a fresh keyframe (`_generate_keyframe_once`, the
+    one-gate model, A5) and submits it. Returns `(clip, is_fresh)` -
+    `is_fresh` is `True` only when THIS call actually generated a
+    keyframe and submitted a new job, the video-path equivalent of
+    `generate_image_real`'s own `cache_hit` (inverted: that flag means
+    "reused", this one means "the DECIDED-2026-08-18 blocking POST
+    actually did the ~few-seconds keyframe generation just now" - see
+    A6's own note in the plan for why that is unremarkable, not a design
+    smell)."""
+    prompt = _styled_prompt(shot, creative_context)
+    prompt_hash = hashlib.sha256(f"{prompt}|{settings.fal_video_model}".encode()).hexdigest()
+
+    cached = await clip_repo.get_by_prompt_hash(prompt_hash)
+    if cached is not None and cached.status == "completed":
+        binding.clip_id = cached.id
+        binding.state = "generated"
+        binding.rung = AssetStrategy.GENERATE_VIDEO.value
+        return cached, False
+
+    in_flight = await clip_repo.get_in_flight_for_shot(project_uuid, shot.id)
+    if in_flight is not None:
+        binding.state = "pending"
+        return in_flight, False
+
+    # Fresh submission: an unchecked, single-attempt keyframe first (A5,
+    # one-gate model), THEN the video job itself (submit-and-poll,
+    # resumable).
+    keyframe = await _generate_keyframe_once(
+        shot,
+        base_prompt=prompt,
+        project_uuid=project_uuid,
+        width=settings.render_width,
+        height=settings.render_height,
+        model_id=settings.fal_image_model,
+        image_provider=image_provider,
+        clip_repo=clip_repo,
+        narration_repo=narration_repo,
+    )
+    if keyframe.hosted_url is None:
+        raise PermanentError(
+            f"{image_provider.name} did not return a hosted URL required for "
+            "image-to-video generation"
+        )
+
+    # The keyframe's cost is folded into this one bundled estimate
+    # (rather than tracked as its own row) precisely because a PASSING
+    # keyframe attempt is never persisted separately above - see
+    # `_generate_keyframe_once`'s docstring.
+    estimated_cents = (
+        settings.fal_image_cost_cents_estimate + settings.fal_video_cost_cents_estimate
+    )
+    already_spent = await total_project_spend_cents(
+        clip_repo=clip_repo, narration_repo=narration_repo, project_id=project_uuid
+    )
+    check_budget(already_spent_cents=already_spent, additional_cents=estimated_cents)
+
+    job_id = await video_provider.submit(
+        VideoRequest(
+            prompt=prompt,
+            image_url=keyframe.hosted_url,
+            duration_s=shot.duration_s,
+            shot_id=shot.id,
+        )
+    )
+    # Persisted immediately, before anything else - if the process
+    # crashes right after this, the job is still findable on resume.
+    clip = await clip_repo.insert_pending(
+        project_id=project_uuid,
+        shot_id=shot.id,
+        provider=video_provider.name,
+        model_id=settings.fal_video_model,
+        prompt=prompt,
+        prompt_hash=prompt_hash,
+        job_id=job_id,
+        estimated_cost_cents=estimated_cents,
+    )
+    # binding.state stays "pending" (non-terminal) - a later call polls
+    # the job above (`poll_video_job`) rather than resubmitting it.
+    binding.state = "pending"
+    return clip, True
+
+
+async def generate_video_real(
+    shot: Shot,
+    binding,
+    *,
+    project_uuid: uuid_module.UUID,
+    project_dir,
+    image_provider: ImageProvider,
+    video_provider: VideoProvider,
+    clip_repo: GeneratedClipRepository,
+    narration_repo: NarrationRepository,
+    creative_context: CreativeContext,
+) -> None:
+    """`ResolveAssetsStep`'s per-attempt entrypoint for a video shot -
+    poll first (`poll_video_job`; advances a job already in flight from a
+    prior attempt/process), and only submit fresh (`submit_video_
+    generation`) when nothing is in flight. `poll_video_job` only ever
+    matches a truly IN-FLIGHT row (`submitted`/`in_progress`), never a
+    `completed` one, so a shot that is already done correctly falls
+    through to `submit_video_generation`'s own cache-hit check instead of
+    being polled - the ordering here does not depend on checking
+    "already completed" twice."""
+    polled = await poll_video_job(
+        shot,
+        binding,
+        project_uuid=project_uuid,
+        project_dir=project_dir,
+        video_provider=video_provider,
+        clip_repo=clip_repo,
+    )
+    if polled is not None:
+        return
+    await submit_video_generation(
+        shot,
+        binding,
+        project_uuid=project_uuid,
+        project_dir=project_dir,
+        image_provider=image_provider,
+        video_provider=video_provider,
+        clip_repo=clip_repo,
+        narration_repo=narration_repo,
+        creative_context=creative_context,
+    )
 
 
 class ResolveAssetsStep:
@@ -788,17 +1043,15 @@ class ResolveAssetsStep:
         assert image_provider is not None and video_provider is not None
         is_video = bool(asset_plan and asset_plan.preferred_type == PreferredMediaType.VIDEO)
         if is_video:
-            await self._generate_video_real(
+            await generate_video_real(
                 shot,
                 binding,
                 project_uuid=project_uuid,
                 project_dir=project_dir,
                 image_provider=image_provider,
                 video_provider=video_provider,
-                vision_provider=vision_provider,
                 clip_repo=clip_repo,
                 narration_repo=narration_repo,
-                llm_call_repo=llm_call_repo,
                 creative_context=creative_context,
             )
         else:
@@ -1107,7 +1360,12 @@ class ResolveAssetsStep:
         narration_repo: NarrationRepository,
         constraints: list[str],
     ) -> ImageResult:
-        """The video path's A12/A13/A18 equivalent, for the KEYFRAME
+        """Superseded 2026-08-18 (Track A's A5, one-gate model) by
+        `_generate_keyframe_once` above, mirroring the 2026-08-16
+        image-path precedent (`_generate_checked_image`) - kept, unwired,
+        not deleted.
+
+        The video path's A12/A13/A18 equivalent, for the KEYFRAME
         only - "check the keyframe, not the clip: it's already an image
         and it's what determines the content." Unlike
         `_generate_checked_image`, a PASSING attempt is not persisted as
@@ -1197,118 +1455,3 @@ class ResolveAssetsStep:
             f"{settings.max_generation_attempts_per_shot} attempts - still violates a "
             f"Director constraint: {last_violation}"
         )
-
-    async def _generate_video_real(
-        self,
-        shot: Shot,
-        binding,
-        *,
-        project_uuid: uuid_module.UUID,
-        project_dir,
-        image_provider: ImageProvider,
-        video_provider: VideoProvider,
-        vision_provider: VisionConstraintProvider | None,
-        clip_repo: GeneratedClipRepository,
-        narration_repo: NarrationRepository,
-        llm_call_repo: LlmCallRepository,
-        creative_context: CreativeContext,
-    ) -> None:
-        prompt = _styled_prompt(shot, creative_context)
-        prompt_hash = hashlib.sha256(f"{prompt}|{settings.fal_video_model}".encode()).hexdigest()
-
-        cached = await clip_repo.get_by_prompt_hash(prompt_hash)
-        if cached is not None and cached.status == "completed":
-            binding.clip_id = cached.id
-            binding.state = "generated"
-            binding.rung = AssetStrategy.GENERATE_VIDEO.value
-            return
-
-        # Resume path: an in-flight job for this shot already exists from
-        # a prior attempt/process - poll it, never resubmit (implementation
-        # guide, Phase M7 advice).
-        in_flight = await clip_repo.get_in_flight_for_shot(project_uuid, shot.id)
-        if in_flight is not None:
-            assert in_flight.job_id is not None
-            status = await video_provider.poll(in_flight.job_id)
-            if status.state == "in_progress":
-                return  # still going - binding stays "pending", a later run polls again
-            if status.state == "failed":
-                await clip_repo.mark_failed(
-                    in_flight, error=status.error or "video generation failed"
-                )
-                binding.state = "failed"
-                binding.last_error = status.error or "video generation failed"
-                return
-            assert status.content is not None
-            path = project_dir / "clips" / f"{prompt_hash}.mp4"
-            path.write_bytes(status.content)
-            await clip_repo.mark_completed(
-                in_flight,
-                local_path=str(path),
-                duration_s=shot.duration_s,
-                cost_cents=in_flight.cost_cents,
-            )
-            binding.clip_id = in_flight.id
-            binding.state = "generated"
-            binding.rung = AssetStrategy.GENERATE_VIDEO.value
-            return
-
-        # Fresh submission: a constraint-checked keyframe first (A12/A13 -
-        # bounded, synchronous, may itself take up to
-        # settings.max_generation_attempts_per_shot attempts), THEN the
-        # video job itself (submit-and-poll, resumable).
-        keyframe = await self._generate_checked_keyframe(
-            shot,
-            base_prompt=prompt,
-            project_uuid=project_uuid,
-            width=settings.render_width,
-            height=settings.render_height,
-            model_id=settings.fal_image_model,
-            image_provider=image_provider,
-            vision_provider=vision_provider,
-            llm_call_repo=llm_call_repo,
-            clip_repo=clip_repo,
-            narration_repo=narration_repo,
-            constraints=creative_context.constraints,
-        )
-        if keyframe.hosted_url is None:
-            raise PermanentError(
-                f"{image_provider.name} did not return a hosted URL required for "
-                "image-to-video generation"
-            )
-
-        # The keyframe's cost is folded into this one bundled estimate
-        # (rather than tracked as its own row) precisely because a
-        # PASSING keyframe attempt is never persisted separately above -
-        # see `_generate_checked_keyframe`'s docstring. A rejected
-        # attempt along the way was already billed on its own.
-        estimated_cents = (
-            settings.fal_image_cost_cents_estimate + settings.fal_video_cost_cents_estimate
-        )
-        already_spent = await total_project_spend_cents(
-            clip_repo=clip_repo, narration_repo=narration_repo, project_id=project_uuid
-        )
-        check_budget(already_spent_cents=already_spent, additional_cents=estimated_cents)
-
-        job_id = await video_provider.submit(
-            VideoRequest(
-                prompt=prompt,
-                image_url=keyframe.hosted_url,
-                duration_s=shot.duration_s,
-                shot_id=shot.id,
-            )
-        )
-        # Persisted immediately, before anything else - if the process
-        # crashes right after this, the job is still findable on resume.
-        await clip_repo.insert_pending(
-            project_id=project_uuid,
-            shot_id=shot.id,
-            provider=video_provider.name,
-            model_id=settings.fal_video_model,
-            prompt=prompt,
-            prompt_hash=prompt_hash,
-            job_id=job_id,
-            estimated_cost_cents=estimated_cents,
-        )
-        # binding.state stays "pending" (non-terminal) - a later run of
-        # this step polls the job above rather than resubmitting it.

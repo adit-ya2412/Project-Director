@@ -85,6 +85,7 @@ from app.models.asset import AssetModel
 from app.models.generated_clip import GeneratedClipModel
 from app.providers.fakes.image import FakeImageProvider
 from app.providers.fal_image import FalImageProvider
+from app.providers.fal_video import FalVideoProvider
 from app.providers.openai_provider import OpenAIPlanningProvider
 from app.renderer.retention import purge_expired_drafts
 from app.renderer.slideshow import RenderSettings
@@ -113,7 +114,11 @@ from app.timeline.service import TimelineService
 from app.workflow.context import RunContext
 from app.workflow.render_only import RENDER_ONLY_STEPS, render_precondition_gap
 from app.workflow.steps.render import render_video
-from app.workflow.steps.resolve_assets import generate_image_real
+from app.workflow.steps.resolve_assets import (
+    generate_image_real,
+    poll_video_job,
+    submit_video_generation,
+)
 from app.workflow.trigger import WorkflowTriggerResult, start_workflow_run
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -1072,6 +1077,184 @@ async def generate_shot_image(
         clip_id=str(clip.id),
         cost_cents=0 if cache_hit else clip.cost_cents,
         cache_hit=cache_hit,
+    )
+
+
+class GenerateShotVideoResult(BaseModel):
+    shot_id: str
+    clip_id: str
+    # `None` only ever on a `"completed"` clip predating `insert_pending`
+    # (the fake/dry-run `insert()` path never sets one) - every real
+    # submit-and-poll row (the only kind either endpoint below can ever
+    # produce) has one from the moment it exists.
+    job_id: str | None
+    # "pending" | "completed" | "failed" - collapses the model's own
+    # `"submitted"`/`"in_progress"` DB states into one API-facing
+    # "pending" (see `_video_status_label`), matching A6's own wording in
+    # the plan exactly rather than leaking an internal distinction the
+    # caller never needs to act on differently.
+    status: str
+    error: str | None = None
+
+
+def _video_status_label(clip: GeneratedClipModel) -> str:
+    if clip.status in ("submitted", "in_progress"):
+        return "pending"
+    return clip.status
+
+
+@router.post(
+    "/{project_id}/shots/{shot_id}/generate/video",
+    status_code=202,
+    response_model=GenerateShotVideoResult,
+)
+async def generate_shot_video(
+    project_id: str,
+    shot_id: str,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    session: AsyncSession = Depends(get_db),
+) -> GenerateShotVideoResult:
+    """A6 (motion_new_styles_and_long_form_videos.md Track A, 2026-08-18):
+    a human, at the one asset-review gate, generates (or regenerates) one
+    shot's VIDEO on demand - the video-path sibling of `generate_shot_
+    image` above, wiring rather than invention: `submit_video_generation`
+    is exactly `ResolveAssetsStep`'s own fresh-submission logic
+    (`app.workflow.steps.resolve_assets`), called directly with no engine
+    and no workflow trigger, for the identical reason `generate_shot_
+    image` already gives - a human clicking across several shots before
+    approving anything must never race the pipeline forward mid-review.
+
+    **DECIDED 2026-08-18: this blocks while the keyframe generates
+    (typically seconds - `FalImageProvider`'s 60s is a give-up ceiling,
+    not the expected time), then returns `202`.** Kling stays image-to-
+    video (A3a), so a still must exist before the video job can be
+    submitted; the alternative (returning instantly and generating the
+    keyframe in the background) would create an in-flight row with no
+    `job_id` yet, an orphan state M7's own resume logic
+    (`get_in_flight_for_shot`) does not expect and has no reaper for. See
+    the plan's own A6 for the full reasoning.
+
+    Explicitly polling, not synchronous, past this point - regeneration
+    itself takes minutes, so the response here only ever reports
+    `"pending"` for a fresh submission (or `"completed"`/an existing
+    `"pending"` if this shot's video was already done or already
+    in-flight - idempotent by construction, see `submit_video_
+    generation`'s own docstring). `GET` on this same URL is how a caller
+    learns the real outcome.
+
+    No `DRY_RUN` support: unlike image generation, there is no fake video
+    provider (`_resolve_one_fake` never generates video at all - every
+    fake shot gets a fake IMAGE regardless of `preferred_type`), a
+    pre-existing gap this endpoint does not attempt to close - refusing
+    loudly here is preferable to a confusing failure three calls deep."""
+    await _get_project_or_404(project_id, repo)
+    active = await timeline_service.get_active(project_id)
+    if active is None:
+        raise HTTPException(status_code=400, detail="no timeline to generate a shot video for yet")
+    shot = next((s for s in active.all_shots() if s.id == shot_id), None)
+    if shot is None:
+        raise HTTPException(
+            status_code=404, detail=f"shot {shot_id} not found in the active timeline"
+        )
+    if settings.dry_run:
+        raise HTTPException(
+            status_code=400,
+            detail="video generation is not available under DRY_RUN - no fake video provider exists",
+        )
+
+    project_uuid = uuid.UUID(project_id)
+    project_dir = settings.storage_root / project_id
+    (project_dir / "clips").mkdir(parents=True, exist_ok=True)
+
+    clip_repo = GeneratedClipRepository(session)
+    narration_repo = NarrationRepository(session)
+    binding_repo = ShotBindingRepository(session)
+    binding = await binding_repo.get_or_create_pending(project_uuid, active.version, shot_id)
+
+    try:
+        clip, _is_fresh = await submit_video_generation(
+            shot,
+            binding,
+            project_uuid=project_uuid,
+            project_dir=project_dir,
+            image_provider=FalImageProvider(),
+            video_provider=FalVideoProvider(),
+            clip_repo=clip_repo,
+            narration_repo=narration_repo,
+            creative_context=active.creative_context,
+        )
+    except PermanentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    await session.commit()
+    return GenerateShotVideoResult(
+        shot_id=shot_id, clip_id=str(clip.id), job_id=clip.job_id, status=_video_status_label(clip)
+    )
+
+
+@router.get(
+    "/{project_id}/shots/{shot_id}/generate/video",
+    response_model=GenerateShotVideoResult,
+)
+async def poll_shot_video(
+    project_id: str,
+    shot_id: str,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    session: AsyncSession = Depends(get_db),
+) -> GenerateShotVideoResult:
+    """The poll half of A6 - calls `poll_video_job`
+    (`app.workflow.steps.resolve_assets`) directly, the SAME resume logic
+    `ResolveAssetsStep` already used for crash recovery (M7), so a human
+    polling from the gate and the automatic pipeline resuming after a
+    restart observe the identical state machine. Never submits anything
+    itself - a GET must not have the side effect of a fresh, paid
+    generation - so `404`s if there is nothing in flight for this shot
+    (nothing ever `POST`ed, or it already resolved and a caller is
+    polling a stale reference) rather than silently starting one."""
+    await _get_project_or_404(project_id, repo)
+    active = await timeline_service.get_active(project_id)
+    if active is None:
+        raise HTTPException(status_code=400, detail="no timeline to poll a shot video for yet")
+    shot = next((s for s in active.all_shots() if s.id == shot_id), None)
+    if shot is None:
+        raise HTTPException(
+            status_code=404, detail=f"shot {shot_id} not found in the active timeline"
+        )
+    if settings.dry_run:
+        raise HTTPException(
+            status_code=400,
+            detail="video generation is not available under DRY_RUN - no fake video provider exists",
+        )
+
+    project_uuid = uuid.UUID(project_id)
+    project_dir = settings.storage_root / project_id
+    clip_repo = GeneratedClipRepository(session)
+    binding_repo = ShotBindingRepository(session)
+    binding = await binding_repo.get_or_create_pending(project_uuid, active.version, shot_id)
+
+    clip = await poll_video_job(
+        shot,
+        binding,
+        project_uuid=project_uuid,
+        project_dir=project_dir,
+        video_provider=FalVideoProvider(),
+        clip_repo=clip_repo,
+    )
+    if clip is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no pending video generation for shot {shot_id} - call POST first",
+        )
+
+    await session.commit()
+    return GenerateShotVideoResult(
+        shot_id=shot_id,
+        clip_id=str(clip.id),
+        job_id=clip.job_id,
+        status=_video_status_label(clip),
+        error=clip.error,
     )
 
 

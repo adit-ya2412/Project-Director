@@ -12,7 +12,15 @@ from app.planners.asset.planner import AssetPlanner
 from app.planners.asset.schemas import AssetPlannerOutput, AssetPlanShotOutput
 from app.repositories.llm_call_repository import LlmCallRepository
 from app.repositories.project_repository import PostgresProjectRepository
-from app.schemas.timeline import AssetStrategy, PreferredMediaType, Scene, Shot, ShotIntent
+from app.schemas.timeline import (
+    AssetStrategy,
+    Camera,
+    CameraMovement,
+    PreferredMediaType,
+    Scene,
+    Shot,
+    ShotIntent,
+)
 
 from .helpers import FakePlanningProvider
 
@@ -72,6 +80,46 @@ def _valid_output() -> AssetPlannerOutput:
             ),
         ]
     )
+
+
+async def test_asset_planner_prompt_includes_each_shots_camera_movement(project_id):
+    """A real, previously-verified gap (2026-08-18): the prompt's own
+    `preferred_type` rule (app/prompts/asset_planner/v1.md) says to judge
+    by "the shot's camera movement", but `_build_user_content` never
+    actually sent that field - the model was asked to use a signal it
+    could not see. Fixed by including it; proven here against the real
+    text handed to the provider, not just by reading the diff."""
+    shots = [
+        Shot(
+            id="sh_01",
+            order=0,
+            intent=ShotIntent.EXPLAIN,
+            duration_s=3.0,
+            prompt="1930s coal mine, archival photograph",
+            camera=Camera(movement=CameraMovement.SLOW_PUSH),
+        ),
+    ]
+    scene = Scene(id="sc_01", order=0, title="Coal wealth", duration_s=3.0, shots=shots)
+    output = AssetPlannerOutput(
+        asset_plans=[
+            AssetPlanShotOutput(
+                shot_id="sh_01",
+                entity="",
+                strategy=AssetStrategy.HISTORICAL_SEARCH,
+                search_queries=["Ruhr coal mine 1936"],
+                preferred_type=PreferredMediaType.IMAGE,
+                fallback_chain=[AssetStrategy.HISTORICAL_SEARCH, AssetStrategy.GENERATE_IMAGE],
+                licence_requirements=["public_domain"],
+            )
+        ]
+    )
+
+    async with async_session_factory() as session:
+        provider = FakePlanningProvider(responses=[output])
+        planner = AssetPlanner(provider, LlmCallRepository(session))
+        await planner.plan(project_id=project_id, scenes=[scene])
+
+    assert "camera=slow_push" in provider.calls[0]["user_content"]
 
 
 async def test_asset_plan_attaches_to_correct_shots(project_id):

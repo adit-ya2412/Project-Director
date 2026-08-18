@@ -24,6 +24,22 @@ still produce a stream of exactly `duration_s` seconds at `settings.fps`
 - the crossfade arithmetic below never needs to know which path a given
 shot took.
 
+## Motion clips (motion_new_styles_and_long_form_videos.md, Track A, A1/A2)
+
+A shot's resolved media may be a real video clip rather than a still
+(Kling generation, or a future Pexels-video rung) - `render_timeline`
+classifies every shot's media exactly once (`app/renderer/motion.py`,
+Pillow-then-ffprobe) before grouping into runs, and `_render_run` below
+dispatches on the result: a STILL shot is unchanged (the plain loop path
+or Ken Burns, as above); a MOTION shot is fed to ffmpeg fully decoded
+(`-i path`, no `-loop`/`-t` - the SAME input shape Ken Burns uses and for
+an adjacent reason: both need a real decode, never a pre-looped copy),
+never gets a `zoompan` filter regardless of what `shot.camera` says
+(moving the camera over already-moving footage reads as a bug, not a
+style), and is duration-fitted to exactly `shot.duration_s` by
+`app/renderer/motion.py::build_duration_fit_fragment` (A2) so the
+crossfade arithmetic below still gets a stream of the length it expects.
+
 Determinism (Invariant I5): every ffmpeg invocation is built as an argument
 list (never a shell string — see security guidance in the implementation
 guide), inputs are normalised individually before composition, and nothing
@@ -36,6 +52,7 @@ from pathlib import Path
 
 from app.core.errors import PermanentError
 from app.renderer.ken_burns import WORKING_CANVAS_SCALE, ZoompanExpression, build_zoompan_expression
+from app.renderer.motion import MediaKind, MediaProbe, build_duration_fit_fragment, probe_media
 from app.schemas.timeline import Shot, Timeline
 from app.timeline.duration import group_into_runs
 
@@ -85,6 +102,30 @@ def _normalize_filter(index: int, settings: RenderSettings, label: str) -> str:
     )
 
 
+def _motion_filter(
+    index: int, settings: RenderSettings, label: str, probe: MediaProbe, target_duration_s: float
+) -> str:
+    """The motion-clip equivalent of `_normalize_filter` - the same
+    scale/pad/setsar/fps/format envelope, plus the ONE extra stage A2's
+    duration-fit arithmetic (`app/renderer/motion.py`) inserts between
+    `fps=` and `format=`: trim a too-long clip, or hold the last frame of
+    a too-short one, so every motion shot's stream is EXACTLY
+    `target_duration_s` seconds long - the same guarantee a still shot's
+    `-t` flag already gives, and the property the crossfade offset
+    arithmetic below (D5) depends on."""
+    assert probe.duration_s is not None
+    w, h = settings.width, settings.height
+    fit_fragment = build_duration_fit_fragment(
+        actual_duration_s=probe.duration_s, target_duration_s=target_duration_s
+    )
+    fit_stage = f"{fit_fragment}," if fit_fragment else ""
+    return (
+        f"[{index}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
+        f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={settings.fps},"
+        f"{fit_stage}format={settings.pixel_format}[{label}]"
+    )
+
+
 def _ken_burns_filter(
     index: int, settings: RenderSettings, label: str, expr: ZoompanExpression, frames: int
 ) -> str:
@@ -112,6 +153,7 @@ def _ken_burns_filter(
 async def _render_run(
     run: list[Shot],
     shot_images: dict[str, Path],
+    media_probes: dict[str, MediaProbe],
     settings: RenderSettings,
     output_path: Path,
 ) -> None:
@@ -121,28 +163,39 @@ async def _render_run(
     # M8 step 5: a Ken-Burns shot's frame count is computed HERE (the one
     # place duration-to-frames arithmetic lives for this module, D5's
     # "compute it once" discipline) and reused for both the input args
-    # (which input shape a shot gets) and the filter (zoompan's `d`).
+    # (which input shape a shot gets) and the filter (zoompan's `d`). A1
+    # (2026-08-18): a MOTION shot never gets a zoompan expression at all,
+    # regardless of what `shot.camera` says - moving the camera over
+    # already-moving footage reads as a bug, not a style.
     frame_counts = [max(round(shot.duration_s * settings.fps), 1) for shot in run]
     ken_burns_exprs = [
-        build_zoompan_expression(shot.camera, frames=f)
+        (
+            build_zoompan_expression(shot.camera, frames=f)
+            if media_probes[shot.id].kind is MediaKind.STILL
+            else None
+        )
         for shot, f in zip(run, frame_counts, strict=True)
     ]
 
     for shot, expr in zip(run, ken_burns_exprs, strict=True):
         image_path = shot_images[shot.id]
-        if expr is None:
-            args += ["-loop", "1", "-t", f"{shot.duration_s:.3f}", "-i", str(image_path)]
-        else:
-            # Exactly one decoded frame - see this module's own docstring
-            # and `app/renderer/ken_burns.py`'s for why `-loop`/`-t` must
-            # NOT be used here.
+        if media_probes[shot.id].kind is MediaKind.MOTION or expr is not None:
+            # A real decoded clip (A1) and a Ken-Burns still (M8 step 5)
+            # share this input shape for adjacent reasons: both need
+            # ffmpeg to decode the input itself, never a pre-looped copy
+            # - see this module's own docstring and `ken_burns.py`'s.
             args += ["-i", str(image_path)]
+        else:
+            args += ["-loop", "1", "-t", f"{shot.duration_s:.3f}", "-i", str(image_path)]
 
     filters: list[str] = []
     labels: list[str] = []
-    for i, expr in enumerate(ken_burns_exprs):
+    for i, (shot, expr) in enumerate(zip(run, ken_burns_exprs, strict=True)):
         label = f"n{i}"
-        if expr is None:
+        probe = media_probes[shot.id]
+        if probe.kind is MediaKind.MOTION:
+            filters.append(_motion_filter(i, settings, label, probe, shot.duration_s))
+        elif expr is None:
             filters.append(_normalize_filter(i, settings, label))
         else:
             filters.append(_ken_burns_filter(i, settings, label, expr, frame_counts[i]))
@@ -220,12 +273,37 @@ async def render_timeline(
     if missing:
         raise PermanentError(f"no resolved image for shots: {missing}")
 
+    # A1 (2026-08-18): classify each shot's resolved media exactly once,
+    # here. A STILL still goes through the existing GIF-flatten gate
+    # (`ensure_still_image`) - deferred-imported because `still.py`
+    # itself imports `RenderSettings`/`run_ffmpeg` from this module, and
+    # importing it at module scope here would be a circular import. A
+    # real MOTION clip is left untouched (that gate would flatten it to a
+    # single frame, the exact frozen-frame failure this whole track
+    # exists to fix) and is instead fitted to the shot's duration by
+    # `_render_run` below (A2).
+    from app.renderer.still import ensure_still_image
+
+    media_probes: dict[str, MediaProbe] = {}
+    resolved_images: dict[str, Path] = {}
+    for shot in shots:
+        path = shot_images[shot.id]
+        probe = await probe_media(path, ffprobe_binary=settings.ffprobe_binary)
+        media_probes[shot.id] = probe
+        resolved_images[shot.id] = (
+            path
+            if probe.kind is MediaKind.MOTION
+            else await ensure_still_image(
+                path, shot_id=shot.id, work_dir=work_dir, settings=settings
+            )
+        )
+
     runs = group_into_runs(shots)
 
     run_paths: list[Path] = []
     for i, run in enumerate(runs):
         run_path = work_dir / f"run_{i:03d}.mp4"
-        await _render_run(run, shot_images, settings, run_path)
+        await _render_run(run, resolved_images, media_probes, settings, run_path)
         run_paths.append(run_path)
 
     if len(run_paths) == 1:

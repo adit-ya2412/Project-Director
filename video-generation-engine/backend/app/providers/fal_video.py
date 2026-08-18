@@ -40,6 +40,11 @@ class FalVideoProvider:
             "image_url": request.image_url,
             "prompt": request.prompt,
             "duration": str(duration),
+            # A3 (motion_new_styles_and_long_form_videos.md, 2026-08-18):
+            # narration is the only voice (D1) - without this the model
+            # rides its own undocumented default and may generate (and
+            # bill for) an audio track nothing ever plays.
+            "generate_audio": False,
         }
         return await self._queue.submit(self._model_id, arguments)
 

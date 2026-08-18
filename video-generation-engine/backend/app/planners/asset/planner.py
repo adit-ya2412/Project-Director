@@ -20,8 +20,17 @@ from app.schemas.timeline import ASSET_LADDER, AssetPlan, AssetStrategy, Scene
 
 
 def _build_user_content(scene: Scene) -> str:
+    # `camera` is included because the prompt's own `preferred_type` rule
+    # (app/prompts/asset_planner/v1.md) explicitly says to judge by "the
+    # shot's camera movement" - before this fix that field was never sent
+    # here at all, even though the Shot Planner (which sets it) always
+    # runs before the Asset Planner, so the data existed and simply
+    # wasn't passed along. Found 2026-08-18 while checking whether
+    # `render_style` influences this decision (it doesn't - the real gap
+    # was one level down, in what the Asset Planner could even see).
     shot_lines = "\n".join(
-        f"- shot_id={s.id} | intent={s.intent.value} | framing={s.framing.value} | prompt={s.prompt}"
+        f"- shot_id={s.id} | intent={s.intent.value} | framing={s.framing.value} | "
+        f"camera={s.camera.movement.value} | prompt={s.prompt}"
         for s in scene.shots
     )
     return (

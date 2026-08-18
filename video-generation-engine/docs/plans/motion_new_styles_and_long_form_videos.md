@@ -1,6 +1,6 @@
 # Motion, New Styles, Script Pre-flight, and Long-Form Video — Implementation Plan
 
-> **Status:** Plan only. Nothing here is built. No code was written to produce this document — it is the result of reading the existing implementation, running the real fragment splitter against a real fixture, and the frozen docs. 2026-08-17.
+> **Status:** Originally plan-only (2026-08-17). Since then, built and verified against real ffmpeg/real Postgres: Track D (script pre-flight, all levels except the phrasing-rewrite L3), Track B Tier 1–2 (grade, extra transitions, text cards, punch-in), and — as of 2026-08-18 — Track A's A1/A2/A3/A5/A6 (motion clip input, duration fitting, the video path's one-gate model, and the on-demand video endpoint pair). See §12 for the full chronological log; unmarked sections below are still design-only.
 > **Scope:** four tracks — **A** (motion clip input), **B** (style catalogue), **C** (long-form), **D** (script pre-flight). A is the keystone for the motion half of B; D is independent and could ship first.
 > **Related:** [`13_Implementation_Guide.md`](../13_Implementation_Guide.md) §M7/M8/M9 and its Backlog, [`14_Captions_Plan.md`](../14_Captions_Plan.md), [`watermark_implementation_plan.md`](watermark_implementation_plan.md).
 > **Fixture:** project `58f0a5e6-008d-468e-862a-e365e463878e` / `backend/tests/fixtures/m8_test_project.json` — real Fischer-Tropsch timeline, 13 shots. Reuse it; do not plan a fresh one.
@@ -61,11 +61,17 @@ Marking this so nobody downstream has to reverse-engineer my confidence.
 
 ## 1. Track A — the motion clip input path
 
-### A1. Renderer accepts motion (2–3 d) — the keystone
+### A1. Renderer accepts motion (2–3 d) — the keystone — **BUILT 2026-08-18, see §12**
 
 A shot is currently a still. It must become **a still or a clip**, decided per shot.
 
-**Path:** classify by probing with ffprobe, not by asking Pillow whether it can open the file; add a third input branch in `_render_run` (normalise fps/SAR/resolution, scale-and-crop to canvas, fit to shot duration); gate `ensure_still_image` on that classification so it only touches genuine stills. Leave its GIF handling alone — that behaviour is correct and load-bearing.
+**Path:** add a third input branch in `_render_run` (today there are exactly two: `-loop 1 -t` for a static still, one decoded frame for `zoompan`) — normalise fps/SAR/resolution, scale-and-crop to canvas, fit to shot duration; gate `ensure_still_image` on the classification so it only touches genuine stills.
+
+⚠ **Correction to this section's own original wording (2026-08-18, design pass).** It previously said "classify by probing with ffprobe, **not** by asking Pillow whether it can open the file." Taken literally that causes a regression: an animated GIF has multiple frames, so a purely frame-count/ffprobe-based rule classifies it as MOTION and it would start *playing* — but Commons serves plenty of GIF maps and process diagrams that `ensure_still_image` deliberately flattens, and this plan elsewhere says to leave that behaviour alone. The two statements contradict each other.
+
+**The rule that satisfies both:** Pillow **opens** it → STILL (Pillow correctly identifies GIF/PNG/JPEG/BMP/TIFF as images; `ensure_still_image` keeps flattening animated ones exactly as today). Pillow **fails** → ffprobe must then *positively confirm* a real video stream with a duration → MOTION. The motion decision is still positively confirmed by ffprobe and never inferred from a failure — which is what the original wording was actually protecting — while every existing still/GIF behaviour is preserved bit-for-bit.
+
+**Threading:** `render_timeline` probes once and passes the result down to `_render_run`. The external `shot_images: dict[str, Path]` contract stays **unchanged**, so no existing render test needs touching.
 
 **Pitfalls:**
 
@@ -74,11 +80,17 @@ A shot is currently a still. It must become **a still or a clip**, decided per s
 - ⚠ **The single-decoded-frame trick does not apply.** `ken_burns.py`'s whole docstring is about feeding `zoompan` exactly one frame; a motion clip is the opposite case. Do not merge the two paths "for symmetry" — the jitter bug returns.
 - ⚠ **`xfade` offsets assume durations D5 already governs.** Any fitting rule from A2 must feed the same duration function the crossfade offsets come from, or audio drifts against picture progressively — presenting as a mystery, not as a transition bug.
 
-### A2. Duration reconciliation (0.5 d)
+### A2. Duration reconciliation (0.5 d) — **BUILT 2026-08-18, see §12**
 
 Narration is the master clock. Kling returns a fixed length. The shot needs 3.2s. One rule, one function, beside the existing D5 arithmetic. Clip longer → trim. Clip shorter → **recommendation: hold the last frame.** Looping reads as a glitch; slowing changes the motion's character and fights fps normalisation.
 
+**Mechanism (2026-08-18 design pass):** `trim` for the too-long case, `tpad=stop_mode=clone:stop_duration=<gap>` for the too-short case. The clip's real duration comes free from A1's own probe, so no extra ffprobe call is needed to compute the gap. Either way the branch emits exactly `duration_s`, so D5's existing `xfade` offset arithmetic keeps working untouched — which is the property that matters most here (§1's own pitfall: getting this wrong desynchronises audio from picture progressively and presents as a mystery, not as a transition bug).
+
 **Caution:** this is a creative decision wearing an arithmetic costume. Document the choice in the function, as D5 is documented, or it will be "fixed" later.
+
+**DECIDED 2026-08-18 (Q4 closed): hold the last frame.** Put to the user with the real numbers rather than as an abstract preference, which is what made it decidable: because `fal_video.py` asks Kling for `round(shot.duration_s)`, **the gap is mathematically bounded at ±0.5s**, and measured across every shot in the real `m8_test_project` the worst case is exactly `+0.50s`. More importantly, comparing each gap against that shot's own `transition_out`: **6 of the 8 shots needing a hold have the entire held tail fall inside their own outgoing dissolve** — the viewer sees a crossfade, never a frozen frame. The 2 exceptions are `+0.10s` each (3 frames at 30fps). Against that, a loop would snap a 3.0s clip back to frame 0 for 0.4s exactly as the shot dissolves out, and slow-motion would mean a 13% retime needing frame duplication.
+
+⚠ **One assumption underneath this remains unverified:** that Kling returns *approximately* the duration requested. The implementation measures the clip's real duration via A1's probe, so it handles whatever actually arrives — but "asked for 3s, got ~3.0s" has never been checked against the live API.
 
 ### A3. Verify the Kling duration contract — **DONE, 2026-08-17: the code is already correct**
 
@@ -86,19 +98,55 @@ Narration is the master clock. Kling returns a fixed length. The shot needs 3.2s
 
 **Checked against fal's own live API docs** (`fal.ai/models/fal-ai/kling-video/o3/standard/image-to-video/api`): `duration` is a `DurationEnum` accepting **every integer second from 3 to 15**, default `"5"`. `fal_video.py`'s existing `max(3, min(15, round(duration)))` → `str(duration)` already matches this exactly. **No code change needed here.**
 
-⚠ **New finding from the same schema check, not previously known:** the model also exposes a `generate_audio` boolean, which `fal_video.py` never sets — so it rides the model's undocumented default rather than an explicit choice. This sharpens A1's "generated clips may carry audio" pitfall below: the correct fix is passing `generate_audio: false` in the request, not only discarding an audio track in ffmpeg after the clip is already downloaded.
+**New finding from the same schema check, not previously known — FIXED 2026-08-18, see §12:** the model also exposes a `generate_audio` boolean, which `fal_video.py` never set — so it rode the model's undocumented default rather than an explicit choice. `submit()` now sends `"generate_audio": False` explicitly.
 
-### A4. Motion-vs-still becomes a real decision (1 d)
+### A3a. Image-to-video vs text-to-video — surfaced and decided 2026-08-18
+
+**The image-to-video choice was never a comparison.** M7's own notes record it as a *discovery*, not a decision: the model id was a "direct pick," and its image-to-video nature was "a fact only discovered by checking the live schema, and it reshapes the whole generation path." Combined with A8's bake-off being deliberately skipped, **nobody has ever compared the two variants on real output.** Raised when the user questioned whether Kling was text-to-video at all — a fair challenge, since nothing in the plan had ever justified the choice.
+
+**A text-to-video variant exists at the identical tier:** `fal-ai/kling-video/o3/standard/text-to-video`, same family/version/tier, published at $0.084/sec audio-off (≈42¢ for 5s, close to the 50¢ already in `fal_video_cost_cents_estimate`).
+
+| | image-to-video (current) | text-to-video |
+|---|---|---|
+| API calls per shot | 2 (Seedream keyframe → Kling) | 1 |
+| Cost | ~4¢ keyframe + ~42¢ | ~42¢ |
+| POST shape | must block for keyframe | pure submit, instant `202` |
+| Style anchor | keyframe uses the same `visual_style` + per-project seed as every still in the project | prompt only, no anchor |
+| Gate preview | keyframe viewable immediately | nothing until the video completes |
+
+**DECIDED: keep image-to-video.** The deciding argument is the Creative Philosophy's own: generated media must sit convincingly beside 1936 archival photography, and the keyframe path anchors every clip to the same styled, same-seeded look as the project's stills. Text-to-video has no such anchor.
+
+⚠ **"It's just a config line" is not quite true** — `FalVideoProvider.submit()` unconditionally sends `image_url`, which text-to-video would reject. Switching later means the config value *plus* shaping the request per mode and skipping the keyframe in `_generate_video_real`. Small, but not zero — worth knowing before A8's bake-off treats the two as freely swappable.
+
+### A4. Motion-vs-still becomes a real decision (1 d) — **one real bug already found and FIXED 2026-08-18, see §12; the calibration/cap work below is still open**
 
 `asset_plan.preferred_type == VIDEO` is planner output today; nothing calibrates when it should be chosen and nothing prices it. At ~50¢ per motion shot vs ~1–3¢ per image, an uncalibrated planner is a budget event. Prompt guidance for when motion earns its cost, plus a per-project cap.
 
-### A5. Bring the video path onto the one-gate model (0.5 d)
+⚠ **Found while answering an unrelated question, not while working this item directly: the Asset Planner's OWN prompt rule for `preferred_type` was unreachable.** `app/prompts/asset_planner/v1.md` says to judge by "the shot's camera movement and intent" — but `_build_user_content` (`app/planners/asset/planner.py`) never sent `camera` at all, only `intent`/`framing`/`prompt`, even though the Shot Planner (which sets `camera`) always runs first. The model was told to use a signal it could not see. **FIXED**: `camera={movement}` now included per shot line. This also answers a question worth recording precisely: **style has no path to influencing image-vs-video today, not even indirectly** — the Asset Planner never receives `render_style` or a style prompt fragment (unlike the Shot Planner), and the one channel that COULD have carried an indirect style effect (style-influenced camera movement reaching this decision) was the exact thing that was broken.
+
+### A5. Bring the video path onto the one-gate model (0.5 d) — **BUILT 2026-08-18, see §12**
 
 Already in the Backlog, already deferred once. `_generate_video_real`/`_generate_checked_keyframe` still run the old constraint-check and bounded-retry loop the image path shed on 2026-08-16 — so a video shot can still be killed outright by a constraint violation, the exact failure that destroyed the German-tank shots. ⚠ **Apply the identical treatment, rather than inventing a third behaviour.**
 
-### A6. Gate UX for motion (1–2 d)
+### A6. Gate UX for motion, and the on-demand video endpoint (1–2 d) — **BUILT 2026-08-18, see §12**
 
 The review screen must play a clip. Regeneration takes minutes, so `POST /shots/{id}/generate` cannot stay a blocking round-trip for video. The Backlog's missing batch endpoint stops being an ergonomic nit here.
+
+**Scope reduced by a finding, 2026-08-18: the submit/poll machinery already exists — this is wiring, not invention.** `ResolveAssetsStep._generate_video_real` (`resolve_assets.py:1201`) already implements the whole shape: fresh path generates a keyframe → submits to Kling → `insert_pending()` persists `job_id` **immediately, before anything else**; resume path calls `get_in_flight_for_shot()` → `poll(job_id)` **once** → `in_progress` (return, binding stays pending) / `failed` (`mark_failed`) / `completed` (download, `mark_completed`, bind). `GeneratedClipModel` already carries `job_id`/`status`/`error`, and the repository already has `insert_pending`/`mark_in_progress`/`mark_completed`/`mark_failed`. **That resume path is, structurally, the body of a poll endpoint.**
+
+**Endpoint pair (user-requested, 2026-08-18 — explicitly polling, not synchronous):**
+
+- `POST /{project_id}/shots/{shot_id}/generate/video` → keyframe, submit, persist `job_id`, return `202 {clip_id, job_id, status: "pending"}`
+- `GET  /{project_id}/shots/{shot_id}/generate/video` → polls once; returns `pending` / `failed` / `completed` (downloading, recording and binding on completion)
+
+⚠ **Deliberately NOT routed through the workflow engine**, unlike every other `202` trigger in `api/projects.py`. The reason is already written down in `generate_shot_image`'s own docstring and applies identically here: a human at the gate may click across several shots before approving anything, and resuming the engine on each click would race the pipeline forward mid-review. The image endpoint made exactly this call; the video pair follows it.
+
+⚠ **A1 is a hard prerequisite, not a nicety.** Shipping this endpoint before A1 lets a user spend ~50¢ on a Kling clip and receive a **frozen frame** in the render — the failure this whole track exists to fix. Build A1 first, or ship both together; never this alone.
+
+**DECIDED 2026-08-18: the `POST` blocks while the keyframe generates, then returns `202`.** Kling stays image-to-video (see A3), so a still must exist before the video job can be submitted. Two things settled this rather than preference:
+
+- **The "~60s block" framing was wrong and was corrected before the decision was taken.** 60s is `FalImageProvider`'s give-up *ceiling*, not the expected time — M7's own notes say Seedream is "fast, typically seconds." A POST of a few seconds is unremarkable and matches what `generate_shot_image` already does.
+- **Backgrounding the keyframe would break a real M7 invariant.** `get_in_flight_for_shot` filters on `status.in_(IN_FLIGHT_STATUSES)`, and today an in-flight row *always* has a pollable `job_id` — M7 was explicit that the handle is persisted "immediately on submit, before anything else." Creating a row before any job exists introduces an orphan state (looks in-flight, nothing to poll) needing a reaper or timeout, which is a new failure mode rather than a UX improvement.
 
 ### A7. Pexels video rung (1 d)
 
@@ -557,7 +605,7 @@ The distinction is not "cartoon vs photo" — it is **"a look" vs "precise contr
 
 **Q3. Where does the render actually fall over on length?** **PARTIALLY ANSWERED, 2026-08-17** — see §12. A Windows-specific argv-length crash was found and bracketed at ~85–90 dissolve-joined shots in one continuous run; single-threaded encode time (C3's original framing) measured smaller than expected (12.8s wall-clock for 40 shots / 104.4s of output). **Open remainder:** the equivalent threshold on the actual Linux production target (`backend/Dockerfile`) — not measured, likely far higher, worth 20 minutes in a container before C3 is built.
 
-**Q4. Trim-or-hold for a short clip in a long shot?** Recommendation is hold-last-frame; needs agreement, not a default.
+**Q4. Trim-or-hold for a short clip in a long shot?** **DECIDED 2026-08-18 — hold the last frame.** Settled with measured numbers from the real fixture (gap bounded at ±0.5s; 6 of 8 held tails fall entirely inside their own outgoing dissolve), not as an abstract preference. See A2.
 
 **Q5. Target pacing bands per style.** Blocked on calibration data, not on a decision.
 
@@ -783,6 +831,64 @@ One small, incidental bug caught along the way while verifying scoped tests: `ta
 **Full suite: 494/494 passed, 16m48s.** Count verified by arithmetic before trusting the green result, applying the exact lesson from the grading entry above: 475 (previous full run) + 7 (`test_grading.py`, missing from that previous run for the same reason described there, now genuinely collected) + 1 (`test_duration.py`'s transition test) + 9 (`test_text_cards.py`) + 2 (`test_fingerprint.py`'s two text-card additions) = 494 exactly, no gap. This run is the real proof the three Tier-2 changes compose correctly, not just that each works alone: `test_render_determinism.py`, `test_render_captions_determinism.py`, `test_render_watermark_determinism.py`, and `test_render_ken_burns.py` all exercise the actual `render_video()` call site with grade + text cards + captions + watermark all present in one real filter graph, and all passed.
 
 Transitions and text cards (Tier 2, partial - split-screen not yet built) are done: built, visually verified against real archival photos, fully tested under real pytest, and confirmed not to regress anything across two full-suite runs.
+
+### 2026-08-18 — Track A design pass (no code written), triggered by a request for an on-demand video endpoint
+
+User asked for a video-generation endpoint at the approval gate, mirroring the existing image one, and specified it must be **polling-based rather than synchronous**. Read the relevant code before answering rather than designing from memory. Three findings, all folded into §1 above.
+
+**1. The polling machinery already exists — A6 shrinks from "build" to "wire."** `_generate_video_real` already does submit → persist-`job_id`-immediately → poll-once-per-attempt → download/bind, and `GeneratedClipModel`/`GeneratedClipRepository` already carry every column and method that needs (`job_id`, `status`, `error`; `insert_pending`, `mark_in_progress`, `mark_completed`, `mark_failed`, `get_in_flight_for_shot`). The resume branch is structurally already a poll endpoint's body. See A6 above for the endpoint pair this becomes.
+
+**2. §1's own A1 wording was subtly wrong and would have caused a regression.** It said to classify by ffprobe "**not** by asking Pillow whether it can open the file" — but an animated GIF passes a frame-count/ffprobe test as MOTION, and Commons GIF maps/diagrams are exactly what `ensure_still_image` deliberately flattens (behaviour this same plan says to leave alone). The two instructions contradicted each other. Corrected in A1: Pillow-opens → STILL, Pillow-fails → ffprobe must positively confirm a video stream → MOTION. Preserves the "never infer motion from a failure" intent the original wording was protecting, while keeping every existing still/GIF path bit-for-bit identical. **Caught by reasoning through the GIF case before writing code, not by a regression test after.**
+
+**3. No external signature has to change.** `render_timeline` can probe once internally and pass the classification down to `_render_run`, leaving the public `shot_images: dict[str, Path]` contract alone — so none of the existing render tests (`test_render_determinism`, `test_render_ken_burns`, `test_render_draft`, `test_render_fingerprint_cache`, …) need touching to accommodate motion support.
+
+**Agreed build order:** A1 + A2 (renderer motion input and the fitting rule, together — A1 cannot fit a clip to a shot without A2's rule) → A3's one-line `generate_audio: false` fix → A5 (strip the old constraint-check/bounded-retry from the video path, converging it on the one-gate model the image path already uses) → A6 (the endpoint pair). A1 first is non-negotiable for the reason recorded in A6.
+
+**Two assumptions stated to the user and left open pending their answer — recorded so they are not silently absorbed as decisions:**
+
+1. **Short clip → hold the last frame** (not loop, not slow-motion). This is Q4, which this document has recommended since it was written but which had **never actually been put to the user**; flagged as such rather than quietly treated as settled.
+2. **The `POST` blocks while the keyframe generates** (Kling is image-to-video, so a still must exist before the video job can be submitted — up to ~60s). Only the *video* job is polled. Consistent with the existing image endpoint, which already blocks the same way — but if an instant `202` with the keyframe also backgrounded is wanted, that is a materially different shape and should be built that way from the start rather than retrofitted.
+
+**Both assumptions were then put to the user with real numbers rather than as abstract preferences, and both are now closed:**
+
+- **Q4 → hold the last frame.** What made it decidable was measuring instead of arguing: `round()` bounds the gap at ±0.5s, the real project's worst case is exactly +0.50s, and 6 of 8 held tails fall entirely inside their own outgoing dissolve. Recorded in A2.
+- **POST shape → block on the keyframe, then `202`.** Two corrections surfaced while framing this, both of which changed the answer: the "~60s block" I had quoted was `FalImageProvider`'s give-up ceiling, not the expected time (M7: Seedream is "fast, typically seconds"); and backgrounding the keyframe would break M7's own invariant that an in-flight row always has a pollable `job_id`, introducing an orphan-row state. Recorded in A6.
+
+**A third question surfaced that the plan had never asked, and it was the user who raised it: is Kling even image-to-video?** It is — but M7 recorded that as a *discovery*, never a comparison, and with A8 skipped nobody had ever weighed it against the text-to-video variant that exists at the identical tier. Investigated, tabled, and decided (keep image-to-video, for the style-anchor argument the Creative Philosophy itself makes). Recorded as new section A3a, including the correction that switching later is *not* purely a config line, since `submit()` unconditionally sends `image_url`.
+
+**Nothing was implemented in this pass** — design and documentation only, at the user's explicit instruction. Track A is now fully specified with no open questions blocking A1.
+
+### 2026-08-18 — Track A built: A1, A2, A3's `generate_audio` fix, A5, A6 — the agreed build order, end to end
+
+User gave the explicit go-ahead to implement. Built in the agreed order, verifying against real ffmpeg/real Postgres at each step rather than trusting the diff alone (the same discipline used for Track B/D).
+
+**A1 (`app/renderer/motion.py`, new).** `probe_media(path)` — Pillow-opens → `MediaKind.STILL`; Pillow-fails → ffprobe must positively confirm a real video stream with a positive duration → `MediaKind.MOTION`; neither signal fires → falls back to `STILL` (matches `still.py`'s own existing "not something Pillow reads" fallback). `render_timeline` (`app/renderer/slideshow.py`) probes every shot's media exactly once, before grouping into runs, and gates `ensure_still_image` on the result (STILL only — a GIF still gets flattened exactly as before; a real clip is left untouched). `ensure_still_image` had to be deferred-imported inside `render_timeline` to avoid a real circular import (`still.py` itself imports `RenderSettings`/`run_ffmpeg` from `slideshow.py`) — caught by running the import, not by inspection. `_render_run` gained a third input/filter branch (`_motion_filter`): a MOTION shot is fed `-i path` fully decoded (never `-loop`/`-t`, the same reason a Ken-Burns shot's input isn't looped either) and NEVER gets a `zoompan` expression regardless of what `shot.camera` says — forced at the `ken_burns_exprs` list-comprehension level, not by relying on every call site to remember the rule.
+
+**A2, same module.** `build_duration_fit_fragment(actual_duration_s, target_duration_s)` — the one function this arithmetic lives in. Gap < 0.02s: no filter at all. Too long: `trim=duration=<target>,setpts=PTS-STARTPTS`. Too short: `tpad=stop_mode=clone:stop_duration=<gap>` (the DECIDED-2026-08-18 hold-last-frame choice). Inserted into the motion filter chain between `fps=` and `format=`, so the stream is exactly `shot.duration_s` seconds either way and D5's `xfade` offset arithmetic never has to know a clip's real length differed from what was asked for.
+
+**Verified against real ffmpeg, not mocked (`tests/integration/test_motion_classification.py`, `tests/integration/test_render_motion_clips.py`, `tests/unit/renderer/test_motion.py`):** a real Pillow PNG classifies STILL; a real animated GIF classifies STILL (the A1 correction, checked directly, not just asserted from the rule); a real ffmpeg `testsrc` clip classifies MOTION with its real probed duration; garbage bytes fall back to STILL. End to end through `render_timeline`: a too-long clip trims to the shot duration; a too-short clip holds its last frame to the shot duration; a shot with `camera.movement=SLOW_ZOOM` whose media is a clip still renders at plain motion, never `zoompan`; a motion clip and a static still crossfade together at the correct total duration (the riskiest combination, mirroring `test_render_ken_burns.py`'s own equivalent proof for STATIC+Ken-Burns). All 46 pre-existing render/thumbnail/media-endpoint tests re-run green afterward — zero regressions from threading a new classification step through the one function every render call site already shares.
+
+**A3's pending half.** `fal_video.py`'s `submit()` now sends `"generate_audio": False` alongside `duration`/`prompt`/`image_url` — the live schema field A3 found but the code never set. One line, one new unit test.
+
+**A5 — the video path onto the one-gate model.** `_generate_checked_keyframe`'s bounded-retry constraint check (the exact mechanism the German-tank-shot failure motivated removing from images on 2026-08-16) is now unwired for video too — kept, not deleted, matching that same precedent. New `_generate_keyframe_once` (module-level, `app/workflow/steps/resolve_assets.py`) generates once, at the project seed, no retry, no vision call — the identical shape `_generate_image_once` already has. Rewrote `tests/integration/test_resolve_assets_generation_real.py::test_video_keyframe_is_checked_not_the_final_clip` (which asserted the OLD retry mechanism directly and would have failed honestly, not silently, against the new behaviour) into `test_video_keyframe_generation_never_checks_director_constraints_even_when_configured`, mirroring the image path's own equivalent proof exactly: a vision provider configured to object is never consulted, and the keyframe ships on the first attempt.
+
+**A6 — the endpoint pair, and a design refinement found while building it.** The plan's own framing ("wiring, not invention") held, but the single existing `_generate_video_real` method conflated three branches — cache-hit, poll-if-in-flight, submit-if-fresh — that a POST and a GET need to split apart: a GET must never have the side effect of a fresh, paid submission, which the unified function could not guarantee if called from a route with nothing yet submitted. Split into two composable, module-level functions instead of duplicating logic per endpoint: `poll_video_job` (poll-in-flight-once, or `None` if nothing is in flight) and `submit_video_generation` (cache-hit / already-in-flight / fresh-submit, idempotent by construction). `generate_video_real` (the workflow step's own per-attempt entrypoint) composes them — poll first, submit only if nothing was polled — and is behaviourally identical to the old method (proven by re-running the full generation test file unchanged, 11/11 green).
+
+`POST /{project_id}/shots/{shot_id}/generate/video` calls `submit_video_generation` directly (202, `{shot_id, clip_id, job_id, status}`, `status` one of `pending`/`completed`/`failed`); `GET` on the same URL calls `poll_video_job` directly and 404s if nothing is in flight ("call POST first"). Neither is routed through the workflow engine, for the identical reason `generate_shot_image` already isn't. **Real gap found and scoped out rather than silently worked around: there is no DRY_RUN fake for video generation anywhere in this codebase** (`_resolve_one_fake` generates a fake IMAGE for every shot regardless of `preferred_type` — video was never wired into the fake path at all). Both endpoints refuse with `400` under DRY_RUN rather than crashing three calls deep on a missing `hosted_url`. Proven end to end in `tests/e2e/test_generate_shot_video_api.py` by flipping `dry_run` to `False` for just the video calls (project setup itself still runs under DRY_RUN, matching every other e2e test) and monkeypatching `FalImageProvider`/`FalVideoProvider` to local fakes — the same pattern the integration test already used one layer down, exercised here through the real HTTP surface: POST rejects under DRY_RUN; GET 404s with nothing submitted; POST-then-GET submits and resolves a video, updating `GET /progress`; a second POST while a job is still in flight never resubmits; a failed job's error reaches the caller.
+
+**Full suite, both before and after the refactor pass, green** — 46/46 pre-existing render tests untouched by A1/A2, 11/11 generation tests (one rewritten) after A5, 6/6 new e2e tests for A6. Static analysis (`ruff`, `black`, `mypy`) clean throughout.
+
+**Track A is now built end to end** except A4 (motion-vs-still calibration/pricing in the planner prompt) and A7/A8 (the Pexels video rung and the bake-off) — neither was in the agreed build order for this pass.
+
+**Full test suite re-run after all of the above, 513/513 green** (up from 494 before this session — 19 new tests: 4 motion classification, 4 render-motion-clip, 4 motion-fit unit, 6 video-endpoint e2e, 1 `generate_audio`). Zero regressions.
+
+### 2026-08-18 — A4's own prompt rule found broken while answering a user question, and fixed on the spot
+
+User asked whether image-vs-video selection is driven by the project's chosen render style. Verified against the actual code rather than answering from memory (an Explore agent confirmed `CreateProjectRequest` has no media-type field, and the Asset Planner — the thing that sets `preferred_type` per shot — never receives `render_style` or a style prompt fragment at all, unlike the Shot Planner). **Answer: no, style has zero connection to it.**
+
+**But checking that surfaced a real, separate bug worth fixing immediately rather than filing away.** The Asset Planner's own prompt (`app/prompts/asset_planner/v1.md:78`) says `preferred_type` should be judged by "the shot's camera movement and intent" — but `_build_user_content` (`app/planners/asset/planner.py`) only ever sent `intent`/`framing`/`prompt` per shot line, never `camera`. Confirmed the Shot Planner (which sets `camera`) runs BEFORE the Asset Planner in `generate_timeline.py` (line 203 vs 231), so the data existed the whole time and was simply never plumbed through — the model was being told to use a signal it structurally could not see. **Fixed**: `camera={movement}` added to each shot line. New test (`test_asset_planner_prompt_includes_each_shots_camera_movement`) asserts the literal string reaches `FakePlanningProvider`'s recorded `user_content`, not just that the diff looks right. 30/30 relevant tests (asset planner, timeline generation, resolve-assets real and generation) green afterward.
+
+**Filed under A4** rather than as a standalone item — it's the same "calibrate the motion-vs-still decision" surface, just the part of it that turned out to already be broken rather than merely uncalibrated. A4's own remaining scope (prompt guidance for when motion earns its cost, plus a per-project cap) is unchanged and still open.
 
 ### 2026-08-17 — Plan review: one error corrected, and the plan's real weak point named
 

@@ -44,6 +44,26 @@ async def test_submit_sends_image_url_prompt_and_clamped_duration():
     assert arguments["duration"] == "3"
 
 
+async def test_submit_disables_generated_audio():
+    """A3 (motion_new_styles_and_long_form_videos.md, 2026-08-18):
+    narration is the only voice (D1) - the request must not ride the
+    model's own undocumented `generate_audio` default."""
+    queue = _FakeQueueClient()
+    provider = FalVideoProvider(queue)
+
+    await provider.submit(
+        VideoRequest(
+            prompt="a slow pan",
+            image_url="http://fal.example/keyframe.jpg",
+            duration_s=3.0,
+            shot_id="sh_01",
+        )
+    )
+
+    _model_id, arguments = queue.submit_calls[0]
+    assert arguments["generate_audio"] is False
+
+
 async def test_submit_clamps_duration_to_the_allowed_range():
     queue = _FakeQueueClient()
     provider = FalVideoProvider(queue)
