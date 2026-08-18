@@ -11,12 +11,13 @@ planner stage.
 
 import uuid
 
+from app.core.errors import PermanentError
 from app.planners.asset.schemas import AssetPlannerOutput, AssetPlanShotOutput
 from app.planners.repair import run_structured_with_repair
 from app.prompts.loader import load_prompt
 from app.providers.base import PlanningLLMProvider
 from app.repositories.llm_call_repository import LlmCallRepository
-from app.schemas.timeline import ASSET_LADDER, AssetPlan, AssetStrategy, Scene
+from app.schemas.timeline import ASSET_LADDER, AssetPlan, AssetStrategy, PreferredMediaType, Scene
 
 
 def _build_user_content(scene: Scene) -> str:
@@ -115,9 +116,19 @@ class AssetPlanner:
         self._provider = provider
         self._llm_call_repo = llm_call_repo
 
-    async def plan(self, *, project_id: str, scenes: list[Scene]) -> list[Scene]:
+    async def plan(
+        self, *, project_id: str, scenes: list[Scene], max_video_shots_per_project: int
+    ) -> list[Scene]:
         system_prompt = load_prompt(self.name, self._PROMPT_VERSION)
         planned_scenes: list[Scene] = []
+        # A4 (motion_new_styles_and_long_form_videos.md, 2026-08-18): a
+        # running, cross-scene count, checked and failed loudly the
+        # moment it's exceeded - mirrors `ShotPlanner.plan()`'s own
+        # `max_shots_per_project` check exactly (same file structure,
+        # same "the model is never asked to reduce, this just stops the
+        # run" reasoning). At ~50c per video shot vs ~4c per image, this
+        # bounds worst-case spend from an uncalibrated planner run.
+        video_shot_count = 0
 
         for scene in scenes:
             output = await run_structured_with_repair(
@@ -131,6 +142,15 @@ class AssetPlanner:
                 response_model=AssetPlannerOutput,
                 validate=_make_validator(scene),
             )
+            video_shot_count += sum(
+                1 for p in output.asset_plans if p.preferred_type == PreferredMediaType.VIDEO
+            )
+            if video_shot_count > max_video_shots_per_project:
+                raise PermanentError(
+                    f"asset planner exceeded max_video_shots_per_project "
+                    f"({max_video_shots_per_project}) after scene {scene.id} - "
+                    f"{video_shot_count} video shots planned so far"
+                )
             plans_by_id = {p.shot_id: _to_domain(p) for p in output.asset_plans}
             new_shots = [
                 shot.model_copy(update={"asset_plan": plans_by_id[shot.id]}) for shot in scene.shots

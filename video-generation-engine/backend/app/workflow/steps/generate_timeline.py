@@ -229,7 +229,9 @@ class GenerateTimelineStep:
 
         if any(shot.asset_plan is None for shot in timeline.all_shots()):
             planned_scenes = await AssetPlanner(provider, llm_call_repo).plan(
-                project_id=ctx.project_id, scenes=timeline.scenes
+                project_id=ctx.project_id,
+                scenes=timeline.scenes,
+                max_video_shots_per_project=settings.max_video_shots_per_project,
             )
 
             def _apply_assets(base: Timeline) -> Timeline:

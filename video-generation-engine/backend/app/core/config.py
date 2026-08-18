@@ -216,6 +216,17 @@ class Settings(BaseSettings):
     max_scenes: int = 12
     default_language: str = "en"
 
+    # A4 (motion_new_styles_and_long_form_videos.md, 2026-08-18): an
+    # absolute cap, not a fraction of shot count - `fal_video_cost_cents_
+    # estimate` (50c) is ~12x `fal_image_cost_cents_estimate` (4c), so an
+    # uncalibrated planner choosing video freely is a real budget event.
+    # A flat cap bounds worst-case spend predictably regardless of
+    # project size, the same reasoning `max_shots_per_project` already
+    # applies to shot count. Enforced in `AssetPlanner.plan()`, mirroring
+    # that same function's own "loud failure, never silent merging" cap
+    # check exactly (`shot/planner.py`).
+    max_video_shots_per_project: int = 5
+
     # --- Script pre-flight (motion_new_styles_and_long_form_videos.md
     # §3, Track D) - estimates a script's spoken duration BEFORE any
     # narration exists, from character count alone. Each constant is

@@ -117,7 +117,11 @@ async def test_asset_planner_prompt_includes_each_shots_camera_movement(project_
     async with async_session_factory() as session:
         provider = FakePlanningProvider(responses=[output])
         planner = AssetPlanner(provider, LlmCallRepository(session))
-        await planner.plan(project_id=project_id, scenes=[scene])
+        await planner.plan(
+            project_id=project_id,
+            scenes=[scene],
+            max_video_shots_per_project=settings.max_video_shots_per_project,
+        )
 
     assert "camera=slow_push" in provider.calls[0]["user_content"]
 
@@ -128,7 +132,11 @@ async def test_asset_plan_attaches_to_correct_shots(project_id):
         provider = FakePlanningProvider(responses=[_valid_output()])
         planner = AssetPlanner(provider, LlmCallRepository(session))
 
-        planned = await planner.plan(project_id=project_id, scenes=[scene])
+        planned = await planner.plan(
+            project_id=project_id,
+            scenes=[scene],
+            max_video_shots_per_project=settings.max_video_shots_per_project,
+        )
 
     shots = planned[0].shots
     assert shots[0].asset_plan.strategy == AssetStrategy.HISTORICAL_SEARCH
@@ -152,7 +160,11 @@ async def test_asset_plan_rejects_out_of_order_ladder(project_id, monkeypatch):
         planner = AssetPlanner(provider, LlmCallRepository(session))
 
         with pytest.raises(PermanentError, match="ladder order"):
-            await planner.plan(project_id=project_id, scenes=[scene])
+            await planner.plan(
+                project_id=project_id,
+                scenes=[scene],
+                max_video_shots_per_project=settings.max_video_shots_per_project,
+            )
 
 
 async def test_asset_plan_rejects_sentence_length_search_queries(project_id, monkeypatch):
@@ -172,7 +184,41 @@ async def test_asset_plan_rejects_sentence_length_search_queries(project_id, mon
         planner = AssetPlanner(provider, LlmCallRepository(session))
 
         with pytest.raises(PermanentError, match="too long"):
-            await planner.plan(project_id=project_id, scenes=[scene])
+            await planner.plan(
+                project_id=project_id,
+                scenes=[scene],
+                max_video_shots_per_project=settings.max_video_shots_per_project,
+            )
+
+
+async def test_asset_plan_fails_loudly_once_the_video_shot_cap_is_exceeded(project_id):
+    """A4 (motion_new_styles_and_long_form_videos.md, 2026-08-18): the
+    cap is a running, cross-scene count checked and failed the moment
+    it's exceeded - mirroring `ShotPlanner.plan()`'s own `max_shots_per_
+    project` check exactly (same file, same "loud failure, never silent
+    merging" reasoning, since the model is never asked to reduce its own
+    video count)."""
+    scene = _scene_with_shots()
+    both_video = _valid_output()
+    both_video.asset_plans[0].preferred_type = PreferredMediaType.VIDEO
+    both_video.asset_plans[0].strategy = AssetStrategy.GENERATE_VIDEO
+    both_video.asset_plans[0].fallback_chain = [
+        AssetStrategy.GENERATE_VIDEO,
+        AssetStrategy.GENERATE_IMAGE,
+    ]
+    both_video.asset_plans[1].preferred_type = PreferredMediaType.VIDEO
+    both_video.asset_plans[1].strategy = AssetStrategy.GENERATE_VIDEO
+    both_video.asset_plans[1].fallback_chain = [
+        AssetStrategy.GENERATE_VIDEO,
+        AssetStrategy.GENERATE_IMAGE,
+    ]
+
+    async with async_session_factory() as session:
+        provider = FakePlanningProvider(responses=[both_video])
+        planner = AssetPlanner(provider, LlmCallRepository(session))
+
+        with pytest.raises(PermanentError, match="max_video_shots_per_project"):
+            await planner.plan(project_id=project_id, scenes=[scene], max_video_shots_per_project=1)
 
 
 async def test_asset_plan_rejects_missing_licence_requirements(project_id, monkeypatch):
@@ -186,4 +232,8 @@ async def test_asset_plan_rejects_missing_licence_requirements(project_id, monke
         planner = AssetPlanner(provider, LlmCallRepository(session))
 
         with pytest.raises(PermanentError, match="licence_requirements"):
-            await planner.plan(project_id=project_id, scenes=[scene])
+            await planner.plan(
+                project_id=project_id,
+                scenes=[scene],
+                max_video_shots_per_project=settings.max_video_shots_per_project,
+            )

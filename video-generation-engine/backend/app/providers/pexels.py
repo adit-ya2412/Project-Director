@@ -17,12 +17,12 @@ it finds at `asset.local_path`, never by this provider's own `media_kind`
 field (that field only exists so `ResolveAssetsStep` knows how to
 VALIDATE and TYPE the downloaded bytes before they ever reach a render).
 
-⚠ **The exact `/videos/search` response shape below is implemented from
-Pexels' documented API structure, not verified against a live call** -
-no `PEXELS_API_KEY` is configured in this development environment, so
-there was nothing to check it against (the same class of assumption
-flagged for the ElevenLabs speed parameter elsewhere in this plan).
-Verify against a real response before trusting this in production.
+**Verified against a real, live call, 2026-08-18** (a `PEXELS_API_KEY`
+turned out to be configured after all - see this plan's own §12 for the
+correction): a real `search("aerial coastline", preferred_type="video")`
+returned 10 genuine candidates, `fetch()` downloaded a real 6.3MB mp4,
+and `validate_and_identify_video` confirmed it via real ffprobe. The
+response shape this file parses is correct, not merely plausible.
 """
 
 import httpx

@@ -118,7 +118,7 @@ Narration is the master clock. Kling returns a fixed length. The shot needs 3.2s
 
 ⚠ **"It's just a config line" is not quite true** — `FalVideoProvider.submit()` unconditionally sends `image_url`, which text-to-video would reject. Switching later means the config value *plus* shaping the request per mode and skipping the keyframe in `_generate_video_real`. Small, but not zero — worth knowing before A8's bake-off treats the two as freely swappable.
 
-### A4. Motion-vs-still becomes a real decision (1 d) — **one real bug already found and FIXED 2026-08-18, see §12; the calibration/cap work below is still open**
+### A4. Motion-vs-still becomes a real decision (1 d) — **BUILT 2026-08-18, see §12**
 
 `asset_plan.preferred_type == VIDEO` is planner output today; nothing calibrates when it should be chosen and nothing prices it. At ~50¢ per motion shot vs ~1–3¢ per image, an uncalibrated planner is a budget event. Prompt guidance for when motion earns its cost, plus a per-project cap.
 
@@ -148,11 +148,11 @@ The review screen must play a clip. Regeneration takes minutes, so `POST /shots/
 - **The "~60s block" framing was wrong and was corrected before the decision was taken.** 60s is `FalImageProvider`'s give-up *ceiling*, not the expected time — M7's own notes say Seedream is "fast, typically seconds." A POST of a few seconds is unremarkable and matches what `generate_shot_image` already does.
 - **Backgrounding the keyframe would break a real M7 invariant.** `get_in_flight_for_shot` filters on `status.in_(IN_FLIGHT_STATUSES)`, and today an in-flight row *always* has a pollable `job_id` — M7 was explicit that the handle is persisted "immediately on submit, before anything else." Creating a row before any job exists introduces an orphan state (looks in-flight, nothing to poll) needing a reaper or timeout, which is a new failure mode rather than a UX improvement.
 
-### A7. Pexels video rung (1 d) — **BUILT 2026-08-18, see §12**
+### A7. Pexels video rung (1 d) — **BUILT AND VERIFIED LIVE, 2026-08-18, see §12**
 
 The cheapest motion in the system, and it sits *below* paid generation on the ladder — "reuse before generate". **Build immediately after A1:** it exercises the new motion path at zero spend, which is the right way to prove A1 before pointing it at a paid API.
 
-⚠ **Not verified against a live call.** No `PEXELS_API_KEY` is configured in this development environment, so the `/videos/search` response parsing is implemented from Pexels' documented API shape, not checked against a real response — the same class of assumption flagged for the ElevenLabs speed parameter elsewhere in this plan. Verify before trusting in production.
+**Verified against a real live call, not just a mocked one** — a `PEXELS_API_KEY` turned out to be configured after all (see §12's correction). A real search, a real 6.3MB download, and real ffprobe validation all succeeded on the first try.
 
 ### A8. The bake-off, now unavoidable (1 d + spend)
 
@@ -898,7 +898,7 @@ User asked whether image-vs-video selection is driven by the project's chosen re
 
 **`PexelsAssetProvider.search()`** (`app/providers/pexels.py`) now branches on `query.preferred_type`: `"video"` hits Pexels' separate `/videos/search` endpoint instead of `/v1/search`, picks the `hd` mp4 rendition when available (falling back through `sd`/`uhd`, skipping a video with no mp4 rendition at all rather than crashing the whole search), and builds each candidate's `title` from the descriptive slug embedded in Pexels' own video page URL (no `alt` text field exists for videos the way it does for photos). `fetch()` labels attribution "Video by X" vs "Photo by X" based on the candidate's own `media_kind`.
 
-⚠ **Not verified against a live call** — see A7's own note above. Implemented from Pexels' documented API shape; no `PEXELS_API_KEY` configured in this environment to check it against.
+**Correction, same day: the "no API key configured" claim above was wrong.** Checking `backend/.env` (which doesn't exist) instead of the real config location — `app/core/config.py` resolves `env_file` against the REPO ROOT, not the backend directory, and `/.env` there has both `FAL_KEY` and `PEXELS_API_KEY` set. Once found, ran a genuinely live check rather than trusting the mocked tests alone: `search("aerial coastline", preferred_type="video")` returned 10 real candidates, `fetch()` downloaded a real 6.3MB mp4, and `validate_and_identify_video` confirmed it via real ffprobe (360x640, a real result, not fabricated). The parsing logic this section describes is now proven correct against Pexels' actual API, not merely plausible against documented shape. This also means `FAL_KEY` is real too - directly relevant to A8 below.
 
 **New `validate_and_identify_video`** (`app/assets/validation.py`) — Pillow cannot open a video container at all, so this shells out to a real ffprobe (writing the downloaded bytes to a temp file first), applying the same "positively confirm a real video stream with a positive duration" discipline A1's `probe_media` established, extended here to also read width/height. Returns a hard-coded `"mp4"` extension (every video source this codebase downloads from - Pexels, Kling - serves mp4; getting this wrong would only affect the file extension on disk, never playback). Proven against a REAL ffmpeg-generated clip piped to stdout as fragmented mp4 bytes (`tests/integration/test_validate_video.py`) - garbage bytes, an oversized download, and a genuine audio-only mp4 (no video stream at all) are each rejected with a distinct, correct reason.
 
@@ -909,6 +909,24 @@ User asked whether image-vs-video selection is driven by the project's chosen re
 **Verified against real ffmpeg and a real Postgres, not mocked:** `tests/unit/providers/test_pexels.py` (video search parses a real-shaped response, picks the HD rendition, skips a webm-only video, falls back on a slug-less title, image search never touches `/videos/search`); `tests/integration/test_validate_video.py` (4 cases against genuine ffmpeg-generated clips); `tests/integration/test_resolve_assets_real.py::test_video_candidate_from_a_stock_search_rung_validates_and_binds_as_video` (a real generated clip, through the REAL `ResolveAssetsStep` search pass, ends up `resolved`/`stock_search`/`type="video"` on disk with a `.mp4` extension). 227/227 relevant tests green (assets, providers, resolve-assets real/generation, planners) - zero regressions.
 
 **Track A is now built end to end except A8** (the bake-off - needs a human's eyes on real spend, can't be automated) and the calibration half of A4 (prompt guidance for when motion earns its cost, plus a per-project cap - the prompt-plumbing bug under that same heading is already fixed).
+
+### 2026-08-18 — A4's calibration half built: sharper prompt guidance, a per-project video cap
+
+**Prompt guidance** (`app/prompts/asset_planner/v1.md`) rewritten now that the Asset Planner can actually see `camera` (the earlier plumbing fix): the old rule ("image unless camera movement and intent clearly call for genuine motion") left "genuine motion" undefined and never mentioned that the renderer can ALREADY put a slow push/pan/zoom on a still photo (Ken Burns). Rewritten to say so explicitly - camera movement alone is never a reason to choose video, since a still gets the same movement for a fraction of the cost; video is for when the SUBJECT itself needs to move in a way no single photograph could show (flames spreading, smoke billowing, machinery operating), with a concrete cost ratio (~10x) and a worked contrast (a static subject with only a described camera direction is exactly the Ken-Burns case, not a video one).
+
+**Per-project cap** (`settings.max_video_shots_per_project`, default 5) enforced in `AssetPlanner.plan()` - a running, cross-scene count of `preferred_type == VIDEO` shots, checked and failed loudly (`PermanentError`) the moment it's exceeded, mirroring `ShotPlanner.plan()`'s own `max_shots_per_project` check exactly (same file structure, same "the model is never asked to reduce its own count, this just stops the run before more of it gets planned" reasoning already established and validated for shot count). `AssetPlanner.plan()`'s signature gained a required `max_video_shots_per_project` kwarg (no default, matching `ShotPlanner.plan()`'s own style) - every call site, including five in the existing test file, updated to pass it explicitly.
+
+**Verified:** a new test (`test_asset_plan_fails_loudly_once_the_video_shot_cap_is_exceeded`) proves the cap actually fires, with a cap of 1 and two video shots in one scene. 71/71 relevant tests green (planners, timeline generation, resolve-assets real/generation, fixture round-trip) - zero regressions.
+
+**A4 is now fully built.** Track A's only remaining item is A8.
+
+### 2026-08-18 — Correction: a real `PEXELS_API_KEY`/`FAL_KEY` ARE configured, found while double-checking A7's own caveat before starting A8
+
+Re-verified A7's "not verified against a live call" claim before treating A8 as blocked on missing keys. It was wrong: `app/core/config.py` resolves its `env_file` against the REPO ROOT (`Path(__file__).resolve()` climbed to `_REPO_ROOT`), not `backend/`, which is the directory checked earlier. The real `.env` at the repo root has both `FAL_KEY` and `PEXELS_API_KEY` set, and `DRY_RUN=false` - this environment is wired to real, billable accounts, not a key-less sandbox.
+
+**Ran the free half live rather than assuming the correction was enough on its own:** `PexelsAssetProvider.search("aerial coastline", preferred_type="video")` returned 10 real candidates; `fetch()` downloaded a genuine 6.3MB mp4; `validate_and_identify_video` confirmed it via real ffprobe (360x640). A7's parsing logic is now proven against Pexels' real API, not merely documented shape - the caveat is retired, not just softened (see A7's own section and its earlier §12 entry, both updated).
+
+**Did NOT similarly test `FAL_KEY` against Kling** - unlike Pexels search, a Kling video generation call is real, billed spend (~54c per clip: ~4c Seedream keyframe + ~50c Kling video, per `settings.fal_*_cost_cents_estimate`). That is exactly what A8 is - stopping here to confirm scope and budget with the user before spending real money, rather than treating "the user said do A4 through A8" as authorization for an unspecified dollar amount against a real account.
 
 ### 2026-08-17 — Plan review: one error corrected, and the plan's real weak point named
 
