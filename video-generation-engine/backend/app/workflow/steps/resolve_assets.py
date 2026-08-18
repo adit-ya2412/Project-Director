@@ -194,10 +194,52 @@ def _project_seed(project_id: str) -> int:
     return int(hashlib.sha256(project_id.encode("utf-8")).hexdigest()[:8], 16)
 
 
+# FIXED 2026-08-18 (A8's bake-off, motion_new_styles_and_long_form_videos.md):
+# see `_styled_prompt`'s own docstring for the failure this bounds.
+_MAX_VISUAL_STYLE_WORDS = 15
+
+
 def _styled_prompt(shot: Shot, creative_context: CreativeContext) -> str:
-    if creative_context.visual_style:
-        return f"{shot.prompt}, {creative_context.visual_style}"
-    return shot.prompt
+    """`creative_context.visual_style` describes the WHOLE video's visual
+    arc (ADR-010), often as an explicit multi-part sequence - the real
+    m8_test_project's own value reads "black-and-white WWII coal
+    mines... THEN muted-color South African refinery... ENDING WITH
+    contemporary energy infrastructure". Appending that verbatim to a
+    single shot's prompt reliably made Seedream generate a multi-panel
+    collage of the whole arc (with garbled fake captions) instead of one
+    photograph of the scene this shot actually describes - measured
+    directly against a real project, not assumed: all 3 real shots in
+    the bake-off failed identically before this fix.
+
+    Two things were tried and REJECTED before this one, each verified
+    against a real regeneration, not assumed to work from reasoning
+    alone: an explicit "single photograph, no collage" instruction did
+    NOT help (if anything, the output got MORE elaborate - diffusion-
+    family image models are well known to handle negation poorly, and
+    naming the failure mode ("collage") in the prompt just adds that
+    concept as content); a "one photograph, one camera framing, one
+    moment" positive reframing made the main scene more dominant but
+    still left a sidebar strip of extra panels.
+
+    **What actually worked, verified against the same real prompt:**
+    bounding how much of `visual_style` is appended at all, mechanically
+    (a fixed word count, language-agnostic - deliberately NOT a keyword
+    search for connectives like "then"/"ending with", which is
+    English-specific and would miss e.g. Hindi "फिर" in
+    `hindi_test_project.json`'s own visual_style). The multi-era
+    NARRATIVE is what triggers the collage, not phrasing choices within
+    it - truncating to the first `_MAX_VISUAL_STYLE_WORDS` words leaves
+    one coherent style clause instead of the full multi-subject arc, and
+    a real regeneration with this exact truncation produced a single,
+    clean, correctly-styled photograph. This is a mechanical bound, not
+    a semantic one - it does not understand the text it's cutting, only
+    where it's cutting it, and may need retuning if a future project's
+    `visual_style` puts its multi-era sequencing earlier than 15 words
+    in."""
+    if not creative_context.visual_style:
+        return shot.prompt
+    capped_style = " ".join(creative_context.visual_style.split()[:_MAX_VISUAL_STYLE_WORDS])
+    return f"{shot.prompt}, {capped_style}"
 
 
 async def generate_image_real(
