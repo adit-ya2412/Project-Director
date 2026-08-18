@@ -1,9 +1,10 @@
 # Motion, New Styles, Script Pre-flight, and Long-Form Video — Implementation Plan
 
-> **Status:** Originally plan-only (2026-08-17). Since then, built and verified against real ffmpeg/real Postgres/real live APIs: Track D (script pre-flight, all levels except the phrasing-rewrite L3), Track B Tier 1–2 (grade, extra transitions, text cards, punch-in), and Track A's A1/A2/A3/A4/A5/A6/A7 (motion clip input, duration fitting, the video path's one-gate model, the on-demand video endpoint pair, the Pexels video rung, and video-vs-image planner calibration). **A8 (the bake-off) was attempted 2026-08-18 with real spend (~$1.86) and found a real, previously-unknown collage bug affecting every project with a rich `visual_style` — fixed and verified, but A8's own question ("does synthetic motion blend next to real archival photography") is still open**, by the user's own choice to stop before re-running the video half. See §12 for the full chronological log; unmarked sections below are still design-only.
+> **Status:** Originally plan-only (2026-08-17). Since then, built and verified against real ffmpeg/real Postgres/real live APIs: Track D (script pre-flight, all levels except the phrasing-rewrite L3), Track B Tier 1–2 (grade, extra transitions, text cards, punch-in), and Track A's A1/A2/A3/A4/A5/A6/A7 (motion clip input, duration fitting, the video path's one-gate model, the on-demand video endpoint pair, the Pexels video rung, and video-vs-image planner calibration). **A8 (the bake-off) was attempted 2026-08-18 with real spend (~$1.86) and found a real, previously-unknown collage bug affecting every project with a rich `visual_style` — fixed and verified, but A8's own question ("does synthetic motion blend next to real archival photography") is still open**, by the user's own choice to stop before re-running the video half. **§11 step 5 (orphan-run fix) and step 6 (music taxonomy + a real 54-track curated library, §5.1) are also now built and verified**, 2026-08-18 — see §12 for both. See §12 for the full chronological log; unmarked sections below are still design-only.
 > **Scope:** four tracks — **A** (motion clip input), **B** (style catalogue), **C** (long-form), **D** (script pre-flight). A is the keystone for the motion half of B; D is independent and could ship first.
 > **Related:** [`13_Implementation_Guide.md`](../13_Implementation_Guide.md) §M7/M8/M9 and its Backlog, [`14_Captions_Plan.md`](../14_Captions_Plan.md), [`watermark_implementation_plan.md`](watermark_implementation_plan.md).
 > **Fixture:** project `58f0a5e6-008d-468e-862a-e365e463878e` / `backend/tests/fixtures/m8_test_project.json` — real Fischer-Tropsch timeline, 13 shots. Reuse it; do not plan a fresh one.
+> ⚠ **Read §13 before trusting any "BUILT" marker in this document.** A code-vs-plan review on 2026-08-18 found ten open discrepancies between what §12 records as built and what the code does, two of them blocking — including that `retention_fast` could not complete a planning run. **Update, same day: 8 of 10 items (R1/R2's blocking half, R3, R4, R6, R7, R9, R10) are now fixed and verified, plus R5 (a user-confirmed architecture decision). Only R2's second half (a lowest-priority product decision) and R8 (needs a real, tiny ElevenLabs spend, not yet confirmed) remain open.** See §13's own status line for the current per-item state.
 
 ---
 
@@ -88,7 +89,9 @@ Narration is the master clock. Kling returns a fixed length. The shot needs 3.2s
 
 **Caution:** this is a creative decision wearing an arithmetic costume. Document the choice in the function, as D5 is documented, or it will be "fixed" later.
 
-**DECIDED 2026-08-18 (Q4 closed): hold the last frame.** Put to the user with the real numbers rather than as an abstract preference, which is what made it decidable: because `fal_video.py` asks Kling for `round(shot.duration_s)`, **the gap is mathematically bounded at ±0.5s**, and measured across every shot in the real `m8_test_project` the worst case is exactly `+0.50s`. More importantly, comparing each gap against that shot's own `transition_out`: **6 of the 8 shots needing a hold have the entire held tail fall inside their own outgoing dissolve** — the viewer sees a crossfade, never a frozen frame. The 2 exceptions are `+0.10s` each (3 frames at 30fps). Against that, a loop would snap a 3.0s clip back to frame 0 for 0.4s exactly as the shot dissolves out, and slow-motion would mean a 13% retime needing frame duplication.
+**DECIDED 2026-08-18 (Q4 closed): hold the last frame.** Put to the user with the real numbers rather than as an abstract preference, which is what made it decidable: because `fal_video.py` asks Kling for `round(shot.duration_s)`, **the HOLD direction is bounded at +0.5s** — measured across every shot in the real `m8_test_project`, the worst case is exactly `+0.50s`. More importantly, comparing each gap against that shot's own `transition_out`: **6 of the 8 shots needing a hold have the entire held tail fall inside their own outgoing dissolve** — the viewer sees a crossfade, never a frozen frame. The 2 exceptions are `+0.45s` (`sc_02_sh_01`, against a 0.35s dissolve) and `+0.10s` (`sc_03_sh_03`, against a 0.0s fade) — 3 frames at 30fps in the smaller case, still small in the larger one. Against that, a loop would snap a 3.0s clip back to frame 0 for 0.4s exactly as the shot dissolves out, and slow-motion would mean a 13% retime needing frame duplication.
+
+⚠ **Corrected 2026-08-18 (§13.3, "R3") — the bound above is NOT symmetric, and this paragraph is the primary claim §13.3 was quoting.** The TRIM direction is unbounded below the 3s Kling API floor: any shot under 2.5s asks Kling for a flat 3s regardless of how short the shot actually is, so `retention_fast`'s 0.8s shot floor can see a gap of up to **-2.2s**, not ±0.5s. The HOLD-direction numbers and the dissolve-overlap argument above are correct and unaffected — only the "±0.5s" framing was wrong, and only for the direction this section doesn't actually need to bound (the `trim` branch already handles an arbitrarily large negative gap correctly, emitting exactly `target_duration_s` either way). See §4.2 for the resulting cost note: every `retention_fast` motion shot clamps up to a paid 3s Kling request.
 
 ⚠ **One assumption underneath this remains unverified:** that Kling returns *approximately* the duration requested. The implementation measures the clip's real duration via A1's probe, so it handles whatever actually arrives — but "asked for 3s, got ~3.0s" has never been checked against the live API.
 
@@ -205,7 +208,7 @@ So **style is freely changeable right up to the gate and frozen after it.** The 
 - ⚠ **Speed and punctuation partially cancel.** Commas add TTS pauses (`D` grows); speed removes them (`D` shrinks). Do not tune the two independently.
 - ⚠ **Practical quality ceiling ~1.15–1.25×.** Past that ElevenLabs prosody degrades, and Hinglish will likely degrade earlier and differently than English — `hinglish_final_project` is the fixture for that.
 
-`narration_locked` already exempts measured durations from the planner's shot-duration floor, so shorter measured shots need no constraint change — the fixture's own 0.6s and 1.33s shots prove that path works in production.
+`narration_locked` already exempts measured durations from the planner's shot-duration floor, so shorter measured shots need no constraint change — lowering the planning-time floor affects only the planner's pre-narration estimate, because A26 exempts measured durations regardless. *(Corrected 2026-08-18, §13.4/"R4": the 0.6s/1.33s shots this line used to cite live in `hinglish_final_project`/`captions_test_project`, not `m8_test_project` — and both have `narration_locked: true`, so they only prove the A26 exemption itself, never in doubt, not that the Shot Planner can be trusted with a 0.8s floor at planning time. The argument above is the one that actually holds.)*
 
 ### 2.2 The I1 line — where a style decision is allowed to live
 
@@ -258,7 +261,7 @@ This is what fixes the long-fragment dead stops Route 1 cannot. Four pieces, all
 | More fragments | §3.2 level 2 | punctuation suggestions — **same words**, more `,;:—` |
 | Shot Planner instruction | §4.1, §4.3 | style fragment instructing one fragment per shot at the finest setting |
 | Shot-count cap | §4.2 | `max_shots_per_project` ~55–60 for fast-cut (90s ÷ 1.75s ≈ 51 + headroom) |
-| Duration floor | §4.2 | `min_shot_duration_s` **~0.8s** for fast-cut — a planning heuristic only, and A26 already exempts measured durations, so the risk is low. The fixture's own 0.6s and 1.33s shots prove sub-floor shots already exist in production |
+| Duration floor | §4.2 | `min_shot_duration_s` **~0.8s** for fast-cut — a planning heuristic only, and A26 already exempts measured durations, so the risk is low: lowering it affects only the planner's pre-narration estimate, never a real, reconciled shot length (corrected 2026-08-18, §13.4/"R4" — this no longer cites the misattributed 0.6s/1.33s fixture shots) |
 | **Narration speed** | §2.1 | **~1.2×**, in v1. Contributes ~17% to pacing but its real job is making the *delivery* match the cutting — the piece that resolves the mismatch warned about below. Requires speed in the narration content-hash key |
 
 ⚠ **Ship both routes together.** Route 1 alone gives a fast-*looking* video over documentary-paced narration, which reads as mismatched rather than fast — and the punch-ins get blamed when the problem is the voice. Route 2's speed component is what closes that specifically.
@@ -291,11 +294,11 @@ Every style × planner pair is a behaviour that can regress, and there are four 
 
 ---
 
-## 3. Track D — script pre-flight
+## 3. Track D — script pre-flight — **levels 1–2 BUILT AND VERIFIED 2026-08-17, see §12; level 3 (§3.3, the actual rewrite) still open**
 
 Runs at **project setup, before the pipeline starts.** Not a workflow step — the run keeps exactly one gate, and the 2026-08-16 one-gate redesign is not reopened.
 
-### 3.1 Two checks, deliberately different in kind
+### 3.1 Two checks, deliberately different in kind — **BUILT, `app/script/preflight.py` + `suitability.py`, see §12**
 
 **Check 1 — Feasibility (code, deterministic) → BLOCKS**
 
@@ -330,13 +333,13 @@ Runs at **project setup, before the pipeline starts.** Not a workflow step — t
 
 A style's preset should declare whether it has a pacing floor to check. For the slow half of the catalogue the answer is "none", and the check is skipped rather than trivially passed.
 
-### 3.2 The three intervention levels — all in v1
+### 3.2 The three intervention levels — levels 1–2 **BUILT**, level 3 **NOT BUILT**, see §12
 
-| Level | What it does | The user's words |
-|---|---|---|
-| **1. Diagnose** | Shows the fragment table with predicted durations; highlights spans that are too long | untouched |
-| **2. Suggest breaks** | Proposes punctuation insertion points; accepted per-span | untouched |
-| **3. Rewrite phrasing** | Splits sentences by rephrasing, where punctuation cannot | changed |
+| Level | What it does | The user's words | Status |
+|---|---|---|---|
+| **1. Diagnose** | Shows the fragment table with predicted durations; highlights spans that are too long | untouched | **BUILT** (`preflight.py`) |
+| **2. Suggest breaks** | Proposes punctuation insertion points; accepted per-span | untouched | **BUILT** (`suggestions.py`) |
+| **3. Rewrite phrasing** | Splits sentences by rephrasing, where punctuation cannot | changed | **not built — §3.3 is still design-only** |
 
 **The insight that makes levels 1–2 powerful:** the splitter breaks on **punctuation**, not meaning. So
 
@@ -349,7 +352,7 @@ is **the same words, one comma, two shots instead of one.** For a large share of
 
 **Level 2 also shrinks the LLM's job to something safe.** It stops being *"rewrite my script"* and becomes *"where can this sentence naturally break?"* — one span at a time, each one accepted or rejected by the user. A wrong suggestion is a rejected checkbox rather than a corrupted script, and the model is never holding the whole text at once. That is the entire reason levels 1–2 carry the fear-reduction work that level 3 cannot: **the user's words are never in the model's output.**
 
-### 3.3 The rewrite, and how it is validated in code
+### 3.3 The rewrite, and how it is validated in code — **NOT BUILT — this section is still design-only**
 
 Scope: **phrasing only** — same facts, same order, same claims; only sentence length and rhythm change.
 
@@ -385,7 +388,9 @@ Fast-cut on a well-punctuated 90s script gives `N` ≈ 55 fragments → one-per-
 
 This drops the check from **urgent** to **good ergonomics**. It should still ship — it is nearly free once `N` is being computed anyway — but it is no longer a safety feature, and §11's ordering need not privilege it.
 
-### 3.5 Provenance and freezing — **revised 2026-08-17: use the existing script versioning, don't duplicate it**
+**Built as part of levels 1–2**, and its own honest limitation (flagged when levels 1–2 shipped, 2026-08-17 — `retention_fast`'s shot-cap override wasn't enforced anywhere real yet) was closed the same day by Track B's `resolve_constraint_bundle(style)`, which both `generate_timeline.py` and `shot/planner.py` now call instead of reading `settings.*` directly. See §12.
+
+### 3.5 Provenance and freezing — **revised 2026-08-17: use the existing script versioning, don't duplicate it — BUILT, see §12**
 
 **Correction to the original design.** `app/models/script.py::ScriptModel` already versions every script change immutably — `_append_script_if_changed` appends a new row whenever content differs, the same discipline as `TimelineService.append_version` (I3). This was found while checking the persistence layer before building, and it makes the originally-planned `script_original`/`script_source` columns on `Project` redundant: they would duplicate, in a weaker form (one-level-back instead of full history), a mechanism that already exists.
 
@@ -410,11 +415,11 @@ This drops the check from **urgent** to **good ergonomics**. It should still shi
 
 ⚠ **"Suggest a comma" is only correct advice above the 80-char threshold.** A script of many short, already-punctuated sentences — a plausible shape for someone *already* attempting punchy writing — would get zero benefit from comma suggestions. Level 2's suggestion engine must pick the punctuation type from the target fragment's current length: **period** (always splits) below ~80 chars, **clause punctuation** above it. This is an implementation correction, not a product decision, so it proceeds without needing sign-off — flagged here so the "same words, one comma" framing from earlier in this plan isn't read as the general case.
 
-### 3.5.2 Style bands are a small standalone config, not a Track B dependency — decided 2026-08-17
+### 3.5.2 Style bands are a small standalone config, not a Track B dependency — decided 2026-08-17, **BUILT** (`app/script/styles.py`)
 
 Track B's `metadata.render_style` field and full preset system do not exist yet. Track D needs a pacing floor/ceiling per style regardless, so it owns a **small local config** — just the 2–3 styles' `D/N` floor and `max(fragment)` ceiling (§2.5.1, §3.1) — independent of any Timeline field or planner prompt. Track B, when built, reads or extends this same config rather than duplicating it. This unblocks Track D immediately and keeps the two tracks' schedules independent.
 
-### 3.5.3 Endpoint shape — stateless, decided 2026-08-17
+### 3.5.3 Endpoint shape — stateless, decided 2026-08-17, **BUILT** (`POST /{project_id}/script/preflight`)
 
 Pre-flight is **`POST /{project_id}/script/preflight`**, taking script text and style directly in the request body and returning feasibility + suitability **without persisting anything**. This is what makes live re-measurement on every edit or style change (Q9) cheap and safe — a keystroke-driven check must never create a new `ScriptModel` version, which would fight that table's own "append only on a real, deliberate change" discipline. `POST /{project_id}/script` (persistence) is called separately, once, when the user is done — that endpoint gains the freeze check from §3.5, not the pre-flight logic itself.
 
@@ -422,11 +427,11 @@ Pre-flight is **`POST /{project_id}/script/preflight`**, taking script text and 
 
 No existing table shape fits `(script_hash, style) → verdict` in this codebase, and inventing one for a single feature was judged not worth it: the check only fires when the user actively requests it (not on every keystroke — that's the free arithmetic check), so the cost is one cheap LLM call per genuine request. Recompute each time; add persistence later only if the gate screen needs to explain a past verdict without re-asking.
 
-### 3.6 Calibration
+### 3.6 Calibration — **BUILT**, the English constant is live in `app/core/config.py`
 
 `662 chars / 46.0s` = **14.4 chars/sec (English)**, from a real measured run. `hinglish_final_project` gives the Devanagari constant the same way. ⚠ **Calibrate before you block** — you would be hard-stopping a user on the basis of an estimate. Record the error band and set thresholds to fire only on unambiguous mismatch.
 
-### 3.7 Architectural placement
+### 3.7 Architectural placement — **followed as written**, see `app/script/suitability.py`
 
 The suitability check is **not a fifth planner** — it never writes to the Timeline. Its closest relative is `app/assets/depiction_check.py`: an LLM-backed check returning a verdict without touching creative state. Following that pattern keeps it clear of the four-planner chain and clear of I4, since the verdict only ever informs a human.
 
@@ -455,9 +460,11 @@ The suitability check is **not a fifth planner** — it never writes to the Time
 | `min_shot_duration_s` | planning-time only | yes — low risk |
 | `max_shot_duration_s` | planning-time only | yes — low risk |
 
-The two shot-duration bounds are already exempted once `narration_locked` is set, so lowering the floor for fast-cut affects only planner *estimates* — measured reality was never bound by them. Proven by the fixture's own 0.6s shot.
+The two shot-duration bounds are already exempted once `narration_locked` is set, so lowering the floor for fast-cut affects only planner *estimates* — measured reality was never bound by them. *(The claim that a real fixture shot proves this was corrected 2026-08-18, §13.4/"R4" — the cited 0.6s/1.33s shots belong to `narration_locked` fixtures, which only proves the A26 exemption itself, never in doubt. The argument above stands on its own without that citation.)*
 
 Fast-cut at 90s and ~1.75s/shot needs ~51 shots; budget ~55–60. **Decided: fast-cut is allowed to lean harder on paid generation** — which walks into the reuse-repetition problem in §6.
+
+⚠ **Cost note, added 2026-08-18 (§13.3/"R3"):** `fal_video.py` clamps Kling requests to a 3s floor (`max(3, min(15, round(shot.duration_s)))`), so with `retention_fast`'s 0.8–3.5s shots, **every** motion shot clamps up to a 3s request — you pay ~50¢ and discard up to 2.2s of the returned clip. This decision was taken without that cost in view. The real lever, if the economics matter enough to act on, is making A4's per-project video-shot cap style-aware: a `retention_fast` project should cap motion shots far lower than a `documentary_archival` one, because each one delivers less usable footage per dollar.
 
 ### 4.3 Prompt organisation
 
@@ -465,7 +472,7 @@ Fast-cut at 90s and ~1.75s/shot needs ~51 shots; budget ~55–60. **Decided: fas
 
 ---
 
-## 5. Music, audio, and sound effects under styles
+## 5. Music, audio, and sound effects under styles — §5.1's taxonomy **BUILT 2026-08-18, see §12**
 
 **Timing is lucky here: the curated local music library (M4–M10) is adopted but not built.** There is no `local_music.py` and `MUSIC_PROVIDER` is still `openverse`. Style can be folded into the library's *design* rather than retrofitted.
 
@@ -609,7 +616,7 @@ The distinction is not "cartoon vs photo" — it is **"a look" vs "precise contr
 
 **Q3. Where does the render actually fall over on length?** **PARTIALLY ANSWERED, 2026-08-17** — see §12. A Windows-specific argv-length crash was found and bracketed at ~85–90 dissolve-joined shots in one continuous run; single-threaded encode time (C3's original framing) measured smaller than expected (12.8s wall-clock for 40 shots / 104.4s of output). **Open remainder:** the equivalent threshold on the actual Linux production target (`backend/Dockerfile`) — not measured, likely far higher, worth 20 minutes in a container before C3 is built.
 
-**Q4. Trim-or-hold for a short clip in a long shot?** **DECIDED 2026-08-18 — hold the last frame.** Settled with measured numbers from the real fixture (gap bounded at ±0.5s; 6 of 8 held tails fall entirely inside their own outgoing dissolve), not as an abstract preference. See A2.
+**Q4. Trim-or-hold for a short clip in a long shot?** **DECIDED 2026-08-18 — hold the last frame.** Settled with measured numbers from the real fixture (the HOLD direction is bounded at +0.5s; 6 of 8 held tails fall entirely inside their own outgoing dissolve), not as an abstract preference. *(Corrected 2026-08-18, §13.3/"R3": the bound is not symmetric — the TRIM direction is unbounded below the 3s Kling API floor, up to -2.2s at `retention_fast`'s 0.8s shot floor. The hold decision itself is unaffected; only the stated bound was wrong.)* See A2.
 
 **Q5. Target pacing bands per style.** Blocked on calibration data, not on a decision.
 
@@ -952,6 +959,76 @@ User approved 3 real clips (~$1.60) against real archival stills from `m8_test_p
 
 **User's call, asked explicitly rather than assumed: stop here.** Given a choice between spending ~$1.50 more to re-run all 3 Kling clips against the now-mostly-fixed keyframes (the real comparison A8 exists to make) or stopping with the prompt fix as the deliverable, the user chose to stop. **A8's own question - does synthetic motion actually blend next to real 1936 archival photography - remains open.** Re-running the Kling half is cheap and immediate whenever picked back up (the fixed keyframes already exist, saved to `C:\Users\<user>\Desktop\a8_bakeoff\`, alongside the original failed ones and the rejected-attempt keyframes, kept as evidence).
 
+### 2026-08-18 — Orphan-run fix built (§11 step 5), then the music library (§11 step 6, §5.1) built end to end
+
+**Orphan-run fix.** `trigger.py::_claim_or_join`'s `state == "running"` check assumed "running" always means another caller is actively executing the pipeline right now - true until that caller's process is hard-killed (Ctrl-C, reboot, OOM), after which the row is stuck `"running"` forever with nothing left to ever resume it (the exact bug named in the Backlog, `docs/13_Implementation_Guide.md`, and flagged in §6 as blocking C6). Fixed with the preferred approach already written down there: `reclaim_orphaned_runs()` (`app/workflow/trigger.py`), called once from `main.py`'s `lifespan` before the app accepts requests - any row still `"running"` at that exact moment is provably orphaned under the single-instance assumption (the process that would be running it is the one just starting), so it's resumed the same way a normal trigger would (`_execute_in_background`, no special-casing needed since `WorkflowEngine.run()` already resumes a `"running"` row correctly via `is_satisfied()`). New `WorkflowRunRepository.list_running()` plus 2 new integration tests against the real DB (`test_workflow_trigger.py`) - one proving a genuinely orphaned row gets resumed, one proving completed/paused rows are left alone. 6/6 in that file, 336/336 full unit suite, ruff/black/mypy clean.
+
+**Music taxonomy + BPM decision, then a real 54-track library.** §5.1 named the gap (six mood categories describe *what*, none describe *how it's cut* - no category a fast-cut style could use) and warned the full cross-product (6 moods × 3 energies × 2-3 tracks = 36-54, human-vetted **by ear**) is expensive. User chose the full matrix anyway, explicitly accepting that cost. Two axes: **mood** (`documentary_dark`, `documentary_mystery`, `documentary_ambient`, `industrial`, `historical_epic`, `emotional` - unchanged from §5.1) × **energy** (`ambient`/`mid`/`driving`, new - closes the fast-cut gap).
+
+Sourcing was real research, not assumed: 6 parallel agents searched Pixabay Music, Free Music Archive, and Incompetech (YouTube Audio Library was checked and found to require an authenticated session neither WebFetch/WebSearch nor this agent can drive - skipped, not faked) and returned only link-verified real candidates, 3 per cell, 54 total. Downloading turned out to be genuinely uneven across sources, discovered by testing rather than assumed: **Pixabay has no download API at all** (`app/providers/pixabay_music.py` already documented this for search; verified here it's equally true for downloads - JS-gated, no static pattern, and that module's own docstring already concluded scraping around it is "fragile and likely against Pixabay's terms," a wall this work did not attempt to go around) and **FMA's classic API 404s on the current site** (ownership changed hands; no current public docs found). Only **Incompetech** serves files from a plain static path with no auth/JS needed - verified live before trusting it, then all 14 Incompetech tracks were downloaded programmatically this way. The remaining 40 (27 Pixabay + 13 FMA) were downloaded by the user by hand, batched 10 at a time, each batch verified with `ffprobe` (real MP3, duration matches source) before being filed into `storage/music_library/<mood>/<energy>/` and deleted from Downloads - nothing added to the library unverified.
+
+**Licensing, recorded honestly rather than smoothed over:** 45 of 53 unique files are Pixabay Content License / CC0 / CC BY (commercial-safe); 8 are CC BY-NC or CC BY-NC-ND. Worth naming precisely, not just as a policy risk: `OpenverseMusicProvider`'s own docstring already excludes NC/ND from ITS result set for a concrete reason - this renderer's own bed/duck mix (`app/renderer/music.py`) creates a derivative of whatever track is chosen, which is exactly what ND forbids, not a grey area. Flagged twice; **user's explicit, informed decision: use all of them anyway.** `LocalMusicProvider` therefore does no licence filtering of its own (unlike Openverse) - it reports the whole library, licence included, and leaves gating to the EXISTING mechanism `SelectMusicStep._select` already has (`plan.licence_requirements`, empty/unused by default) rather than inventing a second one. Recorded in `MANIFEST.md` per track so the decision stays visible, not silently absorbed.
+
+**Built:** `manifest.json` (54 entries: file/title/artist/source/licence/mood/energy/bpm/duration_s/tags, `duration_s` computed by real `ffprobe` against every file, not asserted) and `app/providers/local_music.py` (`LocalMusicProvider` - `search()` returns the whole library as the candidate pool since a fixed local catalogue has no "zero results" case the way a live search does, letting the existing term-overlap ranking in `app/assets/music_ranking.py` do the actual matching; `fetch()` reads local disk, never network). `settings.music_provider` default changed from `"openverse"` to `"local"` (Openverse's own docstring: "a narrow music_plan legitimately finds nothing on a real search" - this library is never empty). New `settings.music_library_root`. 6 new unit tests (fake manifest under `tmp_path`, never the real files) plus 3 new integration tests against the REAL library (`test_music_library_integrity.py` - all 54 slots present across all 18 cells, every file exists and is real decodable audio matching its recorded duration, no duplicate file paths). 342/342 unit suite, 27/27 targeted music tests, ruff/black/mypy clean. Verified once more end to end against the real library outside the test suite too: a real query ranked and picked a genuinely fitting track, `fetch()` returned real bytes with a correct attribution string.
+
+**Not done:** per-style bed/duck gain (§5.2, ~0.5d), BPM-based tempo-fit ranking (§5.3, needs the library to exist first - it now does), SFX (§5.5, separate batch). BPM itself is only recorded where a source actually published it (mostly Incompetech) - not fabricated for the rest, per this document's own standing discipline.
+
+### 2026-08-18 — §13's code-vs-plan review acted on: 8 of 10 findings fixed, 1 needs a spend decision, 1 is a deferred product call
+
+Worked the review's own recommended order (§13.13), skipping nothing that didn't need a human decision.
+
+**R1 (BLOCKING) + R2's first half (auto-closed).** `GenerateTimelineStep.run()`'s post-planning gate and `_is_fully_planned` (the resume check) used to resolve style bounds SEPARATELY and had drifted apart - `run()` read flat `settings.*` directly, so `retention_fast` (authorised by the Shot Planner to emit 0.8s shots / up to 58 of them) was rejected by its own project's final gate every time, after the Director/Scene Planner/every Shot Planner call had already been paid for. Fixed by extracting ONE shared function, `_validate_against_style`, that both call sites now use - structurally impossible to diverge again, not just corrected for today. 5 new pure unit tests (`test_generate_timeline_style_bounds.py`) build a real `retention_fast` Timeline with 50 shots at 0.9s and prove it passes the resolved bundle, fails the flat settings, and that both call sites' source code now contains the same function call.
+
+**R9.** `preflight.py`'s shot-cap violation message was telling users planning "would have to merge fragments... or fail outright" - §3.4 (corrected twice, back on 2026-08-17) already established the merge half doesn't exist. Message rewritten to say what actually happens: planning fails outright, partway through, after the Director and Scene Planner already ran.
+
+**R7.** `resolve_constraint_bundle` was reading `max_fragment_duration_s` - a pre-flight DIAGNOSTIC (§2.5.1's dead-stop ceiling, explicitly uncalibrated, Q5 still open) - as the Shot Planner's real validation bound. Fixed by giving `StylePacingBand` its own `max_shot_duration_s_override` field (3.5 for `retention_fast`, same number as before, now independent rather than borrowed). Also replaced three `x or y` reads with `x if x is not None else y` in the same function - the `or` form silently treated a legitimate `0`/`0.0` override as unset, unreachable today but a live trap for a future style. 2 new tests prove the fields are independent (moving one doesn't move the other) and that a `0.0` override is honoured.
+
+**R3, R4 (documentation only, no code was wrong).** Both were wrong JUSTIFICATIONS, not bugs: `build_duration_fit_fragment`'s `trim` branch already handled the real numbers correctly. R3 - the "±0.5s gap" bound is only true in the HOLD direction; the TRIM direction is unbounded below the Kling API's 3s floor (up to -2.2s at `retention_fast`'s 0.8s shot floor) - corrected in `motion.py`'s docstring and in §2.5/Q4/§4.2, plus a new cost note added to §4.2 (every `retention_fast` motion shot clamps up to a paid 3s request regardless of the shot's real length). R4 - the "0.6s and 1.33s shots prove sub-floor shots work in production" claim, cited three times, pointed at the wrong fixtures (both cited shots are in OTHER projects with `narration_locked: true`, which only proves the already-uncontested A26 exemption) - all three citations replaced with the argument that actually holds (A26 exempts measured durations regardless of the planning-time floor).
+
+**R6 (user-confirmed decision: `documentary_archival` becomes the real default look).** `render_style=None` and `render_style="documentary_archival"` produced identical planning constraints but different pixels - `resolve_constraint_bundle(None)` already resolved through `settings.default_render_style`, but `grade_filter_fragment(None)` returned no grade at all. Fixed by making the grade function resolve `None`/an unrecognised name through `settings.default_render_style` too, matching the constraint-bundle function exactly. **This changes the output bytes of every existing style-less project** - a deliberate, confirmed trade, correctly caught as a re-render by the fingerprint (I5), since `render_style` was already part of its payload. 2 existing tests updated to assert the new behaviour (`None` now equals an explicit `documentary_archival` call, not `None`).
+
+**R5 (user-confirmed decision, chosen via a concrete scenario: split the field).** §2.1 promised the grade stays freely changeable ("re-render is cheap") separately from planner-facing levels that freeze at planning start - but there was only one field (`render_style`) and one freeze, so the grade was in practice the MOST locked knob, not the most flexible. Fixed with a new, independent `TimelineMetadata.grade_style: str | None` field and a new endpoint, `POST /{project_id}/grade` - deliberately NOT behind the freeze check `POST /style` has, since it never touches planning inputs, only which `eq` filter the renderer applies. `grade_style=None` (the default) falls through to `render_style`'s own grade unchanged; setting it overrides the grade at any time, including after a project has already rendered. `RenderStep` now reads `grade_style or render_style`. Persisted via `TimelineService.append_version` with `owns={"metadata.grade_style"}` - a dotted-path ownership grant the additive-only checker (`app/timeline/additive.py`) already supported, verified directly rather than assumed. 5 new pure unit tests exercise that mechanism directly: changing `grade_style` alone is allowed when owned, rejected without ownership (once a value is already set - filling a null field is always allowed regardless, which is a different, correctly separate rule), clearing it back to `None` is allowed, and owning `grade_style` grants no ownership over `render_style`.
+
+**R10.** A1's own stated requirement - "the review screen must play a clip" - was never met; `GET /shots/{shot_id}/asset` only ever serves a still frame, even for a bound video. New `GET /{project_id}/shots/{shot_id}/clip` streams the real video bytes (`media_type="video/mp4"` - NOT `mime_type_for_extension`, which only knows image extensions and would have silently mislabelled this as `image/png`, a bug caught before it shipped, not after), 404 for a still or an unbound shot. `/asset`'s own frame-extraction behaviour is unchanged - the right thing for a thumbnail grid, the wrong thing for judging motion, which is exactly what A8's bake-off needs and R10 names.
+
+**Verified throughout, not merely written:** every fix above landed with its own new unit test(s) alongside it (18 new tests total across `test_generate_timeline_style_bounds.py`, `test_styles.py`, `test_grading.py`, `test_grade_style_ownership.py`), `ruff`/`black`/`mypy` clean on every file touched, `python -c "import app.main"` clean after the new endpoint, and the full 367-test unit suite (up from 355) green with zero regressions. Per this session's standing instruction, the DB-backed integration/e2e suite was NOT run during this work - deferred to a single run once the currently-planned work is done, same discipline as Track D level 3.
+
+**Left open, deliberately:**
+- **R2's second half** (level 2's suggestions are iterative but presented as one-shot) - a product decision, explicitly the LOWEST-urgency item in §13.13's own order, not touched.
+- **R8** (ElevenLabs speed support - unverified, 10-minute live API check) - needs a real, tiny spend against the configured ElevenLabs account; not yet asked for or approved, so not done. ⚠ Per §13.13's own warning, `retention_fast` should not reach a real user until R1 (done) AND R8 (open) both close - the style is safe to plan and render now, but its narration will not yet match its cutting speed.
+
+### 2026-08-18 — Three follow-up findings on the §13 review, from a second reviewer
+
+Found while re-reading §13.1/§13.7 against this environment's actual configured values (not the code's own defaults) - real, independently useful catches, none of them re-opening a closed item:
+
+1. **§13.1 correction, not a re-open.** The "kills `retention_fast` even on a 13-shot script" claim is true of the code's *default* `min_shot_duration_s` (1.5s) but this environment's `.env` overrides `MIN_SHOT_DURATION_S=0.5`, below `retention_fast`'s own 0.8s floor - so the duration-based half of R1 could never have fired on this exact machine; only the 40-vs-58 shot-cap half was reachable here, and it alone was already sufficient to make R1 fully blocking. §13.1 corrected to say so precisely rather than imply the 13-shot failure was universal.
+2. **A residual, narrower version of R1's own shape survives the fix, found and documented (not closed) - mechanism sharpened by a third reviewer pass the same day.** `script_preflight_margin_fraction=0.2` widens `check_feasibility`'s ceiling check (`3.5 x 1.2 = 4.2s` for `retention_fast`) but `generate_timeline.py::_validate_against_style` enforces the same `max_shot_duration_s_override` (3.5s) with no margin at all. The first pass under-stated the risk as "only a planner estimate, never a real narrated shot" - true of the FINISHED video, but not of whether the RUN survives. **The sharper mechanism, verified directly against the real code:** a fragment landing in 3.5-4.2s is ATOMIC (`fragments.py`: "a fragment is the finest unit a shot may own" - unsplittable, unmergeable by the Shot Planner), and the repair loop DOES check this bound (`shot/planner.py::_make_validator` takes `max_shot_duration_s` and retries on violation) - so the model has no legal move that shortens the shot. Two outcomes only: it under-estimates `duration_s` (passes planning, `narration_locked` corrects it later, no harm to the finished video) or it reports honestly (~3.6s), the repair loop cannot converge against a bound the shot can never satisfy, retries exhaust, and the run dies - exactly R1's own failure mode, reached a different way. Which branch happens depends on the model choosing to mis-estimate, not a property this code controls. Still deliberately left open (narrowing the margin reintroduces false pre-flight rejections; widening planning's real bound weakens an actual creative ceiling for an unrelated reason) - but `preflight.py`'s own comment now states the real two-branch mechanism, not the softer estimate-only framing.
+3. **A second, untouched copy of R7's exact `or`-trap**, found in `preflight.py:179` (`shot_cap = band.max_shots_override or settings.max_shots_per_project`) - R7's fix only touched `styles.py`'s own copy of this read. Fixed the same way (`if ... is not None else`), with a new test (`test_a_zero_shot_cap_override_is_honoured_not_treated_as_unset`) proving a synthetic `max_shots_override=0` band is honoured rather than silently falling through to the flat default.
+4. **R3's correction never reached its own primary source paragraph.** The first R3 pass fixed `motion.py`'s docstring, §4.2, and Q4 (§10) - but missed A2's own statement in §1 (the paragraph §13.3 actually quotes from), which still read "the gap is mathematically bounded at ±0.5s" and "the 2 exceptions are +0.10s each" verbatim. Both numbers were wrong there too: the bound is HOLD-direction only (TRIM is unbounded below the 3s Kling floor, down to -2.2s at `retention_fast`'s 0.8s floor), and the two dissolve/fade exceptions are `+0.45s` (`sc_02_sh_01`) and `+0.10s` (`sc_03_sh_03`), not `+0.10s` each. Fixed in place with a correction note, rather than rewriting the original paragraph's own voice.
+
+**Verified:** 8 tests across `test_preflight.py` (1 new) all green, `ruff`/`black`/`mypy` clean. DB suite still not run, same standing deferral.
+
+### 2026-08-18 — Track D level 3 built: the script rewrite, §3.3
+
+**Built as designed, no scope changes from §3.2/§3.3.** `app/script/rewrite.py::rewrite_script` - same `None`-means-"nothing to show" convention `check_suitability` already established (DRY_RUN, no provider, or empty script all return `None`, never a fabricated result), one LLM call via `PlanningLLMProvider.structured_complete` against a new prompt (`app/prompts/script_rewrite/v1.md`), recorded through the same `LlmCallRepository.insert` audit path every other planning call uses.
+
+**All three deterministic backstops from §3.3 implemented as designed:**
+- Numeric tokens preserved as a multiset (`Counter` comparison) - a dropped or invented number rejects the whole rewrite outright, named specifically in the rejection reason (which numbers, not just "numbers changed").
+- Capitalised entities preserved, but as a SET, not a multiset - deliberately allows a second mention to become a pronoun (a legitimate rephrase) while still catching an entity disappearing outright. A small stoplist of common sentence-initial words (`_COMMON_CAPITALIZED_WORDS`) excludes words like "The"/"It" that legitimately move around when sentences get re-split - without it, ordinary rephrasing would trip this check on words that were never real entities. Verified directly with a test for exactly this case.
+- Fragment count actually increased, using the real `split_narration_fragments` - a rewrite that changes wording without increasing fragment count is rejected as a no-op, not accepted as a pointless diff.
+
+**A rejected rewrite is never silently discarded** - `RewriteResult` always carries the attempted text plus every reason it failed, so a caller can show a human what the model tried and why it didn't stick, rather than a bare failure.
+
+**Persistence wired per §3.5, not reopened:** new `ProjectRepository.append_rewritten_script` (both `InMemoryProjectRepository` and `PostgresProjectRepository`) appends a new `ScriptModel` row with `source="rewritten"` - the ONLY path that does; the existing `update()`/`upload_script` path still writes `source="user"` by default, unchanged. `_append_script_if_changed` gained an optional `source` kwarg, backward compatible (existing call site unaffected).
+
+**Endpoint: `POST /{project_id}/script/rewrite`, stateless by default** - mirrors `POST /script/preflight`'s own design (§3.5.3): `script`/`style` travel in the request, so a rewrite can be tried against draft text before it's ever uploaded, and nothing persists unless `persist=True` is explicitly passed AND the rewrite was `accepted` - a rejected rewrite is never persisted regardless of the flag. `persist=True` goes through the same freeze check `upload_script`/`POST /style` already have (refuses once a timeline exists).
+
+**Verified, not merely written:** 13 new pure unit tests (`tests/unit/script/test_rewrite.py`) - a fake `PlanningLLMProvider`/`LlmCallRepository` double, no DB - covering all three backstops individually (including the pronoun-swap and common-word-stoplist cases specifically, so a future edit can't silently make these checks stricter than intended without a test noticing), the three `None`-return cases, an accepted rewrite recording its LLM call and re-running feasibility on the result, and a rejected rewrite still returning its reasons. `tests/unit/script/` in full (29 tests, including the pre-existing preflight/suggestions/styles tests) green. `python -c "import app.main"` succeeds. `ruff`, `black`, `mypy` clean on every file touched.
+
+**Not run yet, per the user's own standing instruction this session:** the DB-backed integration/e2e suite (an API-level test for the new endpoint against a real project/DB would belong in `tests/e2e/`, not yet written) - deferred until the rest of the currently-planned work is done, then run once, matching this session's established discipline for expensive full-suite runs.
+
+**Track D is now fully built** - all three intervention levels (diagnose, suggest, rewrite) exist and are verified at the unit level; only a DB-backed end-to-end API test for the new endpoint remains, deliberately deferred.
+
 ### 2026-08-17 — Plan review: one error corrected, and the plan's real weak point named
 
 Asked to assess the plan as a whole. Findings, including against this document itself:
@@ -989,3 +1066,225 @@ Rendered `m8_test_project`'s real 13 shots through the real, unmodified `render_
 **Verdict, 2026-08-17: holds good.** User watched both files (copied to Desktop for access — the scratchpad path under `AppData\Local\Temp` is hidden by Explorer by default, worth remembering for any future review artifact). Punch-in reads as a deliberate stylistic choice on real archival stills, not a glitch. **Step 0 closes green** — proceeding into Track B/D as planned, with `build_punch_in_expression` as a proven building block rather than an open question.
 
 **Scope note on what was actually validated:** this implementation is zoom-only, centered (`x`/`y` unchanged from the existing zoom movements) — it snaps zoom level, it does not re-frame to a different part of the image. Real punch-in editing sometimes also re-centers; that variant is untested and would need its own check before being assumed to work as well.
+
+---
+
+## 13. Code-vs-plan review, 2026-08-18 — where the code does not match this document, and the fixes
+
+> **Method.** Read this plan in full, then verified its claims against the actual code and the real fixture files rather than against §12's own log. Every number below was produced by *running* the real functions (`check_feasibility`, `suggest_breaks`, `split_narration_fragments`, `build_duration_fit_fragment`, `grade_filter_fragment`, and the real `_motion_filter`/`_ken_burns_filter`/`_normalize_filter`) or read directly out of the fixture JSON — none is inferred from reading code. Where a finding is a wrong *justification* rather than a wrong *behaviour*, it says so.
+>
+> ⚠ **Status, updated 2026-08-18: R1 (both blocking items, which auto-closes R2's first half), R9, R7, R3, R4, R6, R5, and R10 are all FIXED and verified (see §12's matching entry for each) — only R2's second half (transitive suggestions, a product decision, explicitly lowest urgency) and R8 (ElevenLabs speed - needs a real, tiny spend, not yet confirmed) remain OPEN.** This section remains the record of what was found; §12 records what was done about it.
+>
+> **The pattern behind R1, R2 and R4 is worth naming up front, because it is the same mistake three times and it is not a carelessness problem.** This project's verification standard is high *per unit* — §12 is full of "verified, not merely written," and it means it. All three of these slipped through because the check ran at the wrong **altitude**: the resolver was verified but not the run that calls it; the suggestion engine's mechanism was verified but not the user journey through it; two real sub-floor shot durations were found but not the fixture they were attributed to, nor the flag that made them legal. This is the same class of mistake §12's own 2026-08-17 method note already recorded once ("the first correction failed because it read the shared helper without reading the call site that supplies its validator") — recurring, so worth treating as a standing review rule rather than an incident.
+
+### 13.1 R1 — BLOCKING: `retention_fast` cannot complete a run, and the "gap closure" closed the wrong call site — **FIXED 2026-08-18, see §12**
+
+**`app/workflow/steps/generate_timeline.py:124-129` — `GenerateTimelineStep.run()`'s post-planning validation still reads the flat settings:**
+
+```python
+violations = timeline.validate_constraints(
+    max_video_duration_s=settings.max_video_duration_s,
+    max_shots_per_project=settings.max_shots_per_project,   # 40
+    min_shot_duration_s=settings.min_shot_duration_s,       # 1.5
+    max_shot_duration_s=settings.max_shot_duration_s,       # 8.0
+    max_scenes=settings.max_scenes,
+)
+```
+
+Twenty-five lines earlier, at `generate_timeline.py:199-210`, the Shot Planner was handed `resolve_constraint_bundle("retention_fast")` → `(0.8, 3.5, 58)`. And `app/prompts/shot_planner_styles/retention_fast.md` actively instructs the model to use it: *"You will be given a lower minimum shot duration than usual for this reason — use the room it gives you."*
+
+**So the planner is authorised to emit exactly the timeline the next statement rejects.** Two failure modes, both loud, both after the Director, the Scene Planner and every Shot Planner call have been paid for:
+
+- any shot under **`settings.min_shot_duration_s`** fails `_validate_planning_time_shot_bounds` (`narration_locked` is not set yet at planning time) — the *code default* is 1.5s, which is above `retention_fast`'s 0.8s floor and so kills it **even on a 13-shot script**, not only above the cap. **Correction, 2026-08-18:** this environment's own `.env` overrides `MIN_SHOT_DURATION_S=0.5`, *below* `retention_fast`'s floor — so on THIS machine the duration half of R1 could not fire on any script; only the cap half (below) was reachable here, and it alone was still fully blocking, since `retention_fast` needs ~51 shots for a 90s script regardless of the duration floor;
+- more than **40** shots fails `_validate_structural_invariants`, which applies regardless of `narration_locked` and regardless of `min_shot_duration_s` - this half was reachable on this exact machine and is sufficient on its own to make R1 blocking here.
+
+⚠ **§3.2 and §12 both record this gap as closed, and it is not.** The claim — *"closed the same day by Track B's `resolve_constraint_bundle(style)`, which both `generate_timeline.py` and `shot/planner.py` now call instead of reading `settings.*` directly"* — is true of `shot/planner.py`, and true of `generate_timeline.py:77`. But line 77 is inside **`_is_fully_planned`**, the resume/idempotency predicate. It is not the gate that fails the run. Two validators of the same invariant now disagree, and the comment at `generate_timeline.py:68-76` asserts the closure that did not happen.
+
+**`app/script/preflight.py:14-29`'s own module docstring still warns that this gap is open — it is now the only accurate record of it in the repository, and it should not be deleted until the fix below lands.**
+
+**Why 513/513 green never caught it:** nothing puts `retention_fast` through `GenerateTimelineStep` or `Timeline.validate_constraints`. Every `retention_fast` test is a unit test of the registry (`test_styles.py` asserts `resolve_constraint_bundle` returns `(0.8, 3.5, 58)` — which it correctly does) or of a pure function. The end-to-end path was never exercised.
+
+**Fix (three lines, plus the test that is the actual deliverable):**
+
+```python
+# generate_timeline.py, inside run(), replacing lines 124-129
+min_shot_duration_s, max_shot_duration_s, max_shots_per_project = resolve_constraint_bundle(
+    timeline.metadata.render_style
+)
+violations = timeline.validate_constraints(
+    max_video_duration_s=settings.max_video_duration_s,
+    max_shots_per_project=max_shots_per_project,
+    min_shot_duration_s=min_shot_duration_s,
+    max_shot_duration_s=max_shot_duration_s,
+    max_scenes=settings.max_scenes,
+)
+```
+
+⚠ **The test matters more than the change.** A test that builds a `retention_fast` Timeline with 50 shots at 0.9s and asserts `validate_constraints` passes under the resolved bundle *and* fails under the flat settings is what stops this regressing a third time. Better still, one asserting that both call sites in this file resolve their bounds identically — the divergence, not the values, is the defect.
+
+### 13.2 R2 — BLOCKING: pre-flight certifies scripts that planning then rejects — **first half FIXED (auto-closed by R1), second half (transitive suggestions) still OPEN as a product decision, see §12**
+
+Reproduced against the real fixture script by iterating `suggest_breaks` → apply → `check_feasibility`:
+
+| pass | `N` | avg | longest | pre-flight | real planning (today) |
+|---|---|---|---|---|---|
+| original | 13 | 3.54s | 8.0s | ❌ blocked | — |
+| +7 suggestions | 20 | 2.32s | 4.3s | ❌ still blocked | — |
+| +10 more | 30 | 1.57s | 2.64s | ✅ passes | ❌ dies (sub-1.5s shots) |
+| +10 more | 40 | 1.20s | 2.15s | ✅ passes | ❌ dies |
+| +3 more | 43 | 1.12s | 2.15s | ✅ passes | ❌ dies (43 > 40, **and** sub-1.5s) |
+
+`preflight.py:179` checks `band.max_shots_override` (58); planning checks 40. **The pre-flight built to prevent a dead planning run now causes one** — and does so precisely on the scripts it has just certified, which is worse than not checking, because the user has been told it is safe. Closes automatically with R1's fix; recorded separately because the *reasoning* is separate (R1 is a mismatch between two call sites, R2 is a mismatch between a pre-flight promise and its enforcement).
+
+⚠ **Second, independent finding in the same table: level 2 is iterative and §3.2 does not say so.** §3.2 presents level 2 as one pass of per-span accept/reject. Accepting **every** suggestion on the reference fixture leaves the script still infeasible (`N`=20, 2.32s/shot against a 1.75s target). It takes two further rounds to pass. Nothing in `ScriptPreflightResponse` or in this plan signals that re-running yields more suggestions — so the honest reading of the current UX is "accept everything, still rejected, no path forward offered."
+
+**Fix:** either return the suggestions transitively (re-split after each proposed mark and keep proposing until the style's band is met, so one response carries the full set), or add a `further_suggestions_available: bool` to `ScriptPreflightResponse` and say so in §3.2. The first is better product for the same amount of code; the second is at least honest about a limitation. Silently requiring the user to guess is neither.
+
+### 13.3 R3 — A2's "gap bounded at ±0.5s" is false, and it fails worst exactly where this plan needs it most — **FIXED (documentation), see §12**
+
+`app/providers/fal_video.py:38` clamps with `max(3, min(15, round(duration)))`. **Any shot shorter than 2.5s therefore asks Kling for 3s**, and the ±0.5s bound A2 rests its whole hold-the-last-frame argument on does not hold. Measured across every shot in `m8_test_project` — the fixture A2 says it measured:
+
+| shot | `duration_s` | requested | real gap |
+|---|---|---|---|
+| `sc_02_sh_03` | 2.20s | 3 | **−0.80s** |
+| `sc_05_sh_02` | 2.30s | 3 | **−0.70s** |
+| `sc_03_sh_02`, `sc_04_sh_01` | 4.50s | 4 | +0.50s (the true worst *hold*) |
+
+Two corrections to A2's own numbers, both minor in themselves and both symptomatic:
+
+- The **±0.5s** framing is right for the *hold* direction only. The *trim* direction is unbounded below — up to −2.2s at `retention_fast`'s 0.8s floor.
+- *"The 2 exceptions are +0.10s each"* — they are **+0.45s** (`sc_02_sh_01`, dissolve 0.35s) and **+0.10s** (`sc_03_sh_03`, fade 0.0s). The "6 of 8 held tails fall inside their own outgoing dissolve" claim does check out exactly.
+
+⚠ **This is a wrong justification, not a bug** — `build_duration_fit_fragment`'s `trim` branch handles a −2.2s gap correctly, and the emitted stream is still exactly `target_duration_s`, so D5's `xfade` arithmetic is safe. But `app/renderer/motion.py:150-158` repeats the wrong bound as its recorded rationale, and A2's own *"caution: this is a creative decision wearing an arithmetic costume — document the choice or it will be 'fixed' later"* applies to its own arithmetic here.
+
+**The real consequence is economic, and it lands on `retention_fast`.** With shots of 0.8–3.5s, **every** motion shot clamps up to a 3s Kling request; you pay ~50¢ and discard up to 2.2s of the clip. §4.2's decision that *"fast-cut is allowed to lean harder on paid generation"* was taken without this. The style with the highest shot count is the one where paid motion is least economical per second delivered.
+
+**Fix:** none required in `build_duration_fit_fragment`. Correct A2's and `motion.py`'s stated bound to *"−(clamp floor − duration) ≤ gap ≤ +0.5s; unbounded below only because of the 3s API floor"*, and add the cost note to §4.2. If the economics matter, the real lever is making A4's per-project cap style-aware — a `retention_fast` project should cap motion shots far lower than a `documentary_archival` one, because each one is worth less.
+
+### 13.4 R4 — the "0.6s and 1.33s shots" evidence is misattributed, and proves the wrong thing — **FIXED (documentation), see §12**
+
+Cited **three times** (§2.1, §2.5, §4.2) as the load-bearing evidence that lowering `min_shot_duration_s` to 0.8s is safe: *"the fixture's own 0.6s and 1.33s shots prove that path works in production."*
+
+Checked directly against every fixture:
+
+| fixture | shots | min duration | `narration_locked` |
+|---|---|---|---|
+| `m8_test_project` (**"the fixture"** per this doc's header) | 13 | **2.20s** | not set |
+| `hinglish_final_project` | 19 | **0.615s** | **true** |
+| `captions_test_project` | 19 | **1.333s** | **true** |
+| `hinglish_test_project` | 14 | 1.696s | not set |
+| `hindi_test_project` | 11 | 2.246s | not set |
+
+Neither cited shot is in `m8_test_project`. They are in two *other* projects, and — the part that matters — **both of those have `narration_locked: true`**. Those durations exist only *after* narration, where `_validate_planning_time_shot_bounds` is skipped entirely. So they demonstrate that the A26 exemption works, which was never in doubt; they say nothing about whether the Shot Planner can be trusted with a 0.8s floor at planning time, which is the claim they are cited for.
+
+**Fix:** documentation only. Replace the citation in all three places with the argument that actually holds — *"lowering the planning-time floor affects only the planner's pre-narration estimate, because A26 exempts measured durations regardless"* — which §4.2 already states correctly one line away from the bad citation. Delete the fixture claim; it adds no support and it is wrong.
+
+### 13.5 R5 — the three-level mutability model collapsed into one frozen field — **FIXED 2026-08-18 (option 2, split the field — user-confirmed via scenario), see §12**
+
+§2.1's table is explicit that a style binds at levels with **different mutability**: render settings are *"changeable any time; re-render is cheap"*, separately from planner prompts and the constraint bundle, which freeze when planning starts.
+
+In the implementation there is one field and one freeze. The grade reads `timeline.metadata.render_style` (`app/renderer/grading.py:81`), copied from `ProjectModel.render_style` at `create_initial` and never re-read; `POST /{project_id}/style` refuses once a timeline exists (`app/api/projects.py:340`, check at `:379`). **So the grade — the cheapest, most eyes-on, most iterated knob in Tier 1 — cannot be changed at all after planning starts.** The level §2.1 calls freely changeable is in practice the most locked.
+
+`set_render_style`'s docstring documents the divergence honestly and gives a real reason for it (style affects the Shot Planner before any Timeline exists to approve, so "the gate" for style is planning, not approval). That reasoning is sound for the *planner* levels. It was then applied to the render level as well, because they share one field.
+
+⚠ **§2.1 has not been updated, so it still instructs the frontend to *"keep the picker live on the progress screen until approval; read-only afterwards."* A picker built to this plan as written will `400`.**
+
+**Fix — pick one and write it down:**
+
+1. **Accept the collapse.** Rewrite §2.1's table to say all three levels freeze at planning start, and correct the frontend guidance. Cheapest and honest; loses the "re-render in a different grade" capability the plan sold.
+2. **Split the field.** `render_style` (frozen at planning) for planner-facing levels, plus a mutable grade-facing field on the Timeline. Restores §2.1's model. `render_style` is already in the render fingerprint via the timeline-document dump, so a mutable grade field inherits cache invalidation for free — genuinely cheap, and it is what makes "iterate on the grade against a real render" possible, which §9 says is where the non-compressible human time goes.
+
+Recommendation: **(2)**, precisely because §9 identifies grade tuning as eyes-on work that does not parallelise. Making the one knob that needs iteration the one knob that cannot be changed post-planning is the wrong trade.
+
+### 13.6 R6 — `documentary_archival` is no longer "today's behaviour, named", and `None` means two different things — **FIXED 2026-08-18 (option 1, `documentary_archival` is the real default — user-confirmed), see §12**
+
+§2.8 defines `documentary_archival` as today's behaviour with a name attached. It now carries a real grade — `eq=contrast=1.05:saturation=0.85:brightness=0.0` — so it changes the picture.
+
+Worse, the `None` sentinel diverges across two modules that each claim "one vocabulary, not two":
+
+| call | result |
+|---|---|
+| `resolve_constraint_bundle(None)` | falls back via `settings.default_render_style` → **documentary_archival's bundle** |
+| `grade_filter_fragment(None)` | **`None` — no grade at all** (`grading.py:81`) |
+
+So `render_style=None` and `render_style="documentary_archival"` produce **identical constraints and different pixels**. §12's Track B entry verified the first half of that ("byte-identical to the flat `settings.*` values") and the grading entry verified the second half in isolation; neither compared them.
+
+**Fix:** make `grade_filter_fragment` resolve `None` through `settings.default_render_style`, exactly as `resolve_constraint_bundle` already does, so one sentinel has one meaning. ⚠ **This changes the output bytes of every existing style-less project** — which the fingerprint will correctly notice, so it is a re-render, not a silent drift. That is the right trade *if* `documentary_archival` is meant to be the default look. If instead "no style" is meant to remain literally today's ungraded picture, then §2.8's claim that `documentary_archival` is today's behaviour is the thing to correct, and `STYLE_GRADES["documentary_archival"]` should be the identity. **Either is defensible; having both at once is not.**
+
+### 13.7 R7 — the pre-flight dead-stop ceiling is being used as the planner's `max_shot_duration_s` — **FIXED 2026-08-18, see §12**
+
+`app/script/styles.py:119-121`:
+
+```python
+min_shot_duration_s = band.min_shot_duration_s_override or settings.min_shot_duration_s
+max_shot_duration_s = band.max_fragment_duration_s or settings.max_shot_duration_s   # <-- here
+max_shots_per_project = band.max_shots_override or settings.max_shots_per_project
+```
+
+`max_fragment_duration_s` is a **pre-flight diagnostic** — the §2.5.1 dead-stop ceiling for a single *narration fragment*, derived as `target_shot_duration_s * _DEAD_STOP_CEILING_MULTIPLIER`, where that multiplier is labelled in its own comment as *"a starting point, not a measured constant… no real long fragment has been rendered against this ceiling yet."* It is now also the Shot Planner's **hard validation bound on a shot's duration**. Two different concepts share one number, so tuning a not-yet-calibrated diagnostic (Q5, explicitly still open) silently moves a planning constraint.
+
+The `StylePacingBand` docstring's promise that the two numbers *"can never drift apart for one style"* is what hides this: it describes the tie between the average target and the fragment ceiling, and reads as if it also covers this reuse.
+
+Also: **`x or y` on numerics** — a `0` or `0.0` override falls through to the settings value. Not reachable with today's three styles; a live trap for the fourth, and `stillness` is exactly the style that might legitimately want a `0.0` bound one day.
+
+**Fix:** give `StylePacingBand` an explicit `max_shot_duration_s_override: float | None = None`, set it to `3.5` for `retention_fast`, and stop reading `max_fragment_duration_s` in `resolve_constraint_bundle`. The values do not change today; the coupling does. In the same pass, replace the three `or`s with `if … is not None else`.
+
+### 13.8 R8 — Route 1 shipped without Route 2's speed component, which §2.5 forbids in bold — **OPEN, needs a real ElevenLabs API check (tiny real spend) — confirmation not yet requested**
+
+Verified absent everywhere: no `speed` in `Settings`, none in `NarrationRequest`, and `compute_narration_content_hash` (`app/providers/elevenlabs.py:57`) is still `f"{text}|{voice_id}|{model}|{output_format}"`. The ⚠ *"speed support on the configured ElevenLabs model is unverified — do it before building"* was never done.
+
+§2.1 records narration speed as **decided, in v1**. §2.5 says, in bold: *"⚠ Ship both routes together. Route 1 alone gives a fast-looking video over documentary-paced narration, which reads as mismatched rather than fast — and the punch-ins get blamed when the problem is the voice. Route 2's speed component is what closes that specifically."*
+
+What has shipped is Route 1 in full (punch-in, cuts-only, grade) plus Route 2's *structural* half (finest granularity, lowered floor, higher cap — none of which works today, see R1) and **none of its voice half**. ⚠ **Track D level 3 makes this more pronounced, not less:** it is now the third mechanism for making the cutting faster, while the delivery stays untouched. Every pacing lever built so far acts on the script or the picture; the one that acts on the voice is the one still missing.
+
+**Fix, in order:** (a) 10 minutes checking `speed` on the configured ElevenLabs model, as §2.1 already specifies; (b) `speed` into `compute_narration_content_hash` **in the same commit as the field itself** — a `speed` that reaches the API but not the key silently serves wrong-speed cached audio on the second run, which is exactly the failure §2.1 warned about; (c) `~1.2×` on `retention_fast`'s band. Until (a)–(c) land, `retention_fast` should not be offered to a real user even after R1 is fixed — it will be judged on a mismatch this plan predicted in writing.
+
+### 13.9 R9 — the claim §3.4 retracted is shipping as a user-facing string — **FIXED 2026-08-18, see §12**
+
+`app/script/preflight.py:181-184` emits:
+
+> *"…exceed '{style}''s shot cap of {shot_cap} — planning would have to merge fragments, producing a slower cut than intended, or fail outright"*
+
+§3.4 is an entire section, corrected twice, establishing that **this merge behaviour does not exist**: `max_shots_per_project` is not in `_make_validator` at all, the cap is checked after `run_structured_with_repair` returns and raises `PermanentError` directly, and *"the model is never asked to reduce shot count, so it never quietly complies."* The retracted claim is what users are being shown.
+
+**Fix:** replace with what §3.4 established — *"…exceeds '{style}''s shot cap of {shot_cap}. Planning would fail partway through, after the Director and Scene Planner have already run. Add fewer breaks, or choose a slower style."* One string, and it names the actual fix, which was §3.4's own revised justification for keeping the check at all.
+
+### 13.10 R10 — A6's stated requirement is unmet: the review screen still cannot play a clip — **FIXED 2026-08-18 (endpoint built, not yet e2e-tested against a real DB — deferred per this session's own standing rule), see §12**
+
+§1's A6 opens with *"The review screen must play a clip."* There is no endpoint that streams one. `GET /{project_id}/shots/{shot_id}/asset` (`app/api/projects.py:1703`) detects a video at `:1754` and serves a **cached representative JPEG frame** via `cached_video_frame`.
+
+So the human at the one gate — the gate that, since the 2026-08-16 one-gate redesign, *is* the quality check that replaced the automated constraint pass — approves ~50¢ of generated motion by looking at a single still frame of it. ⚠ **This specifically undermines A8's bake-off**, whose whole question is *"does synthetic motion blend beside a 1936 photograph"* — a motion-perception judgement §12 has already correctly noted twice cannot be made from extracted stills.
+
+**Fix:** a `GET /{project_id}/shots/{shot_id}/clip` streaming the bound `generated_clip.local_path` when it is a video (`FileResponse`, `Cache-Control: no-cache`, matching `/asset`'s own reasoning for that header), 404 when the binding is a still. Small. The `/asset` frame extraction stays as-is — a thumbnail is the right thing for a grid, and the wrong thing for an approval decision.
+
+### 13.11 Smaller items, all verified, none blocking
+
+- **§9's arithmetic does not close.** Per-track figures sum to 40–51 days; the header table says B is *"~20 d (all)"* where Tier 1+2+3 is 13–17; §12's review entry concludes *"~50 rather than ~35"* and 35 appears in neither. The 1.5×-the-estimates recommendation is sound and is independently supported by the docstring standard it cites — but its base number is not in this document.
+- **§2.5.1's "fails `max(fragment)` by 4.5×"** measures the 7.9s fragment against the **1.75s average target**; the shipped ceiling is **3.5s**, i.e. 2.3×. Same headline number, two denominators. And `script_preflight_margin_fraction = 0.2` stacks on the 2.0× multiplier, so the real gate is **4.2s — 2.4× the style's own target passes as feasible.** Not wrong, but Q5's calibration should be done against the effective number, not the nominal one.
+- **A3a's cost table** quotes ~42¢ for both rows; `$0.084/sec` is the **text-to-video** published price. Image-to-video's own per-second rate was never checked, so the comparison that decided the variant used one side's number for both. The decision itself rests on the style-anchor argument, which is unaffected.
+- **The music library is 54 tracks — 6 moods × 3 energies × 3.** §5.1 says in bold: *"⚠ Do not build the full cross-product. 6 moods × 3 energies × 2–3 tracks is 36–54 tracks to source and verify **by ear** — human time that does not compress. Add a small number of energy-specific categories instead."* 54 is the top of exactly that range. Either the caution was consciously overridden — defensible, but not recorded as a decision anywhere — or the cross-product was built by default. Worth one line in §12 stating which, since the reason it was cautioned against (human listening time) is a cost that has now either been paid or been skipped.
+- **`bpm` is `null` for all 54 tracks.** §5.2's "BPM as a manifest field — a human types it in, free now, awkward later" was followed structurally: the field exists in `manifest.json`. It is unpopulated, so §5.3's tempo-matching ranking has nothing to rank on. Typing 54 integers by ear now is the cheap moment; after the library is in use it is the awkward one §5.2 warned about.
+- **A5's superseded methods are kept unwired** (`_generate_checked_keyframe`, `_generate_checked_image`) — deliberate, and matching the 2026-08-16 image-path precedent, so not a defect. Noting only that there are now two dead constraint-check paths, and a third would be a smell.
+
+### 13.12 What was checked and holds up
+
+Recorded because a review section that lists only faults misrepresents the state of the code.
+
+- **Track A's motion path is correct**, and it is the strongest work in the tracks reviewed. `probe_media`'s Pillow-then-positively-confirm-by-ffprobe rule genuinely preserves GIF flattening (verified against a real animated GIF, not just asserted from the rule). Ken Burns is suppressed on clips at `slideshow.py:174` — a MOTION shot gets no `zoompan` regardless of what `shot.camera` says. Clip audio never reaches the output (`-map [vout]` only, plus `generate_audio: False` at the source). Both fit branches emit exactly `target_duration_s`, so D5's `xfade` offsets are untouched — checked by generating the real fragments:
+  - motion, 3.0s clip in a 3.40s shot → `…,fps=30,tpad=stop_mode=clone:stop_duration=0.400,format=yuv420p`
+  - motion, 3.0s clip in a 2.20s shot → `…,fps=30,trim=duration=2.200,setpts=PTS-STARTPTS,format=yuv420p`
+- **`grading.py`'s fingerprint reasoning is right**, and its test guarding `metadata`'s absence from `_TIMELINE_BOOKKEEPING_FIELDS` is the correct shape — it fails if a future change reopens the gap, rather than restating the assumption.
+- **Budget enforcement covers the new video path** — `check_budget` runs before the keyframe (`_generate_keyframe_once`) and again before the Kling submit, and `insert_pending` persists `job_id` before anything else, so the M7 crash-recovery invariant holds through the new endpoint pair.
+- **`GET .../generate/video` has no submit side effect** and 404s rather than starting a paid job — the property that makes it safe to poll from a browser.
+- **The splitter's tiling is genuinely lossless**, so `check_feasibility`'s `sum(fragment durations)` equals `estimate_duration_s(script)` exactly; the two `D`s cannot drift. An empty script does not crash it either (`split_narration_fragments("")` returns one empty fragment, so the `max()` has something to consume) — checked, because a keystroke-driven endpoint meeting an empty textarea is the obvious way to 500.
+
+### 13.13 Recommended order
+
+1. **R1** — three lines plus the end-to-end test. Do this first and separately, because §3.2 and §12 both currently assert it is already done, which makes it the finding most likely to stay invisible. R2's blocking half closes with it.
+2. **R9** — one string. Free, and it is currently telling users something this document proved false.
+3. **R7** — decouple the diagnostic from the planning bound before Q5's calibration starts moving `_DEAD_STOP_CEILING_MULTIPLIER`, or that calibration will silently retune planning.
+4. **R6** and **R5** — decide what `None` means, and whether the grade is mutable. Both are one-way doors on output bytes, and both get more expensive after the first real project ships in a style.
+5. **R8** — the ElevenLabs speed check is 10 minutes and gates whether `retention_fast` is honest to offer. ⚠ `retention_fast` should not reach a real user until R1 and R8 are both closed.
+6. **R3, R4, §13.11** — documentation and calibration corrections. No code depends on them, but R3's economics should reach §4.2 before A4's cap is tuned, and R4's bad citation should not be relied on by whoever next touches the floor.
+7. **R10** — before A8's bake-off is attempted, not after. Judging motion from a still frame is the one thing that pass exists to avoid.
+8. **R2's second half** (transitive suggestions) — product decision, lowest urgency, highest visible improvement to the pre-flight screen.
