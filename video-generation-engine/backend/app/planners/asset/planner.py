@@ -9,6 +9,7 @@ scene on retry, since `GenerateTimelineStep` only checkpoints once per
 planner stage.
 """
 
+import asyncio
 import uuid
 
 from app.core.errors import PermanentError
@@ -18,6 +19,7 @@ from app.prompts.loader import load_prompt
 from app.providers.base import PlanningLLMProvider
 from app.repositories.llm_call_repository import LlmCallRepository
 from app.schemas.timeline import ASSET_LADDER, AssetPlan, AssetStrategy, PreferredMediaType, Scene
+from app.utils.bounded_gather import bounded_gather, planner_concurrency
 
 
 def _build_user_content(scene: Scene) -> str:
@@ -120,17 +122,9 @@ class AssetPlanner:
         self, *, project_id: str, scenes: list[Scene], max_video_shots_per_project: int
     ) -> list[Scene]:
         system_prompt = load_prompt(self.name, self._PROMPT_VERSION)
-        planned_scenes: list[Scene] = []
-        # A4 (motion_new_styles_and_long_form_videos.md, 2026-08-18): a
-        # running, cross-scene count, checked and failed loudly the
-        # moment it's exceeded - mirrors `ShotPlanner.plan()`'s own
-        # `max_shots_per_project` check exactly (same file structure,
-        # same "the model is never asked to reduce, this just stops the
-        # run" reasoning). At ~50c per video shot vs ~4c per image, this
-        # bounds worst-case spend from an uncalibrated planner run.
-        video_shot_count = 0
+        db_lock = asyncio.Lock()
 
-        for scene in scenes:
+        async def _one_scene(scene: Scene) -> Scene:
             output = await run_structured_with_repair(
                 provider=self._provider,
                 llm_call_repo=self._llm_call_repo,
@@ -141,20 +135,31 @@ class AssetPlanner:
                 user_content=_build_user_content(scene),
                 response_model=AssetPlannerOutput,
                 validate=_make_validator(scene),
+                db_lock=db_lock,
             )
-            video_shot_count += sum(
-                1 for p in output.asset_plans if p.preferred_type == PreferredMediaType.VIDEO
-            )
-            if video_shot_count > max_video_shots_per_project:
-                raise PermanentError(
-                    f"asset planner exceeded max_video_shots_per_project "
-                    f"({max_video_shots_per_project}) after scene {scene.id} - "
-                    f"{video_shot_count} video shots planned so far"
-                )
             plans_by_id = {p.shot_id: _to_domain(p) for p in output.asset_plans}
             new_shots = [
                 shot.model_copy(update={"asset_plan": plans_by_id[shot.id]}) for shot in scene.shots
             ]
-            planned_scenes.append(scene.model_copy(update={"shots": new_shots}))
+            return scene.model_copy(update={"shots": new_shots})
 
+        gathered = await bounded_gather(scenes, _one_scene, concurrency=planner_concurrency())
+        planned_scenes: list[Scene] = []
+        for item in gathered:
+            if isinstance(item, Exception):
+                raise item
+            planned_scenes.append(item)
+        # Cap AFTER gather — same race as the shot cap (Track C §2.4).
+        video_shot_count = sum(
+            1
+            for scene in planned_scenes
+            for shot in scene.shots
+            if shot.asset_plan is not None
+            and shot.asset_plan.preferred_type == PreferredMediaType.VIDEO
+        )
+        if video_shot_count > max_video_shots_per_project:
+            raise PermanentError(
+                f"asset planner exceeded max_video_shots_per_project "
+                f"({max_video_shots_per_project}) - {video_shot_count} video shots planned"
+            )
         return planned_scenes

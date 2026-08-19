@@ -1,9 +1,8 @@
 """Classify a shot's resolved media as a still image or a real motion
 clip (motion_new_styles_and_long_form_videos.md, Track A, A1) - the
 decision `app/renderer/slideshow.py::render_timeline` uses to choose
-between the existing `-loop 1 -t duration` still path and a new
-motion-clip input branch, and to fit a clip's real duration to the
-shot's `duration_s` (A2).
+between the still path (`tpad` / `zoompan`) and a motion-clip input
+branch, and to fit a clip's real duration to the shot's `duration_s` (A2).
 
 ## The classification rule, and why it isn't simpler
 

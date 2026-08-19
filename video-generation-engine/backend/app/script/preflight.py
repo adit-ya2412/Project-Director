@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 
 from app.core.config import settings
 from app.planners.fragments import NarrationFragment, split_narration_fragments
-from app.script.styles import StylePacingBand, get_pacing_band
+from app.script.styles import StylePacingBand, get_pacing_band, resolve_constraint_bundle
 
 # Above this fraction of non-ASCII characters, the script is treated as
 # mixed/non-Latin-script content for calibration purposes (the Hindi/
@@ -152,10 +152,11 @@ def check_feasibility(script: str, style: str) -> FeasibilityResult:
     violations: list[str] = []
     margin = 1.0 + settings.script_preflight_margin_fraction
 
-    if total_duration_s > settings.max_video_duration_s:
+    bundle = resolve_constraint_bundle(style, n_fragments=fragment_count)
+    if total_duration_s > bundle.max_video_duration_s:
         violations.append(
             f"estimated script duration ~{total_duration_s:.1f}s exceeds the "
-            f"{settings.max_video_duration_s:.0f}s project maximum"
+            f"{bundle.max_video_duration_s:.0f}s project maximum"
         )
 
     if band.target_shot_duration_s is not None:
@@ -226,11 +227,7 @@ def check_feasibility(script: str, style: str) -> FeasibilityResult:
     # it lives in a different file): a future style setting
     # `max_shots_override = 0` as a deliberate sentinel would otherwise
     # silently fall through to the flat default here.
-    shot_cap = (
-        band.max_shots_override
-        if band.max_shots_override is not None
-        else settings.max_shots_per_project
-    )
+    shot_cap = bundle.max_shots_per_project
     if fragment_count > shot_cap:
         # R9 fix (§13.9, 2026-08-18): this used to say planning "would
         # have to merge fragments, producing a slower cut... or fail

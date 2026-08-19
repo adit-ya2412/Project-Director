@@ -27,6 +27,7 @@ scope boundary (see the Implementation Guide M5 section): step-level
 resumability, not sub-call-level.
 """
 
+import asyncio
 import uuid
 
 from app.core.errors import PermanentError
@@ -38,6 +39,7 @@ from app.prompts.loader import load_prompt, load_style_fragment
 from app.providers.base import PlanningLLMProvider
 from app.repositories.llm_call_repository import LlmCallRepository
 from app.schemas.timeline import Camera, CreativeContext, Scene, Shot, Transition
+from app.utils.bounded_gather import bounded_gather, planner_concurrency
 
 logger = get_logger(__name__)
 
@@ -277,10 +279,9 @@ class ShotPlanner:
         style_fragment = load_style_fragment(self.name, render_style)
         if style_fragment:
             system_prompt = f"{system_prompt}\n\n{style_fragment}"
-        planned_scenes: list[Scene] = []
-        total_shots = 0
+        db_lock = asyncio.Lock()
 
-        for scene in scenes:
+        async def _one_scene(scene: Scene) -> Scene:
             fragments = split_narration_fragments(scene.narration_text)
             output = await run_structured_with_repair(
                 provider=self._provider,
@@ -294,22 +295,29 @@ class ShotPlanner:
                 validate=_make_validator(
                     scene, fragments, min_shot_duration_s, max_shot_duration_s
                 ),
+                db_lock=db_lock,
             )
-            total_shots += len(output.shots)
-            if total_shots > max_shots_per_project:
-                raise PermanentError(
-                    f"shot planner exceeded max_shots_per_project ({max_shots_per_project}) "
-                    f"after scene {scene.id} - {total_shots} shots planned so far"
-                )
-            planned_scenes.append(
-                scene.model_copy(
-                    update={
-                        "shots": [
-                            _to_domain_shot(s, scene_id=scene.id, fragments=fragments)
-                            for s in output.shots
-                        ]
-                    }
-                )
+            return scene.model_copy(
+                update={
+                    "shots": [
+                        _to_domain_shot(s, scene_id=scene.id, fragments=fragments)
+                        for s in output.shots
+                    ]
+                }
             )
 
+        gathered = await bounded_gather(scenes, _one_scene, concurrency=planner_concurrency())
+        planned_scenes: list[Scene] = []
+        for item in gathered:
+            if isinstance(item, Exception):
+                raise item
+            planned_scenes.append(item)
+        # Cap check AFTER the gather (Track C §2.4) — a running total
+        # inside the concurrent body would race.
+        total_shots = sum(len(s.shots) for s in planned_scenes)
+        if total_shots > max_shots_per_project:
+            raise PermanentError(
+                f"shot planner exceeded max_shots_per_project ({max_shots_per_project}) "
+                f"- {total_shots} shots planned"
+            )
         return planned_scenes

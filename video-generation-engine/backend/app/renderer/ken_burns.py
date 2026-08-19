@@ -8,14 +8,14 @@ rather than a slideshow.
 
 `zoompan`'s `zoom` variable is the PREVIOUS output frame's zoom level -
 it only accumulates correctly across `d` frames generated from a SINGLE
-input frame. Feed it a `-loop 1 -t duration` input (many decoded copies
-of the same still, which is how every OTHER shot in this renderer plays
-a static image for its duration) and zoompan sees a "new" input frame
-on every step, resetting `zoom` to 1 each time - the visible stutter
-this module's whole job is to avoid. The fix (`app/renderer/slideshow.py`
-callers of `zoompan_filter_graph`) is to hand zoompan EXACTLY one decoded
-frame and let its own `d`/`fps` parameters generate the whole shot's
-duration internally, rather than pre-looping the input at all.
+input frame. Feed it a looping multi-frame input and zoompan sees a
+"new" input frame on every step, resetting `zoom` to 1 each time -
+the visible stutter this module's whole job is to avoid. STATIC
+stills used to be that looping input (`-loop 1 -t`); they are not
+any more (Track C §4.1b, `tpad` in the graph). Every still is now a
+single decoded frame. The fix for zoompan itself is unchanged: hand
+it EXACTLY one decoded frame and let its own `d`/`fps` parameters
+generate the whole shot's duration internally.
 
 ## Scope
 

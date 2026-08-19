@@ -94,11 +94,12 @@ class Settings(BaseSettings):
     elevenlabs_voice_id: str | None = None
     elevenlabs_model: str = "eleven_multilingual_v2"
     elevenlabs_output_format: str = "mp3_44100_128"
-    # Rough cost estimate in cents per character (pre-approval estimate and
-    # budget-cap check only - not billing, same spirit as the fal_*_cost_
-    # cents_estimate values above). ElevenLabs bills per character of input
-    # text; refine this after real usage.
-    elevenlabs_cost_cents_per_character: float = 0.018
+    # Pre-approval estimate and budget-cap check only - not billing, same
+    # spirit as the fal_*_cost_cents_estimate values above. Calibrated
+    # 2026-08-19 against ElevenLabs Starter Multilingual v2 (Track C
+    # §3.3): ₹8.80 / 1K chars ≈ 0.0103 ¢/char. The previous 0.018 was a
+    # 1.74× over-estimate; narration is still ~1.4% of the per-minute cap.
+    elevenlabs_cost_cents_per_character: float = 0.0103
 
     # --- Wikimedia (M6+) ---
     wikimedia_user_agent: str = "VideoGenerationEngine/0.1 (https://example.com; you@example.com)"
@@ -222,6 +223,14 @@ class Settings(BaseSettings):
     max_shot_duration_s: float = 8.0
     max_scenes: int = 12
     default_language: str = "en"
+    # Track C C1: scripts with more than this many fragments take Path B
+    # (act pass, then per-act scene planning). Deliberate guess, safe
+    # only in this direction (§11 Q2) — do not raise without measuring.
+    scene_planner_act_threshold: int = 70
+    min_acts: int = 3
+    max_acts: int = 7
+    # Hard ceiling for length-aware max_video_duration_s (10 min).
+    max_long_form_duration_s: float = 600.0
 
     # A4 (motion_new_styles_and_long_form_videos.md, 2026-08-18): an
     # absolute cap, not a fraction of shot count - `fal_video_cost_cents_
@@ -266,6 +275,28 @@ class Settings(BaseSettings):
     max_concurrent_image_jobs: int = 4
     max_concurrent_video_jobs: int = 2
     max_concurrent_asset_downloads: int = 8
+
+    # Track C §3.2 / §11 Q4: four consumers of `bounded_gather`, four
+    # different quantities. A semaphore approximates TPM; per-call
+    # backoff is what actually absorbs a 429. `RateLimiter` (calls/sec)
+    # matches none of these and must not be reused — it stays on the
+    # Wikimedia path, where calls/sec genuinely is the constraint.
+    # ElevenLabs Starter concurrent-request cap (not 4–6; Q4 withdrew
+    # that guess).
+    narration_concurrency: int = 3
+    # ~34% of gpt-5.6-terra's 500,000 TPM at ~1,750 tokens/call and
+    # ~12 calls/min per in-flight slot. Ceiling 16; do not start there
+    # — 8 leaves room for a second project planning concurrently.
+    # Shot planner and asset planner share this number (same TPM
+    # budget); the two loops stay sequential with respect to each
+    # other. See `planner_concurrency()`.
+    planner_concurrency: int = 8
+    # ffmpeg_run_concurrency = max(1, cpu_count - ffmpeg_reserved_cores).
+    ffmpeg_reserved_cores: int = 2
+    # Per-item TransientError retries inside bounded_gather, so a 429
+    # never reaches step level (§2.5). Independent of the engine's
+    # own step-level max_attempts.
+    bounded_gather_max_attempts: int = 3
 
     # --- API ---
     api_host: str = "0.0.0.0"

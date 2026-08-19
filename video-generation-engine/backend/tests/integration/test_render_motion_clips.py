@@ -165,9 +165,9 @@ async def test_ken_burns_never_runs_on_a_motion_clip_even_if_the_shot_requests_i
 
 async def test_a_motion_clip_and_a_still_crossfade_together_at_the_right_total_duration(tmp_path):
     """The riskiest combination for A1: `_render_run` mixes a real
-    decoded clip with a plain `-loop 1 -t duration` still in the SAME
-    xfade chain - both must land on identical stream shapes for the
-    crossfade arithmetic to hold, exactly the property
+    decoded clip with a static `tpad` still in the SAME xfade chain -
+    both must land on identical stream shapes for the crossfade
+    arithmetic to hold, exactly the property
     `test_render_ken_burns.py` already proves for a still/Ken-Burns mix."""
     clip_path = tmp_path / "clip.mp4"
     still_path = tmp_path / "still.png"

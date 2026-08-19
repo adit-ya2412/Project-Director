@@ -1,13 +1,13 @@
-"""Normalise a shot's resolved media to a single still frame the slideshow
-renderer can actually loop.
+"""Normalise a shot's resolved media to a single still frame.
 
-`render_timeline` feeds every shot image to ffmpeg as `-loop 1 -t <dur> -i
-<file>`. That is correct for a plain still (the `image2` demuxer accepts
-`-loop`), but ffmpeg picks its demuxer from the file's CONTENT, and an
-animated format gets a different demuxer that has no `loop` input option -
-ffmpeg then aborts the whole render with "Option loop not found" before
-producing a single frame. One animated GIF among a shot's assets therefore
-takes down the entire video, not just its own shot.
+`render_timeline` feeds every still to ffmpeg as a single-decode `-i`
+(Track C §4.1b: duration comes from `tpad` / `zoompan`, never `-loop`).
+ffmpeg picks its demuxer from the file's CONTENT, and an animated
+format (GIF) is a multi-frame stream — the static/`tpad` path would
+then hold the *last* frame, and Ken Burns would see a new input frame
+every step. One animated GIF among a shot's assets therefore still
+has to be flattened to its first frame here, even though nothing
+loops any more.
 
 This is not hypothetical: the asset ladder legitimately returns GIFs.
 Wikimedia Commons stores plenty of maps and process diagrams as GIF, and
@@ -32,14 +32,14 @@ from app.renderer.slideshow import RenderSettings, run_ffmpeg
 
 logger = get_logger(__name__)
 
-# Formats ffmpeg's image2 demuxer loops happily when they hold a single
-# frame. GIF is absent on purpose - even a single-frame GIF is opened by
-# the gif demuxer, which rejects `-loop`.
+# Formats that decode as a single still frame. GIF is absent on
+# purpose — even a single-frame GIF is opened by the gif demuxer as
+# an animated stream.
 _LOOPABLE_STILL_FORMATS = frozenset({"JPEG", "PNG", "BMP", "TIFF"})
 
 
 def needs_normalising(path: Path) -> bool:
-    """True if ffmpeg would refuse to `-loop` this file as a still."""
+    """True if this file is not a single still frame ffmpeg can `-i`."""
     try:
         with Image.open(path) as image:
             image_format = image.format

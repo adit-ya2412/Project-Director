@@ -233,6 +233,10 @@ class Scene(BaseModel):
     narration_text: str = ""
     duration_s: float = Field(ge=0.0)
     shots: list[Shot] = Field(default_factory=list)
+    # Track C C1 / §11 Q3: set by hierarchical (Path B) scene planning
+    # when N > 70. None for every project below that threshold and every
+    # timeline that predates this field. Music (C7) groups by this.
+    act_id: str | None = None
 
 
 class TimelineMetadata(BaseModel):

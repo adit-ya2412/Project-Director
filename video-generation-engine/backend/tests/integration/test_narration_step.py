@@ -5,19 +5,27 @@ cap (both narration's own spend and its folding into the SAME cap
 `ResolveAssetsStep` already checks), and the over-`MAX_VIDEO_DURATION_S`
 loud failure.
 
+Track C C2: disk-fallback after a DB wipe, unique-by-hash gather,
+ElevenLabs concurrency cap 3, and the Starter per-character cost.
+
 No real ElevenLabs call: `ElevenLabsNarrationProvider` is monkeypatched to
 a queued fake with canned alignments, exactly the pattern
 `test_resolve_assets_generation_real.py` uses for fal.ai.
 """
 
+import asyncio
+import json
 import uuid as uuid_module
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import delete
 
 from app.assets.cost import total_project_spend_cents
 from app.core.config import settings
+from app.core.errors import PermanentError
 from app.db.session import async_session_factory
+from app.models.narration import NarrationModel
 from app.providers.base import NarrationRequest, NarrationResult
 from app.repositories.generated_clip_repository import GeneratedClipRepository
 from app.repositories.narration_repository import NarrationRepository
@@ -62,18 +70,30 @@ def _shot(shot_id: str, order: int, span: tuple[int, int]) -> Shot:
 class _FakeElevenLabsProvider:
     name = "elevenlabs"
 
-    def __init__(self, alignment_by_scene: dict[str, dict]) -> None:
+    def __init__(self, alignment_by_scene: dict[str, dict], *, delay_s: float = 0.0) -> None:
         self._alignment_by_scene = alignment_by_scene
+        self._delay_s = delay_s
         self.calls: list[NarrationRequest] = []
+        self.in_flight = 0
+        self.max_in_flight = 0
 
     async def synthesize(self, request: NarrationRequest) -> NarrationResult:
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
         self.calls.append(request)
-        alignment = self._alignment_by_scene[request.scene_id]
-        return NarrationResult(
-            content=f"fake-audio:{request.scene_id}".encode(),
-            alignment=alignment,
-            character_count=len(request.text),
-        )
+        try:
+            if self._delay_s:
+                await asyncio.sleep(self._delay_s)
+            if request.scene_id not in self._alignment_by_scene:
+                raise PermanentError(f"no canned alignment for {request.scene_id}")
+            alignment = self._alignment_by_scene[request.scene_id]
+            return NarrationResult(
+                content=f"fake-audio:{request.scene_id}".encode(),
+                alignment=alignment,
+                character_count=len(request.text),
+            )
+        finally:
+            self.in_flight -= 1
 
 
 def _patch_provider(monkeypatch, provider: _FakeElevenLabsProvider) -> None:
@@ -99,21 +119,25 @@ async def project_id() -> str:
         return project.id
 
 
-async def _seed_approved_timeline(project_id: str, shots: list[Shot]) -> int:
-    scene = Scene(
-        id="sc_01",
-        order=0,
-        title="Scene",
-        narration_text=_TEXT,
-        duration_s=sum(s.duration_s for s in shots),
-        shots=shots,
+def _single_shot_scene(scene_id: str, order: int, text: str) -> Scene:
+    return Scene(
+        id=scene_id,
+        order=order,
+        title=f"Scene {order}",
+        narration_text=text,
+        duration_s=3.0,
+        shots=[_shot(f"sh_{order:02d}", 0, (0, len(text)))],
     )
+
+
+async def _seed_approved_scenes(project_id: str, scenes: list[Scene]) -> int:
+    script = "".join(s.narration_text for s in scenes)
     async with async_session_factory() as session:
         service = TimelineService(session)
-        await service.create_initial(project_id, script=_TEXT)
+        await service.create_initial(project_id, script=script)
 
         def _fill(base):
-            base.scenes = [scene]
+            base.scenes = list(scenes)
             return base
 
         appended = await service.append_version(
@@ -124,6 +148,18 @@ async def _seed_approved_timeline(project_id: str, shots: list[Shot]) -> int:
         )
         await service.approve(project_id, appended.version)
         return appended.version
+
+
+async def _seed_approved_timeline(project_id: str, shots: list[Shot]) -> int:
+    scene = Scene(
+        id="sc_01",
+        order=0,
+        title="Scene",
+        narration_text=_TEXT,
+        duration_s=sum(s.duration_s for s in shots),
+        shots=shots,
+    )
+    return await _seed_approved_scenes(project_id, [scene])
 
 
 def _make_ctx(project_id: str, session) -> RunContext:
@@ -172,13 +208,23 @@ async def test_fresh_synthesis_reconciles_durations_and_approves_new_version(
     assert shots_by_id["sh_02"].duration_s == pytest.approx(0.6)
     assert timeline.metadata.total_duration_s == pytest.approx(1.1)
 
+    content_hash = _content_hash_for(_TEXT, _VOICE_ID)
     async with async_session_factory() as session:
         narration_repo = NarrationRepository(session)
-        row = await narration_repo.get_by_content_hash(_content_hash_for(_TEXT, _VOICE_ID))
+        row = await narration_repo.get_by_content_hash(content_hash)
         assert row is not None
         assert row.cost_cents == len(_TEXT)  # 1 cent/char, monkeypatched above
         spent = await narration_repo.total_cost_cents_for_project(uuid_module.UUID(project_id))
     assert spent == len(_TEXT)
+    narration_dir = settings.storage_root / project_id / "narration"
+    assert (narration_dir / f"{content_hash}.mp3").is_file()
+    sidecar = narration_dir / f"{content_hash}.alignment.json"
+    assert sidecar.is_file()
+    assert set(json.loads(sidecar.read_text(encoding="utf-8"))) >= {
+        "characters",
+        "character_start_times_seconds",
+        "character_end_times_seconds",
+    }
 
 
 async def test_resume_does_not_resynthesize_or_append_a_duplicate_version(project_id, monkeypatch):
@@ -381,3 +427,174 @@ async def test_dry_run_uses_the_fake_provider_and_still_reconciles(project_id, m
     assert spend == 0  # DRY_RUN is free - no check_budget call is even reached
     for shot in timeline.all_shots():
         assert shot.duration_s > 0
+
+
+def test_elevenlabs_cost_matches_starter_multilingual_v2_rate():
+    """Track C §3.3: ₹8.80/1K ≈ 0.0103 ¢/char, not the old 0.018 guess."""
+    assert settings.elevenlabs_cost_cents_per_character == pytest.approx(0.0103)
+
+
+async def test_disk_fallback_restores_row_without_resynthesizing(project_id, monkeypatch):
+    """§3.3: pytest truncates `narration` but leaves the mp3. The sidecar
+    lets the next run re-insert the row instead of re-paying ElevenLabs."""
+    monkeypatch.setattr(settings, "dry_run", False)
+    monkeypatch.setattr(settings, "elevenlabs_voice_id", _VOICE_ID)
+
+    shots = [_shot("sh_01", 0, (0, 5)), _shot("sh_02", 1, (5, 11))]
+    await _seed_approved_timeline(project_id, shots)
+    provider = _FakeElevenLabsProvider({"sc_01": _uniform_alignment(_TEXT)})
+
+    async with async_session_factory() as session:
+        _patch_provider(monkeypatch, provider)
+        result = await NarrationStep().run(_make_ctx(project_id, session))
+        await session.commit()
+    assert result.outcome == "ok"
+    assert len(provider.calls) == 1
+
+    content_hash = _content_hash_for(_TEXT, _VOICE_ID)
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(NarrationModel).where(NarrationModel.content_hash == content_hash)
+        )
+        await session.commit()
+
+    async with async_session_factory() as session:
+        assert await NarrationRepository(session).get_by_content_hash(content_hash) is None
+
+    # is_satisfied is True (timeline already produced_by=NARRATION), so
+    # call the synthesis path directly on a fresh un-narrated version.
+    async with async_session_factory() as session:
+        service = TimelineService(session)
+        timeline = await service.get_active(project_id)
+        assert timeline is not None
+
+        def _unlock(base):
+            base.metadata.narration_locked = False
+            return base
+
+        await service.append_version(
+            project_id,
+            produced_by=ProducedBy.ASSET_PLANNER,
+            transform=_unlock,
+            owns=frozenset({"metadata"}),
+        )
+        await session.commit()
+
+    async with async_session_factory() as session:
+        _patch_provider(monkeypatch, provider)
+        result = await NarrationStep().run(_make_ctx(project_id, session))
+        await session.commit()
+
+    assert result.outcome == "ok"
+    assert len(provider.calls) == 1  # disk fallback, not a second paid call
+
+    async with async_session_factory() as session:
+        row = await NarrationRepository(session).get_by_content_hash(content_hash)
+    assert row is not None
+    assert row.alignment["characters"] == list(_TEXT)
+
+
+async def test_mp3_without_sidecar_still_resynthesizes(project_id, monkeypatch):
+    """Legacy files written before C2 have no alignment sidecar, so the
+    bytes on disk are not enough to rebuild the row."""
+    monkeypatch.setattr(settings, "dry_run", False)
+    monkeypatch.setattr(settings, "elevenlabs_voice_id", _VOICE_ID)
+
+    shots = [_shot("sh_01", 0, (0, 5)), _shot("sh_02", 1, (5, 11))]
+    await _seed_approved_timeline(project_id, shots)
+
+    content_hash = _content_hash_for(_TEXT, _VOICE_ID)
+    narration_dir = settings.storage_root / project_id / "narration"
+    narration_dir.mkdir(parents=True, exist_ok=True)
+    (narration_dir / f"{content_hash}.mp3").write_bytes(b"legacy-mp3-no-sidecar")
+
+    provider = _FakeElevenLabsProvider({"sc_01": _uniform_alignment(_TEXT)})
+    async with async_session_factory() as session:
+        _patch_provider(monkeypatch, provider)
+        result = await NarrationStep().run(_make_ctx(project_id, session))
+        await session.commit()
+
+    assert result.outcome == "ok"
+    assert len(provider.calls) == 1
+    assert (narration_dir / f"{content_hash}.alignment.json").is_file()
+
+
+async def test_identical_scene_text_synthesizes_once(project_id, monkeypatch):
+    monkeypatch.setattr(settings, "dry_run", False)
+    monkeypatch.setattr(settings, "elevenlabs_voice_id", _VOICE_ID)
+
+    scenes = [
+        _single_shot_scene("sc_01", 0, _TEXT),
+        _single_shot_scene("sc_02", 1, _TEXT),
+    ]
+    await _seed_approved_scenes(project_id, scenes)
+    # Only sc_01 is canned: a second call keyed on sc_02 would fail.
+    provider = _FakeElevenLabsProvider({"sc_01": _uniform_alignment(_TEXT)})
+
+    async with async_session_factory() as session:
+        _patch_provider(monkeypatch, provider)
+        result = await NarrationStep().run(_make_ctx(project_id, session))
+        await session.commit()
+
+    assert result.outcome == "ok"
+    assert len(provider.calls) == 1
+    assert provider.calls[0].scene_id == "sc_01"
+
+    async with async_session_factory() as session:
+        timeline = await TimelineService(session).get_active(project_id)
+    assert len(timeline.scenes) == 2
+    assert all(s.shots[0].duration_s > 0 for s in timeline.scenes)
+
+
+async def test_tts_concurrency_never_exceeds_elevenlabs_cap(project_id, monkeypatch):
+    monkeypatch.setattr(settings, "dry_run", False)
+    monkeypatch.setattr(settings, "elevenlabs_voice_id", _VOICE_ID)
+    monkeypatch.setattr(settings, "narration_concurrency", 3)
+
+    texts = [f"Scene text number {i} here" for i in range(4)]
+    scenes = [_single_shot_scene(f"sc_{i:02d}", i, text) for i, text in enumerate(texts)]
+    await _seed_approved_scenes(project_id, scenes)
+
+    provider = _FakeElevenLabsProvider(
+        {scene.id: _uniform_alignment(scene.narration_text) for scene in scenes},
+        delay_s=0.08,
+    )
+    async with async_session_factory() as session:
+        _patch_provider(monkeypatch, provider)
+        result = await NarrationStep().run(_make_ctx(project_id, session))
+        await session.commit()
+
+    assert result.outcome == "ok"
+    assert len(provider.calls) == 4
+    assert provider.max_in_flight <= 3
+    assert provider.max_in_flight == 3
+
+
+async def test_one_scene_tts_failure_fails_the_whole_step(project_id, monkeypatch):
+    monkeypatch.setattr(settings, "dry_run", False)
+    monkeypatch.setattr(settings, "elevenlabs_voice_id", _VOICE_ID)
+
+    scenes = [
+        _single_shot_scene("sc_01", 0, "First scene text"),
+        _single_shot_scene("sc_02", 1, "Second scene text"),
+    ]
+    seeded_version = await _seed_approved_scenes(project_id, scenes)
+    provider = _FakeElevenLabsProvider({"sc_01": _uniform_alignment("First scene text")})
+
+    async with async_session_factory() as session:
+        _patch_provider(monkeypatch, provider)
+        result = await NarrationStep().run(_make_ctx(project_id, session))
+        await session.commit()
+
+    assert result.outcome == "failed"
+    assert "no canned alignment for sc_02" in result.error
+
+    async with async_session_factory() as session:
+        timeline = await TimelineService(session).get_active(project_id)
+    assert timeline.version == seeded_version
+    # The successful sibling is cached; a retry only re-pays sc_02.
+    async with async_session_factory() as session:
+        row = await NarrationRepository(session).get_by_content_hash(
+            _content_hash_for("First scene text", _VOICE_ID)
+        )
+    assert row is not None

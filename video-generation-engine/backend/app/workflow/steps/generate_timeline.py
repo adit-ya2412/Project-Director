@@ -17,13 +17,14 @@ from app.core.config import settings
 from app.core.errors import TransientError
 from app.planners.asset.planner import AssetPlanner
 from app.planners.director.planner import DirectorPlanner
+from app.planners.fragments import split_narration_fragments
 from app.planners.scene.planner import ScenePlanner
 from app.planners.shot.planner import ShotPlanner
 from app.providers.fakes.llm import FakeTimelinePlanner
 from app.providers.openai_provider import OpenAIPlanningProvider
 from app.repositories.llm_call_repository import LlmCallRepository
 from app.schemas.timeline import ProducedBy, Timeline
-from app.script.styles import resolve_constraint_bundle
+from app.script.styles import ConstraintBundle, resolve_constraint_bundle
 from app.timeline.duration import compute_timeline_duration
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
@@ -70,16 +71,22 @@ def _validate_against_style(timeline: Timeline) -> list[str]:
     bounds still apply, so this call is correct uniformly, forever,
     without this function needing to know anything about narration at
     all."""
-    min_shot_duration_s, max_shot_duration_s, max_shots_per_project = resolve_constraint_bundle(
-        timeline.metadata.render_style
-    )
+    bundle = _constraint_bundle(timeline)
     return timeline.validate_constraints(
-        max_video_duration_s=settings.max_video_duration_s,
-        max_shots_per_project=max_shots_per_project,
-        min_shot_duration_s=min_shot_duration_s,
-        max_shot_duration_s=max_shot_duration_s,
-        max_scenes=settings.max_scenes,
+        max_video_duration_s=bundle.max_video_duration_s,
+        max_shots_per_project=bundle.max_shots_per_project,
+        min_shot_duration_s=bundle.min_shot_duration_s,
+        max_shot_duration_s=bundle.max_shot_duration_s,
+        max_scenes=bundle.max_scenes,
     )
+
+
+def _constraint_bundle(timeline: Timeline, *, script: str | None = None) -> ConstraintBundle:
+    """One resolver, one N. Concatenated scene narration is the script
+    once scenes exist; the uploaded script is used before that."""
+    text = script or "".join(s.narration_text for s in timeline.scenes)
+    n = len(split_narration_fragments(text)) if text else None
+    return resolve_constraint_bundle(timeline.metadata.render_style, n_fragments=n)
 
 
 def _is_fully_planned(timeline: Timeline) -> bool:
@@ -189,12 +196,13 @@ class GenerateTimelineStep:
             assert timeline is not None
 
         if not timeline.scenes:
+            bundle = _constraint_bundle(timeline, script=script)
             scenes = await ScenePlanner(provider, llm_call_repo).plan(
                 project_id=ctx.project_id,
                 script=script,
                 creative_context=timeline.creative_context,
-                max_scenes=settings.max_scenes,
-                max_video_duration_s=settings.max_video_duration_s,
+                max_scenes=bundle.max_scenes,
+                max_video_duration_s=bundle.max_video_duration_s,
             )
 
             def _apply_scenes(base: Timeline) -> Timeline:
@@ -211,9 +219,10 @@ class GenerateTimelineStep:
             assert timeline is not None
 
         if any(not scene.shots for scene in timeline.scenes):
-            min_shot_duration_s, max_shot_duration_s, max_shots_per_project = (
-                resolve_constraint_bundle(timeline.metadata.render_style)
-            )
+            bundle = _constraint_bundle(timeline, script=script)
+            min_shot_duration_s = bundle.min_shot_duration_s
+            max_shot_duration_s = bundle.max_shot_duration_s
+            max_shots_per_project = bundle.max_shots_per_project
             planned_scenes = await ShotPlanner(provider, llm_call_repo).plan(
                 project_id=ctx.project_id,
                 scenes=timeline.scenes,

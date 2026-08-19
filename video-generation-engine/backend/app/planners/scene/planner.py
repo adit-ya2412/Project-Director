@@ -47,9 +47,13 @@ boundary for the Shot Planner's own re-split, never a cut through the
 middle of what would otherwise be one fragment.
 """
 
+import asyncio
+import math
 import uuid
 
+from app.core.config import settings
 from app.core.logging import get_logger
+from app.planners.act.planner import ActPlanner
 from app.planners.fragments import NarrationFragment, split_narration_fragments
 from app.planners.repair import run_structured_with_repair
 from app.planners.scene.schemas import ScenePlannerOutput, ScenePlanOutput
@@ -57,6 +61,7 @@ from app.prompts.loader import load_prompt
 from app.providers.base import PlanningLLMProvider
 from app.repositories.llm_call_repository import LlmCallRepository
 from app.schemas.timeline import CreativeContext, Scene
+from app.utils.bounded_gather import bounded_gather, planner_concurrency
 
 AGENT = "scene_planner"
 PROMPT_VERSION = "v1"
@@ -278,6 +283,7 @@ def _to_domain_scene(
         narration_text=script[start:end],
         duration_s=s.duration_s,
         shots=[],
+        act_id=None,
     )
 
 
@@ -297,7 +303,34 @@ class ScenePlanner:
         max_scenes: int,
         max_video_duration_s: float,
     ) -> list[Scene]:
-        system_prompt = load_prompt(AGENT, PROMPT_VERSION)
+        fragments = split_narration_fragments(script)
+        if len(fragments) > settings.scene_planner_act_threshold:
+            return await self._plan_hierarchical(
+                project_id=project_id,
+                script=script,
+                fragments=fragments,
+                creative_context=creative_context,
+                max_scenes=max_scenes,
+                max_video_duration_s=max_video_duration_s,
+            )
+        return await self._plan_single(
+            project_id=project_id,
+            script=script,
+            creative_context=creative_context,
+            max_scenes=max_scenes,
+            max_video_duration_s=max_video_duration_s,
+        )
+
+    async def _plan_single(
+        self,
+        *,
+        project_id: str,
+        script: str,
+        creative_context: CreativeContext,
+        max_scenes: int,
+        max_video_duration_s: float,
+        db_lock: asyncio.Lock | None = None,
+    ) -> list[Scene]:
         fragments = split_narration_fragments(script)
         output = await run_structured_with_repair(
             provider=self._provider,
@@ -305,9 +338,55 @@ class ScenePlanner:
             project_id=uuid.UUID(project_id),
             agent=AGENT,
             prompt_version=PROMPT_VERSION,
-            system_prompt=system_prompt,
+            system_prompt=load_prompt(AGENT, PROMPT_VERSION),
             user_content=_build_user_content(fragments, creative_context, max_scenes),
             response_model=ScenePlannerOutput,
             validate=_make_validator(script, fragments, max_scenes, max_video_duration_s),
+            db_lock=db_lock,
         )
         return [_to_domain_scene(s, script=script, fragments=fragments) for s in output.scenes]
+
+    async def _plan_hierarchical(
+        self,
+        *,
+        project_id: str,
+        script: str,
+        fragments: list[NarrationFragment],
+        creative_context: CreativeContext,
+        max_scenes: int,
+        max_video_duration_s: float,
+    ) -> list[Scene]:
+        """Path B: act pass, then per-act scene planning on re-based
+        local fragment lists (never absolute indices in the prompt)."""
+        n_total = len(fragments)
+        acts = await ActPlanner(self._provider, self._llm_call_repo).plan(
+            project_id=project_id, script=script, creative_context=creative_context
+        )
+        db_lock = asyncio.Lock()
+
+        async def _one_act(act) -> list[Scene]:
+            n_act = max(1, len(split_narration_fragments(act.script_slice)))
+            act_max_scenes = max(1, math.ceil(max_scenes * n_act / n_total))
+            act_max_duration = max_video_duration_s * n_act / n_total
+            scenes = await self._plan_single(
+                project_id=project_id,
+                script=act.script_slice,
+                creative_context=creative_context,
+                max_scenes=act_max_scenes,
+                max_video_duration_s=act_max_duration,
+                db_lock=db_lock,
+            )
+            named: list[Scene] = []
+            for scene in scenes:
+                named.append(
+                    scene.model_copy(update={"id": f"{act.id}_{scene.id}", "act_id": act.id})
+                )
+            return named
+
+        gathered = await bounded_gather(acts, _one_act, concurrency=planner_concurrency())
+        scenes: list[Scene] = []
+        for item in gathered:
+            if isinstance(item, Exception):
+                raise item
+            scenes.extend(item)
+        return [s.model_copy(update={"order": i}) for i, s in enumerate(scenes)]

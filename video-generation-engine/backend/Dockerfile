@@ -1,10 +1,14 @@
 FROM python:3.12-slim
 
-# ffmpeg is pinned by the base image's apt snapshot; the renderer's
-# determinism guarantee (Invariant I5) records this version in every
-# render fingerprint (see docs/13_Implementation_Guide.md, Phase M8).
+# Pin ffmpeg to the version measured in this image on 2026-08-19
+# (Track C §14.6): 7.1.5 on Debian trixie. A bare `apt-get install
+# ffmpeg` tracks the base image's snapshot — python:3.12-slim moving
+# bookworm → trixie is how §4.2a's "5.1" claim went stale. The
+# render cache is already safe across binaries (`ffmpeg_version` is
+# in the fingerprint); the pin makes the argv-flag branch and the
+# plan's claims deterministic. Epoch `7:` is Debian's package epoch.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
+    ffmpeg=7:7.1.5-0+deb13u1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

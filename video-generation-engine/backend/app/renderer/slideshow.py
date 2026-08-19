@@ -13,13 +13,14 @@ A shot whose `camera.movement` isn't `STATIC`/`SPLIT_FRAME` gets a
 `zoompan` filter instead of the plain static-frame path -
 `app/renderer/ken_burns.py` owns the expression arithmetic (kept
 separate and unit-testable without shelling out); this module only
-builds the ffmpeg filter STRING around it. Critically, a Ken-Burns
-shot's INPUT is `-i path` (no `-loop`/`-t`) - not the static path's
-`-loop 1 -t duration` - because `zoompan` must see exactly ONE decoded
-frame to accumulate its `zoom` variable correctly across the `d` frames
-it generates internally; feeding it the static path's already-looped,
-multi-frame input is the well-known cause of `zoompan` resetting to
-zoom=1 every single frame (see that module's own docstring). Both paths
+builds the ffmpeg filter STRING around it. Every still input is a
+single-decode `-i path` (Track C §4.1b): Ken Burns because `zoompan`
+must see exactly ONE decoded frame to accumulate its `zoom` variable
+across the `d` frames it generates internally, and STATIC/SPLIT_FRAME
+because a looping `-loop 1 -t` demuxer held ~10.6 GB resident on a
+185-shot dissolve run. Duration for a static still comes from
+`tpad=stop_mode=clone` inside the graph, the same "one decode, generate
+duration internally" shape `zoompan`'s `d=` already used. Both paths
 still produce a stream of exactly `duration_s` seconds at `settings.fps`
 - the crossfade arithmetic below never needs to know which path a given
 shot took.
@@ -30,13 +31,12 @@ A shot's resolved media may be a real video clip rather than a still
 (Kling generation, or a future Pexels-video rung) - `render_timeline`
 classifies every shot's media exactly once (`app/renderer/motion.py`,
 Pillow-then-ffprobe) before grouping into runs, and `_render_run` below
-dispatches on the result: a STILL shot is unchanged (the plain loop path
-or Ken Burns, as above); a MOTION shot is fed to ffmpeg fully decoded
-(`-i path`, no `-loop`/`-t` - the SAME input shape Ken Burns uses and for
-an adjacent reason: both need a real decode, never a pre-looped copy),
-never gets a `zoompan` filter regardless of what `shot.camera` says
-(moving the camera over already-moving footage reads as a bug, not a
-style), and is duration-fitted to exactly `shot.duration_s` by
+dispatches on the result: a STILL shot is Ken Burns or static-tpad (as
+above); a MOTION shot is fed to ffmpeg fully decoded (`-i path` - the
+same input shape every still now uses), never gets a `zoompan` filter
+regardless of what `shot.camera` says (moving the camera over
+already-moving footage reads as a bug, not a style), and is
+duration-fitted to exactly `shot.duration_s` by
 `app/renderer/motion.py::build_duration_fit_fragment` (A2) so the
 crossfade arithmetic below still gets a stream of the length it expects.
 
@@ -47,14 +47,21 @@ here reads the wall clock or iterates an unordered collection.
 """
 
 import asyncio
+import os
+import shutil
+import subprocess
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from app.core.errors import PermanentError
+from app.core.logging import get_logger
 from app.renderer.ken_burns import WORKING_CANVAS_SCALE, ZoompanExpression, build_zoompan_expression
 from app.renderer.motion import MediaKind, MediaProbe, build_duration_fit_fragment, probe_media
 from app.schemas.timeline import Shot, Timeline
 from app.timeline.duration import group_into_runs
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -81,11 +88,12 @@ class RenderSettings:
     burn_text_cards: bool = False
 
 
-async def run_ffmpeg(args: list[str]) -> None:
+async def run_ffmpeg(args: list[str], *, cwd: Path | None = None) -> None:
     process = await asyncio.create_subprocess_exec(
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
     )
     _, stderr = await process.communicate()
     if process.returncode != 0:
@@ -93,11 +101,115 @@ async def run_ffmpeg(args: list[str]) -> None:
         raise PermanentError(f"ffmpeg failed (exit {process.returncode}): {tail}")
 
 
-def _normalize_filter(index: int, settings: RenderSettings, label: str) -> str:
+def stage_short_input(src: Path, dest: Path) -> None:
+    """Make `dest` a same-bytes alias of `src` inside the ffmpeg cwd.
+
+    Track C §4.2 half 2: argv carries `run_000_s000.jpg`, never
+    `storage/{uuid}/assets/{64-hex}.jpg`. Symlink first (no copy),
+    hardlink next (works on Windows without Developer Mode when both
+    paths share a volume), copy last. I5 cares about decoded pixels,
+    not whether dest is a link. Re-renders unlink a leftover dest
+    from a previous run in the same work_dir.
+
+    Copy is the fallback when `storage_root` and `work_dir` sit on
+    different volumes (~110 MB at 185 shots). Production Linux and
+    same-volume Windows are free (symlink/hardlink). Not a defect —
+    Track C §14.3.
+    """
+    if dest.is_symlink() or dest.exists():
+        dest.unlink()
+    src = src.resolve()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        dest.symlink_to(src)
+        return
+    except OSError:
+        pass
+    try:
+        os.link(src, dest)
+        return
+    except OSError:
+        pass
+    shutil.copy2(src, dest)
+
+
+@lru_cache
+def filter_graph_file_flag(ffmpeg_binary: str) -> str:
+    """Argv flag that loads a filtergraph from a file.
+
+    Probe the modern flag (`-/filter_complex`, ffmpeg ≥ 7) against a
+    missing script file. "Unrecognized option" means this binary is
+    older than 7 and needs `-filter_complex_script`. Any other failure
+    (file not found, etc.) means the option exists. Cached per binary
+    so the subprocess runs once per process, not per render.
+
+    Version-string parsing is deliberately not used: nightlies like
+    `N-120345-g…` parse as major 0, and an unparseable string is more
+    likely new than old (Track C §14.6). Probe failure (binary
+    missing, timeout) also defaults to the modern flag.
+    """
+    try:
+        result = subprocess.run(
+            [
+                ffmpeg_binary,
+                "-hide_banner",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "nullsrc=s=2x2:d=0.04",
+                "-/filter_complex",
+                "__no_such_filter_script.filter",
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        text = (result.stderr or "") + (result.stdout or "")
+    except (OSError, subprocess.TimeoutExpired):
+        return "-/filter_complex"
+    if "unrecognized option" in text.lower() and "filter_complex" in text.lower():
+        return "-filter_complex_script"
+    return "-/filter_complex"
+
+
+def short_input_name(index: int, src: Path, kind: MediaKind, *, run_stem: str) -> str:
+    """Per-run unique name (Track C §14.2 / R-C2).
+
+    `i` is the index *within the run*. Every run shares `work_dir`, so
+    a bare `s000.jpg` collides the moment §12 step 9c renders runs
+    concurrently — a silent wrong-picture, not a crash. The filter
+    file already used `output_path.stem` (`run_000.filter`); inputs
+    inherit that same stem. Do not simplify this back to `s000.jpg`.
+    """
+    suffix = src.suffix.lower()
+    if not suffix:
+        suffix = ".mp4" if kind is MediaKind.MOTION else ".png"
+    return f"{run_stem}_s{index:03d}{suffix}"
+
+
+def _normalize_filter(index: int, settings: RenderSettings, label: str, *, hold_s: float) -> str:
+    """STATIC/SPLIT_FRAME still: one decoded frame, duration from tpad.
+
+    Filter order is scale/pad/setsar, then `fps`, then `tpad`, then
+    format. The C0 probe put tpad *before* fps and that is fine for
+    still-only xfades; ffmpeg 7.1.5 (production) rejects a motion-clip
+    + tpad-still xfade with `rate of 1/0 is invalid` unless the still
+    is already CFR when tpad clones it. `fps` first also makes the
+    decoded frame last `1/fps` seconds, so `hold_s = (frames - 1) / fps`
+    is exact (Track C §14.1). `frames == 1` → `0.0`. Do not "fix"
+    the `- 1` back.
+    """
     w, h = settings.width, settings.height
     return (
         f"[{index}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
-        f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={settings.fps},"
+        f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,"
+        f"fps={settings.fps},"
+        f"tpad=stop_mode=clone:stop_duration={hold_s:.6f},"
+        f"fps={settings.fps},"
         f"format={settings.pixel_format}[{label}]"
     )
 
@@ -111,7 +223,7 @@ def _motion_filter(
     `fps=` and `format=`: trim a too-long clip, or hold the last frame of
     a too-short one, so every motion shot's stream is EXACTLY
     `target_duration_s` seconds long - the same guarantee a still shot's
-    `-t` flag already gives, and the property the crossfade offset
+    `tpad` hold already gives, and the property the crossfade offset
     arithmetic below (D5) depends on."""
     assert probe.duration_s is not None
     w, h = settings.width, settings.height
@@ -119,10 +231,12 @@ def _motion_filter(
         actual_duration_s=probe.duration_s, target_duration_s=target_duration_s
     )
     fit_stage = f"{fit_fragment}," if fit_fragment else ""
+    # fps again after trim/setpts: ffmpeg 7.1.5's xfade rejects a
+    # post-setpts stream as rate 1/0 when the other input is a still.
     return (
         f"[{index}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
         f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={settings.fps},"
-        f"{fit_stage}format={settings.pixel_format}[{label}]"
+        f"{fit_stage}fps={settings.fps},format={settings.pixel_format}[{label}]"
     )
 
 
@@ -156,17 +270,25 @@ async def _render_run(
     media_probes: dict[str, MediaProbe],
     settings: RenderSettings,
     output_path: Path,
+    *,
+    work_dir: Path,
 ) -> None:
     """Render one run (shots joined only by crossfades, no hard cuts) to
-    a single MP4."""
-    args = [settings.ffmpeg_binary, "-y"]
+    a single MP4.
+
+    Track C §4.2 + §4.1b: every input is a short work-dir name
+    (`run_000_s000.jpg` — run-unique, §14.2); the filter graph lives
+    in a sibling `.filter` file; ffmpeg runs with `cwd=work_dir`.
+    There is no `-loop 1 -t` branch left — STATIC duration is `tpad`
+    in the graph. Both halves of the argv fix are required: the
+    filter file alone leaves ~31k chars of long input paths against
+    Windows' 32,767 limit.
+    """
     # M8 step 5: a Ken-Burns shot's frame count is computed HERE (the one
     # place duration-to-frames arithmetic lives for this module, D5's
-    # "compute it once" discipline) and reused for both the input args
-    # (which input shape a shot gets) and the filter (zoompan's `d`). A1
-    # (2026-08-18): a MOTION shot never gets a zoompan expression at all,
-    # regardless of what `shot.camera` says - moving the camera over
-    # already-moving footage reads as a bug, not a style.
+    # "compute it once" discipline) and reused for zoompan's `d` and for
+    # STATIC tpad's hold. A1 (2026-08-18): a MOTION shot never gets a
+    # zoompan expression at all, regardless of what `shot.camera` says.
     frame_counts = [max(round(shot.duration_s * settings.fps), 1) for shot in run]
     ken_burns_exprs = [
         (
@@ -177,16 +299,18 @@ async def _render_run(
         for shot, f in zip(run, frame_counts, strict=True)
     ]
 
-    for shot, expr in zip(run, ken_burns_exprs, strict=True):
-        image_path = shot_images[shot.id]
-        if media_probes[shot.id].kind is MediaKind.MOTION or expr is not None:
-            # A real decoded clip (A1) and a Ken-Burns still (M8 step 5)
-            # share this input shape for adjacent reasons: both need
-            # ffmpeg to decode the input itself, never a pre-looped copy
-            # - see this module's own docstring and `ken_burns.py`'s.
-            args += ["-i", str(image_path)]
+    args = [settings.ffmpeg_binary, "-y"]
+    run_stem = output_path.stem
+    for i, shot in enumerate(run):
+        src = shot_images[shot.id]
+        short = short_input_name(i, src, media_probes[shot.id].kind, run_stem=run_stem)
+        stage_short_input(src, work_dir / short)
+        # image2 defaults to 25 fps; pin stills to the output rate so
+        # xfade on ffmpeg 7.1.5 sees CFR on both sides (Track C §14.6).
+        if media_probes[shot.id].kind is MediaKind.STILL:
+            args += ["-framerate", str(settings.fps), "-i", short]
         else:
-            args += ["-loop", "1", "-t", f"{shot.duration_s:.3f}", "-i", str(image_path)]
+            args += ["-i", short]
 
     filters: list[str] = []
     labels: list[str] = []
@@ -196,7 +320,11 @@ async def _render_run(
         if probe.kind is MediaKind.MOTION:
             filters.append(_motion_filter(i, settings, label, probe, shot.duration_s))
         elif expr is None:
-            filters.append(_normalize_filter(i, settings, label))
+            # tpad appends after the decoded frame (§14.1). Holding
+            # `frames / fps` yields frames+1. `frames == 1` → 0.0, which
+            # is correct — no hold.
+            hold_s = (frame_counts[i] - 1) / settings.fps
+            filters.append(_normalize_filter(i, settings, label, hold_s=hold_s))
         else:
             filters.append(_ken_burns_filter(i, settings, label, expr, frame_counts[i]))
         labels.append(label)
@@ -219,9 +347,16 @@ async def _render_run(
             prev_label = out_label
         vout = prev_label
 
+    script_name = f"{output_path.stem}.filter"
+    (work_dir / script_name).write_text(";".join(filters), encoding="utf-8")
+    try:
+        output_arg = output_path.resolve().relative_to(work_dir.resolve()).as_posix()
+    except ValueError:
+        output_arg = str(output_path)
+
     args += [
-        "-filter_complex",
-        ";".join(filters),
+        filter_graph_file_flag(settings.ffmpeg_binary),
+        script_name,
         "-map",
         f"[{vout}]",
         "-r",
@@ -246,9 +381,17 @@ async def _render_run(
         settings.pixel_format,
         "-movflags",
         "+faststart",
-        str(output_path),
+        output_arg,
     ]
-    await run_ffmpeg(args)
+    logger.info(
+        "render.run_argv",
+        extra={
+            "shots": len(run),
+            "arg_count": len(args),
+            "argv_chars": len(" ".join(args)),
+        },
+    )
+    await run_ffmpeg(args, cwd=work_dir)
 
 
 async def render_timeline(
@@ -303,7 +446,9 @@ async def render_timeline(
     run_paths: list[Path] = []
     for i, run in enumerate(runs):
         run_path = work_dir / f"run_{i:03d}.mp4"
-        await _render_run(run, resolved_images, media_probes, settings, run_path)
+        await _render_run(
+            run, resolved_images, media_probes, settings, run_path, work_dir=work_dir
+        )
         run_paths.append(run_path)
 
     if len(run_paths) == 1:

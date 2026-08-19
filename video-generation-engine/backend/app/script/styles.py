@@ -10,6 +10,7 @@ Only three styles ship in v1 (plan §2.8: "three presets, not eight" -
 every style is a behaviour four planners can regress against).
 """
 
+import math
 from dataclasses import dataclass
 
 from app.core.config import settings
@@ -120,32 +121,53 @@ def get_pacing_band(style: str) -> StylePacingBand:
     return STYLE_PACING_BANDS[style]
 
 
-def resolve_constraint_bundle(style: str | None) -> tuple[float, float, int]:
-    """`(min_shot_duration_s, max_shot_duration_s, max_shots_per_project)`
-    for the two REAL enforcement points (`generate_timeline.py`'s
-    `_is_fully_planned`, `shot/planner.py`'s `plan()`), style-aware where
-    a style overrides a bound and falling back to the flat `settings.*`
-    value everywhere it does not.
+# Track C C1 §2.3: projected from the five short fixtures (plan §0).
+# ~3.2 fragments/scene, ~0.9 shots/fragment. 31 fragments ≈ today's 90 s.
+_FRAGS_PER_SCENE = 3.2
+_SHOTS_PER_FRAG = 0.9
+_N_AT_SHORT_CAP = 31.0
+_SCENE_HEADROOM = 5
+_SHOT_SCALE = 1.18  # 206 * 0.9 * 1.18 ≈ 220 at 10 min
 
-    `style=None` (a Timeline predating this field, or an explicit
-    "no style set yet") resolves via `settings.default_render_style`
-    (`"documentary_archival"`, which itself has no overrides at all) -
-    so every existing project and fixture gets EXACTLY the bundle it
-    always did, byte-for-byte, not a new default that happens to look
-    similar. An unrecognised style name (should not happen - the create-
-    project endpoint validates against `STYLE_PACING_BANDS` before it
-    ever reaches here) falls back the same way rather than raising, since
-    this function runs deep inside planning where a raised `KeyError`
-    would surface as a confusing crash far from the actual mistake.
+
+@dataclass(frozen=True)
+class ConstraintBundle:
+    """The one resolved set of planning bounds (Track C C1, R1).
+
+    Unpackable as the historical 3-tuple
+    `(min_shot_duration_s, max_shot_duration_s, max_shots_per_project)`
+    so existing call sites keep working. `max_scenes` and
+    `max_video_duration_s` used to be read from flat settings beside
+    this function — that is the R1 shape; they live here now.
+    """
+
+    min_shot_duration_s: float
+    max_shot_duration_s: float
+    max_shots_per_project: int
+    max_scenes: int
+    max_video_duration_s: float
+
+    def __iter__(self):
+        yield self.min_shot_duration_s
+        yield self.max_shot_duration_s
+        yield self.max_shots_per_project
+
+
+def resolve_constraint_bundle(
+    style: str | None, *, n_fragments: int | None = None
+) -> ConstraintBundle:
+    """Length-aware, style-aware bounds for the real enforcement points.
+
+    `style=None` and `n_fragments=None` (every Timeline predating both
+    fields, and every caller that has not yet split the script) resolve
+    to EXACTLY the five numbers those flat `settings.*` reads always
+    produced. Length sets the base (`max(today's cap, f(N))`); style
+    multiplies the shot cap (retention_fast 58/40). Not "whichever is
+    larger" — that silently drops one of the two (Track C §2.3).
     """
     band = STYLE_PACING_BANDS.get(style or settings.default_render_style)
     if band is None:
         band = STYLE_PACING_BANDS[settings.default_render_style]
-    # `if ... is not None else`, not `x or y` (R7, §13.7): an `or` here
-    # would fall through to the flat setting for an override of `0`/`0.0`
-    # - unreachable with today's three styles, but a live trap for a
-    # future one (`stillness` is exactly the style that might legitimately
-    # want a `0.0` bound one day).
     min_shot_duration_s = (
         band.min_shot_duration_s_override
         if band.min_shot_duration_s_override is not None
@@ -156,9 +178,38 @@ def resolve_constraint_bundle(style: str | None) -> tuple[float, float, int]:
         if band.max_shot_duration_s_override is not None
         else settings.max_shot_duration_s
     )
-    max_shots_per_project = (
-        band.max_shots_override
-        if band.max_shots_override is not None
-        else settings.max_shots_per_project
+
+    if n_fragments:
+        max_scenes = max(
+            settings.max_scenes, math.ceil(n_fragments / _FRAGS_PER_SCENE) + _SCENE_HEADROOM
+        )
+        shots_base = max(
+            settings.max_shots_per_project,
+            math.ceil(n_fragments * _SHOTS_PER_FRAG * _SHOT_SCALE),
+        )
+        implied_duration = (n_fragments / _N_AT_SHORT_CAP) * settings.max_video_duration_s
+        max_video_duration_s = min(
+            settings.max_long_form_duration_s,
+            max(settings.max_video_duration_s, implied_duration),
+        )
+    else:
+        max_scenes = settings.max_scenes
+        shots_base = settings.max_shots_per_project
+        max_video_duration_s = settings.max_video_duration_s
+
+    # Length sets the base; style multiplies. retention_fast's 58 is
+    # 58/40 of the 90 s cap; at 10 min that same ratio applies to the
+    # length-scaled base, not "max(220, 58)".
+    if band.max_shots_override is not None:
+        style_mult = band.max_shots_override / settings.max_shots_per_project
+        max_shots_per_project = math.ceil(shots_base * style_mult)
+    else:
+        max_shots_per_project = shots_base
+
+    return ConstraintBundle(
+        min_shot_duration_s=min_shot_duration_s,
+        max_shot_duration_s=max_shot_duration_s,
+        max_shots_per_project=max_shots_per_project,
+        max_scenes=max_scenes,
+        max_video_duration_s=max_video_duration_s,
     )
-    return min_shot_duration_s, max_shot_duration_s, max_shots_per_project

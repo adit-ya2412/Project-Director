@@ -7,8 +7,10 @@ Every attempt - including a failed first attempt that triggers a repair -
 is recorded as its own `llm_call` row, regardless of outcome.
 """
 
+import asyncio
 import uuid
 from collections.abc import Callable
+from contextlib import nullcontext
 from typing import TypeVar
 
 from pydantic import BaseModel
@@ -33,6 +35,7 @@ async def run_structured_with_repair(
     response_model: type[OutputT],
     validate: Callable[[OutputT], list[str]],
     seed: int | None = None,
+    db_lock: asyncio.Lock | None = None,
 ) -> OutputT:
     attempt_user_content = user_content
     attempts = 0
@@ -46,16 +49,19 @@ async def run_structured_with_repair(
             response_model=response_model,
             seed=seed,
         )
-        await llm_call_repo.insert(
-            project_id=project_id,
-            agent=agent,
-            prompt_version=prompt_version,
-            model=completion.model,
-            request=completion.request,
-            response=completion.response,
-            input_tokens=completion.input_tokens,
-            output_tokens=completion.output_tokens,
-        )
+        # Concurrent planners share one session; the LLM call is safe
+        # in parallel, the insert is not (Track C C1).
+        async with db_lock if db_lock is not None else nullcontext():
+            await llm_call_repo.insert(
+                project_id=project_id,
+                agent=agent,
+                prompt_version=prompt_version,
+                model=completion.model,
+                request=completion.request,
+                response=completion.response,
+                input_tokens=completion.input_tokens,
+                output_tokens=completion.output_tokens,
+            )
 
         parsed: OutputT = completion.parsed  # type: ignore[assignment]
         violations = validate(parsed)

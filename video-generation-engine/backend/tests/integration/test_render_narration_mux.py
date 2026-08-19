@@ -205,15 +205,17 @@ async def test_render_step_mux_produces_audio_and_video_matching_the_timeline(
     # Narration is the master clock (D1); it is never trimmed to fit.
     assert by_type["audio"] == pytest.approx(expected_total, abs=0.005)
 
-    # Video is frame-quantised by the (unchanged, out-of-scope) silent
-    # renderer - `render_timeline` re-times every shot onto
-    # `settings.render_fps`, so its true rendered length can land up to
-    # about one frame (1/30s ~= 0.033s) either side of the exact total.
-    # Measured while building this: a 4.153016s narrated timeline
-    # rendered a 4.133333s silent video (~20ms short) - comfortably inside
-    # one frame, and the reason `mux_narration` deliberately does NOT use
-    # `-shortest` to paper over it (see its module docstring).
-    assert by_type["video"] == pytest.approx(expected_total, abs=0.05)
+    # Audio stays on the 5 ms band (sample-accurate narration clock).
+    # Video cannot: this fixture is four hard-cut runs of non-round
+    # narration durations, each frame-quantised, then concat-copied.
+    # The old 50 ms band hid the §14.1 tpad bug here as +0.180 s
+    # (4.333 vs 4.153). After (frames-1)/fps the residual is ~80 ms
+    # of quantisation-plus-concat, not an extra decoded frame.
+    # The 5 ms / 3.40 s exactness proof lives in
+    # test_static_tpad_duration_is_frame_exact — that is the test
+    # that fails if someone reverts the `- 1`. This band only has
+    # to fail the pre-fix 180 ms regression.
+    assert by_type["video"] == pytest.approx(expected_total, abs=0.10)
 
 
 async def test_dry_run_render_step_stays_silent_even_though_narration_rows_exist(

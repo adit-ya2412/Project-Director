@@ -37,6 +37,7 @@ import pytest_asyncio
 from app.core.config import settings
 from app.core.errors import PermanentError
 from app.db.session import async_session_factory
+from app.planners.act.schemas import ActPlannerOutput, ActPlanOutput
 from app.planners.fragments import split_narration_fragments
 from app.planners.repair import run_structured_with_repair
 from app.planners.scene.planner import ScenePlanner
@@ -376,6 +377,63 @@ async def test_scene_plan_rejects_too_many_scenes(project_id, monkeypatch):
                 max_scenes=1,
                 max_video_duration_s=90.0,
             )
+
+
+async def test_path_a_leaves_act_id_none(project_id):
+    async with async_session_factory() as session:
+        provider = FakePlanningProvider(responses=[_valid_output_for(SCRIPT)])
+        planner = ScenePlanner(provider, LlmCallRepository(session))
+        scenes = await planner.plan(
+            project_id=project_id,
+            script=SCRIPT,
+            creative_context=CreativeContext(),
+            max_scenes=12,
+            max_video_duration_s=90.0,
+        )
+    assert all(s.act_id is None for s in scenes)
+
+
+async def test_path_b_rebases_indices_and_sets_act_id(project_id, monkeypatch):
+    """N > threshold: act pass, then per-act scene planning on a LOCAL
+    1..M fragment list. Absolute indices must never enter the per-act
+    prompt (S2 / Track C §2.2)."""
+    monkeypatch.setattr(settings, "scene_planner_act_threshold", 3)
+    acts = ActPlannerOutput(
+        acts=[
+            ActPlanOutput(id="act_01", order=0, title="Coal", fragment_start=1, fragment_end=2),
+            ActPlanOutput(id="act_02", order=1, title="Oil", fragment_start=3, fragment_end=3),
+            ActPlanOutput(id="act_03", order=2, title="War", fragment_start=4, fragment_end=5),
+        ]
+    )
+    # Each act's slice is re-split locally: 2, 1, then 2 fragments.
+    act1_scenes = ScenePlannerOutput(
+        scenes=[_scene(scene_id="sc_01", order=0, fragment_start=1, fragment_end=2, duration_s=5.0)]
+    )
+    act2_scenes = ScenePlannerOutput(
+        scenes=[_scene(scene_id="sc_01", order=0, fragment_start=1, fragment_end=1, duration_s=3.0)]
+    )
+    act3_scenes = ScenePlannerOutput(
+        scenes=[_scene(scene_id="sc_01", order=0, fragment_start=1, fragment_end=2, duration_s=5.0)]
+    )
+    async with async_session_factory() as session:
+        provider = FakePlanningProvider(responses=[acts, act1_scenes, act2_scenes, act3_scenes])
+        planner = ScenePlanner(provider, LlmCallRepository(session))
+        scenes = await planner.plan(
+            project_id=project_id,
+            script=MULTI_SCRIPT,
+            creative_context=CreativeContext(tone="sober"),
+            max_scenes=12,
+            max_video_duration_s=90.0,
+        )
+
+    assert [s.id for s in scenes] == ["act_01_sc_01", "act_02_sc_01", "act_03_sc_01"]
+    assert [s.act_id for s in scenes] == ["act_01", "act_02", "act_03"]
+    assert [s.order for s in scenes] == [0, 1, 2]
+    assert "".join(s.narration_text for s in scenes) == MULTI_SCRIPT
+    # Per-act prompts must be locally numbered 1..M, never "fragments 3 to 5".
+    scene_prompts = [c["user_content"] for c in provider.calls[1:]]
+    assert all("3 to 5" not in p and "fragments 3" not in p for p in scene_prompts)
+    assert any("1 to 2" in p or "1 to 3" in p or "from 1 to 2" in p or "from 1 to 3" in p for p in scene_prompts)
 
 
 async def test_run_structured_with_repair_is_reused_correctly(project_id):

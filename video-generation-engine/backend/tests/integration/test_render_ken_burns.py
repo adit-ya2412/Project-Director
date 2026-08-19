@@ -10,6 +10,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from app.core.config import settings
@@ -127,10 +128,10 @@ async def test_pan_shot_renders_the_correct_duration(tmp_path):
 
 
 async def test_static_and_moving_shots_crossfade_together_at_the_right_total_duration(tmp_path):
-    """The riskiest combination: `_render_run` mixes a plain `-loop 1
-    -t duration` static input with a single-frame `zoompan` input in the
-    SAME xfade chain - both must land on identical stream shapes
-    (duration, fps) for the crossfade arithmetic to hold."""
+    """The riskiest combination: `_render_run` mixes a static `tpad`
+    still with a single-frame `zoompan` input in the SAME xfade chain
+    - both must land on identical stream shapes (duration, fps) for
+    the crossfade arithmetic to hold."""
     static_path = tmp_path / "static.png"
     moving_path = tmp_path / "moving.png"
     _make_image(static_path, (70, 80, 90))
@@ -167,11 +168,39 @@ async def test_static_and_moving_shots_crossfade_together_at_the_right_total_dur
     assert abs(float(video["duration"]) - expected_total) < 0.15
 
 
+async def test_static_tpad_duration_is_frame_exact(tmp_path):
+    """Track C §14.1: tpad hold is (frames - 1) / fps. At 30 fps a
+    3.40 s shot must be 3.4000 s, not 3.4333 s (one extra frame).
+    5 ms band — the one the mux test's old 50 ms tolerance hid."""
+    image_path = tmp_path / "img.png"
+    _make_image(image_path, (10, 20, 30))
+    shot = _shot("sh_01", Camera(movement=CameraMovement.STATIC), duration_s=3.4)
+    settings_30 = RenderSettings(
+        width=320,
+        height=240,
+        fps=30,
+        pixel_format="yuv420p",
+        ffmpeg_binary=settings.ffmpeg_binary,
+        ffprobe_binary=settings.ffprobe_binary,
+    )
+    output_path = tmp_path / "out.mp4"
+    await render_timeline(
+        _timeline([shot]),
+        {"sh_01": image_path},
+        settings_30,
+        output_path,
+        work_dir=tmp_path / "work",
+    )
+    streams = _ffprobe_streams(output_path)
+    video = next(s for s in streams if s["codec_type"] == "video")
+    assert float(video["duration"]) == pytest.approx(3.4, abs=0.005)
+
+
 async def test_static_camera_is_byte_identical_to_before_ken_burns_existed(tmp_path):
     """No regression for the overwhelmingly common case: a STATIC shot
-    must still take the exact plain `-loop 1 -t duration` path, never
-    `zoompan` - proven by asserting its rendered duration matches
-    exactly, the same assertion this renderer has always made."""
+    must still take the plain still path (`tpad`, never `zoompan`) —
+    proven by asserting its rendered duration matches exactly, the
+    same assertion this renderer has always made."""
     image_path = tmp_path / "img.png"
     _make_image(image_path, (200, 90, 40))
     shot = _shot("sh_01", Camera(movement=CameraMovement.STATIC))
