@@ -1,6 +1,6 @@
 # Motion, New Styles, Script Pre-flight, and Long-Form Video — Implementation Plan
 
-> **Status:** Originally plan-only (2026-08-17). Since then, built and verified against real ffmpeg/real Postgres/real live APIs: Track D (script pre-flight, all levels except the phrasing-rewrite L3), Track B Tier 1–2 (grade, extra transitions, text cards, punch-in), and Track A's A1/A2/A3/A4/A5/A6/A7 (motion clip input, duration fitting, the video path's one-gate model, the on-demand video endpoint pair, the Pexels video rung, and video-vs-image planner calibration). **A8 (the bake-off) was attempted 2026-08-18 with real spend (~$1.86) and found a real, previously-unknown collage bug affecting every project with a rich `visual_style` — fixed and verified, but A8's own question ("does synthetic motion blend next to real archival photography") is still open**, by the user's own choice to stop before re-running the video half. **§11 step 5 (orphan-run fix) and step 6 (music taxonomy + a real 54-track curated library, §5.1) are also now built and verified**, 2026-08-18 — see §12 for both. See §12 for the full chronological log; unmarked sections below are still design-only.
+> **Status:** Originally plan-only (2026-08-17). Since then, built and verified against real ffmpeg/real Postgres/real live APIs: Track D (script pre-flight, all levels except the phrasing-rewrite L3), Track B Tier 1–2 (grade, extra transitions, text cards, punch-in), and Track A's A1/A2/A3/A4/A5/A6/A7 (motion clip input, duration fitting, the video path's one-gate model, the on-demand video endpoint pair, the Pexels video rung, and video-vs-image planner calibration). **A8 (the bake-off) was attempted 2026-08-18 with real spend (~$1.86) and found a real, previously-unknown collage bug affecting every project with a rich `visual_style` — fixed and verified, but A8's own question ("does synthetic motion blend next to real archival photography") is still open**, by the user's own choice to stop before re-running the video half. **§11 step 5 (orphan-run fix) and step 6 (music taxonomy + a real 54-track curated library, §5.1) are also now built and verified**, 2026-08-18 — see §12 for both. See §12 for the full chronological log; unmarked sections below are still design-only. ✅ **2026-08-20: Track C is COMPLETE** and moved to [`track_c_long_form_video.md`](track_c_long_form_video.md). ⚠ **Six items remain in this document — see §14, audited against real code:** narration speed (R8, blocked on a 10-min live ElevenLabs check needing a tiny spend, and by §13.13's own rule `retention_fast` is not honest to offer until it closes), SFX (entirely unbuilt), split-screen, 2.5D parallax, per-style music gains, and BPM/tempo-fit ranking (9 of 54 tracks carry a BPM).
 > **Scope:** four tracks — **A** (motion clip input), **B** (style catalogue), **C** (long-form), **D** (script pre-flight). A is the keystone for the motion half of B; D is independent and could ship first.
 > **Related:** [`13_Implementation_Guide.md`](../13_Implementation_Guide.md) §M7/M8/M9 and its Backlog, [`14_Captions_Plan.md`](../14_Captions_Plan.md), [`watermark_implementation_plan.md`](watermark_implementation_plan.md).
 > **Fixture:** project `58f0a5e6-008d-468e-862a-e365e463878e` / `backend/tests/fixtures/m8_test_project.json` — real Fischer-Tropsch timeline, 13 shots. Reuse it; do not plan a fresh one.
@@ -517,7 +517,9 @@ The irony is that the guide flagged the solution as a problem — *"Freesound sk
 
 ---
 
-## 6. Track C — long-form (90 s → ~10 min)
+## 6. Track C — long-form (90 s → ~10 min) — ✅ **COMPLETE 2026-08-20, moved to [`track_c_long_form_video.md`](track_c_long_form_video.md)**
+
+> ✅ **Track C is done and no longer lives here.** The seven rows below were the whole of its specification; they became a 1,556-line plan of its own covering C0–C8, a frontend contract (§13 there), and three review rounds that raised and fixed nine findings. ⚠ **Three of the premises in the table below did not survive contact with the code** — the orphan-run blocker was already fixed, the renderer already segmented and concatenated, and C3's encode cost was measured at **~18.6 min for a 10-minute video** against this table's guessed 2–9, which overturned the no-segment-cache decision. **Read the table below as the original specification, not as current status.** For what remains in THIS document, see §14.
 
 Three config lines change in under a minute. Everything behind them is the work.
 
@@ -1288,3 +1290,97 @@ Recorded because a review section that lists only faults misrepresents the state
 6. **R3, R4, §13.11** — documentation and calibration corrections. No code depends on them, but R3's economics should reach §4.2 before A4's cap is tuned, and R4's bad citation should not be relied on by whoever next touches the floor.
 7. **R10** — before A8's bake-off is attempted, not after. Judging motion from a still frame is the one thing that pass exists to avoid.
 8. **R2's second half** (transitive suggestions) — product decision, lowest urgency, highest visible improvement to the pre-flight screen.
+
+---
+
+## 14. What remains in this plan — audit against real code, 2026-08-20
+
+> **Why this section exists.** Track C is complete and lives in its own document ([`track_c_long_form_video.md`](track_c_long_form_video.md), 1,556 lines, C0–C8 + frontend contract, three review rounds). With it closed, "what is left in the parent plan" stopped being answerable by reading §12's log top to bottom. **Every status below was verified by probing the code on 2026-08-20, not by trusting a marker.**
+
+### 14.1 The short answer
+
+**Six things remain. One is blocked on you, one is a decision, four are unbuilt work.**
+
+| # | item | § | status probe | effort |
+|---|---|---|---|---|
+| **1** | **Narration speed (Route 2's voice half)** | §2.1, §2.5, §13.8 | ⚠ `speed` **absent** from `Settings`, `NarrationRequest`, and `compute_narration_content_hash` | ~0.5 d **after** a 10-min live check |
+| **2** | **Sound effects layer** | §5.5 | ⚠ `app/renderer/sfx.py` **absent** — nothing built | 3–4 d + curation |
+| **3** | **Split-screen (`SPLIT_FRAME`)** | §2.6 Tier 2 | correctly still a documented no-op in `ken_burns.py:87` | 3–5 d |
+| **4** | **2.5D parallax** | §2.7 Tier 3 | ⚠ no provider module exists | 3–4 d + Q10 |
+| **5** | **Per-style music gains** | §5.2 | ⚠ **0** refs to `music_bed_gain_db` in `styles.py` | ~0.5 d |
+| **6** | **BPM + tempo-fit ranking** | §5.2, §5.3 | ⚠ **9 of 54** tracks have `bpm`; **0** refs to `bpm` in `music_ranking.py` | ~0.5 d + ear time |
+
+**Plus two carried-over decisions:** A8's bake-off verdict (human viewing) and R2's second half (iterative punctuation suggestions — a product call).
+
+### 14.2 Item 1 — narration speed is the only thing gating a shipped style
+
+⚠ **This is the most consequential remaining item and it is not a coding problem.**
+
+§2.5 says, in bold: *"Ship both routes together. Route 1 alone gives a fast-looking video over documentary-paced narration, which reads as mismatched rather than fast — and the punch-ins get blamed when the problem is the voice."*
+
+**What shipped is Route 1 in full** (punch-in, cuts-only, grade) **plus Route 2's structural half** (finest granularity, lowered floor, higher cap — all now working after §13.1's R1 fix) **and none of its voice half.** Probed 2026-08-20: no `speed` in `Settings`, none in `NarrationRequest`, and `compute_narration_content_hash` is still the four-value key.
+
+⚠ **§13.13's own rule stands unmet:** *"`retention_fast` should not reach a real user until R1 and R8 are both closed."* R1 is closed. **R8 is not**, so by this document's own standard `retention_fast` is not yet honest to offer.
+
+**Three steps, in order, and the first needs you:**
+
+1. ⚠ **A live schema/behaviour check on `eleven_multilingual_v2` for `speed`** — ~10 minutes and a **tiny real spend** against the configured ElevenLabs account. **Not yet requested or approved**, which is the only reason this is still open. Track C's §11 Q4 established the target precisely: `ElevenLabsNarrationProvider` currently sends only `{"text", "model_id"}`, so `speed` is a change against that specific model's schema.
+2. **`speed` into `compute_narration_content_hash` in the same commit as the field itself.** §2.1 flagged this and it is the real hazard: a `speed` that reaches the API but not the cache key **silently serves wrong-speed audio on the second run**. Track C's §3.3 disk-fallback makes this worse, not better — a wrong-speed mp3 plus sidecar on disk would now be *restored* rather than re-synthesised.
+3. **`~1.2×` on `retention_fast`'s band**, with the ⚠ practical ceiling §2.1 records (~1.15–1.25×; Hinglish likely degrades earlier and differently — `hinglish_final_project` is the fixture).
+
+⚠ **One quota consequence Track C measured that §2.1 could not have known:** ElevenLabs Starter is **60,000 characters/month** for Multilingual v2, a 10-minute video is ~8,640, and `speed` joining the hash **re-synthesises every scene**. So a single speed change on a long project costs ~14% of the monthly allowance. **Decide speed before synthesising a long project, not after** — see Track C §3.3.
+
+### 14.3 Item 2 — SFX is the largest genuinely unbuilt feature in this plan
+
+`app/renderer/sfx.py` does not exist; nothing in §5.5 is built. The design in §5.5 still holds and needs no revision:
+
+- **Placement follows D6/21.2 exactly** — choosing the palette is creative → `sfx_plan` in the Timeline; placing and mixing is deterministic → the renderer, driven by events already there (`camera` punch-ins, `text_card`, transitions). No new per-SFX creative decisions.
+- **Source is the same Openverse provider, same licence gate, different query** — §5.5's own irony (Freesound "skews to sound effects" was a complaint about music search; for SFX it is the point).
+
+⚠ **§5.5's cost warning is now better evidenced than when written.** It says *"the mixing is the real cost… a materially larger filter graph that must stay bit-exact for I5. This sounds small and is not."* Track C's C7 built exactly this shape one axis over — `assemble_act_bed` loops, trims and concats per-act beds and rejoins the existing duck/mux — and it landed at 1–1.5 d for a *sequential, non-overlapping* set of segments. **SFX is N short overlays at computed offsets, overlapping narration and a ducked bed**, which is materially harder than concatenation. The 3–4 d estimate looks right, and Track C's music work is the closest available precedent to copy.
+
+⚠ **Two Track C findings that SFX must not repeat:**
+- Every new render input enters `compute_render_fingerprint` (this document's own §7 lesson, hit four times: music gain → captions → watermark → grade, then Track C's R-C6 in the other direction). An `sfx_plan` and its per-clip content hashes are render inputs.
+- Track C's R-C7 found `run_ffmpeg` concurrency multiplying through nested gathers. SFX mixing adds filter-graph size, not process count — but the module-level ffmpeg semaphore now exists and SFX should route through `run_ffmpeg` rather than spawning directly.
+
+### 14.4 Items 3–4 — the two Tier 2/3 pipeline changes, both correctly still absent
+
+**Split-screen.** `ken_burns.py:87` still returns `None` for `SPLIT_FRAME` with the honest reason recorded in its docstring: *"a real split-screen composite needs a SECOND source image… building that is a materially different pipeline change, not a `zoompan` expression."* ⚠ **§7's "scope honesty" caution is being kept** — declared in the schema, documented as a gap, not mis-implemented. It reaches into the Shot Planner and asset resolution (two assets per shot), which is why it is 3–5 d and not a filter.
+
+**2.5D parallax.** No provider module. §2.7's architecture is unchanged and is the right one: **treat parallax as a provider, not a filter** — still in, clip out, cached by content hash like `generated_clip`, so the renderer only ever sees an mp4 and I5 holds on the cached artifact. ⚠ Requires Track A's A1, which is built — so parallax is now unblocked technically and blocked only on **Q10** (does it justify a GPU dependency), the one item in this plan that changes the deployment story.
+
+### 14.5 Items 5–6 — the music library's two unfinished halves
+
+The library itself landed (54 tracks, `LocalMusicProvider`, `MUSIC_PROVIDER=local`) and Track C's C7 added per-act selection on top. Two §5.2/§5.3 items did not land:
+
+**Per-style bed/duck gains (~0.5 d).** Probed: **0** references to `music_bed_gain_db` in `styles.py`. §5.2 calls this *"genuinely differentiating — archival wants the bed present, fast-cut wants it driving and barely ducked, stillness wants it near-absent."* ⚠ Both gains are already in `compute_render_fingerprint` (R2's own fix), so making them style-derived needs no new fingerprint work — it is a resolver change, and `resolve_constraint_bundle` is now the established place for exactly this.
+
+**BPM and tempo-fit ranking.** Probed: **9 of 54** tracks carry a `bpm`; `music_ranking.py` has **0** references to it. §5.2 said *"a human types it in — free now, awkward later"*; §12's music entry recorded that BPM was only filled where a source published it, deliberately not fabricated. ⚠ **That was the right call and it means §5.3's tempo-fit ranking has almost nothing to rank on** — 45 tracks would score as unknown. **Populating 45 integers by ear is the cheap moment; it does not get cheaper.** And §5.3's insight is unaffected and still good: cuts cannot land on beats (D1 makes narration the clock), so **rank tracks by how well their BPM fits the measured shot pacing** — a ranking criterion, not a timing change.
+
+### 14.6 The two carried-over decisions
+
+**A8's bake-off.** §12 records the collage bug found *during* A8's bake-off, so it started. ⚠ **No verdict is recorded**, and §9 is explicit that this needs a human comparing outputs and does not compress. It is the question *"does synthetic motion blend beside a 1936 photograph"* — and Track C's R10 fix (`GET /shots/{id}/clip`, streaming real clip bytes) is what finally makes it answerable from the UI rather than from extracted stills.
+
+**R2's second half.** §13.2's finding that level 2's punctuation suggestions are iterative but presented as one-shot — accepting all 7 leaves the reference fixture still infeasible; it takes two more rounds. Deliberately left as the lowest-urgency item. Still open, still a product call (return suggestions transitively, or add a `further_suggestions_available` flag and say so in §3.2).
+
+### 14.7 What is done, so the remaining list can be trusted
+
+| track | state |
+|---|---|
+| **A** — motion clip input | A1/A2/A3/A5/A6 built; A4's prompt fix + per-project video cap built; A7 (Pexels video rung) built. **Only A8's verdict outstanding.** |
+| **B** — style catalogue | Tier 1 (grade, punch-in, `retention_fast` end-to-end) and Tier 2 (extra transitions, text cards) built. **Split-screen and Tier 3 outstanding; per-style gains outstanding.** |
+| **C** — long-form | ✅ **complete and closed 2026-08-20** — 658 tests pass in 17m51s, R-C1…R-C10 all closed — see [`track_c_long_form_video.md`](track_c_long_form_video.md). C0–C8, frontend contract §13, and three review rounds (§14/§15) with nine findings raised and fixed. |
+| **D** — script pre-flight | Levels 1–2 and level 3 (rewrite) all built. **Only R2's second half outstanding.** |
+| **Music** | Library + `LocalMusicProvider` + per-act beds built. **Per-style gains and BPM/tempo-fit outstanding. SFX entirely unbuilt.** |
+| **§13 review** | R1–R7, R9, R10 fixed and verified. **R8 (speed) open — see §14.2.** |
+
+⚠ **Open questions still genuinely open:** **Q5** (pacing bands per style — blocked on calibration data, and Track C's `_DEAD_STOP_CEILING_MULTIPLIER` is still the uncalibrated 2.0), **Q8** (Hinglish chars/sec constant), **Q10** (parallax GPU dependency). Q1–Q4, Q6, Q7, Q9 are closed.
+
+### 14.8 Suggested order for the remainder
+
+1. **Item 1's live speed check** — ⚠ needs your approval for a tiny spend, gates a shipped style, and is 10 minutes.
+2. **Items 5 and 6** — ~1 d together, and both are cheapest now: per-style gains reuse the existing resolver, and 45 BPM values by ear only get more awkward once the library is in use.
+3. **A8's verdict** — human viewing, now actually possible via `GET /shots/{id}/clip`.
+4. **SFX** — the largest remaining build, and §5.5's own advice is to do it *after* fast-cut ships, which it has. Copy C7's `assemble_act_bed` shape.
+5. **Split-screen**, then **parallax** behind Q10.
+6. **R2's second half** whenever the pre-flight screen gets attention.

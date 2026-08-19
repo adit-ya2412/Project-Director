@@ -55,6 +55,7 @@ import uuid
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from weakref import WeakKeyDictionary
 
 from app.core.errors import PermanentError
 from app.core.logging import get_logger
@@ -69,17 +70,56 @@ logger = get_logger(__name__)
 # R-C7: one ffmpeg pool for every `run_ffmpeg` caller, including nested
 # `bounded_gather` (runs × shots). Recreated if the cap changes so tests
 # that monkeypatch `ffmpeg_run_concurrency` still bind the right size.
-_ffmpeg_slot: asyncio.Semaphore | None = None
-_ffmpeg_slot_cap: int | None = None
+#
+# ## Why this is keyed PER EVENT LOOP and not one module-level object
+#
+# The first version of this was a single process-lifetime `Semaphore`, and
+# that is wrong anywhere event loops are created and destroyed repeatedly
+# - which is exactly what a test runner does. `backend/pytest.ini` sets
+# `asyncio_mode = auto`, so pytest-asyncio builds a fresh event loop per
+# test and discards it at teardown. A task still holding a permit when
+# its loop is closed is destroyed without running `async with`'s
+# `finally`, so the permit is not returned when the loop dies - and with
+# a single shared semaphore that permit is missing for every LATER test
+# in the same process.
+#
+# Measured old-vs-new, one abandoned render per simulated test, cap 14:
+# the shared pool drains 13, 12, 11 ... 2, then jumps back to 13; the
+# per-loop pool sits at 13 forever. The recovery is garbage collection -
+# collecting an abandoned task closes its coroutine, which DOES run the
+# `finally` and hands the permit back. So the failure mode is not a
+# permanent deadlock but a repeated STALL: renders queue up until the
+# collector happens to run, then drain, then queue again. That matches
+# what was observed exactly - a full-suite run that crawled to ~62 tests
+# over hours with zero-CPU ffmpeg children, while the same tests passed
+# file-by-file (a fresh process each time means a fresh pool).
+#
+# Keying on the running loop makes the leak structurally impossible: a
+# test's pool is garbage-collected with its loop, so nothing survives to
+# be exhausted. Production is unaffected and keeps the identical
+# guarantee - a server has one event loop for its whole life, so there is
+# exactly one pool, sized once. `WeakKeyDictionary` (not `dict`) so a
+# finished loop is not retained by this module.
+_ffmpeg_slots: "WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = (
+    WeakKeyDictionary()
+)
+_ffmpeg_slot_caps: "WeakKeyDictionary[asyncio.AbstractEventLoop, int]" = WeakKeyDictionary()
 
 
 def _ffmpeg_semaphore() -> asyncio.Semaphore:
-    global _ffmpeg_slot, _ffmpeg_slot_cap
+    """The ffmpeg concurrency pool for the CURRENT event loop.
+
+    Called only from `run_ffmpeg`, which is a coroutine, so there is
+    always a running loop to key on.
+    """
+    loop = asyncio.get_running_loop()
     cap = ffmpeg_run_concurrency()
-    if _ffmpeg_slot is None or _ffmpeg_slot_cap != cap:
-        _ffmpeg_slot = asyncio.Semaphore(cap)
-        _ffmpeg_slot_cap = cap
-    return _ffmpeg_slot
+    slot = _ffmpeg_slots.get(loop)
+    if slot is None or _ffmpeg_slot_caps.get(loop) != cap:
+        slot = asyncio.Semaphore(cap)
+        _ffmpeg_slots[loop] = slot
+        _ffmpeg_slot_caps[loop] = cap
+    return slot
 
 
 def _atomic_copy(src: Path, dest: Path) -> None:

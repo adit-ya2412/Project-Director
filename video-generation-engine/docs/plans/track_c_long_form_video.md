@@ -1,6 +1,6 @@
 # Track C — Long-Form Video (90 s → ~10 min) — Implementation Plan
 
-> **Status:** Track C production path complete 2026-08-19. §12 steps 3–11, C3 remainder (a–d), §13.4, and §13.6 landed. See §2.6 / §3.2a / §3.3 / §4.2a / §4.3a / §5.3 / §6.3 / §7.3 / §8.3 / §13.4 / §13.6 / §14.8 / §15.8. ⚠ **Reviewed 2026-08-19 (§14.9 / response §14.9a):** C1 and C2 confirmed; **no production-code change from this review.** R-C5's log sentence is corrected (§14.8 R-C1 row now says shipped mux video is `abs=0.10`, 5 ms proof is the dedicated single-shot test). The remaining R-C5 coverage gap (multi-shot dissolve exactness) is C3 remainder, not a C2 defect; the session-scoped lock is declined. Split out of [`motion_new_styles_and_long_form_videos.md`](motion_new_styles_and_long_form_videos.md) §6, which specified Track C in one table and seven rows; this document is that table turned into a buildable plan, with four scoping decisions taken and three of §6's own premises corrected against the real code. ⚠ **Whole-track review 2026-08-19 (§15 / response §15.8):** three findings acted on. **R-C8** atomic cache write, **R-C7** one ffmpeg semaphore (no `cap²`), **R-C6** `approved_scenes` popped from the fingerprint (grade still hashed). **N2** is now a suite test; **N4** kept unwired with a comment, not deleted. Everything else in that review was already clean. ✅ **Fixes confirmed 2026-08-19 (§15.9):** R-C6/R-C7/R-C8 all verified fixed by re-running the experiments that found them (fingerprint now order-invariant with `grade_style`/`render_style` still hashed; peak ffmpeg concurrency measured at 14 on the nested path where it would have been 196; atomic copy at both cache sites). 120 render + 432 unit tests pass. ⚠ **One new finding, R-C9:** N2's new duration test uses `abs=1/fps` — exactly one frame — so it would have PASSED with the one-frame R-C1 bug present. Third tolerance problem in this chain; §15.9 proposes a standing rule.
+> **Status:** Track C production path complete 2026-08-19. §12 steps 3–11, C3 remainder (a–d), §13.4, and §13.6 landed. See §2.6 / §3.2a / §3.3 / §4.2a / §4.3a / §5.3 / §6.3 / §7.3 / §8.3 / §13.4 / §13.6 / §14.8 / §15.8. ⚠ **Reviewed 2026-08-19 (§14.9 / response §14.9a):** C1 and C2 confirmed; **no production-code change from this review.** R-C5's log sentence is corrected (§14.8 R-C1 row now says shipped mux video is `abs=0.10`, 5 ms proof is the dedicated single-shot test). The remaining R-C5 coverage gap (multi-shot dissolve exactness) is C3 remainder, not a C2 defect; the session-scoped lock is declined. Split out of [`motion_new_styles_and_long_form_videos.md`](motion_new_styles_and_long_form_videos.md) §6, which specified Track C in one table and seven rows; this document is that table turned into a buildable plan, with four scoping decisions taken and three of §6's own premises corrected against the real code. ⚠ **Whole-track review 2026-08-19 (§15 / response §15.8):** three findings acted on. **R-C8** atomic cache write, **R-C7** one ffmpeg semaphore (no `cap²`), **R-C6** `approved_scenes` popped from the fingerprint (grade still hashed). **N2** is now a suite test; **N4** kept unwired with a comment, not deleted. Everything else in that review was already clean. ✅ **Fixes confirmed 2026-08-19 (§15.9):** R-C6/R-C7/R-C8 all verified fixed by re-running the experiments that found them (fingerprint now order-invariant with `grade_style`/`render_style` still hashed; peak ffmpeg concurrency measured at 14 on the nested path where it would have been 196; atomic copy at both cache sites). 120 render + 432 unit tests pass. ⚠ **One new finding, R-C9:** N2's new duration test uses `abs=1/fps` — exactly one frame — so it would have PASSED with the one-frame R-C1 bug present. Third tolerance problem in this chain; §15.9 proposes a standing rule. ✅ **CLOSED 2026-08-20 (§15.10): 658 passed in 17m51s**, single process, count-verified (432 unit + 159 integration + 67 e2e). **R-C1…R-C10 all closed.** R-C10 was found by trying to run the whole suite — R-C7's semaphore was process-lifetime under pytest's per-test event loops, leaking permits and stalling the run; now keyed per event loop, production behaviour unchanged. ⚠ **Correction recorded in §15.10:** this plan's own claim that the suite slowed from ~17 to ~30 min was WRONG — 494 tests/16m48s before vs 658/17m51s now, i.e. faster per test. The two-pass threshold remains the one open design question and should be decided by measurement, not by that retracted claim.
 > **Scope:** the seven C-items (C1–C7), plus **C8** (a scaling problem none of them named) and **§13 — the frontend**, which §1–§12 wrongly treated as a consumer rather than a deliverable. ⚠ **Read §13 before quoting any effort figure above it: Track C is ~26–29.5 days, not ~15–20** (measured 2026-08-19, up from an original ~25–28 guess — see the Verdict and §4.1a/§4.1b/§9.1 for what the C0/C8 probes actually found). Nothing about styles, motion, or script pre-flight — those are the parent document's Tracks A/B/D and are treated here as fixed context.
 > **Related:** [`motion_new_styles_and_long_form_videos.md`](motion_new_styles_and_long_form_videos.md) §6/§7/§13, [`13_Implementation_Guide.md`](../13_Implementation_Guide.md) §M8/M9 and its Backlog, [`14_Captions_Plan.md`](../14_Captions_Plan.md).
 > **Fixtures:** `m8_test_project` (13 shots), `captions_test_project` (19), `hinglish_final_project` (19), `hinglish_test_project` (14), `hindi_test_project` (11). **Every calibration number in this document comes from those five real projects.** There is no long-form fixture; C0's is **synthesised in Python** (§11, Q1) and the real planned one waits for C1.
@@ -1556,3 +1556,73 @@ assert actual == pytest.approx(expected, abs=1 / _RENDER_SETTINGS.fps)
 #### Regression check
 
 `tests/integration/test_render_two_pass.py`, `test_render_run_cache.py`, `test_render_determinism.py`, `test_render_ken_burns.py`, `test_render_motion_clips.py` and all of `tests/unit/renderer` — **120 passed**. Full unit suite — **432 passed**. DB confirmed at 0 projects beforehand. I5 byte-identity holds through the semaphore and both atomic-copy changes.
+
+### 15.10 R-C10 and the full-suite result — Track C closed, 2026-08-20
+
+> **This entry closes Track C.** It records one further finding (R-C10) discovered *by* trying to run the whole suite, its fix, the first complete single-process suite run in Track C's history, and ⚠ **a correction to a claim this reviewer made and built a recommendation on.**
+
+#### R-C10 — the R-C7 semaphore was process-lifetime under per-test event loops
+
+⚠ **Introduced by R-C7's own fix, which this reviewer recommended.** §15.3 asked for "one ffmpeg pool, not one per nesting level" and §15.8 delivered a single module-level `asyncio.Semaphore`. That is correct for production and wrong for a test runner.
+
+`backend/pytest.ini` sets `asyncio_mode = auto`, so pytest-asyncio builds a **fresh event loop per test** and closes it at teardown. A task still holding a permit when its loop closes is destroyed without running `async with`'s `finally`, so the permit is not returned — and a single shared semaphore carries that loss into every later test in the same process.
+
+**Mechanism proven, old vs new, one abandoned render per simulated test, cap 14:**
+
+| simulated test | OLD (shared pool) | NEW (per-loop pool) |
+|---|---|---|
+| 1 | 13 | 13 |
+| 5 | 9 | 13 |
+| 10 | 4 | 13 |
+| 12 | **2** | 13 |
+| 13 | **back to 13** | 13 |
+
+Python emitted `Task was destroyed but it is pending!` on every iteration — the exact condition §15.9 flagged as *"a hypothesis, not a measurement… I have not tested loop-close-with-pending-task."* **Now measured. The causal chain is closed.**
+
+⚠ **And the measurement corrected the failure mode.** §15.9 and the first draft of the fix comment both said the pool empties and renders "wait forever." **Wrong** — look at test 13. Garbage collection recovers the permits: collecting an abandoned task closes its coroutine, and closing a coroutine *does* run the `finally`. So it is a **repeated stall**, not a permanent deadlock: renders queue until the collector runs, drain, queue again. That fits the observed symptom far better than "hangs" did — a run that crawled to ~62 tests over hours with zero-CPU ffmpeg children, while the same tests passed file-by-file (fresh process, fresh pool).
+
+**Fix.** `_ffmpeg_slots` / `_ffmpeg_slot_caps` are now `WeakKeyDictionary` keyed on `asyncio.get_running_loop()`. A test's pool is collected with its loop, so the leak is structurally impossible. **Production is unchanged and keeps R-C7's guarantee exactly** — a server has one event loop for its whole life, therefore one pool, sized once. `ruff` / `black` / `mypy` clean; the reasoning is recorded in the module so the next reader does not "simplify" it back to a global.
+
+#### The full suite — first complete single-process run in Track C
+
+```
+658 passed in 1071.96s (0:17:51)
+```
+
+Real pytest exit code (no pipe — see the note below). Zero `FAILED`, zero `ERROR`, zero skips. **Count arithmetic verified** per §12's own standing lesson: 432 unit + 159 integration + 67 e2e = **658 exactly**, so collection was complete and nothing was silently missed.
+
+⚠ **Two process-hygiene lessons from getting here, both worth keeping:**
+- **Never pipe pytest through `tail` without `pipefail`.** An earlier background run reported "exit code 0" that was `tail`'s status, not pytest's, over an empty output file. A green signal that means nothing is worse than a red one.
+- **A DB safety check found a real leftover.** `project` held one row — `M6.5 upload/override`, traced to `tests/e2e/test_upload_and_override_api.py:63` — from the interrupted run. Confirmed a fixture name rather than user data before letting `clean_database` truncate, exactly as §12 did once before with `hinglish_final_project`.
+
+#### ⚠ Correction: the suite is NOT slower, and a recommendation rested on that error
+
+This reviewer stated the suite had gone "from ~17 to ~30 minutes" because of two-pass, and used it as the headline justification for raising the two-pass threshold. **That was wrong.**
+
+| run | tests | time |
+|---|---|---|
+| §12, pre-Track-C | 494 | 16m48s |
+| **post-Track-C, this run** | **658** | **17m51s** |
+
+**33% more tests in 6% more time — the suite got faster per test.**
+
+**Where the error came from, because the method is the lesson.** e2e was measured as **14 separate pytest invocations, summed** (~12.2 min). Each invocation pays full process startup — app import, Postgres connect, collection — which in one process is paid once, not fourteen times. The arithmetic exposes it: 12.2 (e2e) + 2.2 (unit) = 14.4 min for 499 tests would leave only ~3.5 min for 159 integration tests, yet 23 render integration tests alone had already been measured at 74 s. **Summing per-file timings does not estimate a single-process run.**
+
+**What survives and what does not:**
+- ✅ **The two-pass cost model stands on its own merits.** Cost is ~2× encode work, flat in run length; the re-render benefit scales with run length; `len(run) >= 2` therefore sits below the crossover, and pass 2 is unavoidably whole-run so the saving caps around 30–40% rather than approaching per-shot.
+- ❌ **The evidence cited for urgency does not.** There is no demonstrated suite cost. **If the threshold is changed, change it on a measured 6-shot-vs-20-shot first-render/re-render comparison, not on anything claimed here about suite time.**
+- Consequently the suite-speed ideas raised alongside it (scoping the DB fixture out of `tests/unit`, checking test render resolution, `pytest-xdist` with per-worker databases) are **optimisation of a healthy 18-minute suite, not remediation of a regression.**
+
+#### Track C — final state
+
+| | |
+|---|---|
+| **Items** | C0–C8 built; §13 frontend contract landed (§13.4a, §13.6a); §13's remaining UI work is scoped, not built |
+| **Decisions** | 15, all recorded with their costs (D1–D4, Q1–Q7, F1–F4) |
+| **Review findings** | **R-C1 … R-C10 — all closed and verified** |
+| **Tests** | **658 passed, 17m51s**, single process, count-verified |
+| **Verdict** | ✅ **Track C is complete.** |
+
+**One open design question, deliberately not closed:** the two-pass threshold at `len(run) >= 2`. Not a correctness issue — renders are duration-exact and byte-deterministic at every size tested — and now without the false evidence that made it look urgent. Whoever picks it up should measure first.
+
+**For what remains in the parent plan** (narration speed, SFX, split-screen, parallax, per-style music gains, BPM/tempo-fit), see [`motion_new_styles_and_long_form_videos.md`](motion_new_styles_and_long_form_videos.md) §14.
