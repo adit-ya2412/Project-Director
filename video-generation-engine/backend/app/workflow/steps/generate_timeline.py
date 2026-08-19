@@ -251,10 +251,11 @@ class GenerateTimelineStep:
             assert timeline is not None
 
         if any(shot.asset_plan is None for shot in timeline.all_shots()):
+            bundle = _constraint_bundle(timeline, script=script)
             planned_scenes = await AssetPlanner(provider, llm_call_repo).plan(
                 project_id=ctx.project_id,
                 scenes=timeline.scenes,
-                max_video_shots_per_project=settings.max_video_shots_per_project,
+                max_video_shots_per_project=bundle.max_video_shots_per_project,
             )
 
             def _apply_assets(base: Timeline) -> Timeline:

@@ -66,6 +66,73 @@ from app.renderer.slideshow import RenderSettings, probe_duration_seconds, run_f
 _FADE_SECONDS = 1.0
 
 
+async def assemble_act_bed(
+    segments: list[tuple[Path, float]],
+    output_path: Path,
+    settings: RenderSettings,
+) -> Path:
+    """Loop-and-trim each `(path, duration_s)` segment, then concat in
+    order to `output_path`. One segment is still loop+trim so a short
+    library track covers a 2-minute act the same way Path A's single bed
+    covers the whole video. Hard cuts between acts — a 1.5–3 minute
+    change does not need a crossfade, and a cut stays I5-simple."""
+    if not segments:
+        raise ValueError("assemble_act_bed requires at least one segment")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    work_dir = output_path.parent / f"_act_bed_{output_path.stem}"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    trimmed: list[Path] = []
+    for i, (path, duration_s) in enumerate(segments):
+        piece = work_dir / f"act_{i:03d}.m4a"
+        args = [
+            settings.ffmpeg_binary,
+            "-y",
+            "-stream_loop",
+            "-1",
+            "-i",
+            str(path),
+            "-t",
+            f"{duration_s:.3f}",
+            "-c:a",
+            "aac",
+            "-fflags",
+            "+bitexact",
+            "-flags:a",
+            "+bitexact",
+            str(piece),
+        ]
+        await run_ffmpeg(args)
+        trimmed.append(piece)
+
+    if len(trimmed) == 1:
+        trimmed[0].replace(output_path)
+        return output_path
+
+    list_path = work_dir / "concat.txt"
+    list_path.write_text(
+        "".join(f"file '{p.name}'\n" for p in trimmed),
+        encoding="utf-8",
+    )
+    args = [
+        settings.ffmpeg_binary,
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(list_path),
+        "-c",
+        "copy",
+        "-fflags",
+        "+bitexact",
+        str(output_path),
+    ]
+    await run_ffmpeg(args, cwd=work_dir)
+    return output_path
+
+
 def _db_to_linear(gain_db: float) -> float:
     return 10 ** (gain_db / 20)
 

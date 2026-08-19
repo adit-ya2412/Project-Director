@@ -42,9 +42,11 @@ import uuid
 
 from app.core.config import settings
 from app.core.errors import PermanentError
+from app.planners.fragments import split_narration_fragments
 from app.repositories.generated_clip_repository import GeneratedClipRepository
 from app.repositories.narration_repository import NarrationRepository
 from app.schemas.timeline import AssetStrategy, PreferredMediaType, Timeline
+from app.script.styles import resolve_constraint_bundle
 
 # Binding states that mean "this shot already has media, of some kind" -
 # nothing left to estimate a generation cost for, whichever way it got
@@ -138,14 +140,36 @@ async def total_project_spend_cents(
     return clip_total + narration_total
 
 
-def check_budget(*, already_spent_cents: int, additional_cents: int) -> None:
+def budget_cap_cents_for(timeline: Timeline) -> int:
+    """Length-aware project cap (Track C C6). 90 s and `n_fragments=None`
+    resolve to `settings.project_budget_cap_cents` (1000). One resolver
+    with the rest of the bounds — do not read the flat setting at a
+    check site (R1)."""
+    text = "".join(s.narration_text for s in timeline.scenes)
+    n = len(split_narration_fragments(text)) if text else None
+    return resolve_constraint_bundle(timeline.metadata.render_style, n_fragments=n).budget_cap_cents
+
+
+def check_budget(
+    *,
+    already_spent_cents: int,
+    additional_cents: int,
+    cap_cents: int | None = None,
+) -> None:
     """Raises PermanentError (never retryable - a retry storm against a
     paid API is the single most expensive failure mode this system has)
     if spending `additional_cents` more would exceed the project's hard
-    cap."""
+    cap.
+
+    `cap_cents` is the length-aware C6 cap. Omit it and the 90 s default
+    (`settings.project_budget_cap_cents`) is used — that default is the
+    *safe* direction (halts too early on a long-form project), not an
+    overspend.
+    """
+    cap = settings.project_budget_cap_cents if cap_cents is None else cap_cents
     projected = already_spent_cents + additional_cents
-    if projected > settings.project_budget_cap_cents:
+    if projected > cap:
         raise PermanentError(
             f"generation would bring project spend to {projected} cents, exceeding the "
-            f"{settings.project_budget_cap_cents} cent budget cap - halting further generation"
+            f"{cap} cent budget cap - halting further generation"
         )

@@ -169,6 +169,7 @@ async def test_dry_run_records_a_selection_via_the_fake_provider(project_id, mon
     assert timeline.music_plan.selection_attempted is True
     assert timeline.music_plan.selected_track is not None
     assert timeline.music_plan.selected_track.provider == "fake_music"
+    assert timeline.music_plan.act_beds == []
 
 
 async def test_is_satisfied_true_after_a_completed_selection(project_id, monkeypatch):
@@ -353,3 +354,94 @@ async def test_budget_cap_blocks_a_fetch_and_degrades_to_no_track(project_id, mo
 
     assert timeline.music_plan.selected_track is None
     assert provider.fetch_calls == []  # budget check happens before the fetch attempt
+
+
+async def _seed_three_act_timeline(project_id: str) -> None:
+    scenes = [
+        Scene(
+            id="sc_a",
+            order=0,
+            title="Act one",
+            duration_s=4.0,
+            act_id="act_1",
+            shots=[Shot(id="sh_a", order=0, intent=ShotIntent.EXPLAIN, duration_s=4.0)],
+        ),
+        Scene(
+            id="sc_b",
+            order=1,
+            title="Act two",
+            duration_s=4.0,
+            act_id="act_2",
+            shots=[Shot(id="sh_b", order=0, intent=ShotIntent.EXPLAIN, duration_s=4.0)],
+        ),
+        Scene(
+            id="sc_c",
+            order=2,
+            title="Act three",
+            duration_s=4.0,
+            act_id="act_3",
+            shots=[Shot(id="sh_c", order=0, intent=ShotIntent.EXPLAIN, duration_s=4.0)],
+        ),
+    ]
+    async with async_session_factory() as session:
+        service = TimelineService(session)
+        await service.create_initial(project_id, script="a script")
+
+        def _fill(base):
+            base.scenes = scenes
+            base.music_plan = MusicPlan(
+                mood="sombre",
+                tempo="slow",
+                search_terms=["documentary underscore"],
+                licence_requirements=["cc0"],
+            )
+            return base
+
+        await service.append_version(
+            project_id,
+            produced_by=ProducedBy.DIRECTOR,
+            transform=_fill,
+            owns=frozenset({"scenes", "music_plan"}),
+        )
+
+
+async def test_per_act_beds_skip_consecutive_repeat_and_allow_later_repeat(project_id, monkeypatch):
+    """C7: consecutive acts must not share a bed when another candidate
+    exists; a later non-adjacent act may reuse act 1's bed. Three acts
+    and two tracks: t1, t2, t1."""
+    monkeypatch.setattr(settings, "dry_run", False)
+    await _seed_three_act_timeline(project_id)
+    content = await _make_wav_mp3_bytes()
+    provider = _FakeMusicSearchProvider(
+        candidates=[
+            TrackCandidate(
+                source_id="t1",
+                source_url="http://example.test/t1",
+                title="documentary underscore",
+                licence="cc0",
+                duration_s=30.0,
+            ),
+            TrackCandidate(
+                source_id="t2",
+                source_url="http://example.test/t2",
+                title="documentary underscore",
+                licence="cc0",
+                duration_s=30.0,
+            ),
+        ],
+        content_by_id={"t1": content, "t2": content},
+    )
+    _patch_music_provider(monkeypatch, provider)
+
+    async with async_session_factory() as session:
+        ctx = _make_ctx(project_id, session)
+        result = await SelectMusicStep().run(ctx)
+        assert result.outcome == "ok"
+        timeline = await ctx.timeline_service.get_active(project_id)
+
+    beds = timeline.music_plan.act_beds
+    assert [b.act_id for b in beds] == ["act_1", "act_2", "act_3"]
+    ids = [b.selected_track.track_id for b in beds if b.selected_track is not None]
+    assert ids == ["t1", "t2", "t1"]
+    assert timeline.music_plan.selected_track is not None
+    assert timeline.music_plan.selected_track.track_id == "t1"

@@ -25,14 +25,24 @@ class AssetRepository:
         return result.scalar_one_or_none()
 
     async def list_content_hashes_for_project(self, project_id: uuid.UUID) -> set[str]:
-        """Every asset already stored for this project - the reuse-penalty
-        input for ranking (implementation guide, Phase M6 advice: "penalise
-        reuse within a project... [Creative Philosophy] Principle 10 demands
-        visual variety")."""
+        """Every asset already stored for this project. Ranking no longer
+        uses this as a global reuse set (Track C C4 — a window keyed off
+        shot start times); kept for callers that still need the inventory.
+        """
         result = await self._session.execute(
             select(AssetModel.content_hash).where(AssetModel.project_id == project_id)
         )
         return set(result.scalars().all())
+
+    async def content_hashes_for_ids(self, asset_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
+        """`asset.id -> content_hash` for the ids that exist. Used to
+        seed C4's temporal reuse map from already-resolved bindings."""
+        if not asset_ids:
+            return {}
+        result = await self._session.execute(
+            select(AssetModel.id, AssetModel.content_hash).where(AssetModel.id.in_(asset_ids))
+        )
+        return {row.id: row.content_hash for row in result.all()}
 
     async def get_by_id(self, asset_id: uuid.UUID) -> AssetModel | None:
         return await self._session.get(AssetModel, asset_id)

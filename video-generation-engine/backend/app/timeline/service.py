@@ -248,6 +248,20 @@ class TimelineService:
 
         document = dict(row.document)
         document["status"] = TimelineStatus.APPROVED.value
+        # C5: the flat Approve button is sugar over per-scene approval.
+        # Stamp remaining scene ids on THIS version, in-place, the same
+        # way `status` is written. A new version would change
+        # `produced_by` and make NarrationStep think it had not run.
+        metadata = dict(document.get("metadata") or {})
+        approved = list(metadata.get("approved_scenes") or [])
+        seen = set(approved)
+        for scene in document.get("scenes") or []:
+            scene_id = scene.get("id")
+            if scene_id and scene_id not in seen:
+                approved.append(scene_id)
+                seen.add(scene_id)
+        metadata["approved_scenes"] = approved
+        document["metadata"] = metadata
         row.document = document
         row.status = TimelineStatus.APPROVED.value
 

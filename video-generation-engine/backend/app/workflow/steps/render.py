@@ -79,7 +79,7 @@ from app.renderer.captions import (
 )
 from app.renderer.fingerprint import compute_render_fingerprint, get_ffmpeg_version
 from app.renderer.grading import grade_filter_fragment
-from app.renderer.music import mux_music
+from app.renderer.music import assemble_act_bed, mux_music
 from app.renderer.placeholder import render_placeholder
 from app.renderer.slideshow import RenderSettings, probe_duration_seconds, render_timeline
 from app.renderer.text_cards import (
@@ -102,6 +102,7 @@ from app.repositories.render_repository import RenderRepository
 from app.repositories.shot_binding_repository import ShotBindingRepository
 from app.schemas.project import ProjectStatus
 from app.schemas.timeline import ProducedBy, Timeline
+from app.timeline.acts import act_time_ranges, music_content_hash_for
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
 
@@ -222,12 +223,8 @@ async def render_video(
     narration_content_hashes = (
         [row.content_hash for row in narration_rows] if narration_rows is not None else []
     )
-    music_path = _resolve_music_track(timeline, ctx.project_id)
-    music_content_hash = (
-        timeline.music_plan.selected_track.content_hash
-        if music_path is not None and timeline.music_plan and timeline.music_plan.selected_track
-        else None
-    )
+    music_segments = _music_segments(timeline, ctx.project_id)
+    music_content_hash = music_content_hash_for(timeline) if music_segments is not None else None
 
     # Captions (2026-08-17): mirrors the R2 gain pattern exactly (see
     # fingerprint.py's own docstring) - cues are derived here, before the
@@ -424,9 +421,17 @@ async def render_video(
         else:
             await mux_narration(captioned_path, narration_paths, narrated_path, render_settings)
 
-        if music_path is None:
+        if music_segments is None:
             narrated_path.replace(output_path)
         else:
+            if len(music_segments) == 1:
+                music_path = music_segments[0][0]
+            else:
+                music_path = await assemble_act_bed(
+                    music_segments,
+                    output_path.parent / f"_act_bed_{output_path.stem}.m4a",
+                    render_settings,
+                )
             await mux_music(
                 narrated_path,
                 music_path,
@@ -548,36 +553,7 @@ async def _resolve_narration_rows(
     return rows
 
 
-def _resolve_music_track(timeline: Timeline, project_id: str) -> Path | None:
-    """The chosen track's audio file, or `None` when there is nothing to
-    mux - mirrors `_resolve_narration_audio`'s own DRY_RUN/no-op
-    reasoning exactly (see that function's docstring for the general
-    shape of this argument).
-
-    - `settings.dry_run`: `SelectMusicStep` still runs and still records
-      a selection (`FakeMusicProvider` always "finds" a canned track,
-      exercising the real selection logic end to end), but deliberately
-      never writes its fake, undecodable bytes to disk (same idiom as
-      `FakeNarrationProvider`) - muxing it would try to read a file that
-      was never written, not degrade gracefully. DRY_RUN's contract is
-      "zero spend, always produces something runnable"; skipping the mux
-      satisfies that, trying to read a missing file would not.
-    - `music_plan` absent, or present but `selected_track is None`: a
-      genuine, decided "no suitable track" (or no plan at all) - not a
-      fallback, the correct output for this step's own scope.
-
-    Past both of those checks, a selected track is supposed to have a
-    real file on disk (`SelectMusicStep` only ever records a selection
-    after successfully validating and writing it) - a missing file here
-    is a genuine data-integrity failure, not a case to quietly degrade
-    for, so it raises `PermanentError` rather than silently rendering
-    without music."""
-    if settings.dry_run:
-        return None
-    if timeline.music_plan is None or timeline.music_plan.selected_track is None:
-        return None
-
-    content_hash = timeline.music_plan.selected_track.content_hash
+def _music_file(project_id: str, content_hash: str) -> Path:
     path = settings.storage_root / project_id / "music" / f"{content_hash}.mp3"
     if not path.exists():
         raise PermanentError(
@@ -585,6 +561,43 @@ def _resolve_music_track(timeline: Timeline, project_id: str) -> Path | None:
             "audio file is missing on disk - cannot mux music that was never persisted"
         )
     return path
+
+
+def _music_segments(timeline: Timeline, project_id: str) -> list[tuple[Path, float]] | None:
+    """Source files to mux, or `None` when there is nothing to mux.
+
+    Mirrors `_resolve_narration_audio`'s DRY_RUN/no-op reasoning: fake
+    bytes are never written, so muxing them would fail rather than
+    degrade. A missing file on a real selection is data-integrity, not
+    a silent skip.
+
+    Path A (no `act_beds`, or a single bed): one file; duration is unused
+    because `mux_music` still loop+trims to the video. Path B (two or
+    more beds): one `(path, act_duration_s)` per act, assembled on the
+    cache-miss path so a fingerprint hit never pays the concat.
+    """
+    if settings.dry_run:
+        return None
+    if timeline.music_plan is None:
+        return None
+
+    beds = [bed for bed in timeline.music_plan.act_beds if bed.selected_track is not None]
+    if len(beds) >= 2:
+        ranges = {act_id: (start, end) for act_id, start, end in act_time_ranges(timeline)}
+        segments: list[tuple[Path, float]] = []
+        for bed in beds:
+            path = _music_file(project_id, bed.selected_track.content_hash)
+            start, end = ranges.get(bed.act_id, (0.0, 0.0))
+            duration_s = end - start
+            if duration_s <= 0:
+                continue
+            segments.append((path, duration_s))
+        return segments or None
+
+    if timeline.music_plan.selected_track is None:
+        return None
+    path = _music_file(project_id, timeline.music_plan.selected_track.content_hash)
+    return [(path, 0.0)]
 
 
 async def _resolved_path_and_hash(session, binding) -> tuple[Path | None, str | None]:

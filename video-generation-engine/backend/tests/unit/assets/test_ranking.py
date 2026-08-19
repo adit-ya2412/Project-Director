@@ -10,7 +10,10 @@ Tests that exercise the relevance component instead pass `search_terms` and
 vary `title`/`description`, the same real inputs `ResolveAssetsStep` gives
 it."""
 
-from app.assets.ranking import rank_candidates
+import pytest
+
+from app.assets.ranking import rank_candidates, reuse_gaps_s, reuse_window_s
+from app.core.config import settings
 from app.providers.base import AssetCandidate
 
 
@@ -146,6 +149,60 @@ def test_reuse_penalty_can_flip_the_ranking_despite_higher_relevance():
     assert reused_result.components["relevance"] > fresh_result.components["relevance"]
     assert ranked[0].candidate.source_id == "fresh"
     assert reused_result.components["reuse_penalty"] == 1.0
+
+
+def test_reuse_window_is_shorter_for_retention_fast():
+    assert reuse_window_s(None) == settings.asset_reuse_window_s == 60.0
+    assert reuse_window_s("documentary_archival") == 60.0
+    assert reuse_window_s("retention_fast") == settings.asset_reuse_window_s_fast == 20.0
+
+
+def test_reuse_gaps_ignore_later_uses_on_resume():
+    """A binding at t=200 must not penalise a shot at t=50."""
+    gaps = reuse_gaps_s({"h": [10.0, 200.0]}, shot_start_s=50.0)
+    assert gaps["h"] == 40.0
+
+
+def test_near_reuse_keeps_the_full_penalty():
+    reused = _candidate(source_id="reused", title="Leuna Werke synthetic fuel plant 1943")
+    fresh = _candidate(source_id="fresh", title="a Leuna factory building")
+    ranked = rank_candidates(
+        [(reused, "hash-reused"), (fresh, "hash-fresh")],
+        search_terms=["Leuna Werke 1943"],
+        reuse_gap_s={"hash-reused": 5.0},
+        window_s=60.0,
+    )
+    assert ranked[0].candidate.source_id == "fresh"
+    reused_result = next(r for r in ranked if r.candidate.source_id == "reused")
+    assert reused_result.components["reuse_penalty"] == pytest.approx(1.0 - 5.0 / 60.0)
+
+
+def test_far_reuse_is_a_callback_not_a_penalty():
+    """C4: 8 minutes later the term is zero, so the more-relevant reused
+    photo wins — the global set would have given it the same -0.4 as a
+    3-second stutter and (late in a long video) as every other candidate.
+    """
+    reused = _candidate(source_id="reused", title="Leuna Werke synthetic fuel plant 1943")
+    fresh = _candidate(source_id="fresh", title="a Leuna factory building")
+    ranked = rank_candidates(
+        [(reused, "hash-reused"), (fresh, "hash-fresh")],
+        search_terms=["Leuna Werke 1943"],
+        reuse_gap_s={"hash-reused": 480.0},
+        window_s=60.0,
+    )
+    reused_result = next(r for r in ranked if r.candidate.source_id == "reused")
+    assert reused_result.components["reuse_penalty"] == 0.0
+    assert ranked[0].candidate.source_id == "reused"
+
+
+def test_mid_window_reuse_is_a_partial_penalty():
+    reused = _candidate(source_id="reused")
+    ranked = rank_candidates(
+        [(reused, "hash-reused")],
+        reuse_gap_s={"hash-reused": 30.0},
+        window_s=60.0,
+    )
+    assert ranked[0].components["reuse_penalty"] == pytest.approx(0.5)
 
 
 def test_entity_curated_breaks_a_close_tie_in_its_own_favour():

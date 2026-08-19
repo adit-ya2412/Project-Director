@@ -75,6 +75,15 @@ def is_video_file(path: Path) -> bool:
     return path.suffix.lower() in _VIDEO_SUFFIXES
 
 
+def shot_frame_cache_path(project_id: str, shot_id: str) -> Path:
+    """The JPEG `GET /shots/{id}/asset` serves for a video binding.
+    Shared with ResolveAssetsStep's pre-warm (§13.6) so the first
+    review-gate load does not extract 185 frames on the human's clock."""
+    from app.core.config import settings
+
+    return settings.storage_root / project_id / "cache" / f"shot_{shot_id}.jpg"
+
+
 def _cache_is_fresh(source: Path, cache: Path) -> bool:
     return cache.exists() and cache.stat().st_mtime >= source.stat().st_mtime
 

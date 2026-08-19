@@ -139,7 +139,7 @@ def test_progress_shots_are_in_timeline_order_with_full_semantics(client):
     ]
     asyncio.run(_seed_out_of_order_timeline(project_id))
 
-    progress = client.get(f"/api/v1/projects/{project_id}/progress").json()
+    progress = client.get(f"/api/v1/projects/{project_id}/progress?expand=shots").json()
     shots = progress["shots"]
     assert len(shots) == 3
 
@@ -270,5 +270,5 @@ def test_progress_estimated_cost_counts_shots_awaiting_generation(client):
     ).json()["id"]
     asyncio.run(_seed_mixed_generation_state_timeline(project_id))
 
-    progress = client.get(f"/api/v1/projects/{project_id}/progress").json()
+    progress = client.get(f"/api/v1/projects/{project_id}/progress?expand=shots").json()
     assert progress["estimated_cost_cents"] == settings.fal_image_cost_cents_estimate

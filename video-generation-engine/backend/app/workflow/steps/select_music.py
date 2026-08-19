@@ -58,7 +58,7 @@ import hashlib
 import uuid as uuid_module
 from collections.abc import Callable
 
-from app.assets.cost import check_budget, total_project_spend_cents
+from app.assets.cost import budget_cap_cents_for, check_budget, total_project_spend_cents
 from app.assets.music_ranking import rank_music_candidates
 from app.core.config import settings
 from app.core.errors import PermanentError
@@ -70,7 +70,8 @@ from app.providers.pixabay_music import PixabayMusicProvider
 from app.renderer.slideshow import probe_duration_seconds
 from app.repositories.generated_clip_repository import GeneratedClipRepository
 from app.repositories.narration_repository import NarrationRepository
-from app.schemas.timeline import MusicTrackSelection, ProducedBy, Timeline
+from app.schemas.timeline import ActMusicBed, MusicTrackSelection, ProducedBy, Timeline
+from app.timeline.acts import group_scenes_by_act, uses_per_act_beds
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
 
@@ -118,23 +119,64 @@ class SelectMusicStep:
         if timeline.music_plan is None:
             return StepResult(outcome="ok")
 
-        selection = await self._select(ctx, timeline)
+        if uses_per_act_beds(timeline):
+            beds: list[ActMusicBed] = []
+            previous_track_id: str | None = None
+            for act_id, scenes in group_scenes_by_act(timeline.scenes):
+                act_duration_s = sum(scene.duration_s for scene in scenes) or (
+                    timeline.metadata.total_duration_s
+                )
+                exclude = {previous_track_id} if previous_track_id else set()
+                selection = await self._select(
+                    ctx,
+                    timeline,
+                    video_duration_s=act_duration_s,
+                    exclude_source_ids=exclude,
+                )
+                beds.append(ActMusicBed(act_id=act_id, selected_track=selection))
+                if selection is not None:
+                    previous_track_id = selection.track_id
 
-        def _record(base: Timeline) -> Timeline:
-            assert base.music_plan is not None
-            base.music_plan.selected_track = selection
-            base.music_plan.selection_attempted = True
-            return base
+            def _record_acts(base: Timeline) -> Timeline:
+                assert base.music_plan is not None
+                base.music_plan.act_beds = beds
+                # First bed also fills `selected_track` so Path A readers
+                # (retry UI, cost estimate) still see a selection.
+                base.music_plan.selected_track = beds[0].selected_track if beds else None
+                base.music_plan.selection_attempted = True
+                return base
+
+            record = _record_acts
+        else:
+            selection = await self._select(
+                ctx, timeline, video_duration_s=timeline.metadata.total_duration_s
+            )
+
+            def _record_one(base: Timeline) -> Timeline:
+                assert base.music_plan is not None
+                base.music_plan.selected_track = selection
+                base.music_plan.act_beds = []
+                base.music_plan.selection_attempted = True
+                return base
+
+            record = _record_one
 
         await ctx.timeline_service.append_version(
             ctx.project_id,
             produced_by=ProducedBy.MUSIC_SELECTION,
-            transform=_record,
+            transform=record,
             owns=frozenset({"music_plan"}),
         )
         return StepResult(outcome="ok")
 
-    async def _select(self, ctx: RunContext, timeline: Timeline) -> MusicTrackSelection | None:
+    async def _select(
+        self,
+        ctx: RunContext,
+        timeline: Timeline,
+        *,
+        video_duration_s: float,
+        exclude_source_ids: set[str] | frozenset[str] = frozenset(),
+    ) -> MusicTrackSelection | None:
         plan = timeline.music_plan
         assert plan is not None
         project_uuid = uuid_module.UUID(ctx.project_id)
@@ -170,12 +212,22 @@ class SelectMusicStep:
             # corrected at this point in the pipeline (SelectMusicStep
             # runs before narration reconciliation). Good enough for a
             # duration FLOOR (see music_ranking.py) - it only needs to be
-            # in the right ballpark, not exact.
-            video_duration_s=timeline.metadata.total_duration_s,
+            # in the right ballpark, not exact. Per-act calls pass that
+            # act's duration so a 90 s act does not inherit a 10 min floor.
+            video_duration_s=video_duration_s,
         )
+        # C7: consecutive acts must not share a bed when any other
+        # candidate exists. Repeating a bed from act 1 at act 4 is fine.
+        # The full library is the pool (mood×energy is 3 tracks/cell), so
+        # excluding the previous id is what "move across the energy axis
+        # within one mood" actually is — ranking already sees mood/energy
+        # in tags; we do not pre-filter energy and then get stuck.
+        preferred = [c for c in ranked if c.source_id not in exclude_source_ids]
+        ranked = preferred or ranked
 
         clip_repo = GeneratedClipRepository(ctx.session)
         narration_repo = NarrationRepository(ctx.session)
+        cap_cents = budget_cap_cents_for(timeline)
 
         for candidate in ranked:
             try:
@@ -185,6 +237,7 @@ class SelectMusicStep:
                 check_budget(
                     already_spent_cents=already_spent,
                     additional_cents=settings.music_cost_cents_estimate,
+                    cap_cents=cap_cents,
                 )
                 fetched = await provider.fetch(candidate)
             except Exception:  # noqa: BLE001 - try the next-ranked candidate

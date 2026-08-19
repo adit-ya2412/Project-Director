@@ -1,6 +1,6 @@
 # Track C — Long-Form Video (90 s → ~10 min) — Implementation Plan
 
-> **Status:** Implementation started 2026-08-19. §12 steps 3 (helper), 4 (argv + tpad), 5 (C1 planning at length), and 6 (C2 narration concurrency + disk-fallback) landed — see §2.6 / §3.2a / §3.3 / §4.2a / §14.8. C3 remainder / C4–C7 production paths are unchanged. ⚠ **Reviewed 2026-08-19 (§14.9 / response §14.9a):** C1 and C2 confirmed; **no production-code change from this review.** R-C5's log sentence is corrected (§14.8 R-C1 row now says shipped mux video is `abs=0.10`, 5 ms proof is the dedicated single-shot test). The remaining R-C5 coverage gap (multi-shot dissolve exactness) is C3 remainder, not a C2 defect; the session-scoped lock is declined. Split out of [`motion_new_styles_and_long_form_videos.md`](motion_new_styles_and_long_form_videos.md) §6, which specified Track C in one table and seven rows; this document is that table turned into a buildable plan, with four scoping decisions taken and three of §6's own premises corrected against the real code.
+> **Status:** Track C production path complete 2026-08-19. §12 steps 3–11, C3 remainder (a–d), §13.4, and §13.6 landed. See §2.6 / §3.2a / §3.3 / §4.2a / §4.3a / §5.3 / §6.3 / §7.3 / §8.3 / §13.4 / §13.6 / §14.8 / §15.8. ⚠ **Reviewed 2026-08-19 (§14.9 / response §14.9a):** C1 and C2 confirmed; **no production-code change from this review.** R-C5's log sentence is corrected (§14.8 R-C1 row now says shipped mux video is `abs=0.10`, 5 ms proof is the dedicated single-shot test). The remaining R-C5 coverage gap (multi-shot dissolve exactness) is C3 remainder, not a C2 defect; the session-scoped lock is declined. Split out of [`motion_new_styles_and_long_form_videos.md`](motion_new_styles_and_long_form_videos.md) §6, which specified Track C in one table and seven rows; this document is that table turned into a buildable plan, with four scoping decisions taken and three of §6's own premises corrected against the real code. ⚠ **Whole-track review 2026-08-19 (§15 / response §15.8):** three findings acted on. **R-C8** atomic cache write, **R-C7** one ffmpeg semaphore (no `cap²`), **R-C6** `approved_scenes` popped from the fingerprint (grade still hashed). **N2** is now a suite test; **N4** kept unwired with a comment, not deleted. Everything else in that review was already clean. ✅ **Fixes confirmed 2026-08-19 (§15.9):** R-C6/R-C7/R-C8 all verified fixed by re-running the experiments that found them (fingerprint now order-invariant with `grade_style`/`render_style` still hashed; peak ffmpeg concurrency measured at 14 on the nested path where it would have been 196; atomic copy at both cache sites). 120 render + 432 unit tests pass. ⚠ **One new finding, R-C9:** N2's new duration test uses `abs=1/fps` — exactly one frame — so it would have PASSED with the one-frame R-C1 bug present. Third tolerance problem in this chain; §15.9 proposes a standing rule.
 > **Scope:** the seven C-items (C1–C7), plus **C8** (a scaling problem none of them named) and **§13 — the frontend**, which §1–§12 wrongly treated as a consumer rather than a deliverable. ⚠ **Read §13 before quoting any effort figure above it: Track C is ~26–29.5 days, not ~15–20** (measured 2026-08-19, up from an original ~25–28 guess — see the Verdict and §4.1a/§4.1b/§9.1 for what the C0/C8 probes actually found). Nothing about styles, motion, or script pre-flight — those are the parent document's Tracks A/B/D and are treated here as fixed context.
 > **Related:** [`motion_new_styles_and_long_form_videos.md`](motion_new_styles_and_long_form_videos.md) §6/§7/§13, [`13_Implementation_Guide.md`](../13_Implementation_Guide.md) §M8/M9 and its Backlog, [`14_Captions_Plan.md`](../14_Captions_Plan.md).
 > **Fixtures:** `m8_test_project` (13 shots), `captions_test_project` (19), `hinglish_final_project` (19), `hinglish_test_project` (14), `hindi_test_project` (11). **Every calibration number in this document comes from those five real projects.** There is no long-form fixture; C0's is **synthesised in Python** (§11, Q1) and the real planned one waits for C1.
@@ -443,6 +443,22 @@ So for the dissolve-heavy long-form case — archival montage stretched to 10 mi
 
 **Recommendation: do not choose between these now.** They are ordered by preference and gated on one measurement that costs half a day.
 
+### 4.3a — Landed 2026-08-19: per-run cache + parallel encodes + two-pass
+
+**(b) and (c) together.** Cache is the miss path; `bounded_gather` is the encode path. Staging names were already `run_000_s000.jpg` (R-C2) — concurrency does not rename them.
+
+| piece | where | why |
+|---|---|---|
+| `compute_run_fingerprint` | `fingerprint.py` | Shots in run order + per-shot content hashes + render settings + ffmpeg version. `kind: run_v1` so it cannot collide with a full-render hash. Captions/watermark/grade/music/narration are **after** concat, so they stay out. Asset order is the run's order, not sorted — swapping two shots' media must miss. |
+| `work_dir/run_cache/{fp}.mp4` | `slideshow._render_or_reuse_run` | Filesystem only. Same `work/` as the project, so a re-render after an edit hits; determinism tests that use separate `work_a`/`work_b` still double-encode. |
+| `bounded_gather(..., ffmpeg_run_concurrency())` | `render_timeline` | Cap `cpu_count - 2`. Each run still `-threads 1` `+bitexact`. One run (archival dissolve) still serial — this does **not** claim to be the archival edit-latency fix. |
+
+**(d) two-pass — landed 2026-08-19, same session.** Multi-shot runs encode each shot's normalised/zoompanned stream to `work/shot_cache/{fp}.mp4` (tpad, never `-loop`), then one xfade-only ffmpeg over those files. Single-shot runs stay one encode. Transition-out is **not** in the shot-stream fingerprint, so changing a dissolve duration re-chains xfades without re-encoding shots. Camera/duration/media still miss. Nested `bounded_gather` at `ffmpeg_run_concurrency()` for pass 1. ⚠ Still a second encode of every frame on the xfade pass — that is the cost the plan named; I5 keeps `-threads 1` `+bitexact` on both passes.
+
+Tests: shot-stream fingerprint ignores `transition_out`; 3-shot dissolve, edit overlap → zero shot re-encodes; edit one camera → that shot only. Existing ken-burns/motion xfade duration tests and two-dir determinism still apply.
+
+Tests: run-fingerprint unit tests; two-run re-render encodes nothing on a second pass and only the edited run when one camera changes; parallel gather with cap 2 sees both in flight.
+
 ---
 
 ## 5. C4 — Asset reuse at length
@@ -470,6 +486,21 @@ Replace the global set with a **temporal window** — assets used within the las
 ⚠ **`W` is uncalibrated and this is a taste judgement dressed as a parameter.** It needs eyes on a real long render, same class as the grade tuning the parent §9 flags as non-compressible human time. Ship a defensible default, expect to change it.
 
 ⚠ **Interaction with `retention_fast`:** tripling shot count for the same runtime means three times as many shots competing for the same asset pool inside any window. Fast styles need either a larger candidate pool per shot or a shorter `W`, and probably both. Do not tune `W` on a documentary render and assume it transfers.
+
+### 5.3 — Landed 2026-08-19: a 60 s window, graded, style-aware
+
+**Built.** Ranking no longer subtracts a flat 0.4 for "this hash exists anywhere in the project."
+
+| piece | where | why |
+|---|---|---|
+| `reuse_gap_s` | `rank_candidates` | Hash → seconds since the most recent *earlier* use (`compute_shot_start_times`, D5). Component is 1.0 at 0 s, linear to 0 at `W`. |
+| `W` | `settings.asset_reuse_window_s=60` / `_fast=20` | Uncalibrated, as §5.2 said. `retention_fast` gets the shorter window rather than inheriting the documentary one. |
+| Weight 0.7 | `_W_REUSE_PENALTY` | Near reuse is harsher than the old 0.4, because far reuse is free. |
+| Seed from bindings | `ResolveAssetsStep._seed_used_at` | Resume-safe. Later-in-the-video bindings do not penalise an earlier shot. Generated clips are not in the map (search-pool penalty). `list_content_hashes_for_project` is no longer the ranking input. |
+
+`already_used_hashes=frozenset(...)` still means gap 0 (full penalty) so the old unit test keeps working.
+
+Tests: near reuse still flips; 480 s later the more-relevant photo wins; 30 s in a 60 s window is 0.5; later uses ignored.
 
 ---
 
@@ -500,6 +531,24 @@ One approval: `TimelineService.approve(project_id, version)` sets a single docum
 
 **The draft is still the right artifact to review against** even though D3 chose scene-by-scene as the mechanism — a 480p draft of 10 minutes is the only way to judge pacing, and pacing is the thing per-shot review structurally cannot see. Scene-grouped approval and draft-first review are complements, not the alternatives the question framed them as; build the grouping, and link each scene to its draft timestamp.
 
+### 6.3 — Landed 2026-08-19: scene grouping, per-scene approval, adaptive review, draft player
+
+**Built.** Adaptive UI, single backend model (F3). `AwaitApprovalStep` still checks document `status == APPROVED` only — no threshold in the engine.
+
+| piece | where | why this shape |
+|---|---|---|
+| `metadata.approved_scenes` | `TimelineMetadata` | Monotonic list of scene ids. Dotted `owns={"metadata.approved_scenes"}`. Empty default so pre-C5 documents load unchanged. Review record, not a lock — regenerate/override still run on an approved scene (Q6 repair path). |
+| `POST /scenes/{id}/approve` | `projects.py` | Appends one id. Requires that scene's shots in `_TERMINAL_SHOT_STATES`. Idempotent (no version bump on a second click). Does **not** stamp document `APPROVED` or start the pipeline. |
+| `POST /timeline/approve` stamps remaining | `TimelineService.approve` | In-place on the current version (same as `status=APPROVED`), not an `append_version` — a HUMAN version would make `NarrationStep.is_satisfied` false and re-run TTS. |
+| `POST /scenes/{id}/regenerate-failed` | same | Batch wrapper over `POST /shots/{id}/generate`. Always requires `confirmed_cost_cents` when the estimate is > 0 (dry-run does **not** skip — this is the $6 click). Motion stays on the per-shot `/generate/video` path (async, no dry-run fake). |
+| `GET /progress` `scenes[]` | same | id, `act_id`, title, `shot_ids`, counts, `approved`, `starts_at_s`, `regenerate_failed_cost_cents`. `scene_id` on each shot. Flat `shots[]` kept — dropping it is §13.4, not this slice. |
+| Adaptive review UI | `AssetReviewGate.tsx` | `SCENE_GROUP_SHOT_THRESHOLD = 40` in `lib/types.ts` only. Below: today's flat grid. Above: scene rows, expand, per-scene approve, watch-from-here. Three distinct confirms (scene / approve-remaining / regenerate) plus the existing C6 spend dialog. |
+| Draft player + clip lightbox | same | F4: `POST /render/draft` + `GET /video/draft` wired; scene rows seek to `starts_at_s`. R10: lightbox plays `/shots/{id}/clip` when a generated clip is bound. |
+
+**Not in this slice (still later items):** §13.4 ETag / drop default `shots[]` / adaptive poll interval; §13.6 thumbnail pre-warm; virtualisation (grouping makes 65 collapsed rows, so a new dep was not added).
+
+Tests: ownership of the dotted path; progress `scenes[]`; per-scene approve + unfilled 400 + idempotent re-approve; pinning test (short vs long, per-scene-then-document vs all-at-once); regenerate-failed confirm then fill, including on an already-approved scene.
+
 ---
 
 ## 7. C6 — Budget per minute of output
@@ -517,6 +566,19 @@ At $65 a mis-planned run is a real loss, so two things stop being informational:
 **A length-aware motion cap.** Per §1's D4 caution, a total cap alone lets one project spend ~$65 on ~130 motion shots. A4's per-project motion cap (built, parent §12) should scale with length too, but **sub-linearly** — a 10-minute video does not need 6.7× the motion of a 90-second one to read as motion-rich, and motion is the line item that decides the bill.
 
 ⚠ **The `check_budget` TOCTOU from §3.2 matters most here.** Concurrent motion submissions each reading the same pre-spend total can overshoot by `concurrency × 50¢`. Small at cap 4; not small if anyone raises the cap.
+
+### 7.3 — Landed 2026-08-19: length-aware cap, sub-linear motion cap, confirm-to-approve
+
+**Built.** Same resolver as C1 (`resolve_constraint_bundle`). `n_fragments=None` / Path A fixtures stay 1000¢ and 5 video shots.
+
+| piece | where | why this shape |
+|---|---|---|
+| `budget_cap_cents` | `ConstraintBundle` | `ceil(duration_cap × 1000 / 90)`. 90 s → 1000. ~10 min → ~6646–6667¢. |
+| `max_video_shots_per_project` | same bundle | `max(5, ceil(5 × sqrt(duration/90)))`. 90 s → 5. 10 min → **13**, not 33 (linear) and not 130 (uncapped). Asset planner reads the bundle, not flat settings. |
+| `check_budget(..., cap_cents=)` | narration, music, image/video generate, API generate | Default remains 1000 (halts too *early* on long-form if a caller forgets — the safe direction). Wired callers pass `budget_cap_cents_for(timeline)`. |
+| Confirm to approve | `POST /timeline/approve?confirmed_cost_cents=` | Required when spent + remaining estimate > 0 **and** `DRY_RUN` is off (fake spend is not a confirmation event). Review gate shows a confirm dialog and the estimate caveat. `GET /progress` now reports `budget_cap_cents` and spent includes narration. |
+
+Tests: `test_styles` short=1000/5, long≈$66/13; `test_cost` explicit cap; existing asset-planner cap tests still pass at 5.
 
 ---
 
@@ -542,6 +604,20 @@ Measured against the real 54-track manifest: **min 62 s, median 149 s, max 2193 
 - A *single* bed under a 10-minute video needs 600 s and only 4 tracks reach it, so the existing `-stream_loop -1` loop would run 4× on the median track — §6's C7 row, confirmed with real numbers.
 - ⚠ **The 6 moods × 3 energies taxonomy has only 3 tracks per cell.** A 10-minute video wanting 5 acts that happen to share a mood and energy has 3 candidates for 5 slots — so either an act repeats a bed, or act-level selection must be allowed to move across the energy axis within one mood. Decide it deliberately; repeating a bed at act 4 that played at act 1 is fine, repeating consecutively is not.
 - **`bpm` is `null` for all 54 tracks**, so §5.3's tempo-fit ranking has nothing to rank on. Independent of Track C, but per-act selection is the first feature that would actually benefit from it.
+
+### 8.3 — Landed 2026-08-19: one bed below the act threshold, one bed per act above it
+
+**Built.** Switch is `Scene.act_id` (any scene has one ⇒ Path B), not a second copy of `N > 70` in the music step.
+
+| piece | where | why |
+|---|---|---|
+| `MusicPlan.act_beds` | Timeline IR | Additive. Empty on Path A and every older document. Path B writes one `ActMusicBed` per consecutive `act_id` group. `selected_track` is still the first bed so retry/UI keep working. |
+| Consecutive-repeat rule | `SelectMusicStep._select` | Exclude the previous act's `source_id` when any other candidate exists. Repeating act 1 at act 3 is allowed; repeating act 2 immediately after act 2 is not. Full library stays the pool — that *is* the energy-axis move §8.2 asked for (3 tracks/cell). |
+| Duration floor per act | same | A 90 s act does not inherit a 10-minute floor. |
+| `assemble_act_bed` | `renderer/music.py` | Loop+trim each act to its D5 time range, concat, then the existing duck/mux. Hard cuts between acts. Fingerprint hashes beds in mix order (`bbb\|aaa`), not sorted. Assemble runs on cache miss only. |
+| Music retry | `POST /music/retry` | Clears `act_beds` with `selected_track`. |
+
+Path A tests still see empty `act_beds`. Three-act / two-track fixture selects `t1, t2, t1`.
 
 ---
 
@@ -768,16 +844,16 @@ Even at ~450× headroom against `ARG_MAX`, having the real number means the next
 4. ~~**C3's argv fix (1 d).**~~ **Done 2026-08-19 (§4.2a), folded with §12 step 9a (tpad).** Both argv halves + STATIC `-loop` → `-i`/`tpad`. ffmpeg 9 uses `-/filter_complex`, not `-filter_complex_script` — see §4.2a.
 5. ~~**C1 (3–4 d).**~~ **Done 2026-08-19 (§2.6).** Length-aware `ConstraintBundle`, Path B act pass, concurrent shot/asset planning (cap after gather, `db_lock` on inserts). Incremental persist declined (C8).
 6. ~~**C2 (1 d).**~~ **Done 2026-08-19 (§3.3).** Unique-by-hash `reserve_then_gather` at cap 3, `{hash}.alignment.json` sidecar + disk fallback, cost constant 0.0103, duration cap via `ConstraintBundle`.
-7. **C6 (1 d).** Per-minute cap, length-aware motion cap, and the pre-approval confirmation D4 makes load-bearing.
-8. **C4 (1.5 d).** Temporal reuse window. Before C5, so the first long review is looking at output the reuse rule already improved rather than at repetition that will be fixed later.
+7. ~~**C6 (1 d).**~~ **Done 2026-08-19 (§7.3).** Length-aware `budget_cap_cents` (90 s → 1000), sub-linear motion cap (10 min → 13), `confirmed_cost_cents` on approve when spend > 0.
+8. ~~**C4 (1.5 d).**~~ **Done 2026-08-19 (§5.3).** Temporal reuse window (60 s documentary / 20 s `retention_fast`), graded penalty, weight 0.7. Seeded from resolved bindings, not the global asset inventory.
 9. **C3's remainder — rescoped by C0, now 3.5–5.5 d after (a) landed early.** Four sub-tasks, in this order:
    - ~~**(a) Test the memory hypothesis first (~0.5 d).**~~ **Probe done 2026-08-19 (§4.1b). Production fix landed the same day with step 4 (§4.2a)** — `_render_run` has no `-loop` branch left. (b)/(d) start from the tpad input shape; do not reintroduce `-loop 1 -t`.
-   - **(b) Per-run fingerprint caching (1–1.5 d).** Now the plan rather than a contingency (D2 overturned). ⚠ **Do not record this as "the edit-latency fix"** — per §4.1a's asymmetry table it fully solves `retention_fast` (~185 runs) and does **nothing** for `documentary_archival` (1 run), which is the style long-form is actually for.
-   - **(c) Parallel run encodes (0.5 d).** Same asymmetry, same caveat: helps the cuts-only style that was never the problem. Cheap, so still worth it. ⚠ **Staging names are already run-unique (`run_000_s000.jpg`, §14.2 / R-C2)** — do not simplify them back to `s000.jpg` when adding concurrency; that collision is why they got the run stem.
-   - **(d) Two-pass within a long run (2–3 d) — the real answer for the dissolve-heavy case.** Cache each shot's normalised/zoompanned stream, re-chain only the `xfade`s on edit; per-shot granularity regardless of transitions. The second encode of every frame is far easier to justify against a measured ~18.6 min than against the guessed 2–9. ⚠ Should reuse (a)'s `tpad` input shape for the still path when building the per-shot intermediate encode, not the old `-loop 1 -t` — no reason to reintroduce the memory cost into a new code path this probe just found and fixed.
+   - ~~**(b) Per-run fingerprint caching (1–1.5 d).**~~ **Done 2026-08-19 (§4.3a).** `work_dir/run_cache/{fp}.mp4`. ⚠ Not "the edit-latency fix" — fully solves `retention_fast` (~185 runs) and does **nothing** for `documentary_archival` (1 run).
+   - ~~**(c) Parallel run encodes (0.5 d).**~~ **Done 2026-08-19 (§4.3a), with (b).** `bounded_gather` at `ffmpeg_run_concurrency()`. Staging names stay `run_000_s000.jpg` (R-C2).
+   - ~~**(d) Two-pass within a long run (2–3 d).**~~ **Done 2026-08-19 (§4.3a).** Per-shot `shot_cache`, xfade re-chain, tpad stills. Dissolve-duration edits reuse every shot file.
    - ⚠ **Explicitly NOT `-threads 1` relaxation.** It trades away I5's byte-exactness for a problem caching solves without touching determinism, and it was the least-preferred of §4.3's levers before C0; the measurement does not change that ordering.
-10. **C5 (3–4 d).** Scene-grouped progress, per-scene approval (**final, no un-approve** — §11 Q6), bulk actions with cost confirmation, draft timestamp links, and the per-shot override reachable **from the scene row** — which Q6 promoted from an affordance to a requirement, since it is now the only repair path for a scene approved in error.
-11. **C7 (1–1.5 d).** Per-act music, and the act-repeat rule from §8.2.
+10. ~~**C5 (3–4 d).**~~ **Done 2026-08-19 (§6.3).** Scene-grouped progress, per-scene approval (**final, no un-approve** — §11 Q6), bulk regenerate-failed with cost confirmation, draft timestamp links, and the per-shot override reachable **from the scene row**. Adaptive UI, single backend (`SCENE_GROUP_SHOT_THRESHOLD` is frontend-only). ETag / payload reshape / thumbnail pre-warm stay §13.4 / §13.6.
+11. ~~**C7 (1–1.5 d).**~~ **Done 2026-08-19 (§8.3).** Per-act beds when `Scene.act_id` is set; consecutive-repeat rule; Path A unchanged.
 12. ~~**C8 (1–2 d).** Measure timeline document growth at real scale, then decide whether anything is needed.~~ **Done 2026-08-19 (§9.1), out of sequence order** — cheap enough (no docker/ffmpeg dependency) to run alongside C0's memory-hypothesis test rather than wait for steps 5–11. Verdict: nothing needed, 0 d follow-on.
 
 Steps 1–4 are all measurement or repair of something already known to be broken, and together they are ~3 days. **Everything after them is contingent on what step 1 says**, which is the point.
@@ -869,9 +945,23 @@ At `PROGRESS_POLL_MS = 2500` that is **~3.3 MB/min per open tab**, and a 40-minu
 
 Net effect: ~95% of polls become ~200 bytes, and the ones that carry data carry ~8 KB instead of ~142 KB.
 
+### 13.4a — Landed 2026-08-19: ETag, slim default, expand on demand
+
+| piece | where | why |
+|---|---|---|
+| ETag | `GET /progress` | SHA-256 of the assembled JSON, not `timeline.version`. `If-None-Match` → 304. Frontend keeps the last body and sends the etag on the next poll. |
+| Default `shots: []` | same | Scene summaries stay. `?expand=shots` is the old full array. Review UI below the threshold requests expand; grouped UI fetches `GET /scenes/{id}/shots` on open. |
+| Adaptive interval | `lib/queries.ts` | 2.5 s default; 8 s when `total_shots >= 40` or `current_step` is `render`/`narration`. One derived value. |
+
+Tests: default omits shots; expand restores them; 304 on unchanged etag; one-scene shots endpoint.
+
+---
+
 ### 13.5 The review screen — and the R1-shaped risk in F3, with its mitigation
 
 F3 chose **adaptive**: today's flat grid and single Approve below a shot threshold, scene-grouped with per-scene approval above it.
+
+⚠ **Landed with C5, 2026-08-19 (§6.3).** Threshold is `SCENE_GROUP_SHOT_THRESHOLD` in `frontend/src/lib/types.ts`. F4's draft player and R10's clip lightbox landed in the same review screen. §13.4 (ETag / drop `shots[]` / adaptive interval) and §13.6 (thumbnail pre-warm) did not.
 
 ⚠ **The risk was flagged when the option was offered and it is real: two approval models means the gate's engine-side satisfied condition differs by project size, and "one invariant, two code paths that can disagree" is exactly the shape of the parent document's R1** — the bug that made `retention_fast` unrunnable and survived 513 green tests because no test crossed the boundary.
 
@@ -896,6 +986,10 @@ F3 chose **adaptive**: today's flat grid and single Approve below a shot thresho
 
 **Fix: pre-warm the frame cache at the end of `ResolveAssetsStep`**, when the clip has just been downloaded and the process is already doing media work. Moves the cost off the human's critical path entirely, and the cache is already keyed and invalidated correctly (mtime), so nothing new has to be reasoned about.
 
+### 13.6a — Landed 2026-08-19: pre-warm at the end of ResolveAssetsStep
+
+`shot_frame_cache_path` is the one cache location `GET /shots/{id}/asset` and the step both write. After each search/generate pass, every bound video is extracted into that JPEG. A failed extract is swallowed so a bad clip cannot fail the step — the gate still falls back to lazy extract.
+
 ### 13.7 Frontend effort, alongside the backend figures
 
 The correction this section exists to make.
@@ -911,8 +1005,8 @@ The correction this section exists to make.
 | C6 budget | 1 d | **1 d** | the pre-approval confirmation D4 made load-bearing |
 | C7 music | 1–1.5 d | — | |
 | C8 doc growth | ~~1–2 d~~ spent, 0 d | — | done 2026-08-19, §9.1 — measurement only, no follow-on work |
-| **§13.4 progress feed** | **1 d** | **1 d** | ETag + payload reshape + adaptive interval |
-| **§13.6 pre-warm** | **0.5 d** | — | |
+| **§13.4 progress feed** | ~~1 d~~ **done** | ~~1 d~~ **done** | ETag + payload reshape + adaptive interval — §13.4a |
+| **§13.6 pre-warm** | ~~0.5 d~~ **done** | — | `ResolveAssetsStep._prewarm_video_frames` — §13.6a |
 | **parent R10/R5 wiring** | — | **0.5 d** | four shipped endpoints with no UI |
 | **totals** | **~18.5–21.5 d** | **~7.5–8.5 d** | |
 
@@ -1208,3 +1302,257 @@ Read as scenarios, not as a punch list. **No production-code change from this re
 | 4. Session-scoped lock | **Declined.** Safe by today’s call order; optional, no behaviour change |
 
 **So: nothing to fix on C2, and nothing to change in production code from this review.** The only edit this response makes is the log sentence R-C5 asked for.
+
+---
+
+## 15. Whole-track review — C0–C8 + §13, verified 2026-08-19
+
+> **Method.** Every landed section (§2.6, §3.2a, §3.3, §4.1b, §4.2a, §4.3a, §5.3, §6.3, §7.3, §8.3, §9.1, §13.4a, §13.6a) reviewed to the same depth: read the code, then re-derive the load-bearing property by running it. Numbers below were produced by execution, not reading. Uniform verdict per item, so a "clean" is as evidenced as a finding.
+>
+> **Three findings — R-C6, R-C7, R-C8 — plus four notes and one still-open item from §14.9 (R-C5).** Nothing found in C1, C2, C4, C6, C7 or §13.4a.
+
+### 15.1 Verdict table
+
+| item | section | verdict |
+|---|---|---|
+| C0 probe | §4.1a/§4.1b | ✅ clean — re-verified in §14.9 |
+| C1 planning at length | §2.6 | ✅ **clean** — both §2.2/§2.4 warnings correctly handled |
+| helper | §3.2a | ✅ clean — re-verified in §14.9 |
+| C2 narration | §3.3 | ✅ clean — re-verified in §14.9 |
+| C3 argv + tpad | §4.2a | ✅ clean — R-C1 fix re-measured in §14.9 |
+| **C3 remainder** | §4.3a | ⚠ **R-C7 (resource), R-C8 (race)** — invalidation and durations are correct |
+| C4 reuse window | §5.3 | ✅ **clean** |
+| **C5 review/approval** | §6.3 | ⚠ **R-C6 (fingerprint)** — F3's invariant holds |
+| C6 budget | §7.3 | ✅ **clean** for every live path |
+| C7 music at length | §8.3 | ✅ **clean** |
+| C8 doc growth | §9.1 | ✅ clean — re-verified in §14.4 |
+| §13.4a progress feed | §13.4a | ✅ **clean** — ETag done right |
+| §13.6a pre-warm | §13.6a | ✅ clean |
+
+---
+
+### 15.2 R-C6 — `metadata.approved_scenes` is a render-cache input, and it depends on human click order
+
+`TimelineService.approve` stamps remaining scene ids **in place** on the current version. The in-place choice is correct and well argued (*"a new version would change `produced_by` and make NarrationStep think it had not run"*) — that is a real constraint and appending would have been worse.
+
+⚠ **But `metadata` is deliberately **not** in `_TIMELINE_BOOKKEEPING_FIELDS`** — it must stay hashed so `render_style` and `grade_style` reach the fingerprint, and `test_grading.py` has a test pinning exactly that. **So `approved_scenes`, a pure review record, is now part of `compute_render_fingerprint`'s payload.**
+
+**Measured on the real fixture — two defects, not one:**
+
+| `metadata.approved_scenes` | fingerprint |
+|---|---|
+| `[]` | `16e6736eafac41e8…` |
+| all five ids, order A | `82b6eef458e4e112…` |
+| all five ids, **order B** (same set, reversed) | `b09f65a962b9f53a…` |
+
+1. **Approving changes the render fingerprint.** Any whole-render performed before every scene is approved is invalidated by the act of approving — nothing that affects a pixel changed.
+2. ⚠ **The same set of approvals in a different order produces a different fingerprint.** `POST /scenes/{id}/approve` appends in **click order**, so **the render cache key now depends on the sequence a human clicked.** Two byte-identical videos get different cache entries.
+
+**This is the R2 shape the project has now hit four times** (music gain, captions, watermark, grade): a value reaches the render path without belonging to it. Here it is the inverse — a value that belongs to *review* has leaked *into* the render key.
+
+**Impact is bounded, and C3 is what bounds it.** `compute_run_fingerprint` and `compute_shot_stream_fingerprint` do **not** include the timeline document, so the expensive encode survives — a post-approval re-render hits the run/shot caches and re-encodes nothing. What is lost is the post-concat pass (grade → text cards → captions → watermark) plus the narration/music mux. ⚠ **So the cost is small *today* and grows with anything added after concat** — which is where §13's remaining work and every future look-and-feel feature live.
+
+**Fix.** Exclude `metadata.approved_scenes` from the fingerprint's content extraction. ⚠ **The existing top-level `_TIMELINE_BOOKKEEPING_FIELDS` set cannot express this** — dropping all of `metadata` would silently un-hash `render_style`/`grade_style` and re-open R6 from the parent document. A nested exclusion (or popping the one key from the copied `metadata` dict) is the change. **Sorting the list is a cheap partial fix for defect 2 only** and should not be mistaken for the whole fix.
+
+### 15.3 R-C7 — nested `bounded_gather` multiplies ffmpeg concurrency to `cap²`
+
+Two gathers, both at `ffmpeg_run_concurrency()`, and they **nest**:
+
+- `render_timeline` (line 681) gathers **runs** at line 749.
+- `_render_run_two_pass` (line 428) gathers that run's **shots** at line 457.
+
+`render_timeline → _render_or_reuse_run → _render_run → _render_run_two_pass`, so the second is inside the first.
+
+**Measured on this machine:**
+
+```
+cpu_count = 16   ffmpeg_run_concurrency() = 14
+worst case = 14 runs x 14 shots = 196 concurrent ffmpeg processes
+```
+
+⚠ **§4.1b measured 3.47 GB peak RSS for a *single* ffmpeg on the 185-shot run, and needed the WSL2 ceiling raised to 12 GB.** Per-shot encodes are far smaller, but 196 of them is not a bounded pool — and the whole point of `cpu_count - 2` was to reserve headroom that `cap²` gives straight back.
+
+**Reachability, which is the part that matters:**
+
+| shape | runs | shots/run | concurrent ffmpeg |
+|---|---|---|---|
+| pure archival (all dissolves) | 1 | 185 | 14 — safe |
+| pure `retention_fast` (cuts only) | ~185 | 1 | 14 — safe (single-shot runs skip two-pass) |
+| ⚠ **mixed** — archival with some hard cuts | ~10 | ~18 | **up to 196** |
+
+**The safe cases are the two extremes; the exposed case is the realistic middle.** A long documentary with occasional hard cuts is neither of the styles the plan reasons about, and it is the most likely real input.
+
+⚠ **This is C0's own finding reintroduced by the fix for it.** C0 discovered memory was an unasked-about axis; §4.3a's parallelism re-opens it multiplicatively.
+
+**Fix: one ffmpeg pool, not one per nesting level.** A module-level semaphore acquired around each `run_ffmpeg` call bounds total concurrency regardless of how many gather levels exist — and it stays correct if a third level is ever added. Gathering at one level only also works, but it is fragile in the same way the current code is: correct until someone nests again.
+
+### 15.4 R-C8 — both cache writes are non-atomic
+
+Both levels do:
+
+```python
+if cache_path.is_file() and cache_path.stat().st_size > 0:   # reader
+    shutil.copy2(cache_path, dest)
+...
+shutil.copy2(dest, cache_path)                                # writer
+```
+
+`shutil.copy2` streams into the destination, so **a reader can observe a partially-written file with `st_size > 0` and copy a truncated MP4.**
+
+⚠ **Two shots share a fingerprint whenever `(asset content hash, duration_s, camera)` match** — and **C4 deliberately made that more likely**: §5.3's whole point is that reusing the same photo far apart is now free, so a 10-minute documentary is *expected* to contain the same asset at the same duration with the same camera more than once. Combined with R-C7's shot-level concurrency, two workers race on one cache path.
+
+**Fix: write to a unique temp name in the same directory, then `os.replace`** — atomic on POSIX and on Windows, and the same-directory requirement is already satisfied. Cheap, and it makes the cache correct independently of whether R-C7 is fixed.
+
+### 15.5 Notes — no action strictly required
+
+**N1 — §4.3a's heading contradicts its body.** The heading reads *"per-run cache + parallel encodes (not two-pass)"*; the body then says *"**(d) two-pass — landed 2026-08-19, same session.**"* Two-pass **did** land and is verified working below. Stale heading; fix the four words.
+
+**N2 — R-C5 is still open.** §14.9 asked for a multi-shot frame-exactness test; none exists in the suite. **This review ran it manually and it passes** — real `render_timeline`, dissolve-joined, against `compute_timeline_duration`:
+
+| camera | shots | expected | actual | delta |
+|---|---|---|---|---|
+| `static` | 3 | 8.0000 s | 8.0000 s | **0.0000** |
+| `static` | 6 | 15.5000 s | 15.5000 s | **0.0000** |
+| `slow_zoom` | 3 | 8.0000 s | 8.0000 s | **0.0000** |
+| `slow_zoom` | 6 | 15.5000 s | 15.5000 s | **0.0000** |
+
+⚠ **This is now a stronger result than when R-C5 was raised**, because these paths go through two-pass — each shot is encoded to its own file and then xfaded from disk, and the durations are *still* exact. That is real evidence two-pass preserves D5. **It should be a test, not a paragraph in a review.**
+
+**N3 — the run fingerprint over-invalidates.** `compute_run_fingerprint` hashes `shot.model_dump()` in full, which includes `prompt`, `intent`, `asset_plan` and `text_card` — none of which affect the silent per-run encode (captions/watermark/grade/text cards are all after concat, as §4.3a itself states). So editing a shot's prompt without changing its asset invalidates that run. **Conservative, i.e. the safe direction, and the shot cache absorbs the cost** — recorded only so nobody reads a cache miss as a bug.
+
+**N4 — dead code is now four functions deep in `resolve_assets.py`.** `_generate_image_real_old`, `_generate_checked_image_temp_old`, `_generate_checked_image`, `_generate_checked_keyframe` are all unreachable. ⚠ **This cost real review time:** three of C6's `check_budget` call sites lack `cap_cents`, and establishing they were unreachable took tracing three levels of caller. A5's "kept, unwired, not deleted" precedent is defensible for one function; a name like `_temp_old` suggests the fourth was left behind rather than kept deliberately.
+
+### 15.6 What was verified clean, and how
+
+Recorded at the same depth as the findings.
+
+**C1 (§2.6) — both of this document's own warnings correctly handled.**
+- §2.4 warned the shot-cap accumulator becomes a race under concurrency. `shot/planner.py` gathers at **309** and checks `total_shots` at **317–321** — after the gather, over the collected result.
+- §2.2 warned "never pass absolute fragment indices into a per-act call." `_one_act` calls `_plan_single(script=act.script_slice, …)`, which re-splits that slice into local `1..M`. The model never sees an absolute index — the S2 precedent followed exactly.
+- `act_max_scenes` / `act_max_duration` are pro-rated by the act's fragment share, so per-act caps sum to the project cap instead of each inheriting the whole budget.
+
+**C2 (§3.3) — Q5's ordering, confirmed.** `reserve` accumulates serially; `check()` re-reads `total_project_spend_cents` and compares against the accumulated reservation, so siblings are visible; `release` decrements on halt or failed submit; `db_lock` wraps **only** `narration_repo.insert`, leaving the HTTP call and file write outside it. `_restore_row_from_disk` requires **both** mp3 and `.alignment.json` non-empty, and mp3-only correctly re-synthesises rather than fabricating an alignment — the right failure direction.
+
+**C3 invalidation (§4.3a) — complete, and my initial concern was wrong.** The `run_v1` payload's `assets` sub-list carries only `{shot_id, hash}`, which looked like it might omit camera and duration — but the payload also contains `"shots": [shot.model_dump(mode="json") …]`, the **full** dump. So a camera or transition edit does change the run fingerprint, and the run cache cannot short-circuit past a real change. `shot_stream_v1` carries `shot_id`, `duration_s` and the full `camera` dump, and correctly omits `transition_out` (which belongs to the xfade pass, not the shot stream). `kind:` discriminators on both prevent cross-collision with the full-render hash.
+
+**C4 (§5.3) — clean, including the case most likely to be got wrong.** A never-used candidate resolves to `gap is None` → penalty component `0.0`, **not** `gap = 0.0` (full penalty). Inverting that would have penalised every fresh asset and inverted the whole ranker. `already_used_hashes` back-compat maps to gap `0.0` so the pre-C4 unit test still means what it meant. `W` = 60 s / 20 s for `retention_fast`, weight 0.7.
+
+**C5's F3 invariant (§6.3) — held, and this is the one I most expected to be broken.** §13.5 specified "adaptive UI, single backend model," and warned that a threshold appearing in the engine would recreate R1. **`grep` for a scene-group threshold across all of `backend/app/` returns zero matches**, `SCENE_GROUP_SHOT_THRESHOLD` exists only in `frontend/src/lib/types.ts` (consumed in three frontend places), and `AwaitApprovalStep` checks `active.status == TimelineStatus.APPROVED` and nothing else. R1 not recreated.
+
+**C6 (§7.3) — complete for every live path.** Five `check_budget` call sites pass `cap_cents` (narration, three in `resolve_assets`, music). The three that do not are all inside unreachable functions (N4). Arithmetic checks out: `max(5, ceil(5 × sqrt(600/90)))` = 13 video shots at 10 minutes — not 33 (linear) and not 130 (uncapped).
+
+**C7 (§8.3) — clean, including the subtle part.** `music_content_hash_for` joins per-act content hashes with `|` **in mix order and deliberately unsorted**, with a comment saying why. That is the correct inversion of the fingerprint module's usual sort-everything rule: for beds, order *is* content. Falls back to the single `selected_track` on Path A, `None` when there is no music — so Path A documents hash exactly as before.
+
+**§13.4a — the ETag is keyed on the right thing.** §13.4 warned it must hash the assembled payload rather than `timeline.version`, because a binding resolving does not bump the version. `_progress_etag_response` hashes the serialised payload, and its docstring states that reason. Correct.
+
+### 15.7 Recommended order
+
+1. **R-C8 (atomic cache write).** Smallest change, and it is correct independently of R-C7 — do it first so the cache is sound even while concurrency is still unbounded.
+2. **R-C7 (one ffmpeg pool).** ⚠ **Highest severity in this review:** it is reachable on the most realistic long-form input, and its failure mode is an OOM kill on the same axis C0 had to discover the hard way.
+3. **R-C6 (drop `approved_scenes` from the fingerprint).** Correctness of a cache key. ⚠ Must be a nested exclusion — dropping all of `metadata` re-opens the parent document's R6.
+4. **N2 (add the multi-shot exactness test).** The assertion exists in this review's evidence; move it into the suite.
+5. **N1, N3, N4** — a heading, a comment, and a delete.
+
+### 15.8 — Response, 2026-08-19: R-C6 / R-C7 / R-C8 fixed; N2 is a test; N4 not deleted
+
+Worked the review's own order.
+
+| item | action |
+|---|---|
+| **R-C8** | `_atomic_copy`: write `{dest}.{pid}.{uuid}.tmp` next to the cache file, then `os.replace`. Both shot-cache and run-cache *writes*. Hits still `shutil.copy2` out of a complete file. |
+| **R-C7** | `run_ffmpeg` acquires a module-level semaphore sized to `ffmpeg_run_concurrency()`. Nested gathers no longer multiply. Recreated if the cap changes (tests that monkeypatch the cap still bind). |
+| **R-C6** | `compute_render_fingerprint` pops `metadata.approved_scenes` from a copied metadata dict. Empty / order A / order B hash the same. `grade_style` still changes the fingerprint (parent R6 stays hashed). |
+| **N2** | `test_two_pass_dissolve_duration_matches_d5` — 3 and 6 shots, static and `slow_zoom`, against `compute_timeline_duration` at 1-frame abs. Closes the remaining R-C5 coverage gap as a suite assertion. |
+| **N1** | §4.3a heading now says two-pass landed. |
+| **N3** | Comment on `compute_run_fingerprint`: full `shot.model_dump()` is conservative; prompt-only edits miss; shot-stream cache absorbs. |
+| **N4** | **Not deleted.** Comment on `_generate_image_real_old`: the four functions are the A5 unwired constraint-checked path, not accidental leftovers. Live `check_budget` callers already pass `cap_cents`. Deleting ~300 lines of documented recovery path is a separate cleanup, not this review's encode/cache fix. |
+
+Tests: fingerprint unit (approved_scenes / grade_style); two-pass duration; existing run-cache / two-pass / determinism still apply.
+
+### 15.9 Confirmation of §15.8's fixes, verified 2026-08-19
+
+> **Method.** Each fix re-verified by re-running the exact experiment that found the defect, not by reading the diff. **All three findings (R-C6, R-C7, R-C8) are genuinely fixed, and the regression guards hold.** ⚠ **One new finding: N2's test cannot catch the bug it was written to guard.**
+
+#### R-C6 — fixed, and the guards hold
+
+Re-ran the fingerprint comparison that produced three different hashes:
+
+| `metadata.approved_scenes` | fingerprint | |
+|---|---|---|
+| `[]` | `4e14b16f45a5dec4…` | |
+| all ids, order A | `4e14b16f45a5dec4…` | **identical** |
+| all ids, **order B** (reversed) | `4e14b16f45a5dec4…` | **identical** |
+
+Both defects closed: approving no longer changes the render key, and click order is no longer a cache input.
+
+⚠ **And the guard that mattered most holds.** The fix pops one nested key rather than dropping `metadata`, so:
+
+| | differ? |
+|---|---|
+| `grade_style` `None` vs `"retention_fast"` | **yes** |
+| `render_style` `documentary_archival` vs `retention_fast` | **yes** |
+
+The parent document's R5 (mutable grade) and R6 (`None` ≡ default look) both stay closed. Dropping all of `metadata` would have silently re-opened them, and it didn't.
+
+#### R-C7 — fixed, and measured on the nested path
+
+`run_ffmpeg` now acquires a module-level semaphore, so every invocation passes one gate regardless of nesting depth. Verified by instrumenting `asyncio.create_subprocess_exec` and rendering a timeline built specifically to engage **both** gathers — 6 runs of 5 shots, dissolve within each run, hard cut between runs:
+
+```
+cap = 14          nested worst case before the fix = 14 x 14 = 196
+PEAK concurrent ffmpeg observed = 14      bounded by cap: yes
+duration expected = 22.8000   actual = 22.8000   delta = +0.0000
+```
+
+⚠ **Peak reached the cap exactly**, which is the useful detail — the semaphore is the binding constraint under this workload, not an untested guard that happened never to be approached. And D5 survives the change: the 30-shot mixed run is duration-exact.
+
+**Note on the recreate-on-cap-change branch** (`if _ffmpeg_slot is None or _ffmpeg_slot_cap != cap`): if the cap ever changed *mid-render* while tasks held slots on the old semaphore, releases would return to a discarded object and total in-flight could briefly exceed the new cap. `ffmpeg_run_concurrency()` derives from `os.cpu_count()` and a setting, so this is reachable only from a test that monkeypatches the cap between renders — which is exactly what the branch exists to support. **Correct trade, worth knowing it is a test affordance rather than a production path.**
+
+#### R-C8 — fixed at both sites
+
+`_atomic_copy` writes `.{name}.{pid}.{uuid4}.tmp` **in the destination directory** (so `os.replace` is same-filesystem and therefore atomic), then replaces, and unlinks the temp on failure. pid + uuid means two concurrent writers cannot collide on the temp name either.
+
+Both cache **writes** converted — `slideshow.py:405` (shot cache) and `:708` (run cache). Both cache **reads** correctly still use plain `shutil.copy2` (`:378`, `:691`), which is safe precisely because `os.replace` guarantees the source is complete. `stage_short_input`'s copy fallback at `:166` is unrelated and correctly untouched.
+
+#### ⚠ R-C9 — NEW: N2's test cannot fail on the bug it exists to catch
+
+`test_two_pass_dissolve_duration_matches_d5` asserts:
+
+```python
+assert actual == pytest.approx(expected, abs=1 / _RENDER_SETTINGS.fps)
+```
+
+**`abs = 1/30 = 0.033333`. The R-C1 defect was exactly one frame: `+0.033333`. `pytest.approx` is inclusive (`|delta| <= abs`).** Checked against this review's own measured pre-fix numbers:
+
+| case | pre-fix actual | expected | delta | test verdict |
+|---|---|---|---|---|
+| 3 shots | 3.033333 s | 3.000000 s | +0.033333 | **PASSES** |
+| 6 shots | 15.533333 s | 15.500000 s | +0.033333 | **PASSES** |
+
+**So the assertion written to close R-C5's coverage gap would have passed with R-C1 present.** It proves the pipeline is within one frame — which is the one thing that was already true when the bug existed.
+
+**Fix: `abs=0.005`, matching the audio band.** Every case measured in §15 and §15.9 has a delta of **exactly 0.0000** — static and `slow_zoom` at 3 and 6 shots, plus the 30-shot 6-run mixed render — so a 5 ms band passes with ~6× margin while still failing a one-frame regression by 6.7×.
+
+**Landed 2026-08-20:** N2 now uses `abs=0.005`. The `1/fps` band is gone.
+
+⚠ **This is the third tolerance problem in this chain, and that makes it a pattern rather than three accidents:**
+
+| # | where | tolerance | what it hid or would hide |
+|---|---|---|---|
+| 1 | §14.1 — mux video band | `abs=0.05` | hid R-C1 by 17 ms |
+| 2 | §14.9 / R-C5 — band widened | `abs=0.10` | 3 frames at 30 fps; exactness moved to a single-shot test |
+| 3 | **§15.9 — the multi-shot test** | `abs=1/fps` | **exactly the one-frame defect class it guards** |
+
+**The recurring mistake is choosing a tolerance from the quantity being measured (a frame) instead of from the observed noise floor (zero).** Duration through this pipeline is exact, repeatedly and across every camera/shot-count combination tried. **Recommended standing rule for duration assertions: pick the band from measured spread, and if the measured spread is zero, use the audio band (5 ms) rather than a frame** — a frame-wide band on a frame-sized defect can never fail.
+
+#### Notes confirmed
+
+| | |
+|---|---|
+| **N1** | §4.3a's heading now reads "per-run cache + parallel encodes + two-pass". Matches the body. |
+| **N3** | `compute_run_fingerprint` carries the conservative-over-invalidation comment. |
+| **N4** | Not deleted, and the A5 provenance is documented in `resolve_assets.py`. **Accepted** — the reasoning (a documented recovery path, ~300 lines, live callers already capped) is sound, and this review's own C6 pass confirmed every *live* `check_budget` site carries `cap_cents`. Recorded so the next reviewer does not re-trace three levels of caller to reach the same conclusion. |
+
+#### Regression check
+
+`tests/integration/test_render_two_pass.py`, `test_render_run_cache.py`, `test_render_determinism.py`, `test_render_ken_burns.py`, `test_render_motion_clips.py` and all of `tests/unit/renderer` — **120 passed**. Full unit suite — **432 passed**. DB confirmed at 0 projects beforehand. I5 byte-identity holds through the semaphore and both atomic-copy changes.

@@ -102,6 +102,7 @@ blocking on it.
 
 import hashlib
 import uuid as uuid_module
+from pathlib import Path
 
 from app.assets.constraint_check import (
     build_revised_prompt,
@@ -109,10 +110,11 @@ from app.assets.constraint_check import (
     seed_for_attempt,
     varied_seed,
 )
-from app.assets.cost import check_budget, total_project_spend_cents
+from app.assets.cost import budget_cap_cents_for, check_budget, total_project_spend_cents
 from app.assets.depiction_check import check_candidate_plausibility
-from app.assets.ranking import rank_candidates
+from app.assets.ranking import rank_candidates, reuse_gaps_s, reuse_window_s
 from app.assets.relevance import candidate_relevance, passes_relevance_gate
+from app.assets.thumbnails import cached_video_frame, is_video_file, shot_frame_cache_path
 from app.assets.validation import (
     mime_type_for_extension,
     validate_and_identify_image,
@@ -120,6 +122,7 @@ from app.assets.validation import (
 )
 from app.core.config import settings
 from app.core.errors import PermanentError, TransientError
+from app.models.asset import AssetModel
 from app.models.generated_clip import GeneratedClipModel
 from app.providers.base import (
     AssetCandidate,
@@ -146,6 +149,7 @@ from app.repositories.llm_call_repository import LlmCallRepository
 from app.repositories.narration_repository import NarrationRepository
 from app.repositories.shot_binding_repository import TERMINAL_STATES, ShotBindingRepository
 from app.schemas.timeline import AssetStrategy, CreativeContext, PreferredMediaType, Shot
+from app.timeline.duration import compute_shot_start_times
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
 
@@ -252,6 +256,7 @@ async def generate_image_real(
     clip_repo: GeneratedClipRepository,
     narration_repo: NarrationRepository,
     creative_context: CreativeContext,
+    cap_cents: int | None = None,
 ) -> tuple[GeneratedClipModel, bool]:
     """Module-level (not a step method) so both `ResolveAssetsStep` and
     the per-shot `/generate` endpoint call the identical path - one
@@ -271,6 +276,7 @@ async def generate_image_real(
         image_provider=image_provider,
         clip_repo=clip_repo,
         narration_repo=narration_repo,
+        cap_cents=cap_cents,
     )
     binding.clip_id = clip.id
     # Task 4 (2026-08-16): `asset_id` is explicitly cleared here, mirroring
@@ -304,6 +310,7 @@ async def _generate_image_once(
     image_provider: ImageProvider,
     clip_repo: GeneratedClipRepository,
     narration_repo: NarrationRepository,
+    cap_cents: int | None = None,
 ) -> tuple[GeneratedClipModel, bool]:
     """Generates once - no retry, no constraint check. The human at the
     one gate is the check now, not an automated vision call that used to
@@ -352,6 +359,7 @@ async def _generate_image_once(
     check_budget(
         already_spent_cents=already_spent,
         additional_cents=settings.fal_image_cost_cents_estimate,
+        cap_cents=cap_cents,
     )
 
     result = await image_provider.generate(
@@ -385,6 +393,7 @@ async def _generate_keyframe_once(
     image_provider: ImageProvider,
     clip_repo: GeneratedClipRepository,
     narration_repo: NarrationRepository,
+    cap_cents: int | None = None,
 ) -> ImageResult:
     """The video path's keyframe generation, brought onto the one-gate
     model (motion_new_styles_and_long_form_videos.md Track A's A5,
@@ -410,6 +419,7 @@ async def _generate_keyframe_once(
     check_budget(
         already_spent_cents=already_spent,
         additional_cents=settings.fal_image_cost_cents_estimate,
+        cap_cents=cap_cents,
     )
     return await image_provider.generate(
         ImageRequest(
@@ -479,6 +489,7 @@ async def submit_video_generation(
     clip_repo: GeneratedClipRepository,
     narration_repo: NarrationRepository,
     creative_context: CreativeContext,
+    cap_cents: int | None = None,
 ) -> tuple[GeneratedClipModel, bool]:
     """`POST /{project_id}/shots/{shot_id}/generate/video`'s own logic
     (Track A's A6, 2026-08-18), module-level so the endpoint calls it
@@ -529,6 +540,7 @@ async def submit_video_generation(
         image_provider=image_provider,
         clip_repo=clip_repo,
         narration_repo=narration_repo,
+        cap_cents=cap_cents,
     )
     if keyframe.hosted_url is None:
         raise PermanentError(
@@ -546,7 +558,11 @@ async def submit_video_generation(
     already_spent = await total_project_spend_cents(
         clip_repo=clip_repo, narration_repo=narration_repo, project_id=project_uuid
     )
-    check_budget(already_spent_cents=already_spent, additional_cents=estimated_cents)
+    check_budget(
+        already_spent_cents=already_spent,
+        additional_cents=estimated_cents,
+        cap_cents=cap_cents,
+    )
 
     job_id = await video_provider.submit(
         VideoRequest(
@@ -585,6 +601,7 @@ async def generate_video_real(
     clip_repo: GeneratedClipRepository,
     narration_repo: NarrationRepository,
     creative_context: CreativeContext,
+    cap_cents: int | None = None,
 ) -> None:
     """`ResolveAssetsStep`'s per-attempt entrypoint for a video shot -
     poll first (`poll_video_job`; advances a job already in flight from a
@@ -615,6 +632,7 @@ async def generate_video_real(
         clip_repo=clip_repo,
         narration_repo=narration_repo,
         creative_context=creative_context,
+        cap_cents=cap_cents,
     )
 
 
@@ -713,7 +731,16 @@ class ResolveAssetsStep:
             if self._generation_permitted
             else None
         )
-        already_used_hashes = await asset_repo.list_content_hashes_for_project(project_uuid)
+        cap_cents = budget_cap_cents_for(timeline)
+        window_s = reuse_window_s(timeline.metadata.render_style)
+        start_times = compute_shot_start_times(timeline.all_shots())
+        used_at_s = await self._seed_used_at(
+            binding_repo=binding_repo,
+            asset_repo=asset_repo,
+            project_uuid=project_uuid,
+            timeline_version=timeline.version,
+            start_times=start_times,
+        )
 
         for shot in timeline.all_shots():
             binding = await binding_repo.get_or_create_pending(
@@ -735,6 +762,7 @@ class ResolveAssetsStep:
                         clip_repo=clip_repo,
                     )
                 else:
+                    shot_start = start_times.get(shot.id, 0.0)
                     used_hash = await self._resolve_one_real(
                         shot,
                         binding,
@@ -750,10 +778,12 @@ class ResolveAssetsStep:
                         narration_repo=narration_repo,
                         llm_call_repo=llm_call_repo,
                         creative_context=timeline.creative_context,
-                        already_used_hashes=already_used_hashes,
+                        reuse_gap_s=reuse_gaps_s(used_at_s, shot_start),
+                        window_s=window_s,
+                        cap_cents=cap_cents,
                     )
                     if used_hash is not None:
-                        already_used_hashes.add(used_hash)
+                        used_at_s.setdefault(used_hash, []).append(shot_start)
             except TransientError as exc:
                 # Leave state as "pending" (not terminal) - eligible for
                 # another attempt on a future run, without failing the
@@ -771,7 +801,69 @@ class ResolveAssetsStep:
         # rather than blocking the other fifty-nine. This is also what
         # makes A22 true: even if every shot's search raised, the step
         # still returns "ok" and the run reaches the approval gate.
+        await self._prewarm_video_frames(ctx, timeline)
         return StepResult(outcome="ok")
+
+    async def _prewarm_video_frames(self, ctx: RunContext, timeline) -> None:
+        """§13.6: extract the review-gate still now, while this process
+        is already doing media work. Failures are swallowed — a miss
+        just means `GET /asset` extracts lazily, the way it always did.
+        """
+        project_uuid = uuid_module.UUID(ctx.project_id)
+        bindings = await ShotBindingRepository(ctx.session).list_for_version(
+            project_uuid, timeline.version
+        )
+        for binding in bindings:
+            path: Path | None = None
+            if binding.asset_id is not None:
+                asset = await ctx.session.get(AssetModel, binding.asset_id)
+                if asset is not None and asset.local_path:
+                    path = Path(asset.local_path)
+            elif binding.clip_id is not None:
+                clip = await ctx.session.get(GeneratedClipModel, binding.clip_id)
+                if clip is not None and clip.local_path:
+                    path = Path(clip.local_path)
+            if path is None or not path.exists() or not is_video_file(path):
+                continue
+            try:
+                await cached_video_frame(
+                    path,
+                    shot_frame_cache_path(ctx.project_id, binding.shot_id),
+                    ffmpeg_binary=settings.ffmpeg_binary,
+                    ffprobe_binary=settings.ffprobe_binary,
+                )
+            except Exception:  # noqa: BLE001 - pre-warm must not fail the step
+                continue
+
+    async def _seed_used_at(
+        self,
+        *,
+        binding_repo: ShotBindingRepository,
+        asset_repo: AssetRepository,
+        project_uuid: uuid_module.UUID,
+        timeline_version: int,
+        start_times: dict[str, float],
+    ) -> dict[str, list[float]]:
+        """C4: content_hash -> start times of already-resolved shots.
+
+        Generated clips are not in this map (ranking is a search-pool
+        penalty). A later shot's binding must not penalise an earlier
+        one — `reuse_gaps_s` keeps only times strictly before the shot
+        being ranked.
+        """
+        used_at: dict[str, list[float]] = {}
+        bindings = await binding_repo.list_for_version(project_uuid, timeline_version)
+        asset_ids = [b.asset_id for b in bindings if b.asset_id is not None]
+        hash_by_id = await asset_repo.content_hashes_for_ids(asset_ids)
+        for binding in bindings:
+            if binding.asset_id is None:
+                continue
+            content_hash = hash_by_id.get(binding.asset_id)
+            start = start_times.get(binding.shot_id)
+            if content_hash is None or start is None:
+                continue
+            used_at.setdefault(content_hash, []).append(start)
+        return used_at
 
     async def _resolve_one_fake(
         self,
@@ -856,7 +948,9 @@ class ResolveAssetsStep:
         narration_repo: NarrationRepository,
         llm_call_repo: LlmCallRepository,
         creative_context: CreativeContext,
-        already_used_hashes: set[str],
+        reuse_gap_s: dict[str, float],
+        window_s: float,
+        cap_cents: int | None = None,
     ) -> str | None:
         """Walks the shot's fallback_chain across real search providers,
         restricted to `self._permitted_strategies`. Returns the
@@ -990,7 +1084,8 @@ class ResolveAssetsStep:
                     [(c, h) for c, h, _, _ in deduped],
                     search_terms=search_terms,
                     historical_period=creative_context.historical_period,
-                    already_used_hashes=frozenset(already_used_hashes),
+                    reuse_gap_s=reuse_gap_s,
+                    window_s=window_s,
                     shot_id=shot.id,
                 )
 
@@ -1114,6 +1209,7 @@ class ResolveAssetsStep:
                 clip_repo=clip_repo,
                 narration_repo=narration_repo,
                 creative_context=creative_context,
+                cap_cents=cap_cents,
             )
         else:
             await generate_image_real(
@@ -1125,6 +1221,7 @@ class ResolveAssetsStep:
                 clip_repo=clip_repo,
                 narration_repo=narration_repo,
                 creative_context=creative_context,
+                cap_cents=cap_cents,
             )
         return None
 
@@ -1165,6 +1262,13 @@ class ResolveAssetsStep:
         binding.clip_id = clip.id
         binding.state = "generated"
         binding.rung = AssetStrategy.GENERATE_IMAGE.value
+
+    # Track C §15 N4: this method and `_generate_checked_image_temp_old` /
+    # `_generate_checked_image` / `_generate_checked_keyframe` below are
+    # unreachable. Kept unwired (A5's "not deleted" precedent for the
+    # constraint-checked generate path), not a fourth accidental leftover
+    # — do not wire `check_budget` here; live callers already pass
+    # `cap_cents`. See §15.8.
 
     async def _generate_image_real_old(
         self,

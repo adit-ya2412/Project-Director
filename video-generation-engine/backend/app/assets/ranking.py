@@ -30,6 +30,13 @@ weight breaks a near-tie in favour of curated provenance without being
 able to override a genuinely stronger free-text match on relevance/
 quality/period.
 
+**Reuse is a window, not a set (Track C C4).** A candidate used 8 minutes
+ago is a callback; one used 8 seconds ago is a stutter. `reuse_penalty`
+is 1.0 at a 0 s gap and decays linearly to 0 at `asset_reuse_window_s`
+(60 s default; 20 s for `retention_fast`). The weight is 0.7, larger
+than the old flat 0.4, because far reuse is no longer paying that 0.4
+for free.
+
 **`quality` measures adequacy for the render, not raw pixel count** - a
 correction made after a live measurement traced a real wrong pick
 (a Polish coal elevator photo beating two genuine Bundesarchiv Leuna-Werke
@@ -45,6 +52,7 @@ threshold rationale.
 """
 
 import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from app.assets.relevance import candidate_relevance
@@ -66,7 +74,10 @@ _W_RELEVANCE = 0.35
 _W_QUALITY = 0.2
 _W_PERIOD = 0.2
 _W_LICENCE = 0.15
-_W_REUSE_PENALTY = 0.4
+# Track C C4: near-reuse is punished harder than the old flat 0.4,
+# because far reuse (a callback 8 minutes later) is no longer paying
+# that 0.4 for free. Component is 1.0 at a 0 s gap, 0.0 at the window.
+_W_REUSE_PENALTY = 0.7
 # Deliberately the smallest weight in the formula - smaller than every
 # other single component (the next-smallest, licence, is 0.15) - so
 # entity-curated provenance can only break a close tie among otherwise
@@ -147,28 +158,74 @@ def _licence_score(candidate: AssetCandidate) -> float:
     return _LICENCE_SCORES.get(candidate.licence, _UNKNOWN_LICENCE_SCORE)
 
 
+def reuse_window_s(style: str | None) -> float:
+    """Seconds of rendered time inside which a reuse still costs. Never
+    less than 1 s (a 0-window would make the penalty a no-op)."""
+    resolved = style or settings.default_render_style
+    raw = (
+        settings.asset_reuse_window_s_fast
+        if resolved == "retention_fast"
+        else settings.asset_reuse_window_s
+    )
+    return max(1.0, raw)
+
+
+def reuse_gaps_s(used_at_s: Mapping[str, Sequence[float]], shot_start_s: float) -> dict[str, float]:
+    """`content_hash -> seconds since the most recent *earlier* use`.
+
+    Uses strictly before this shot (D5 start times). A later-in-the-video
+    binding must not penalise an earlier shot on resume.
+    """
+    gaps: dict[str, float] = {}
+    for content_hash, times in used_at_s.items():
+        prior = [t for t in times if t < shot_start_s]
+        if prior:
+            gaps[content_hash] = shot_start_s - max(prior)
+    return gaps
+
+
+def _reuse_penalty_component(gap_s: float, window_s: float) -> float:
+    """1.0 at a 0 s gap, linear decay to 0 at `window_s` and beyond."""
+    if window_s <= 0 or gap_s >= window_s:
+        return 0.0
+    if gap_s <= 0:
+        return 1.0
+    return 1.0 - (gap_s / window_s)
+
+
 def rank_candidates(
     candidates_with_hash: list[tuple[AssetCandidate, str]],
     *,
     search_terms: list[str] | None = None,
     historical_period: str = "",
     already_used_hashes: frozenset[str] = frozenset(),
+    reuse_gap_s: Mapping[str, float] | None = None,
+    window_s: float | None = None,
     shot_id: str = "",
 ) -> list[RankedCandidate]:
     """Highest score first. `candidates_with_hash` must already be
     deduped by content hash - this function does not dedupe - and already
     past the relevance hard gate; `search_terms` here only re-derives the
     graded score for ordering among survivors, it does not re-admit anyone
-    the gate rejected."""
+    the gate rejected.
+
+    Track C C4: reuse is a gap in rendered seconds, not a global set.
+    `reuse_gap_s` maps content_hash -> seconds since the most recent
+    earlier use. Omit it and `already_used_hashes` still means "used
+    just now" (gap 0, full penalty) so existing callers keep working.
+    """
     search_terms = search_terms or []
+    gaps = reuse_gap_s if reuse_gap_s is not None else {h: 0.0 for h in already_used_hashes}
+    window = window_s if window_s is not None else settings.asset_reuse_window_s
     ranked = []
     for candidate, content_hash in candidates_with_hash:
+        gap = gaps.get(content_hash)
         components = {
             "relevance": candidate_relevance(search_terms, candidate),
             "quality": _quality_score(candidate),
             "period_match": _period_match_score(candidate, historical_period),
             "licence": _licence_score(candidate),
-            "reuse_penalty": 1.0 if content_hash in already_used_hashes else 0.0,
+            "reuse_penalty": (_reuse_penalty_component(gap, window) if gap is not None else 0.0),
             "entity_curated": 1.0 if candidate.entity_curated else 0.0,
         }
         score = (

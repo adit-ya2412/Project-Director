@@ -3,7 +3,7 @@ DB, no network."""
 
 import pytest
 
-from app.assets.cost import check_budget, estimate_project_cost_cents
+from app.assets.cost import budget_cap_cents_for, check_budget, estimate_project_cost_cents
 from app.core.config import settings
 from app.core.errors import PermanentError
 from app.schemas.timeline import (
@@ -169,3 +169,16 @@ def test_check_budget_raises_when_exceeding_cap(monkeypatch):
 def test_check_budget_boundary_is_inclusive(monkeypatch):
     monkeypatch.setattr(settings, "project_budget_cap_cents", 1000)
     check_budget(already_spent_cents=900, additional_cents=100)  # exactly at cap, must not raise
+
+
+def test_check_budget_honours_an_explicit_length_aware_cap():
+    """C6: a 10-minute cap (~6667) must not halt a $20 spend that the
+    flat 1000¢ setting would reject."""
+    check_budget(already_spent_cents=2000, additional_cents=50, cap_cents=6667)
+    with pytest.raises(PermanentError, match="6667"):
+        check_budget(already_spent_cents=6640, additional_cents=50, cap_cents=6667)
+
+
+def test_budget_cap_for_a_short_timeline_is_todays_1000():
+    timeline = _timeline_with_shots([_shot("sh_01", AssetStrategy.GENERATE_IMAGE)])
+    assert budget_cap_cents_for(timeline) == settings.project_budget_cap_cents

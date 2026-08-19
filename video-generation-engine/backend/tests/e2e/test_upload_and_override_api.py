@@ -138,7 +138,7 @@ def test_upload_is_optional_and_a_no_upload_project_is_unaffected(client):
     exactly as before this phase."""
     project_id, awaiting = _create_and_render(client)
     assert awaiting["error"] is None, awaiting.get("error")
-    progress = client.get(f"/api/v1/projects/{project_id}/progress").json()
+    progress = client.get(f"/api/v1/projects/{project_id}/progress?expand=shots").json()
     assert len(progress["shots"]) == 6
     assert all(s["state"] == "resolved" for s in progress["shots"])
     assert all(s["locked"] is False for s in progress["shots"])
@@ -175,7 +175,7 @@ def test_override_before_approval_locks_the_shot_but_still_requires_approval(cli
     )
     assert locked_shot["prompt"] == original_shot["prompt"]
 
-    progress = client.get(f"/api/v1/projects/{project_id}/progress").json()
+    progress = client.get(f"/api/v1/projects/{project_id}/progress?expand=shots").json()
     detail = next(s for s in progress["shots"] if s["shot_id"] == shot_id)
     assert detail["locked"] is True
     assert detail["asset"]["provider"] == "project_assets"

@@ -88,7 +88,7 @@ def test_generate_reports_cache_hit_and_repeat_clicks_are_never_free(client):
     assert second_body["cost_cents"] == settings.fal_image_cost_cents_estimate
     assert second_body["clip_id"] != first_body["clip_id"]
 
-    progress = client.get(f"/api/v1/projects/{project_id}/progress").json()
+    progress = client.get(f"/api/v1/projects/{project_id}/progress?expand=shots").json()
     assert progress["spent_cost_cents"] >= 2 * settings.fal_image_cost_cents_estimate
 
 
@@ -143,7 +143,7 @@ def test_generate_with_edited_prompt_appends_a_new_version_and_carries_forward_o
     total_duration_before = awaiting["timeline"]["metadata"]["total_duration_s"]
     version_before = awaiting["timeline"]["version"]
 
-    before_progress = client.get(f"/api/v1/projects/{project_id}/progress").json()
+    before_progress = client.get(f"/api/v1/projects/{project_id}/progress?expand=shots").json()
     other_assets_before = {
         s["shot_id"]: s["asset"]["local_path"]
         for s in before_progress["shots"]
@@ -169,7 +169,7 @@ def test_generate_with_edited_prompt_appends_a_new_version_and_carries_forward_o
     assert new_target_shot["duration_s"] == duration_before
     assert timeline["metadata"]["total_duration_s"] == pytest.approx(total_duration_before)
 
-    after_progress = client.get(f"/api/v1/projects/{project_id}/progress").json()
+    after_progress = client.get(f"/api/v1/projects/{project_id}/progress?expand=shots").json()
     other_assets_after = {
         s["shot_id"]: (s["asset"]["local_path"] if s["asset"] else None)
         for s in after_progress["shots"]

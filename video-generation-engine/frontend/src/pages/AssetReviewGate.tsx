@@ -1,25 +1,39 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams, Link } from 'react-router-dom'
-import { AlertTriangle, CheckCircle2, ImagePlus, Lock, RefreshCw, Sparkles } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useParams, Link } from "react-router-dom";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  ChevronRight,
+  Film,
+  ImagePlus,
+  Lock,
+  Play,
+  RefreshCw,
+  Sparkles,
+} from "lucide-react";
 import {
   useProgress,
   useTimeline,
   useApproveTimeline,
+  useApproveScene,
   useOverrideShot,
   useGenerateShotImage,
-} from '@/lib/queries'
-import { shotAssetUrl, ApiError } from '@/lib/api'
-import { formatCostCents, formatDuration } from '@/lib/format'
-import { translateError } from '@/lib/errors'
-import { shotAssetSource } from '@/lib/asset-source'
-import { AssetSourceBadge } from '@/components/AssetSourceBadge'
-import { ResolutionWarningBadge } from '@/components/ResolutionWarning'
-import { computeResolutionWarning } from '@/lib/resolution'
-import { Button } from '@/components/ui/button'
-import { Card } from '@/components/ui/card'
-import { Skeleton } from '@/components/ui/skeleton'
-import { Textarea } from '@/components/ui/textarea'
-import { OverrideDialog } from '@/components/OverrideDialog'
+  useRenderDraft,
+  useRegenerateFailedInScene,
+  useSceneShots,
+} from "@/lib/queries";
+import { shotAssetUrl, shotClipUrl, draftVideoUrl, ApiError } from "@/lib/api";
+import { formatCostCents, formatDuration } from "@/lib/format";
+import { translateError } from "@/lib/errors";
+import { shotAssetSource } from "@/lib/asset-source";
+import { AssetSourceBadge } from "@/components/AssetSourceBadge";
+import { ResolutionWarningBadge } from "@/components/ResolutionWarning";
+import { computeResolutionWarning } from "@/lib/resolution";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
+import { OverrideDialog } from "@/components/OverrideDialog";
 import {
   Dialog,
   DialogContent,
@@ -27,9 +41,14 @@ import {
   DialogTitle,
   DialogDescription,
   DialogFooter,
-} from '@/components/ui/dialog'
-import { useToast } from '@/components/ui/toast'
-import type { Camera, ShotProgress } from '@/lib/types'
+} from "@/components/ui/dialog";
+import { useToast } from "@/components/ui/toast";
+import {
+  SCENE_GROUP_SHOT_THRESHOLD,
+  type Camera,
+  type SceneProgress,
+  type ShotProgress,
+} from "@/lib/types";
 
 // Mirrors `_TERMINAL_SHOT_STATES` in `app/api/projects.py` exactly — a
 // shot counts as filled when search found it, a human overrode it, or it
@@ -37,10 +56,10 @@ import type { Camera, ShotProgress } from '@/lib/types'
 // server-side until every shot is in one of these two states (Task 2 of
 // the one-gate redesign), so the button below mirrors that check
 // client-side rather than making a human discover it via a 400.
-const TERMINAL_STATES = new Set(['resolved', 'generated'])
+const TERMINAL_STATES = new Set(["resolved", "generated"]);
 
 function isFilled(shot: ShotProgress): boolean {
-  return TERMINAL_STATES.has(shot.state)
+  return TERMINAL_STATES.has(shot.state);
 }
 
 function GenerateDialog({
@@ -50,36 +69,49 @@ function GenerateDialog({
   onConfirm,
   isPending,
 }: {
-  shot: ShotProgress
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  onConfirm: (prompt: string) => void
-  isPending: boolean
+  shot: ShotProgress;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: (prompt: string) => void;
+  isPending: boolean;
 }) {
-  const [prompt, setPrompt] = useState(shot.prompt)
+  const [prompt, setPrompt] = useState(shot.prompt);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{shot.state === 'resolved' ? 'Edit prompt and generate' : 'Generate this shot'}</DialogTitle>
+          <DialogTitle>
+            {shot.state === "resolved"
+              ? "Edit prompt and generate"
+              : "Generate this shot"}
+          </DialogTitle>
           <DialogDescription>
-            The prompt is what the image is generated from — edit it if the last attempt (or the plan's own
-            guess) produced the wrong picture. Generating creates a new image and adds to this project's spend,
-            unless it's an exact repeat of a prompt already generated for this shot.
+            The prompt is what the image is generated from — edit it if the last
+            attempt (or the plan's own guess) produced the wrong picture.
+            Generating creates a new image and adds to this project's spend,
+            unless it's an exact repeat of a prompt already generated for this
+            shot.
           </DialogDescription>
         </DialogHeader>
-        <Textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} className="min-h-[120px]" />
+        <Textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          className="min-h-[120px]"
+        />
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button disabled={isPending || !prompt.trim()} onClick={() => onConfirm(prompt.trim())}>
-            {isPending ? 'Generating…' : 'Generate (may cost money)'}
+          <Button
+            disabled={isPending || !prompt.trim()}
+            onClick={() => onConfirm(prompt.trim())}
+          >
+            {isPending ? "Generating…" : "Generate (may cost money)"}
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  )
+  );
 }
 
 function ShotImage({
@@ -88,15 +120,18 @@ function ShotImage({
   camera,
   onExpand,
 }: {
-  projectId: string
-  shot: ShotProgress
-  camera: Camera | undefined
-  onExpand: () => void
+  projectId: string;
+  shot: ShotProgress;
+  camera: Camera | undefined;
+  onExpand: () => void;
 }) {
-  const [errored, setErrored] = useState(false)
-  const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null)
-  const source = shotAssetSource(shot)
-  const hasImage = (shot.asset || shot.clip) && !errored
+  const [errored, setErrored] = useState(false);
+  const [naturalSize, setNaturalSize] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
+  const source = shotAssetSource(shot);
+  const hasImage = (shot.asset || shot.clip) && !errored;
   // `shotAssetUrl` is the same URL string before and after an
   // override/regenerate — an already-mounted `<img>` has no reason to
   // re-request it, so the browser just keeps showing the old bytes it
@@ -104,17 +139,18 @@ function ShotImage({
   // revalidation on a NEW request; it does nothing if no request is ever
   // made). Keying on the bound asset/clip's own path forces React to
   // unmount and remount the element whenever the actual file changes.
-  const mediaVersion = shot.asset?.local_path ?? shot.clip?.local_path ?? shot.state
+  const mediaVersion =
+    shot.asset?.local_path ?? shot.clip?.local_path ?? shot.state;
 
   if (!hasImage) {
     return (
       <div className="flex aspect-[9/16] w-36 shrink-0 flex-col items-center justify-center gap-1.5 rounded-md border border-dashed border-warning/40 bg-warning/5 p-2 text-center">
         <Sparkles className="h-5 w-5 text-warning" />
         <span className="text-xs text-warning">
-          {shot.state === 'pending' ? 'Still searching…' : 'No picture yet'}
+          {shot.state === "pending" ? "Still searching…" : "No picture yet"}
         </span>
       </div>
-    )
+    );
   }
 
   return (
@@ -123,7 +159,7 @@ function ShotImage({
         type="button"
         onClick={onExpand}
         className="block cursor-zoom-in rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        aria-label="View larger image"
+        aria-label={shot.clip ? "Play clip" : "View larger image"}
       >
         <img
           key={mediaVersion}
@@ -132,16 +168,30 @@ function ShotImage({
           className="aspect-[9/16] w-36 rounded-md border border-border object-cover transition-opacity hover:opacity-90"
           onError={() => setErrored(true)}
           onLoad={(e) => {
-            const img = e.currentTarget
-            setNaturalSize({ width: img.naturalWidth, height: img.naturalHeight })
+            const img = e.currentTarget;
+            setNaturalSize({
+              width: img.naturalWidth,
+              height: img.naturalHeight,
+            });
           }}
         />
       </button>
-      {source === 'uploaded' && naturalSize && (
-        <ResolutionWarningBadge warning={computeResolutionWarning(naturalSize.width, naturalSize.height, camera)} />
+      {shot.clip && (
+        <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+          <Film className="h-3 w-3" /> Motion clip — click to play
+        </span>
+      )}
+      {source === "uploaded" && naturalSize && (
+        <ResolutionWarningBadge
+          warning={computeResolutionWarning(
+            naturalSize.width,
+            naturalSize.height,
+            camera,
+          )}
+        />
       )}
     </div>
-  )
+  );
 }
 
 function ImageLightbox({
@@ -150,22 +200,35 @@ function ImageLightbox({
   open,
   onOpenChange,
 }: {
-  projectId: string
-  shot: ShotProgress | null
-  open: boolean
-  onOpenChange: (open: boolean) => void
+  projectId: string;
+  shot: ShotProgress | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }) {
+  const isClip = Boolean(shot?.clip);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl border-none bg-transparent p-0 shadow-none">
         {shot && (
           <div className="space-y-2">
-            <img
-              key={shot.asset?.local_path ?? shot.clip?.local_path ?? shot.state}
-              src={shotAssetUrl(projectId, shot.shot_id)}
-              alt=""
-              className="mx-auto max-h-[80vh] w-auto rounded-md border border-border object-contain"
-            />
+            {isClip ? (
+              <video
+                key={shot.clip?.local_path ?? shot.shot_id}
+                src={shotClipUrl(projectId, shot.shot_id)}
+                controls
+                autoPlay
+                className="mx-auto max-h-[80vh] w-auto rounded-md border border-border bg-black"
+              />
+            ) : (
+              <img
+                key={
+                  shot.asset?.local_path ?? shot.clip?.local_path ?? shot.state
+                }
+                src={shotAssetUrl(projectId, shot.shot_id)}
+                alt=""
+                className="mx-auto max-h-[80vh] w-auto rounded-md border border-border object-contain"
+              />
+            )}
             <p className="rounded-md bg-background/90 p-2 text-center text-sm text-foreground">
               {shot.says ? `"${shot.says}"` : shot.intent}
             </p>
@@ -173,31 +236,267 @@ function ImageLightbox({
         )}
       </DialogContent>
     </Dialog>
-  )
+  );
+}
+
+function DraftPlayer({
+  projectId,
+  seekToS,
+  onSeekConsumed,
+}: {
+  projectId: string;
+  seekToS: number | null;
+  onSeekConsumed: () => void;
+}) {
+  const renderDraft = useRenderDraft(projectId);
+  const { toast } = useToast();
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [draftEpoch, setDraftEpoch] = useState(0);
+  const [hasDraft, setHasDraft] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(draftVideoUrl(projectId), {
+      method: "GET",
+      headers: { Range: "bytes=0-0" },
+    })
+      .then((res) => {
+        if (!cancelled && res.ok) setHasDraft(true);
+      })
+      .catch(() => {
+        if (!cancelled) setHasDraft(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, draftEpoch]);
+
+  useEffect(() => {
+    if (seekToS == null || !videoRef.current || !hasDraft) return;
+    videoRef.current.currentTime = seekToS;
+    void videoRef.current.play();
+    onSeekConsumed();
+  }, [seekToS, hasDraft, onSeekConsumed]);
+
+  function handleRender() {
+    renderDraft.mutate(undefined, {
+      onSuccess: () => {
+        setHasDraft(true);
+        setDraftEpoch((n) => n + 1);
+        toast({
+          title: "Draft ready",
+          description: "A 480p preview of the current plan.",
+          variant: "success",
+        });
+      },
+      onError: (err) =>
+        toast({
+          title: "Could not render draft",
+          description:
+            err instanceof ApiError ? String(err.detail) : "Try again.",
+          variant: "destructive",
+        }),
+    });
+  }
+
+  return (
+    <Card className="space-y-3 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="text-sm font-medium">Draft preview</h2>
+          <p className="text-xs text-muted-foreground">
+            A 480p cut of the current plan — the only way to judge pacing before
+            you approve.
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleRender}
+          disabled={renderDraft.isPending}
+        >
+          <Film className="h-3.5 w-3.5" />
+          {renderDraft.isPending
+            ? "Rendering draft…"
+            : hasDraft
+              ? "Re-render draft"
+              : "Render 480p draft"}
+        </Button>
+      </div>
+      {hasDraft && (
+        <video
+          ref={videoRef}
+          key={draftEpoch}
+          src={`${draftVideoUrl(projectId)}?t=${draftEpoch}`}
+          controls
+          className="w-full rounded-md border border-border bg-black"
+        />
+      )}
+    </Card>
+  );
+}
+
+function SceneExpandedShots({
+  projectId,
+  sceneId,
+  cameraByShot,
+  onExpand,
+  onOverride,
+  onGenerate,
+}: {
+  projectId: string;
+  sceneId: string;
+  cameraByShot: Map<string, Camera>;
+  onExpand: (shot: ShotProgress) => void;
+  onOverride: (shot: ShotProgress) => void;
+  onGenerate: (shot: ShotProgress) => void;
+}) {
+  const { data, isLoading } = useSceneShots(projectId, sceneId);
+  if (isLoading || !data) {
+    return <Skeleton className="h-32 w-full" />;
+  }
+  return (
+    <ul className="space-y-3">
+      {data.shots.map((shot) => (
+        <li key={shot.shot_id}>
+          <ShotCard
+            projectId={projectId}
+            shot={shot}
+            camera={cameraByShot.get(shot.shot_id)}
+            onExpand={() => onExpand(shot)}
+            onOverride={() => onOverride(shot)}
+            onGenerate={() => onGenerate(shot)}
+          />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function ShotCard({
+  projectId,
+  shot,
+  camera,
+  onExpand,
+  onOverride,
+  onGenerate,
+}: {
+  projectId: string;
+  shot: ShotProgress;
+  camera: Camera | undefined;
+  onExpand: () => void;
+  onOverride: () => void;
+  onGenerate: () => void;
+}) {
+  const source = shotAssetSource(shot);
+  const flag = translateError(shot.last_error);
+  const filled = isFilled(shot);
+  return (
+    <Card className="flex gap-4 p-3">
+      <ShotImage
+        projectId={projectId}
+        shot={shot}
+        camera={camera}
+        onExpand={onExpand}
+      />
+      <div className="min-w-0 flex-1 space-y-1.5">
+        <div className="flex flex-wrap items-center gap-2">
+          {filled && <AssetSourceBadge source={source} />}
+          {!filled && shot.state !== "failed" && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
+              {shot.state === "pending"
+                ? "Still searching"
+                : "Headed for generation"}
+            </span>
+          )}
+          {shot.locked && (
+            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+              <Lock className="h-3 w-3" /> Locked by you
+            </span>
+          )}
+          <span className="text-xs text-muted-foreground">
+            {formatDuration(shot.starts_at_s)}–
+            {formatDuration((shot.starts_at_s ?? 0) + shot.duration_s)} (
+            {shot.duration_s.toFixed(1)}s)
+          </span>
+        </div>
+        {shot.says && <p className="text-sm text-foreground">"{shot.says}"</p>}
+        <p className="text-xs text-muted-foreground">
+          <span className="font-medium">{shot.intent}</span> — {shot.prompt}
+        </p>
+
+        {flag && (
+          <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs text-warning-foreground/90">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+            <span>{flag.headline}</span>
+          </div>
+        )}
+
+        <div className="flex flex-wrap gap-2 pt-1">
+          <Button variant="outline" size="sm" onClick={onOverride}>
+            <ImagePlus className="h-3.5 w-3.5" />
+            {filled ? "Replace image" : "Upload your own"}
+          </Button>
+          <Button variant="outline" size="sm" onClick={onGenerate}>
+            <RefreshCw className="h-3.5 w-3.5" />
+            {filled ? "Edit prompt & regenerate" : "Generate now"}
+          </Button>
+        </div>
+      </div>
+    </Card>
+  );
 }
 
 export function AssetReviewGate() {
-  const { projectId } = useParams<{ projectId: string }>()
-  const navigate = useNavigate()
-  const { toast } = useToast()
-  const { data: progress, isLoading } = useProgress(projectId)
-  const { data: timeline } = useTimeline(projectId)
-  const approveTimeline = useApproveTimeline(projectId ?? '')
-  const overrideShot = useOverrideShot(projectId ?? '')
-  const generateShot = useGenerateShotImage(projectId ?? '')
-  const [overrideTarget, setOverrideTarget] = useState<ShotProgress | null>(null)
-  const [generateTarget, setGenerateTarget] = useState<ShotProgress | null>(null)
-  const [lightboxTarget, setLightboxTarget] = useState<ShotProgress | null>(null)
+  const { projectId } = useParams<{ projectId: string }>();
+  const navigate = useNavigate();
+  const { toast } = useToast();
+  const slimQuery = useProgress(projectId);
+  const slim = slimQuery.data;
+  const groupedLayout =
+    !!slim &&
+    slim.workflow_state !== "awaiting_review" &&
+    slim.total_shots >= SCENE_GROUP_SHOT_THRESHOLD &&
+    (slim.scenes?.length ?? 0) > 0;
+  const expandQuery = useProgress(projectId, {
+    expandShots: true,
+    enabled: !!projectId && !!slim && !groupedLayout,
+  });
+  const progress = groupedLayout ? slim : (expandQuery.data ?? slim);
+  const isLoading =
+    slimQuery.isLoading ||
+    (!groupedLayout && !!slim && expandQuery.isLoading && !expandQuery.data);
+  const { data: timeline } = useTimeline(projectId);
+  const approveTimeline = useApproveTimeline(projectId ?? "");
+  const approveScene = useApproveScene(projectId ?? "");
+  const overrideShot = useOverrideShot(projectId ?? "");
+  const generateShot = useGenerateShotImage(projectId ?? "");
+  const regenerateFailed = useRegenerateFailedInScene(projectId ?? "");
+  const [overrideTarget, setOverrideTarget] = useState<ShotProgress | null>(
+    null,
+  );
+  const [generateTarget, setGenerateTarget] = useState<ShotProgress | null>(
+    null,
+  );
+  const [lightboxTarget, setLightboxTarget] = useState<ShotProgress | null>(
+    null,
+  );
+  const [confirmKind, setConfirmKind] = useState<
+    "spend" | "remaining" | "scene" | "regenerate" | null
+  >(null);
+  const [pendingScene, setPendingScene] = useState<SceneProgress | null>(null);
+  const [seekToS, setSeekToS] = useState<number | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const cameraByShot = useMemo(() => {
-    const map = new Map<string, Camera>()
+    const map = new Map<string, Camera>();
     if (timeline) {
       for (const scene of timeline.scenes) {
-        for (const shot of scene.shots) map.set(shot.id, shot.camera)
+        for (const shot of scene.shots) map.set(shot.id, shot.camera);
       }
     }
-    return map
-  }, [timeline])
+    return map;
+  }, [timeline]);
 
   // Complementary to `Progress.tsx`'s own redirect: clicking Approve fires
   // the mutation and navigates to `/progress` immediately (fire-and-forget,
@@ -210,17 +509,17 @@ export function AssetReviewGate() {
   // human could be stuck looking at a stale review gate for an entire
   // render. This self-corrects within one more poll cycle instead.
   useEffect(() => {
-    if (!progress || !projectId) return
-    if (progress.workflow_state === 'completed') {
-      navigate(`/projects/${projectId}/result`, { replace: true })
+    if (!progress || !projectId) return;
+    if (progress.workflow_state === "completed") {
+      navigate(`/projects/${projectId}/result`, { replace: true });
     } else if (
       progress.workflow_state &&
-      progress.workflow_state !== 'awaiting_approval' &&
-      progress.workflow_state !== 'awaiting_review'
+      progress.workflow_state !== "awaiting_approval" &&
+      progress.workflow_state !== "awaiting_review"
     ) {
-      navigate(`/projects/${projectId}/progress`, { replace: true })
+      navigate(`/projects/${projectId}/progress`, { replace: true });
     }
-  }, [progress, projectId, navigate])
+  }, [progress, projectId, navigate]);
 
   if (isLoading || !progress || !projectId) {
     return (
@@ -230,7 +529,7 @@ export function AssetReviewGate() {
           <Skeleton key={i} className="h-32 w-full" />
         ))}
       </div>
-    )
+    );
   }
 
   // Once the plan is already approved, `AwaitReviewStep`'s backstop is why
@@ -247,177 +546,542 @@ export function AssetReviewGate() {
   // Approve button and filtering to failed-only shots long after there
   // are none left. `workflow_state` correctly flips back to "running" the
   // instant the resume begins (same fix as `Progress.tsx`'s redirect).
-  const isBackstop = progress.workflow_state === 'awaiting_review'
-  const visibleShots = isBackstop ? progress.shots.filter((s) => s.state === 'failed') : progress.shots
-  const unfilledShots = progress.shots.filter((s) => !isFilled(s))
-  const canApprove = unfilledShots.length === 0
+  const isBackstop = progress.workflow_state === "awaiting_review";
+  const visibleShots = isBackstop
+    ? progress.shots.filter((s) => s.state === "failed")
+    : progress.shots;
+  const unfilledShots = progress.shots.filter((s) => !isFilled(s));
+  const canApprove = unfilledShots.length === 0;
+  const confirmTotalCents =
+    progress.spent_cost_cents + progress.estimated_cost_cents;
+  const scenes = progress.scenes ?? [];
+  const grouped =
+    !isBackstop &&
+    progress.total_shots >= SCENE_GROUP_SHOT_THRESHOLD &&
+    scenes.length > 0;
+  const remainingScenes = scenes.filter((s) => !s.approved);
 
-  function handleApprove() {
-    approveTimeline.mutate(undefined, {
-      onError: (err) =>
-        toast({
-          title: 'Could not approve',
-          description: err instanceof ApiError ? String(err.detail) : 'Try again.',
-          variant: 'destructive',
-        }),
-    })
-    toast({ title: 'Approved', description: 'Moving on to narration and generation.' })
-    navigate(`/projects/${projectId}/progress`)
+  function submitApprove() {
+    setConfirmKind(null);
+    approveTimeline.mutate(
+      confirmTotalCents > 0 ? confirmTotalCents : undefined,
+      {
+        onError: (err) =>
+          toast({
+            title: "Could not approve",
+            description:
+              err instanceof ApiError ? String(err.detail) : "Try again.",
+            variant: "destructive",
+          }),
+      },
+    );
+    toast({
+      title: "Approved",
+      description: "Moving on to narration and generation.",
+    });
+    navigate(`/projects/${projectId}/progress`);
   }
 
-  function handleOverrideSubmit(shotId: string, file: File, description: string) {
+  function handleApprove() {
+    if (grouped && remainingScenes.length > 0) {
+      setConfirmKind("remaining");
+      return;
+    }
+    if (confirmTotalCents > 0) {
+      setConfirmKind("spend");
+      return;
+    }
+    submitApprove();
+  }
+
+  function handleRemainingConfirmed() {
+    if (confirmTotalCents > 0) {
+      setConfirmKind("spend");
+      return;
+    }
+    submitApprove();
+  }
+
+  function handleApproveScene(scene: SceneProgress) {
+    setPendingScene(scene);
+    setConfirmKind("scene");
+  }
+
+  function submitSceneApprove() {
+    if (!pendingScene) return;
+    const sceneId = pendingScene.id;
+    setConfirmKind(null);
+    setPendingScene(null);
+    approveScene.mutate(sceneId, {
+      onSuccess: () =>
+        toast({
+          title: "Scene approved",
+          description: "This cannot be undone.",
+          variant: "success",
+        }),
+      onError: (err) =>
+        toast({
+          title: "Could not approve scene",
+          description:
+            err instanceof ApiError ? String(err.detail) : "Try again.",
+          variant: "destructive",
+        }),
+    });
+  }
+
+  function handleRegenerateFailed(scene: SceneProgress) {
+    setPendingScene(scene);
+    setConfirmKind("regenerate");
+  }
+
+  function submitRegenerateFailed() {
+    if (!pendingScene) return;
+    const scene = pendingScene;
+    setConfirmKind(null);
+    setPendingScene(null);
+    regenerateFailed.mutate(
+      {
+        sceneId: scene.id,
+        confirmedCostCents: scene.regenerate_failed_cost_cents,
+      },
+      {
+        onSuccess: (result) =>
+          toast({
+            title: "Regenerated",
+            description: `${result.shot_ids.length} shot${result.shot_ids.length === 1 ? "" : "s"} · ${formatCostCents(result.estimated_cost_cents)}`,
+            variant: "success",
+          }),
+        onError: (err) =>
+          toast({
+            title: "Could not regenerate",
+            description:
+              err instanceof ApiError ? String(err.detail) : "Try again.",
+            variant: "destructive",
+          }),
+      },
+    );
+  }
+
+  function toggleExpanded(sceneId: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(sceneId)) next.delete(sceneId);
+      else next.add(sceneId);
+      return next;
+    });
+  }
+
+  function handleOverrideSubmit(
+    shotId: string,
+    file: File,
+    description: string,
+  ) {
     overrideShot.mutate(
       { shotId, file, description: description || undefined },
       {
         onSuccess: () => {
-          toast({ title: 'Image saved', description: 'This shot is locked to your image.', variant: 'success' })
-          setOverrideTarget(null)
+          toast({
+            title: "Image saved",
+            description: "This shot is locked to your image.",
+            variant: "success",
+          });
+          setOverrideTarget(null);
         },
         onError: (err) =>
           toast({
-            title: 'Could not save image',
-            description: err instanceof ApiError ? String(err.detail) : 'Try again.',
-            variant: 'destructive',
+            title: "Could not save image",
+            description:
+              err instanceof ApiError ? String(err.detail) : "Try again.",
+            variant: "destructive",
           }),
       },
-    )
+    );
   }
 
   function handleGenerateConfirm(shot: ShotProgress, prompt: string) {
     generateShot.mutate(
-      { shotId: shot.shot_id, prompt: prompt !== shot.prompt ? prompt : undefined },
+      {
+        shotId: shot.shot_id,
+        prompt: prompt !== shot.prompt ? prompt : undefined,
+      },
       {
         onSuccess: (result) => {
           toast({
-            title: 'Generated',
+            title: "Generated",
             description: result.cache_hit
-              ? 'Reused an image already generated for this exact prompt — free.'
+              ? "Reused an image already generated for this exact prompt — free."
               : `Cost: ${formatCostCents(result.cost_cents)}`,
-            variant: 'success',
-          })
-          setGenerateTarget(null)
+            variant: "success",
+          });
+          setGenerateTarget(null);
         },
         onError: (err) =>
           toast({
-            title: 'Could not generate',
-            description: err instanceof ApiError ? String(err.detail) : 'Try again.',
-            variant: 'destructive',
+            title: "Could not generate",
+            description:
+              err instanceof ApiError ? String(err.detail) : "Try again.",
+            variant: "destructive",
           }),
       },
-    )
+    );
   }
+
+  const approveButtonLabel =
+    grouped && remainingScenes.length > 0
+      ? "Approve all remaining"
+      : "Approve and continue";
 
   return (
     <div className="mx-auto max-w-4xl space-y-4">
       <div className="sticky top-14 z-30 -mx-4 flex flex-wrap items-center justify-between gap-3 border-b border-border bg-background/95 px-4 py-3 backdrop-blur">
         <div>
-          <h1 className="text-lg font-semibold">{isBackstop ? 'Fix what failed' : 'Review the pictures'}</h1>
+          <h1 className="text-lg font-semibold">
+            {isBackstop ? "Fix what failed" : "Review the pictures"}
+          </h1>
           <p className="text-sm text-muted-foreground">
             {isBackstop ? (
               <>
-                {visibleShots.length} shot{visibleShots.length === 1 ? '' : 's'} need
-                {visibleShots.length === 1 ? 's' : ''} a fix before the video can finish
+                {visibleShots.length} shot{visibleShots.length === 1 ? "" : "s"}{" "}
+                need
+                {visibleShots.length === 1 ? "s" : ""} a fix before the video
+                can finish
+              </>
+            ) : grouped ? (
+              <>
+                {scenes.length} scenes · {progress.total_shots} shots ·{" "}
+                {remainingScenes.length} still to approve ·{" "}
+                <span className="font-medium text-success">
+                  {formatCostCents(progress.spent_cost_cents)} spent so far
+                </span>
+                {progress.estimated_cost_cents > 0 && (
+                  <>
+                    {" "}
+                    · ≈ {formatCostCents(progress.estimated_cost_cents)} to fill
+                    the rest
+                  </>
+                )}
+                {progress.budget_cap_cents > 0 && (
+                  <> · cap {formatCostCents(progress.budget_cap_cents)}</>
+                )}
               </>
             ) : (
               <>
-                {progress.total_shots} shots · {unfilledShots.length} still{' '}
-                {unfilledShots.length === 1 ? 'needs' : 'need'} a picture ·{' '}
-                <span className="font-medium text-success">{formatCostCents(progress.spent_cost_cents)} spent so far</span>
+                {progress.total_shots} shots · {unfilledShots.length} still{" "}
+                {unfilledShots.length === 1 ? "needs" : "need"} a picture ·{" "}
+                <span className="font-medium text-success">
+                  {formatCostCents(progress.spent_cost_cents)} spent so far
+                </span>
                 {progress.estimated_cost_cents > 0 && (
-                  <> · ≈ {formatCostCents(progress.estimated_cost_cents)} to fill the rest</>
+                  <>
+                    {" "}
+                    · ≈ {formatCostCents(progress.estimated_cost_cents)} to fill
+                    the rest
+                  </>
+                )}
+                {progress.budget_cap_cents > 0 && (
+                  <> · cap {formatCostCents(progress.budget_cap_cents)}</>
                 )}
               </>
             )}
           </p>
         </div>
         {!isBackstop && (
-          <Button size="lg" onClick={handleApprove} disabled={!canApprove}>
+          <Button
+            size="lg"
+            onClick={handleApprove}
+            disabled={!canApprove}
+            variant={
+              grouped && remainingScenes.length > 0 ? "secondary" : "default"
+            }
+          >
             <CheckCircle2 className="h-4 w-4" />
-            Approve and continue
+            {approveButtonLabel}
           </Button>
         )}
       </div>
 
+      {!isBackstop && (
+        <DraftPlayer
+          projectId={projectId}
+          seekToS={seekToS}
+          onSeekConsumed={() => setSeekToS(null)}
+        />
+      )}
+
       {!isBackstop && unfilledShots.length > 0 && (
         <Card className="border-warning/30 bg-warning/5 p-3 text-sm">
           <span className="font-medium text-warning">
-            {unfilledShots.length} shot{unfilledShots.length === 1 ? '' : 's'} still {unfilledShots.length === 1 ? 'needs' : 'need'} a picture
-          </span>{' '}
+            {unfilledShots.length} shot{unfilledShots.length === 1 ? "" : "s"}{" "}
+            still {unfilledShots.length === 1 ? "needs" : "need"} a picture
+          </span>{" "}
           <span className="text-muted-foreground">
-            before you can approve. Upload your own image, or generate one now, for each one below.
+            before you can approve. Upload your own image, or generate one now,
+            for each one below.
           </span>
         </Card>
       )}
 
-      <ul className="space-y-3">
-        {visibleShots.map((shot) => {
-          const source = shotAssetSource(shot)
-          const flag = translateError(shot.last_error)
-          const filled = isFilled(shot)
-          return (
-            <li key={shot.shot_id}>
-              <Card className="flex gap-4 p-3">
-                <ShotImage
-                  projectId={projectId}
-                  shot={shot}
-                  camera={cameraByShot.get(shot.shot_id)}
-                  onExpand={() => setLightboxTarget(shot)}
-                />
-                <div className="min-w-0 flex-1 space-y-1.5">
-                  <div className="flex flex-wrap items-center gap-2">
-                    {filled && <AssetSourceBadge source={source} />}
-                    {!filled && shot.state !== 'failed' && (
-                      <span className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
-                        {shot.state === 'pending' ? 'Still searching' : 'Headed for generation'}
-                      </span>
-                    )}
-                    {shot.locked && (
-                      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                        <Lock className="h-3 w-3" /> Locked by you
-                      </span>
-                    )}
-                    <span className="text-xs text-muted-foreground">
-                      {formatDuration(shot.starts_at_s)}–{formatDuration((shot.starts_at_s ?? 0) + shot.duration_s)}
-                      {' '}({shot.duration_s.toFixed(1)}s)
-                    </span>
-                  </div>
-                  {shot.says && <p className="text-sm text-foreground">"{shot.says}"</p>}
-                  <p className="text-xs text-muted-foreground">
-                    <span className="font-medium">{shot.intent}</span> — {shot.prompt}
-                  </p>
-
-                  {flag && (
-                    <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs text-warning-foreground/90">
-                      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
-                      <span>{flag.headline}</span>
+      {grouped ? (
+        <ul className="space-y-3">
+          {scenes.map((scene) => {
+            const open = expanded.has(scene.id);
+            const canApproveScene =
+              scene.unfilled_shots === 0 && !scene.approved;
+            return (
+              <li key={scene.id}>
+                <Card className="space-y-3 p-3">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <button
+                      type="button"
+                      className="flex min-w-0 items-start gap-2 text-left sm:flex-1"
+                      onClick={() => toggleExpanded(scene.id)}
+                    >
+                      <ChevronRight
+                        className={`mt-0.5 h-4 w-4 shrink-0 transition-transform ${open ? "rotate-90" : ""}`}
+                      />
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium">
+                            {scene.title || scene.id}
+                          </span>
+                          {scene.approved && (
+                            <span className="inline-flex items-center gap-1 rounded-full border border-success/30 bg-success/10 px-2 py-0.5 text-xs font-medium text-success">
+                              Approved
+                            </span>
+                          )}
+                          {scene.failed_shots > 0 && (
+                            <span className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive">
+                              {scene.failed_shots} failed
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {scene.total_shots} shot
+                          {scene.total_shots === 1 ? "" : "s"} ·{" "}
+                          {formatDuration(scene.starts_at_s)}
+                          {scene.unfilled_shots > 0 &&
+                            ` · ${scene.unfilled_shots} still need a picture`}
+                        </p>
+                      </div>
+                    </button>
+                    <div className="flex flex-wrap gap-2 sm:justify-end">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSeekToS(scene.starts_at_s ?? 0)}
+                        disabled={scene.starts_at_s == null}
+                      >
+                        <Play className="h-3.5 w-3.5" />
+                        Watch from here
+                      </Button>
+                      {scene.failed_shots > 0 && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleRegenerateFailed(scene)}
+                        >
+                          <RefreshCw className="h-3.5 w-3.5" />
+                          Regenerate failed (
+                          {formatCostCents(scene.regenerate_failed_cost_cents)})
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        disabled={!canApproveScene}
+                        onClick={() => handleApproveScene(scene)}
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        {scene.approved ? "Approved" : "Approve scene"}
+                      </Button>
                     </div>
-                  )}
-
-                  <div className="flex flex-wrap gap-2 pt-1">
-                    <Button variant="outline" size="sm" onClick={() => setOverrideTarget(shot)}>
-                      <ImagePlus className="h-3.5 w-3.5" />
-                      {filled ? 'Replace image' : 'Upload your own'}
-                    </Button>
-                    <Button variant="outline" size="sm" onClick={() => setGenerateTarget(shot)}>
-                      <RefreshCw className="h-3.5 w-3.5" />
-                      {filled ? 'Edit prompt & regenerate' : 'Generate now'}
-                    </Button>
                   </div>
-                </div>
-              </Card>
+                  {open && (
+                    <SceneExpandedShots
+                      projectId={projectId}
+                      sceneId={scene.id}
+                      cameraByShot={cameraByShot}
+                      onExpand={setLightboxTarget}
+                      onOverride={setOverrideTarget}
+                      onGenerate={setGenerateTarget}
+                    />
+                  )}
+                </Card>
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <ul className="space-y-3">
+          {visibleShots.map((shot) => (
+            <li key={shot.shot_id}>
+              <ShotCard
+                projectId={projectId}
+                shot={shot}
+                camera={cameraByShot.get(shot.shot_id)}
+                onExpand={() => setLightboxTarget(shot)}
+                onOverride={() => setOverrideTarget(shot)}
+                onGenerate={() => setGenerateTarget(shot)}
+              />
             </li>
-          )
-        })}
-      </ul>
+          ))}
+        </ul>
+      )}
 
       {!isBackstop && (
         <div className="flex justify-end border-t border-border pt-4">
-          <Button size="lg" onClick={handleApprove} disabled={!canApprove}>
+          <Button
+            size="lg"
+            onClick={handleApprove}
+            disabled={!canApprove}
+            variant={
+              grouped && remainingScenes.length > 0 ? "secondary" : "default"
+            }
+          >
             <CheckCircle2 className="h-4 w-4" />
-            Approve and continue
+            {approveButtonLabel}
           </Button>
         </div>
       )}
+
+      <Dialog
+        open={confirmKind === "scene"}
+        onOpenChange={(o) => !o && setConfirmKind(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Approve this scene?</DialogTitle>
+            <DialogDescription>
+              Scene approval is final — there is no un-approve. If you notice a
+              mistake later, replace or regenerate the shot from this row.
+            </DialogDescription>
+          </DialogHeader>
+          <p className="text-sm">
+            {pendingScene?.title || pendingScene?.id} ·{" "}
+            {pendingScene?.total_shots} shot
+            {pendingScene?.total_shots === 1 ? "" : "s"}
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmKind(null)}>
+              Back
+            </Button>
+            <Button onClick={submitSceneApprove}>
+              <CheckCircle2 className="h-4 w-4" />
+              Approve scene
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={confirmKind === "remaining"}
+        onOpenChange={(o) => !o && setConfirmKind(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Approve all remaining scenes?</DialogTitle>
+            <DialogDescription>
+              This marks every scene you have not reviewed as approved. You
+              cannot un-approve. It is the last reversible moment before
+              generation can start.
+            </DialogDescription>
+          </DialogHeader>
+          <p className="text-sm font-medium text-warning">
+            {remainingScenes.length} scene
+            {remainingScenes.length === 1 ? "" : "s"} will be approved without a
+            per-scene look.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmKind(null)}>
+              Back
+            </Button>
+            <Button variant="destructive" onClick={handleRemainingConfirmed}>
+              Approve remaining scenes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={confirmKind === "regenerate"}
+        onOpenChange={(o) => !o && setConfirmKind(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Regenerate failed shots?</DialogTitle>
+            <DialogDescription>
+              This spends money and can be retried if it fails again. It does
+              not approve the scene.
+            </DialogDescription>
+          </DialogHeader>
+          <p className="text-sm">
+            {pendingScene?.failed_shots} failed shot
+            {pendingScene?.failed_shots === 1 ? "" : "s"} in{" "}
+            {pendingScene?.title || pendingScene?.id}
+          </p>
+          <p className="text-sm font-medium">
+            About{" "}
+            {formatCostCents(pendingScene?.regenerate_failed_cost_cents ?? 0)}
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmKind(null)}>
+              Back
+            </Button>
+            <Button
+              variant="outline"
+              onClick={submitRegenerateFailed}
+              disabled={regenerateFailed.isPending}
+            >
+              <RefreshCw className="h-4 w-4" />
+              {regenerateFailed.isPending
+                ? "Regenerating…"
+                : `Regenerate (${formatCostCents(pendingScene?.regenerate_failed_cost_cents ?? 0)})`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={confirmKind === "spend"}
+        onOpenChange={(o) => !o && setConfirmKind(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm spend and continue</DialogTitle>
+            <DialogDescription>
+              Approving locks this plan and continues the pipeline. The
+              remaining estimate is least accurate for shots that have not been
+              searched yet — it falls back to the plan&apos;s primary strategy.
+            </DialogDescription>
+          </DialogHeader>
+          <p className="text-sm">
+            Spent so far:{" "}
+            <span className="font-medium">
+              {formatCostCents(progress.spent_cost_cents)}
+            </span>
+            {progress.estimated_cost_cents > 0 && (
+              <>
+                {" "}
+                · remaining ≈ {formatCostCents(progress.estimated_cost_cents)}
+              </>
+            )}
+            {progress.budget_cap_cents > 0 && (
+              <> · cap {formatCostCents(progress.budget_cap_cents)}</>
+            )}
+          </p>
+          <p className="text-sm font-medium">
+            Confirm {formatCostCents(confirmTotalCents)}
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmKind(null)}>
+              Back
+            </Button>
+            <Button onClick={submitApprove}>
+              <CheckCircle2 className="h-4 w-4" />
+              Confirm and approve
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {overrideTarget && (
         <OverrideDialog
@@ -427,11 +1091,13 @@ export function AssetReviewGate() {
           description={
             isFilled(overrideTarget)
               ? "This replaces the current image. It's free and instant."
-              : 'This locks the shot to your image — generation never runs for it, so it costs nothing.'
+              : "This locks the shot to your image — generation never runs for it, so it costs nothing."
           }
           camera={cameraByShot.get(overrideTarget.shot_id)}
           isPending={overrideShot.isPending}
-          onSubmit={(file, description) => handleOverrideSubmit(overrideTarget.shot_id, file, description)}
+          onSubmit={(file, description) =>
+            handleOverrideSubmit(overrideTarget.shot_id, file, description)
+          }
         />
       )}
 
@@ -453,10 +1119,13 @@ export function AssetReviewGate() {
       />
 
       <p className="pb-6 text-center">
-        <Link to="/" className="text-sm text-muted-foreground hover:text-foreground">
+        <Link
+          to="/"
+          className="text-sm text-muted-foreground hover:text-foreground"
+        >
           Back to projects
         </Link>
       </p>
     </div>
-  )
+  );
 }

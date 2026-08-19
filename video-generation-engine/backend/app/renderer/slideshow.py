@@ -47,9 +47,11 @@ here reads the wall clock or iterates an unordered collection.
 """
 
 import asyncio
+import hashlib
 import os
 import shutil
 import subprocess
+import uuid
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -60,8 +62,38 @@ from app.renderer.ken_burns import WORKING_CANVAS_SCALE, ZoompanExpression, buil
 from app.renderer.motion import MediaKind, MediaProbe, build_duration_fit_fragment, probe_media
 from app.schemas.timeline import Shot, Timeline
 from app.timeline.duration import group_into_runs
+from app.utils.bounded_gather import bounded_gather, ffmpeg_run_concurrency
 
 logger = get_logger(__name__)
+
+# R-C7: one ffmpeg pool for every `run_ffmpeg` caller, including nested
+# `bounded_gather` (runs × shots). Recreated if the cap changes so tests
+# that monkeypatch `ffmpeg_run_concurrency` still bind the right size.
+_ffmpeg_slot: asyncio.Semaphore | None = None
+_ffmpeg_slot_cap: int | None = None
+
+
+def _ffmpeg_semaphore() -> asyncio.Semaphore:
+    global _ffmpeg_slot, _ffmpeg_slot_cap
+    cap = ffmpeg_run_concurrency()
+    if _ffmpeg_slot is None or _ffmpeg_slot_cap != cap:
+        _ffmpeg_slot = asyncio.Semaphore(cap)
+        _ffmpeg_slot_cap = cap
+    return _ffmpeg_slot
+
+
+def _atomic_copy(src: Path, dest: Path) -> None:
+    """R-C8: write next to `dest`, then `os.replace`. `shutil.copy2`
+    into the live cache path can be observed mid-write (`st_size > 0`
+    but truncated) by a concurrent cache hit."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(f".{dest.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dest)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 @dataclass(frozen=True)
@@ -89,13 +121,14 @@ class RenderSettings:
 
 
 async def run_ffmpeg(args: list[str], *, cwd: Path | None = None) -> None:
-    process = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=cwd,
-    )
-    _, stderr = await process.communicate()
+    async with _ffmpeg_semaphore():
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+        )
+        _, stderr = await process.communicate()
     if process.returncode != 0:
         tail = stderr.decode(errors="replace")[-4000:]
         raise PermanentError(f"ffmpeg failed (exit {process.returncode}): {tail}")
@@ -264,6 +297,207 @@ def _ken_burns_filter(
     )
 
 
+def _per_shot_filter(
+    input_index: int,
+    shot: Shot,
+    probe: MediaProbe,
+    settings: RenderSettings,
+    label: str,
+) -> str:
+    frames = max(round(shot.duration_s * settings.fps), 1)
+    if probe.kind is MediaKind.MOTION:
+        return _motion_filter(input_index, settings, label, probe, shot.duration_s)
+    expr = (
+        build_zoompan_expression(shot.camera, frames=frames)
+        if probe.kind is MediaKind.STILL
+        else None
+    )
+    if expr is None:
+        hold_s = (frames - 1) / settings.fps
+        return _normalize_filter(input_index, settings, label, hold_s=hold_s)
+    return _ken_burns_filter(input_index, settings, label, expr, frames)
+
+
+def _h264_bitexact_args(settings: RenderSettings, output_arg: str) -> list[str]:
+    return [
+        "-map",
+        "[vout]",
+        "-r",
+        str(settings.fps),
+        "-fflags",
+        "+bitexact",
+        "-flags:v",
+        "+bitexact",
+        "-threads",
+        "1",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        settings.pixel_format,
+        "-movflags",
+        "+faststart",
+        output_arg,
+    ]
+
+
+def _cwd_output_arg(output_path: Path, work_dir: Path) -> str:
+    try:
+        return output_path.resolve().relative_to(work_dir.resolve()).as_posix()
+    except ValueError:
+        return str(output_path)
+
+
+async def _encode_or_reuse_shot_stream(
+    *,
+    shot: Shot,
+    src: Path,
+    probe: MediaProbe,
+    settings: RenderSettings,
+    dest: Path,
+    work_dir: Path,
+    run_stem: str,
+    index: int,
+    asset_hash: str,
+    ffmpeg_version: str,
+) -> Path:
+    """Pass 1 of C3 (d): one shot's normalised stream, cached by
+    `compute_shot_stream_fingerprint`. tpad, never `-loop 1 -t`.
+    """
+    from app.renderer.fingerprint import compute_shot_stream_fingerprint
+
+    fingerprint = compute_shot_stream_fingerprint(
+        shot=shot,
+        asset_hash=asset_hash,
+        render_settings=settings,
+        ffmpeg_version=ffmpeg_version,
+    )
+    cache_dir = work_dir / "shot_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / f"{fingerprint}.mp4"
+    if cache_path.is_file() and cache_path.stat().st_size > 0:
+        shutil.copy2(cache_path, dest)
+        logger.info(
+            "render.shot_cache_hit",
+            extra={"shot_id": shot.id, "fingerprint": fingerprint[:12]},
+        )
+        return dest
+
+    short = short_input_name(index, src, probe.kind, run_stem=run_stem)
+    stage_short_input(src, work_dir / short)
+    graph = _per_shot_filter(0, shot, probe, settings, "vout")
+    script_name = f"{dest.stem}.filter"
+    (work_dir / script_name).write_text(graph, encoding="utf-8")
+    args = [settings.ffmpeg_binary, "-y"]
+    if probe.kind is MediaKind.STILL:
+        args += ["-framerate", str(settings.fps), "-i", short]
+    else:
+        args += ["-i", short]
+    args += [
+        filter_graph_file_flag(settings.ffmpeg_binary),
+        script_name,
+        *_h264_bitexact_args(settings, _cwd_output_arg(dest, work_dir)),
+    ]
+    logger.info(
+        "render.shot_argv",
+        extra={"shot_id": shot.id, "arg_count": len(args), "argv_chars": len(" ".join(args))},
+    )
+    await run_ffmpeg(args, cwd=work_dir)
+    _atomic_copy(dest, cache_path)
+    return dest
+
+
+async def _xfade_shot_streams(
+    run: list[Shot],
+    stream_paths: list[Path],
+    settings: RenderSettings,
+    output_path: Path,
+    *,
+    work_dir: Path,
+) -> None:
+    """Pass 2 of C3 (d): xfade over pre-encoded streams. No zoompan/tpad."""
+    run_stem = output_path.stem
+    args = [settings.ffmpeg_binary, "-y"]
+    filters: list[str] = []
+    labels: list[str] = []
+    for i, stream in enumerate(stream_paths):
+        short = f"{run_stem}_i{i:03d}{stream.suffix.lower() or '.mp4'}"
+        if stream.resolve() != (work_dir / short).resolve():
+            stage_short_input(stream, work_dir / short)
+        args += ["-i", short]
+        label = f"n{i}"
+        filters.append(f"[{i}:v]fps={settings.fps},format={settings.pixel_format}[{label}]")
+        labels.append(label)
+
+    cumulative = run[0].duration_s
+    prev_label = labels[0]
+    for i in range(1, len(run)):
+        overlap = run[i - 1].transition_out.duration_s
+        transition_name = run[i - 1].transition_out.type.value
+        offset = max(cumulative - overlap, 0.0)
+        out_label = f"x{i}" if i < len(run) - 1 else "vout"
+        filters.append(
+            f"[{prev_label}][{labels[i]}]xfade=transition={transition_name}:"
+            f"duration={overlap:.3f}:offset={offset:.3f}[{out_label}]"
+        )
+        cumulative = cumulative + run[i].duration_s - overlap
+        prev_label = out_label
+
+    script_name = f"{run_stem}.xfade.filter"
+    (work_dir / script_name).write_text(";".join(filters), encoding="utf-8")
+    args += [
+        filter_graph_file_flag(settings.ffmpeg_binary),
+        script_name,
+        *_h264_bitexact_args(settings, _cwd_output_arg(output_path, work_dir)),
+    ]
+    logger.info(
+        "render.xfade_argv",
+        extra={"shots": len(run), "arg_count": len(args), "argv_chars": len(" ".join(args))},
+    )
+    await run_ffmpeg(args, cwd=work_dir)
+
+
+async def _render_run_two_pass(
+    run: list[Shot],
+    shot_images: dict[str, Path],
+    media_probes: dict[str, MediaProbe],
+    settings: RenderSettings,
+    output_path: Path,
+    *,
+    work_dir: Path,
+    shot_content_hashes: dict[str, str],
+    ffmpeg_version: str,
+) -> None:
+    run_stem = output_path.stem
+
+    async def _one(item: tuple[int, Shot]) -> Path:
+        index, shot = item
+        dest = work_dir / f"{run_stem}_i{index:03d}.mp4"
+        return await _encode_or_reuse_shot_stream(
+            shot=shot,
+            src=shot_images[shot.id],
+            probe=media_probes[shot.id],
+            settings=settings,
+            dest=dest,
+            work_dir=work_dir,
+            run_stem=run_stem,
+            index=index,
+            asset_hash=shot_content_hashes[shot.id],
+            ffmpeg_version=ffmpeg_version,
+        )
+
+    gathered = await bounded_gather(
+        list(enumerate(run)),
+        _one,
+        concurrency=ffmpeg_run_concurrency(),
+    )
+    stream_paths: list[Path] = []
+    for item in gathered:
+        if isinstance(item, Exception):
+            raise item
+        stream_paths.append(item)
+    await _xfade_shot_streams(run, stream_paths, settings, output_path, work_dir=work_dir)
+
+
 async def _render_run(
     run: list[Shot],
     shot_images: dict[str, Path],
@@ -272,6 +506,8 @@ async def _render_run(
     output_path: Path,
     *,
     work_dir: Path,
+    shot_content_hashes: dict[str, str] | None = None,
+    ffmpeg_version: str | None = None,
 ) -> None:
     """Render one run (shots joined only by crossfades, no hard cuts) to
     a single MP4.
@@ -283,7 +519,29 @@ async def _render_run(
     in the graph. Both halves of the argv fix are required: the
     filter file alone leaves ~31k chars of long input paths against
     Windows' 32,767 limit.
+
+    Multi-shot runs use two-pass (C3 (d)): per-shot cached streams, then
+    an xfade-only chain. A single-shot run stays one encode.
     """
+    if len(run) >= 2:
+        if ffmpeg_version is None:
+            from app.renderer.fingerprint import get_ffmpeg_version
+
+            ffmpeg_version = await get_ffmpeg_version(settings.ffmpeg_binary)
+        hashes = shot_content_hashes or {
+            shot.id: _file_content_hash(shot_images[shot.id]) for shot in run
+        }
+        await _render_run_two_pass(
+            run,
+            shot_images,
+            media_probes,
+            settings,
+            output_path,
+            work_dir=work_dir,
+            shot_content_hashes=hashes,
+            ffmpeg_version=ffmpeg_version,
+        )
+        return
     # M8 step 5: a Ken-Burns shot's frame count is computed HERE (the one
     # place duration-to-frames arithmetic lives for this module, D5's
     # "compute it once" discipline) and reused for zoompan's `d` and for
@@ -394,6 +652,63 @@ async def _render_run(
     await run_ffmpeg(args, cwd=work_dir)
 
 
+def _file_content_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+async def _render_or_reuse_run(
+    index: int,
+    run: list[Shot],
+    resolved_images: dict[str, Path],
+    media_probes: dict[str, MediaProbe],
+    settings: RenderSettings,
+    work_dir: Path,
+    shot_content_hashes: dict[str, str],
+    ffmpeg_version: str,
+) -> Path:
+    """Encode one run, or copy a previous encode of the same run.
+
+    Staging names stay `run_{index:03d}_s000.jpg` (R-C2) even under
+    parallel gathers — two runs must never share `s000.jpg`.
+    """
+    from app.renderer.fingerprint import compute_run_fingerprint
+
+    run_path = work_dir / f"run_{index:03d}.mp4"
+    fingerprint = compute_run_fingerprint(
+        shots=run,
+        shot_content_hashes=shot_content_hashes,
+        render_settings=settings,
+        ffmpeg_version=ffmpeg_version,
+    )
+    cache_dir = work_dir / "run_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / f"{fingerprint}.mp4"
+    if cache_path.is_file() and cache_path.stat().st_size > 0:
+        shutil.copy2(cache_path, run_path)
+        logger.info(
+            "render.run_cache_hit",
+            extra={"run": index, "shots": len(run), "fingerprint": fingerprint[:12]},
+        )
+        return run_path
+
+    await _render_run(
+        run,
+        resolved_images,
+        media_probes,
+        settings,
+        run_path,
+        work_dir=work_dir,
+        shot_content_hashes=shot_content_hashes,
+        ffmpeg_version=ffmpeg_version,
+    )
+    _atomic_copy(run_path, cache_path)
+    return run_path
+
+
 async def render_timeline(
     timeline: Timeline,
     shot_images: dict[str, Path],
@@ -443,13 +758,35 @@ async def render_timeline(
 
     runs = group_into_runs(shots)
 
-    run_paths: list[Path] = []
-    for i, run in enumerate(runs):
-        run_path = work_dir / f"run_{i:03d}.mp4"
-        await _render_run(
-            run, resolved_images, media_probes, settings, run_path, work_dir=work_dir
+    # Lazy: fingerprint.py imports RenderSettings from this module.
+    from app.renderer.fingerprint import get_ffmpeg_version
+
+    ffmpeg_version = await get_ffmpeg_version(settings.ffmpeg_binary)
+    shot_content_hashes = {shot.id: _file_content_hash(resolved_images[shot.id]) for shot in shots}
+
+    async def _one_run(item: tuple[int, list[Shot]]) -> Path:
+        index, run = item
+        return await _render_or_reuse_run(
+            index,
+            run,
+            resolved_images,
+            media_probes,
+            settings,
+            work_dir,
+            shot_content_hashes,
+            ffmpeg_version,
         )
-        run_paths.append(run_path)
+
+    gathered = await bounded_gather(
+        list(enumerate(runs)),
+        _one_run,
+        concurrency=ffmpeg_run_concurrency(),
+    )
+    run_paths: list[Path] = []
+    for item in gathered:
+        if isinstance(item, Exception):
+            raise item
+        run_paths.append(item)
 
     if len(run_paths) == 1:
         run_paths[0].replace(output_path)

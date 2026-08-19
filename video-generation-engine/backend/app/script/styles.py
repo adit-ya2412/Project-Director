@@ -139,6 +139,9 @@ class ConstraintBundle:
     so existing call sites keep working. `max_scenes` and
     `max_video_duration_s` used to be read from flat settings beside
     this function — that is the R1 shape; they live here now.
+    Track C C6 adds `budget_cap_cents` and `max_video_shots_per_project`
+    the same way: length-aware, and `n_fragments=None` is today's 1000¢
+    / 5 video shots.
     """
 
     min_shot_duration_s: float
@@ -146,6 +149,8 @@ class ConstraintBundle:
     max_shots_per_project: int
     max_scenes: int
     max_video_duration_s: float
+    budget_cap_cents: int
+    max_video_shots_per_project: int
 
     def __iter__(self):
         yield self.min_shot_duration_s
@@ -160,10 +165,13 @@ def resolve_constraint_bundle(
 
     `style=None` and `n_fragments=None` (every Timeline predating both
     fields, and every caller that has not yet split the script) resolve
-    to EXACTLY the five numbers those flat `settings.*` reads always
+    to EXACTLY the numbers those flat `settings.*` reads always
     produced. Length sets the base (`max(today's cap, f(N))`); style
     multiplies the shot cap (retention_fast 58/40). Not "whichever is
     larger" — that silently drops one of the two (Track C §2.3).
+    C6: budget scales linearly with the duration cap (90 s → 1000¢);
+    the motion-shot cap scales with `sqrt(duration / 90 s)` so a
+    10-minute video cannot spend the whole cap on ~130 motion shots.
     """
     band = STYLE_PACING_BANDS.get(style or settings.default_render_style)
     if band is None:
@@ -206,10 +214,25 @@ def resolve_constraint_bundle(
     else:
         max_shots_per_project = shots_base
 
+    # C6: 90 s → project_budget_cap_cents (1000). 10 min → ~6667¢ (~$67).
+    # ceil so a fractional second never silently drops a cent of room.
+    budget_cap_cents = math.ceil(
+        max_video_duration_s * settings.project_budget_cap_cents / settings.max_video_duration_s
+    )
+    # Sub-linear in length (D4): sqrt(6.67) × 5 ≈ 13 motion shots at
+    # 10 min, not 5 × 6.67 ≈ 33, and nowhere near 130.
+    duration_ratio = max_video_duration_s / settings.max_video_duration_s
+    max_video_shots_per_project = max(
+        settings.max_video_shots_per_project,
+        math.ceil(settings.max_video_shots_per_project * math.sqrt(duration_ratio)),
+    )
+
     return ConstraintBundle(
         min_shot_duration_s=min_shot_duration_s,
         max_shot_duration_s=max_shot_duration_s,
         max_shots_per_project=max_shots_per_project,
         max_scenes=max_scenes,
         max_video_duration_s=max_video_duration_s,
+        budget_cap_cents=budget_cap_cents,
+        max_video_shots_per_project=max_video_shots_per_project,
     )

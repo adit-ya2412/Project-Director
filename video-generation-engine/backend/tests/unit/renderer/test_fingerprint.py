@@ -7,9 +7,24 @@ didn't.
 
 from datetime import UTC, datetime
 
-from app.renderer.fingerprint import compute_render_fingerprint
+from app.renderer.fingerprint import (
+    compute_render_fingerprint,
+    compute_run_fingerprint,
+    compute_shot_stream_fingerprint,
+)
 from app.renderer.slideshow import RenderSettings
-from app.schemas.timeline import ProducedBy, Scene, Shot, ShotIntent, Timeline, TimelineStatus
+from app.schemas.timeline import (
+    Camera,
+    CameraMovement,
+    ProducedBy,
+    Scene,
+    Shot,
+    ShotIntent,
+    Timeline,
+    TimelineStatus,
+    Transition,
+    TransitionType,
+)
 
 _SETTINGS = RenderSettings(width=720, height=1280, fps=30, pixel_format="yuv420p")
 
@@ -53,6 +68,27 @@ def _fingerprint(**overrides) -> str:
 
 def test_identical_inputs_produce_identical_fingerprints():
     assert _fingerprint() == _fingerprint()
+
+
+def test_approved_scenes_do_not_change_the_fingerprint():
+    """R-C6: review-record click order is not a render input."""
+    empty = _timeline()
+    order_a = _timeline()
+    order_a.metadata.approved_scenes = ["sc_01", "sc_02"]
+    order_b = _timeline()
+    order_b.metadata.approved_scenes = ["sc_02", "sc_01"]
+    assert (
+        _fingerprint(timeline=empty)
+        == _fingerprint(timeline=order_a)
+        == _fingerprint(timeline=order_b)
+    )
+
+
+def test_grade_style_still_changes_the_fingerprint():
+    """R-C6's nested exclusion must not drop `grade_style` (parent R6)."""
+    styled = _timeline()
+    styled.metadata.grade_style = "retention_fast"
+    assert _fingerprint(timeline=styled) != _fingerprint()
 
 
 def test_asset_content_hash_order_does_not_matter():
@@ -205,3 +241,90 @@ def test_bookkeeping_fields_never_affect_the_fingerprint():
         )
 
     assert _fingerprint() == _fingerprint(timeline=_other_bookkeeping_timeline())
+
+
+def _run_fp(**overrides) -> str:
+    shot = Shot(id="sh_01", order=0, intent=ShotIntent.EXPLAIN, duration_s=2.0)
+    kwargs = {
+        "shots": [shot],
+        "shot_content_hashes": {"sh_01": "hash-a"},
+        "render_settings": _SETTINGS,
+        "ffmpeg_version": "ffmpeg version 7.1.5",
+    }
+    kwargs.update(overrides)
+    return compute_run_fingerprint(**kwargs)
+
+
+def test_identical_runs_produce_identical_run_fingerprints():
+    assert _run_fp() == _run_fp()
+
+
+def test_run_fingerprint_changes_with_shot_duration():
+    other = Shot(id="sh_01", order=0, intent=ShotIntent.EXPLAIN, duration_s=3.0)
+    assert _run_fp(shots=[other]) != _run_fp()
+
+
+def test_run_fingerprint_changes_with_asset_hash():
+    assert _run_fp(shot_content_hashes={"sh_01": "hash-b"}) != _run_fp()
+
+
+def test_run_fingerprint_asset_order_is_the_run_order():
+    """Not sorted: swapping two shots' media must miss, unlike the
+    full-render hash which sorts globally."""
+    a = Shot(id="sh_a", order=0, intent=ShotIntent.EXPLAIN, duration_s=1.0)
+    b = Shot(id="sh_b", order=1, intent=ShotIntent.EXPLAIN, duration_s=1.0)
+    hashes = {"sh_a": "ha", "sh_b": "hb"}
+    swapped = {"sh_a": "hb", "sh_b": "ha"}
+    assert _run_fp(shots=[a, b], shot_content_hashes=hashes) != _run_fp(
+        shots=[a, b], shot_content_hashes=swapped
+    )
+
+
+def test_run_fingerprint_does_not_collide_with_full_render_hash():
+    assert _run_fp() != _fingerprint()
+
+
+def _shot_fp(**overrides) -> str:
+    shot = Shot(id="sh_01", order=0, intent=ShotIntent.EXPLAIN, duration_s=2.0)
+    kwargs = {
+        "shot": shot,
+        "asset_hash": "hash-a",
+        "render_settings": _SETTINGS,
+        "ffmpeg_version": "ffmpeg version 7.1.5",
+    }
+    kwargs.update(overrides)
+    return compute_shot_stream_fingerprint(**kwargs)
+
+
+def test_identical_shots_produce_identical_stream_fingerprints():
+    assert _shot_fp() == _shot_fp()
+
+
+def test_shot_stream_fingerprint_ignores_transition_out():
+    """C3 (d): a dissolve-duration edit must reuse the intermediate."""
+    cut = Shot(
+        id="sh_01",
+        order=0,
+        intent=ShotIntent.EXPLAIN,
+        duration_s=2.0,
+        transition_out=Transition(type=TransitionType.CUT, duration_s=0.0),
+    )
+    dissolve = Shot(
+        id="sh_01",
+        order=0,
+        intent=ShotIntent.EXPLAIN,
+        duration_s=2.0,
+        transition_out=Transition(type=TransitionType.DISSOLVE, duration_s=0.5),
+    )
+    assert _shot_fp(shot=cut) == _shot_fp(shot=dissolve)
+
+
+def test_shot_stream_fingerprint_changes_with_camera():
+    moving = Shot(
+        id="sh_01",
+        order=0,
+        intent=ShotIntent.EXPLAIN,
+        duration_s=2.0,
+        camera=Camera(movement=CameraMovement.SLOW_ZOOM),
+    )
+    assert _shot_fp(shot=moving) != _shot_fp()

@@ -64,19 +64,40 @@ implementation guide's "one-gate redesign" section for the whole picture
 across all seven tasks.
 """
 
+from __future__ import annotations
+
 import hashlib
+import json
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+)
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_repo, get_timeline_service
-from app.assets.cost import estimate_project_cost_cents
-from app.assets.thumbnails import cached_resized_image, cached_video_frame, is_video_file
+from app.assets.cost import (
+    budget_cap_cents_for,
+    estimate_project_cost_cents,
+    total_project_spend_cents,
+)
+from app.assets.thumbnails import (
+    cached_resized_image,
+    cached_video_frame,
+    is_video_file,
+    shot_frame_cache_path,
+)
 from app.assets.validation import mime_type_for_extension, validate_and_identify_image
 from app.core.config import settings
 from app.core.errors import PermanentError
@@ -128,6 +149,99 @@ from app.workflow.trigger import WorkflowTriggerResult, start_workflow_run
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 _TERMINAL_SHOT_STATES = ("resolved", "generated")
+
+
+def _unfilled_shot_ids(shots, bindings_by_shot: dict) -> list[str]:
+    return [
+        shot.id
+        for shot in shots
+        if bindings_by_shot.get(shot.id) is None
+        or bindings_by_shot[shot.id].state not in _TERMINAL_SHOT_STATES
+    ]
+
+
+def _merge_approved_scenes(timeline: Timeline, add: list[str]) -> list[str]:
+    """Monotonic append: existing ids keep their order, new ones are
+    added in `add` order without duplicates."""
+    merged = list(timeline.metadata.approved_scenes)
+    seen = set(merged)
+    for scene_id in add:
+        if scene_id not in seen:
+            merged.append(scene_id)
+            seen.add(scene_id)
+    return merged
+
+
+def _all_scenes_approved(timeline: Timeline) -> bool:
+    return all(scene.id in timeline.metadata.approved_scenes for scene in timeline.scenes)
+
+
+def _failed_regenerate_cost_cents(n_failed: int) -> int:
+    return n_failed * settings.fal_image_cost_cents_estimate
+
+
+def _progress_etag_response(payload: dict, request: Request) -> JSONResponse | Response:
+    """§13.4: ETag from the assembled payload, not `timeline.version` —
+    a binding resolving does not bump the version, so a version-keyed
+    etag would serve stale progress during generation."""
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    etag = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    headers = {"ETag": etag, "Cache-Control": "no-cache"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return JSONResponse(payload, headers=headers)
+
+
+async def _shot_progress_entry(
+    session: AsyncSession,
+    *,
+    scene,
+    shot,
+    binding,
+    locked: bool,
+    start_times: dict,
+) -> dict:
+    asset_detail = None
+    if binding.asset_id is not None:
+        asset = await session.get(AssetModel, binding.asset_id)
+        if asset is not None:
+            asset_detail = {
+                "provider": asset.provider,
+                "source_url": asset.source_url,
+                "licence": asset.licence,
+                "attribution": asset.attribution,
+                "local_path": asset.local_path,
+            }
+    clip_detail = None
+    if binding.clip_id is not None:
+        clip = await session.get(GeneratedClipModel, binding.clip_id)
+        if clip is not None:
+            clip_detail = {
+                "provider": clip.provider,
+                "model_id": clip.model_id,
+                "status": clip.status,
+                "local_path": clip.local_path,
+            }
+    says = None
+    if shot.narration_span is not None:
+        start_char, end_char = shot.narration_span
+        says = scene.narration_text[start_char:end_char]
+    return {
+        "shot_id": binding.shot_id,
+        "scene_id": scene.id,
+        "state": binding.state,
+        "rung": binding.rung,
+        "last_error": binding.last_error,
+        "will_generate": binding.state == "awaiting_generation",
+        "locked": locked,
+        "asset": asset_detail,
+        "clip": clip_detail,
+        "says": says,
+        "prompt": shot.prompt,
+        "intent": shot.intent,
+        "duration_s": shot.duration_s,
+        "starts_at_s": start_times.get(shot.id),
+    }
 
 
 class CreateProjectRequest(BaseModel):
@@ -885,6 +999,7 @@ async def approve_timeline(
     repo: ProjectRepository = Depends(get_repo),
     timeline_service: TimelineService = Depends(get_timeline_service),
     session: AsyncSession = Depends(get_db),
+    confirmed_cost_cents: int | None = None,
 ) -> WorkflowTriggerResult:
     """Approves the active timeline and resumes the engine (which, under
     the one-gate redesign, runs straight through narration-review into
@@ -912,6 +1027,19 @@ async def approve_timeline(
     generated, via the per-shot endpoint) every shot's picture before
     ever calling this endpoint.
 
+    Track C C5: also stamps every remaining scene id into
+    `metadata.approved_scenes` (the one source of truth; the flat
+    Approve button is sugar over the same field). Per-scene
+    `POST /scenes/{id}/approve` records a review without starting
+    the pipeline; this endpoint is what actually gates paid
+    generation.
+
+    Track C C6: when `require_cost_estimate_before_approval` is on,
+    `DRY_RUN` is off, and spent + remaining estimate is greater than
+    zero, the caller must echo that total as `confirmed_cost_cents`
+    (query). Dry-run spend is fake and may omit it. The remaining
+    estimate is least accurate for shots with no binding yet.
+
     Consequence, worth being explicit about: `resolve_assets_generate`
     does not stop being useful - a shot can still reach it in the
     `awaiting_generation` state that this guard blocks on IF this guard
@@ -933,12 +1061,7 @@ async def approve_timeline(
             uuid.UUID(project_id), active.version
         )
     }
-    unfilled_shot_ids = [
-        shot.id
-        for shot in active.all_shots()
-        if bindings_by_shot.get(shot.id) is None
-        or bindings_by_shot[shot.id].state not in _TERMINAL_SHOT_STATES
-    ]
+    unfilled_shot_ids = _unfilled_shot_ids(active.all_shots(), bindings_by_shot)
     if unfilled_shot_ids:
         raise HTTPException(
             status_code=400,
@@ -950,8 +1073,221 @@ async def approve_timeline(
             ),
         )
 
+    # C5: remaining scene ids are stamped in `timeline_service.approve`
+    # on this same version (in-place, like `status=APPROVED`). An
+    # `append_version` here would flip `produced_by` to HUMAN and make
+    # `NarrationStep.is_satisfied` false, re-running TTS after the gate.
+
+    binding_states = {shot_id: b.state for shot_id, b in bindings_by_shot.items()}
+    estimated_cost_cents = estimate_project_cost_cents(active, binding_states)
+    spent_cost_cents = await total_project_spend_cents(
+        clip_repo=GeneratedClipRepository(session),
+        narration_repo=NarrationRepository(session),
+        project_id=uuid.UUID(project_id),
+    )
+    expected_cents = spent_cost_cents + estimated_cost_cents
+    if (
+        settings.require_cost_estimate_before_approval
+        and not settings.dry_run
+        and expected_cents > 0
+        and confirmed_cost_cents != expected_cents
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "confirm the project cost before approving: send "
+                f"confirmed_cost_cents={expected_cents} (spent "
+                f"{spent_cost_cents} + remaining estimate {estimated_cost_cents}). "
+                "The remaining estimate is least accurate for shots with no "
+                "binding yet (it falls back to the plan's primary strategy)."
+            ),
+        )
+
     await timeline_service.approve(project_id, active.version)
     return await start_workflow_run(project_id, session, background_tasks)
+
+
+class SceneApprovalResult(BaseModel):
+    scene_id: str
+    approved: bool
+    approved_scenes: list[str]
+    all_scenes_approved: bool
+
+
+@router.post("/{project_id}/scenes/{scene_id}/approve", response_model=SceneApprovalResult)
+async def approve_scene(
+    project_id: str,
+    scene_id: str,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    session: AsyncSession = Depends(get_db),
+) -> SceneApprovalResult:
+    """C5 / Q6: record that a human approved one scene. Monotonic — the
+    id is appended to `metadata.approved_scenes` and never removed.
+    Idempotent: a second call for an already-approved scene is a no-op
+    (no version bump).
+
+    This is a review record, not a lock and not the engine gate. It
+    does not freeze the scene against later regenerate/override, and it
+    does not stamp document `APPROVED` or start the pipeline — that
+    stays `POST /timeline/approve`, which also fills any remaining
+    scene ids. `AwaitApprovalStep` keeps checking document status only.
+
+    Refuses (400) if any shot in this scene is not yet `resolved` /
+    `generated` — the same filled-media rule `approve_timeline` uses,
+    scoped to the scene so a human can approve scene 1 while scene 12
+    still has a gap.
+    """
+    await _get_project_or_404(project_id, repo)
+    active = await timeline_service.get_active(project_id)
+    if active is None:
+        raise HTTPException(status_code=400, detail="no timeline to approve a scene on yet")
+    scene = next((s for s in active.scenes if s.id == scene_id), None)
+    if scene is None:
+        raise HTTPException(
+            status_code=404, detail=f"scene {scene_id} not found in the active timeline"
+        )
+
+    bindings_by_shot = {
+        b.shot_id: b
+        for b in await ShotBindingRepository(session).list_for_version(
+            uuid.UUID(project_id), active.version
+        )
+    }
+    unfilled_shot_ids = _unfilled_shot_ids(scene.shots, bindings_by_shot)
+    if unfilled_shot_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"cannot approve scene {scene_id} - these shots have no image yet: "
+                f"{unfilled_shot_ids}. Upload one (POST /shots/{{shot_id}}/override) "
+                "or generate one (POST /shots/{shot_id}/generate) for each before "
+                "approving."
+            ),
+        )
+
+    if scene_id in active.metadata.approved_scenes:
+        return SceneApprovalResult(
+            scene_id=scene_id,
+            approved=True,
+            approved_scenes=list(active.metadata.approved_scenes),
+            all_scenes_approved=_all_scenes_approved(active),
+        )
+
+    def _add_scene(base: Timeline) -> Timeline:
+        base.metadata.approved_scenes = _merge_approved_scenes(base, [scene_id])
+        return base
+
+    try:
+        active = await timeline_service.append_version(
+            project_id,
+            produced_by=ProducedBy.HUMAN,
+            transform=_add_scene,
+            owns=frozenset({"metadata.approved_scenes"}),
+        )
+    except PermanentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return SceneApprovalResult(
+        scene_id=scene_id,
+        approved=True,
+        approved_scenes=list(active.metadata.approved_scenes),
+        all_scenes_approved=_all_scenes_approved(active),
+    )
+
+
+class RegenerateFailedResult(BaseModel):
+    scene_id: str
+    shot_ids: list[str]
+    estimated_cost_cents: int
+    regenerated: bool
+    results: list[GenerateShotImageResult] = []
+
+
+@router.post(
+    "/{project_id}/scenes/{scene_id}/regenerate-failed",
+    response_model=RegenerateFailedResult,
+)
+async def regenerate_failed_in_scene(
+    project_id: str,
+    scene_id: str,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    session: AsyncSession = Depends(get_db),
+    confirmed_cost_cents: int | None = None,
+) -> RegenerateFailedResult:
+    """C5: regenerate every `failed` shot in one scene. A batch wrapper
+    over `POST /shots/{id}/generate` (the existing per-shot image
+    endpoint) — motion clips stay on `POST /shots/{id}/generate/video`
+    because that path is async and has no dry-run fake.
+
+    Always returns an estimate and requires `confirmed_cost_cents`
+    matching it when the estimate is greater than zero. Unlike timeline
+    approve, dry-run does not skip the confirmation: a 12-shot bulk
+    click is the thing §6 said must not fire on the first press.
+
+    Scene approval is not a lock (A25/A20): this runs on failed shots
+    even inside an already-approved scene — that is Q6's repair path.
+    """
+    await _get_project_or_404(project_id, repo)
+    active = await timeline_service.get_active(project_id)
+    if active is None:
+        raise HTTPException(status_code=400, detail="no timeline to regenerate failed shots on yet")
+    scene = next((s for s in active.scenes if s.id == scene_id), None)
+    if scene is None:
+        raise HTTPException(
+            status_code=404, detail=f"scene {scene_id} not found in the active timeline"
+        )
+
+    bindings_by_shot = {
+        b.shot_id: b
+        for b in await ShotBindingRepository(session).list_for_version(
+            uuid.UUID(project_id), active.version
+        )
+    }
+    failed_shots = [
+        shot
+        for shot in scene.shots
+        if bindings_by_shot.get(shot.id) is not None and bindings_by_shot[shot.id].state == "failed"
+    ]
+    if not failed_shots:
+        raise HTTPException(
+            status_code=400, detail=f"scene {scene_id} has no failed shots to regenerate"
+        )
+
+    estimated_cost_cents = _failed_regenerate_cost_cents(len(failed_shots))
+    shot_ids = [shot.id for shot in failed_shots]
+    if estimated_cost_cents > 0 and confirmed_cost_cents != estimated_cost_cents:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "confirm the regenerate cost before running: send "
+                f"confirmed_cost_cents={estimated_cost_cents} for "
+                f"{len(failed_shots)} failed shot(s) in scene {scene_id}."
+            ),
+        )
+
+    results: list[GenerateShotImageResult] = []
+    for shot in failed_shots:
+        try:
+            results.append(
+                await _generate_shot_image_now(
+                    session=session,
+                    project_id=project_id,
+                    timeline=active,
+                    shot=shot,
+                )
+            )
+        except PermanentError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return RegenerateFailedResult(
+        scene_id=scene_id,
+        shot_ids=shot_ids,
+        estimated_cost_cents=estimated_cost_cents,
+        regenerated=True,
+        results=results,
+    )
 
 
 @router.post(
@@ -1202,6 +1538,27 @@ async def generate_shot_image(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         shot = next(s for s in active.all_shots() if s.id == shot_id)
 
+    try:
+        return await _generate_shot_image_now(
+            session=session,
+            project_id=project_id,
+            timeline=active,
+            shot=shot,
+        )
+    except PermanentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+async def _generate_shot_image_now(
+    *,
+    session: AsyncSession,
+    project_id: str,
+    timeline: Timeline,
+    shot,
+) -> GenerateShotImageResult:
+    """The shared body of `POST /shots/{id}/generate` and C5's bulk
+    regenerate-failed: one `generate_image_real` plus a commit. Callers
+    own prompt-edit `append_version` and HTTP translation."""
     project_uuid = uuid.UUID(project_id)
     project_dir = settings.storage_root / project_id
     (project_dir / "clips").mkdir(parents=True, exist_ok=True)
@@ -1210,25 +1567,22 @@ async def generate_shot_image(
     clip_repo = GeneratedClipRepository(session)
     narration_repo = NarrationRepository(session)
     binding_repo = ShotBindingRepository(session)
-    binding = await binding_repo.get_or_create_pending(project_uuid, active.version, shot_id)
+    binding = await binding_repo.get_or_create_pending(project_uuid, timeline.version, shot.id)
 
-    try:
-        clip, cache_hit = await generate_image_real(
-            shot,
-            binding,
-            project_uuid=project_uuid,
-            project_dir=project_dir,
-            image_provider=image_provider,
-            clip_repo=clip_repo,
-            narration_repo=narration_repo,
-            creative_context=active.creative_context,
-        )
-    except PermanentError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
+    clip, cache_hit = await generate_image_real(
+        shot,
+        binding,
+        project_uuid=project_uuid,
+        project_dir=project_dir,
+        image_provider=image_provider,
+        clip_repo=clip_repo,
+        narration_repo=narration_repo,
+        creative_context=timeline.creative_context,
+        cap_cents=budget_cap_cents_for(timeline),
+    )
     await session.commit()
     return GenerateShotImageResult(
-        shot_id=shot_id,
+        shot_id=shot.id,
         clip_id=str(clip.id),
         cost_cents=0 if cache_hit else clip.cost_cents,
         cache_hit=cache_hit,
@@ -1338,6 +1692,7 @@ async def generate_shot_video(
             clip_repo=clip_repo,
             narration_repo=narration_repo,
             creative_context=active.creative_context,
+            cap_cents=budget_cap_cents_for(active),
         )
     except PermanentError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1464,6 +1819,7 @@ async def retry_music_selection(
     def _reset_music_plan(base: Timeline) -> Timeline:
         assert base.music_plan is not None
         base.music_plan.selected_track = None
+        base.music_plan.act_beds = []
         base.music_plan.selection_attempted = False
         if body.search_terms is not None:
             base.music_plan.search_terms = body.search_terms
@@ -1572,13 +1928,21 @@ async def get_status(project_id: str, repo: ProjectRepository = Depends(get_repo
 @router.get("/{project_id}/progress")
 async def get_progress(
     project_id: str,
+    request: Request,
     repo: ProjectRepository = Depends(get_repo),
     timeline_service: TimelineService = Depends(get_timeline_service),
     session: AsyncSession = Depends(get_db),
-) -> dict:
+    expand: str | None = None,
+):
     """Progress is derived from shot_binding state, never stored as a
     number - a stored percentage drifts the moment anything fails
-    (implementation guide, Phase M4 advice)."""
+    (implementation guide, Phase M4 advice).
+
+    Track C §13.4: default payload is scene summaries (`scenes[]`) plus
+    counts. Per-shot detail (`shots[]`) is opt-in via `expand=shots` or
+    `GET /scenes/{scene_id}/shots`. ETag is a hash of the assembled
+    payload, not `timeline.version`.
+    """
     project = await _get_project_or_404(project_id, repo)
     run_row = await WorkflowRunRepository(session).get_latest(uuid.UUID(project_id))
 
@@ -1591,16 +1955,21 @@ async def get_progress(
 
     timeline = await timeline_service.get_active(project_id)
     if timeline is None:
-        return {
-            **base,
-            "total_shots": 0,
-            "completed_shots": 0,
-            "failed_shots": 0,
-            "progress": None,
-            "estimated_cost_cents": 0,
-            "spent_cost_cents": 0,
-            "shots": [],
-        }
+        return _progress_etag_response(
+            {
+                **base,
+                "total_shots": 0,
+                "completed_shots": 0,
+                "failed_shots": 0,
+                "progress": None,
+                "estimated_cost_cents": 0,
+                "spent_cost_cents": 0,
+                "budget_cap_cents": settings.project_budget_cap_cents,
+                "shots": [],
+                "scenes": [],
+            },
+            request,
+        )
 
     bindings = await ShotBindingRepository(session).list_for_version(
         uuid.UUID(project_id), timeline.version
@@ -1641,57 +2010,60 @@ async def get_progress(
     bindings_by_shot = {b.shot_id: b for b in bindings}
     start_times = compute_shot_start_times(timeline.all_shots())
 
+    include_shots = expand == "shots"
+    approved_set = set(timeline.metadata.approved_scenes)
     shots_detail = []
+    scenes_detail = []
     for scene in timeline.scenes:
+        scene_shot_ids: list[str] = []
+        completed_in_scene = 0
+        failed_in_scene = 0
+        unfilled_in_scene = 0
+        scene_starts_at: float | None = None
         for shot in scene.shots:
+            scene_shot_ids.append(shot.id)
             b = bindings_by_shot.get(shot.id)
+            start = start_times.get(shot.id)
+            if scene_starts_at is None and start is not None:
+                scene_starts_at = start
             if b is None:
+                unfilled_in_scene += 1
                 continue
+            if b.state in _TERMINAL_SHOT_STATES:
+                completed_in_scene += 1
+            elif b.state == "failed":
+                failed_in_scene += 1
+                unfilled_in_scene += 1
+            else:
+                unfilled_in_scene += 1
 
-            asset_detail = None
-            if b.asset_id is not None:
-                asset = await session.get(AssetModel, b.asset_id)
-                if asset is not None:
-                    asset_detail = {
-                        "provider": asset.provider,
-                        "source_url": asset.source_url,
-                        "licence": asset.licence,
-                        "attribution": asset.attribution,
-                        "local_path": asset.local_path,
-                    }
-            clip_detail = None
-            if b.clip_id is not None:
-                clip = await session.get(GeneratedClipModel, b.clip_id)
-                if clip is not None:
-                    clip_detail = {
-                        "provider": clip.provider,
-                        "model_id": clip.model_id,
-                        "status": clip.status,
-                        "local_path": clip.local_path,
-                    }
+            if include_shots:
+                shots_detail.append(
+                    await _shot_progress_entry(
+                        session,
+                        scene=scene,
+                        shot=shot,
+                        binding=b,
+                        locked=locked_by_shot.get(b.shot_id, False),
+                        start_times=start_times,
+                    )
+                )
 
-            says = None
-            if shot.narration_span is not None:
-                start, end = shot.narration_span
-                says = scene.narration_text[start:end]
-
-            shots_detail.append(
-                {
-                    "shot_id": b.shot_id,
-                    "state": b.state,
-                    "rung": b.rung,
-                    "last_error": b.last_error,
-                    "will_generate": b.state == "awaiting_generation",
-                    "locked": locked_by_shot.get(b.shot_id, False),
-                    "asset": asset_detail,
-                    "clip": clip_detail,
-                    "says": says,
-                    "prompt": shot.prompt,
-                    "intent": shot.intent,
-                    "duration_s": shot.duration_s,
-                    "starts_at_s": start_times.get(shot.id),
-                }
-            )
+        scenes_detail.append(
+            {
+                "id": scene.id,
+                "act_id": scene.act_id,
+                "title": scene.title,
+                "shot_ids": scene_shot_ids,
+                "total_shots": len(scene.shots),
+                "completed_shots": completed_in_scene,
+                "failed_shots": failed_in_scene,
+                "unfilled_shots": unfilled_in_scene,
+                "approved": scene.id in approved_set,
+                "starts_at_s": scene_starts_at,
+                "regenerate_failed_cost_cents": _failed_regenerate_cost_cents(failed_in_scene),
+            }
+        )
 
     # Estimated before generation runs (implementation guide, Phase M7
     # advice: "estimate cost before the approval gate and show it").
@@ -1706,20 +2078,75 @@ async def get_progress(
     estimated_cost_cents = estimate_project_cost_cents(
         timeline, {shot_id: b.state for shot_id, b in bindings_by_shot.items()}
     )
-    spent_cost_cents = await GeneratedClipRepository(session).total_cost_cents_for_project(
-        uuid.UUID(project_id)
+    spent_cost_cents = await total_project_spend_cents(
+        clip_repo=GeneratedClipRepository(session),
+        narration_repo=NarrationRepository(session),
+        project_id=uuid.UUID(project_id),
+    )
+    budget_cap_cents = budget_cap_cents_for(timeline)
+
+    return _progress_etag_response(
+        {
+            **base,
+            "total_shots": total,
+            "completed_shots": completed,
+            "failed_shots": failed,
+            "progress": (completed / total) if total else None,
+            "estimated_cost_cents": estimated_cost_cents,
+            "spent_cost_cents": spent_cost_cents,
+            "budget_cap_cents": budget_cap_cents,
+            "shots": shots_detail,
+            "scenes": scenes_detail,
+        },
+        request,
     )
 
-    return {
-        **base,
-        "total_shots": total,
-        "completed_shots": completed,
-        "failed_shots": failed,
-        "progress": (completed / total) if total else None,
-        "estimated_cost_cents": estimated_cost_cents,
-        "spent_cost_cents": spent_cost_cents,
-        "shots": shots_detail,
+
+@router.get("/{project_id}/scenes/{scene_id}/shots")
+async def get_scene_shots(
+    project_id: str,
+    scene_id: str,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """§13.4: shot detail for one expanded scene. The default
+    `/progress` payload is scene summaries; this is what an opened
+    group fetches."""
+    await _get_project_or_404(project_id, repo)
+    timeline = await timeline_service.get_active(project_id)
+    if timeline is None:
+        raise HTTPException(status_code=400, detail="no timeline yet")
+    scene = next((s for s in timeline.scenes if s.id == scene_id), None)
+    if scene is None:
+        raise HTTPException(
+            status_code=404, detail=f"scene {scene_id} not found in the active timeline"
+        )
+
+    bindings_by_shot = {
+        b.shot_id: b
+        for b in await ShotBindingRepository(session).list_for_version(
+            uuid.UUID(project_id), timeline.version
+        )
     }
+    locked_by_shot = {s.id: s.asset_locked for s in timeline.all_shots()}
+    start_times = compute_shot_start_times(timeline.all_shots())
+    shots_detail = []
+    for shot in scene.shots:
+        b = bindings_by_shot.get(shot.id)
+        if b is None:
+            continue
+        shots_detail.append(
+            await _shot_progress_entry(
+                session,
+                scene=scene,
+                shot=shot,
+                binding=b,
+                locked=locked_by_shot.get(b.shot_id, False),
+                start_times=start_times,
+            )
+        )
+    return {"scene_id": scene_id, "shots": shots_detail}
 
 
 @router.get("/{project_id}/video")
@@ -1817,7 +2244,7 @@ async def get_shot_asset(
 
     no_cache_headers = {"Cache-Control": "no-cache"}
     if is_video_file(path):
-        cache_path = settings.storage_root / project_id / "cache" / f"shot_{shot_id}.jpg"
+        cache_path = shot_frame_cache_path(project_id, shot_id)
         served_path = await cached_video_frame(
             path,
             cache_path,

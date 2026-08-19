@@ -135,7 +135,7 @@ def test_post_then_get_submits_and_resolves_a_video(client, monkeypatch):
     assert get_body["status"] == "completed"
     assert get_body["clip_id"] == post_body["clip_id"]
 
-    progress = client.get(f"/api/v1/projects/{project_id}/progress").json()
+    progress = client.get(f"/api/v1/projects/{project_id}/progress?expand=shots").json()
     shot_progress = next(s for s in progress["shots"] if s["shot_id"] == shot_id)
     assert shot_progress["state"] == "generated"
 

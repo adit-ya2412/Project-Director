@@ -306,6 +306,20 @@ class TimelineMetadata(BaseModel):
     # `metadata`, which is not in `_TIMELINE_BOOKKEEPING_FIELDS` - so a
     # grade change is correctly detected as needing a re-render.
     grade_style: str | None = None
+    # Track C C5 / §6 / Q6: scene ids the human has approved at the
+    # review gate. Empty on every timeline that predates this field and
+    # on every project that has not been reviewed yet. The set is
+    # monotonic — once a scene id is present it stays (no un-approve,
+    # no reverse edge in the workflow). Written by
+    # `POST /{project_id}/scenes/{scene_id}/approve` and stamped for
+    # every remaining scene by `POST /{project_id}/timeline/approve`
+    # (the flat Approve button is sugar over the same field). Scene
+    # approval is a review record, not a lock: it does not freeze a
+    # scene against later regenerate/override (A25/A20 stay the lock).
+    # The engine gate (`AwaitApprovalStep`) still checks document
+    # `status == APPROVED` only; that stamp happens when
+    # `POST /timeline/approve` succeeds, which also fills this list.
+    approved_scenes: list[str] = Field(default_factory=list)
 
 
 class MusicTrackSelection(BaseModel):
@@ -322,6 +336,14 @@ class MusicTrackSelection(BaseModel):
     licence: str
     attribution: str = ""
     content_hash: str
+
+
+class ActMusicBed(BaseModel):
+    """Track C C7: one bed for one act. Empty `act_beds` on MusicPlan
+    means Path A (one bed for the video, `selected_track` only)."""
+
+    act_id: str
+    selected_track: MusicTrackSelection | None = None
 
 
 class MusicPlan(BaseModel):
@@ -346,6 +368,12 @@ class MusicPlan(BaseModel):
     # call, since a miss is often the terms themselves being wrong.
     selected_track: MusicTrackSelection | None = None
     selection_attempted: bool = False
+    # Track C C7: one bed per act when `Scene.act_id` is set (Path B,
+    # N > 70). Empty on Path A and every timeline that predates this
+    # field, so existing projects keep a single `selected_track`. The
+    # renderer concatenates these in list order; consecutive acts must
+    # not share a track when any alternative exists (select_music).
+    act_beds: list[ActMusicBed] = Field(default_factory=list)
 
 
 class CreativeContext(BaseModel):

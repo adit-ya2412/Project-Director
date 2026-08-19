@@ -99,3 +99,7 @@ desktop.ini
 
 # Local safety copies of storage/ taken during live tests - never committed
 backups/
+
+# Playwright / review-UI screenshots and other local scratch — testing
+# artifacts, never committed.
+tmp/

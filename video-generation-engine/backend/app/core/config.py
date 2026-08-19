@@ -269,6 +269,14 @@ class Settings(BaseSettings):
     # for the `None`-means-default reasoning this depends on.
     default_render_style: str = "documentary_archival"
 
+    # Track C C4: reuse penalty is a temporal window, not a global set.
+    # Uncalibrated taste default (plan §5.2) — full penalty at 0 s gap,
+    # linear decay to zero at this horizon. retention_fast packs ~3× the
+    # shots into the same runtime, so its window is shorter; do not tune
+    # one and assume it transfers.
+    asset_reuse_window_s: float = 60.0
+    asset_reuse_window_s_fast: float = 20.0
+
     # --- Cost control ---
     project_budget_cap_cents: int = 1000
     require_cost_estimate_before_approval: bool = True

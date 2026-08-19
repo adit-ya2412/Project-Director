@@ -21,6 +21,8 @@ def test_none_resolves_byte_identical_to_flat_settings():
     assert bundle.max_shots_per_project == settings.max_shots_per_project
     assert bundle.max_scenes == settings.max_scenes
     assert bundle.max_video_duration_s == settings.max_video_duration_s
+    assert bundle.budget_cap_cents == settings.project_budget_cap_cents
+    assert bundle.max_video_shots_per_project == settings.max_video_shots_per_project
 
 
 def test_documentary_archival_resolves_identical_to_none():
@@ -61,6 +63,32 @@ def test_short_n_keeps_todays_caps():
     assert short.max_scenes == settings.max_scenes
     assert short.max_shots_per_project == settings.max_shots_per_project
     assert short.max_video_duration_s == settings.max_video_duration_s
+    assert short.budget_cap_cents == settings.project_budget_cap_cents
+    assert short.max_video_shots_per_project == settings.max_video_shots_per_project
+
+
+def test_long_form_budget_scales_linearly_and_motion_cap_sublinearly():
+    """C6: 90 s → 1000¢ / 5 video shots. 10 min → ~6667¢, 13 video shots
+    (sqrt(600/90)×5), not 33 (linear) and not 130 (uncapped)."""
+    import math
+
+    long = resolve_constraint_bundle(None, n_fragments=206)
+    assert long.max_video_duration_s == pytest.approx(settings.max_long_form_duration_s, abs=5)
+    assert long.budget_cap_cents == math.ceil(
+        long.max_video_duration_s
+        * settings.project_budget_cap_cents
+        / settings.max_video_duration_s
+    )
+    # ~$66, not today's $10, and not a linear 6.7× motion count.
+    assert long.budget_cap_cents == pytest.approx(6667, abs=50)
+    ratio = long.max_video_duration_s / settings.max_video_duration_s
+    assert long.max_video_shots_per_project == math.ceil(
+        settings.max_video_shots_per_project * math.sqrt(ratio)
+    )
+    assert long.max_video_shots_per_project == 13
+    assert long.max_video_shots_per_project < math.ceil(
+        settings.max_video_shots_per_project * ratio
+    )
 
 
 def test_unrecognised_style_falls_back_rather_than_raising():

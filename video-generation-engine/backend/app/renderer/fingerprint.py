@@ -104,7 +104,7 @@ import json
 
 from app.core.errors import PermanentError
 from app.renderer.slideshow import RenderSettings
-from app.schemas.timeline import Timeline
+from app.schemas.timeline import Shot, Timeline
 
 # Mirrors `app.timeline.service._BOOKKEEPING_FIELDS` exactly (kept as its
 # own local copy rather than an import, to avoid a renderer -> timeline
@@ -174,6 +174,15 @@ def compute_render_fingerprint(
     content_only = {
         k: v for k, v in timeline_document.items() if k not in _TIMELINE_BOOKKEEPING_FIELDS
     }
+    # R-C6: `approved_scenes` is a review record, not a pixel input.
+    # It must not share the fingerprint with `render_style`/`grade_style`
+    # (those stay hashed; dropping all of `metadata` would reopen R6).
+    # Click order of per-scene approve must not fork the cache key.
+    metadata = content_only.get("metadata")
+    if isinstance(metadata, dict) and "approved_scenes" in metadata:
+        metadata = dict(metadata)
+        metadata.pop("approved_scenes", None)
+        content_only = {**content_only, "metadata": metadata}
     payload = {
         "timeline": content_only,
         # Sorted, never trusted in caller-supplied order (I5) - two
@@ -224,6 +233,72 @@ def compute_render_fingerprint(
         # swapping the vendored file must invalidate this fingerprint too.
         "burn_text_cards": burn_text_cards,
         "text_card_font_hash": text_card_font_hash,
+        "ffmpeg_version": ffmpeg_version,
+    }
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def compute_run_fingerprint(
+    *,
+    shots: list[Shot],
+    shot_content_hashes: dict[str, str],
+    render_settings: RenderSettings,
+    ffmpeg_version: str,
+) -> str:
+    """Fingerprint of one `group_into_runs` run (Track C C3 remainder).
+
+    The silent-video encode is per-run; captions/watermark/grade/music/
+    narration land after concat and are NOT in this hash. Shot order is
+    the run's order (not sorted): swapping two shots' media must miss.
+    `kind: run_v1` keeps a run hash from colliding with a full-render
+    hash of an otherwise-similar payload.
+    """
+    payload = {
+        "kind": "run_v1",
+        # Full dump is conservative (N3): prompt/intent/asset_plan/text_card
+        # do not affect the silent per-run encode, so a prompt-only edit
+        # misses this cache. Safe direction; the shot-stream cache absorbs
+        # the re-encode when camera/media did not change.
+        "shots": [shot.model_dump(mode="json") for shot in shots],
+        "assets": [
+            {"shot_id": shot.id, "hash": shot_content_hashes.get(shot.id)} for shot in shots
+        ],
+        "render_settings": {
+            "width": render_settings.width,
+            "height": render_settings.height,
+            "fps": render_settings.fps,
+            "pixel_format": render_settings.pixel_format,
+        },
+        "ffmpeg_version": ffmpeg_version,
+    }
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def compute_shot_stream_fingerprint(
+    *,
+    shot: Shot,
+    asset_hash: str,
+    render_settings: RenderSettings,
+    ffmpeg_version: str,
+) -> str:
+    """Fingerprint of one shot's normalised/zoompanned stream (C3 (d)).
+
+    Transition-out is excluded: it only affects the xfade pass, so a
+    dissolve-duration edit must reuse this file. Camera and duration
+    stay in — they change the pixels.
+    """
+    payload = {
+        "kind": "shot_stream_v1",
+        "shot_id": shot.id,
+        "duration_s": shot.duration_s,
+        "camera": shot.camera.model_dump(mode="json"),
+        "asset_hash": asset_hash,
+        "render_settings": {
+            "width": render_settings.width,
+            "height": render_settings.height,
+            "fps": render_settings.fps,
+            "pixel_format": render_settings.pixel_format,
+        },
         "ffmpeg_version": ffmpeg_version,
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()

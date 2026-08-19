@@ -99,7 +99,7 @@ import uuid as uuid_module
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.assets.cost import check_budget, total_project_spend_cents
+from app.assets.cost import budget_cap_cents_for, check_budget, total_project_spend_cents
 from app.core.config import settings
 from app.core.errors import PermanentError, TransientError
 from app.planners.fragments import split_narration_fragments
@@ -305,6 +305,7 @@ class NarrationStep:
         if jobs:
             db_lock = asyncio.Lock()
             reserved_cents = 0
+            cap_cents = budget_cap_cents_for(timeline)
 
             async def reserve(job: _SynthJob) -> None:
                 nonlocal reserved_cents
@@ -316,7 +317,11 @@ class NarrationStep:
                     narration_repo=narration_repo,
                     project_id=project_uuid,
                 )
-                check_budget(already_spent_cents=already_spent, additional_cents=reserved_cents)
+                check_budget(
+                    already_spent_cents=already_spent,
+                    additional_cents=reserved_cents,
+                    cap_cents=cap_cents,
+                )
 
             async def release(job: _SynthJob) -> None:
                 nonlocal reserved_cents

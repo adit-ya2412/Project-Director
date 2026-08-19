@@ -114,7 +114,7 @@ def test_script_to_video_end_to_end(client, tmp_path):
     assert timeline.produced_by == "narration"
     reconciled_duration = compute_timeline_duration(timeline.all_shots())
 
-    progress_resp = client.get(f"/api/v1/projects/{project_id}/progress")
+    progress_resp = client.get(f"/api/v1/projects/{project_id}/progress?expand=shots")
     assert progress_resp.status_code == 200
     progress = progress_resp.json()
     assert progress["workflow_state"] == "awaiting_approval"
@@ -166,7 +166,7 @@ def test_script_to_video_end_to_end(client, tmp_path):
     expected_duration = compute_timeline_duration(final_timeline.all_shots())
     assert expected_duration == pytest.approx(reconciled_duration)
 
-    final_progress = client.get(f"/api/v1/projects/{project_id}/progress").json()
+    final_progress = client.get(f"/api/v1/projects/{project_id}/progress?expand=shots").json()
     assert final_progress["workflow_state"] == "completed"
     assert final_progress["completed_shots"] == final_progress["total_shots"] == 6
     assert final_progress["progress"] == 1.0
