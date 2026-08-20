@@ -114,6 +114,7 @@ def _shot(
         ),
         transition_out=ShotTransitionOutput(type=TransitionType.CUT, duration_s=0.0),
         prompt="archival photograph",
+        secondary_prompt="",
     )
 
 
@@ -467,3 +468,65 @@ async def test_shot_plan_rejects_a_shot_whose_own_range_exceeds_the_fragment_cou
             )
 
     assert len(provider.calls) == 2
+
+
+async def test_split_frame_without_secondary_prompt_is_rejected(project_id, monkeypatch):
+    monkeypatch.setattr(settings, "planner_max_repair_attempts", 1)
+    scene = _scene()
+    bad = _valid_output_for(scene)
+    bad.shots[0].camera.movement = CameraMovement.SPLIT_FRAME
+    bad.shots[0].secondary_prompt = ""
+    async with async_session_factory() as session:
+        provider = FakePlanningProvider(responses=[bad, bad])
+        planner = ShotPlanner(provider, LlmCallRepository(session))
+        with pytest.raises(PermanentError, match="secondary_prompt"):
+            await planner.plan(
+                project_id=project_id,
+                scenes=[scene],
+                creative_context=CreativeContext(),
+                min_shot_duration_s=1.0,
+                max_shot_duration_s=8.0,
+                max_shots_per_project=40,
+            )
+
+
+async def test_split_frame_with_wide_framing_is_rejected(project_id, monkeypatch):
+    monkeypatch.setattr(settings, "planner_max_repair_attempts", 1)
+    scene = _scene()
+    bad = _valid_output_for(scene)
+    bad.shots[0].camera.movement = CameraMovement.SPLIT_FRAME
+    bad.shots[0].secondary_prompt = "1930s map of the Ruhr"
+    bad.shots[0].framing = Framing.WIDE
+    async with async_session_factory() as session:
+        provider = FakePlanningProvider(responses=[bad, bad])
+        planner = ShotPlanner(provider, LlmCallRepository(session))
+        with pytest.raises(PermanentError, match="framing=split"):
+            await planner.plan(
+                project_id=project_id,
+                scenes=[scene],
+                creative_context=CreativeContext(),
+                min_shot_duration_s=1.0,
+                max_shot_duration_s=8.0,
+                max_shots_per_project=40,
+            )
+
+
+async def test_split_frame_secondary_prompt_lands_on_the_shot(project_id):
+    scene = _scene()
+    output = _valid_output_for(scene)
+    output.shots[0].camera.movement = CameraMovement.SPLIT_FRAME
+    output.shots[0].framing = Framing.SPLIT
+    output.shots[0].secondary_prompt = "1930s map of the Ruhr"
+    async with async_session_factory() as session:
+        provider = FakePlanningProvider(responses=[output])
+        planner = ShotPlanner(provider, LlmCallRepository(session))
+        planned = await planner.plan(
+            project_id=project_id,
+            scenes=[scene],
+            creative_context=CreativeContext(),
+            min_shot_duration_s=1.0,
+            max_shot_duration_s=8.0,
+            max_shots_per_project=40,
+        )
+    assert planned[0].shots[0].secondary_prompt == "1930s map of the Ruhr"
+    assert planned[0].shots[0].camera.movement == CameraMovement.SPLIT_FRAME

@@ -42,6 +42,8 @@ class ScriptPreflightResponse(BaseModel):
     # Feasibility (blocking, deterministic) - plan §3.1.
     passed: bool
     violations: list[str]
+    # Q7: short-script notice. Never a block.
+    warnings: list[str] = Field(default_factory=list)
     fragment_count: int
     estimated_total_duration_s: float
     estimated_average_shot_duration_s: float

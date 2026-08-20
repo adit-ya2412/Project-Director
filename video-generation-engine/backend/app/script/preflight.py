@@ -31,17 +31,12 @@ from dataclasses import dataclass, field
 
 from app.core.config import settings
 from app.planners.fragments import NarrationFragment, split_narration_fragments
-from app.script.styles import StylePacingBand, get_pacing_band, resolve_constraint_bundle
-
-# Above this fraction of non-ASCII characters, the script is treated as
-# mixed/non-Latin-script content for calibration purposes (the Hindi/
-# Hinglish chars-per-second constant applies) rather than English.
-# Chosen from real measurement, not guessed: `hinglish_final_project`
-# (mixed Devanagari/Latin) measures 39% non-ASCII; a pure-English script
-# measures ~0%. 15% sits well clear of both, so a script needs a
-# genuinely substantial non-Latin component to cross it, not an
-# occasional loanword or a single non-ASCII punctuation mark.
-_NON_ASCII_HINDI_THRESHOLD = 0.15
+from app.script.styles import (
+    StylePacingBand,
+    get_pacing_band,
+    resolve_constraint_bundle,
+    resolve_narration_speed,
+)
 
 
 @dataclass(frozen=True)
@@ -72,37 +67,33 @@ class FeasibilityResult:
     longest_fragment: FragmentEstimate
     fragment_estimates: list[FragmentEstimate] = field(default_factory=list)
     violations: list[str] = field(default_factory=list)
+    # Q7: arithmetic facts that are not blocks (short script). `passed`
+    # ignores these so a deliberate 40 s piece is not refused.
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
         return not self.violations
 
 
-def _chars_per_second(script: str) -> float:
-    """Selects the calibration constant from the SCRIPT'S OWN character
-    composition, not a `language` metadata field - deliberately.
-    `hinglish_final_project`'s own `language` field reads `"en"` despite
-    being ~39% Devanagari by character count (verified directly against
-    the fixture, 2026-08-17) - that field describes the TTS voice
-    selection, not a reliable claim about script content, so trusting it
-    here would silently miscalibrate every mixed-script project."""
-    if not script:
-        return settings.script_chars_per_second_en
-    non_ascii_fraction = sum(1 for c in script if ord(c) > 127) / len(script)
-    if non_ascii_fraction > _NON_ASCII_HINDI_THRESHOLD:
-        return settings.script_chars_per_second_hi
-    return settings.script_chars_per_second_en
+def _chars_per_second(style: str | None = None) -> float:
+    """One voice-calibrated constant (Q8) scaled by the style's speaking
+    rate (R11). `retention_fast` at 1.2× is ~17.3 chars/sec, not 14.4.
+    The Hindi/Hinglish split is gone: live measurement showed language
+    spans ~8% and voice spans ~36%, so the old `HI=12.9` path made
+    Hindi estimates *worse*."""
+    return settings.script_chars_per_second_en * resolve_narration_speed(style)
 
 
-def estimate_duration_s(script: str) -> float:
+def estimate_duration_s(script: str, style: str | None = None) -> float:
     """The script's estimated total spoken duration - character count
     over the selected chars/sec constant. This is `D` throughout the
-    plan's own notation (§0, §3.1)."""
-    return len(script) / _chars_per_second(script)
+    plan's own notation (§0, §3.1). `style` scales the rate (R11)."""
+    return len(script) / _chars_per_second(style)
 
 
-def _estimate_fragments(script: str) -> list[FragmentEstimate]:
-    chars_per_second = _chars_per_second(script)
+def _estimate_fragments(script: str, style: str | None = None) -> list[FragmentEstimate]:
+    chars_per_second = _chars_per_second(style)
     fragments = split_narration_fragments(script)
     return [
         FragmentEstimate(
@@ -143,14 +134,22 @@ def check_feasibility(script: str, style: str) -> FeasibilityResult:
     later.
     """
     band: StylePacingBand = get_pacing_band(style)
-    fragment_estimates = _estimate_fragments(script)
+    fragment_estimates = _estimate_fragments(script, style)
     fragment_count = len(fragment_estimates)
     total_duration_s = sum(f.estimated_duration_s for f in fragment_estimates)
     average_shot_duration_s = total_duration_s / fragment_count if fragment_count else 0.0
     longest = max(fragment_estimates, key=lambda f: f.estimated_duration_s)
 
     violations: list[str] = []
+    warnings: list[str] = []
     margin = 1.0 + settings.script_preflight_margin_fraction
+    if 0 < total_duration_s < settings.script_preflight_min_duration_s:
+        warnings.append(
+            f"this script will produce ~{total_duration_s:.0f}s; "
+            f"pieces on this product are usually at least "
+            f"{settings.script_preflight_min_duration_s:.0f}s. Short is allowed "
+            "if that is what you want"
+        )
 
     bundle = resolve_constraint_bundle(style, n_fragments=fragment_count)
     if total_duration_s > bundle.max_video_duration_s:
@@ -252,4 +251,5 @@ def check_feasibility(script: str, style: str) -> FeasibilityResult:
         longest_fragment=longest,
         fragment_estimates=fragment_estimates,
         violations=violations,
+        warnings=warnings,
     )

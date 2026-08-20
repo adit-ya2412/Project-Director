@@ -154,7 +154,7 @@ def _canonical_json(value: object) -> str:
 def compute_render_fingerprint(
     *,
     timeline: Timeline,
-    asset_content_hashes: list[str],
+    asset_content_hashes: dict[str, str],
     narration_content_hashes: list[str],
     music_content_hash: str | None,
     render_settings: RenderSettings,
@@ -168,7 +168,11 @@ def compute_render_fingerprint(
     watermark_params_hash: str | None,
     burn_text_cards: bool,
     text_card_font_hash: str | None,
+    sfx_content_hashes: list[str],
+    sfx_gain_db: float,
+    sfx_max_clip_s: float,
     ffmpeg_version: str,
+    secondary_content_hashes: dict[str, str] | None = None,
 ) -> str:
     timeline_document = timeline.model_dump(mode="json")
     content_only = {
@@ -185,10 +189,18 @@ def compute_render_fingerprint(
         content_only = {**content_only, "metadata": metadata}
     payload = {
         "timeline": content_only,
-        # Sorted, never trusted in caller-supplied order (I5) - two
-        # equivalent renders whose bindings merely got resolved in a
-        # different sequence must still fingerprint identically.
-        "asset_content_hashes": sorted(asset_content_hashes),
+        # R16: assignment, not a bag. A flat sorted list could not tell
+        # the top panel from the bottom, nor shot A from shot B. Keyed
+        # by shot_id in timeline order. Empty string when a panel is
+        # missing, so a later resolve cannot cache-HIT the gap.
+        "shot_media": [
+            {
+                "shot_id": shot.id,
+                "hash": asset_content_hashes.get(shot.id, ""),
+                "secondary_hash": (secondary_content_hashes or {}).get(shot.id, ""),
+            }
+            for shot in timeline.all_shots()
+        ],
         "narration_content_hashes": sorted(narration_content_hashes),
         "music_content_hash": music_content_hash,
         "render_settings": {
@@ -233,6 +245,23 @@ def compute_render_fingerprint(
         # swapping the vendored file must invalidate this fingerprint too.
         "burn_text_cards": burn_text_cards,
         "text_card_font_hash": text_card_font_hash,
+        # SFX (plan §5.5). ⚠ `sfx_content_hashes` is REDUNDANT and kept
+        # deliberately, not because it is load-bearing (§15.6 corrected
+        # the reason this comment used to give): every clip hash is
+        # already inside `SfxClipSelection.content_hash` in the timeline
+        # document hashed above, so this entry restates it. Kept anyway
+        # for the same reason `music_content_hash` is - one obvious line
+        # per real mux input, so the next person adding a mix stage sees
+        # the pattern rather than having to prove the timeline dump
+        # already covers them. `sfx_gain_db` is the entry that genuinely
+        # has nowhere else to live: it is config-time, like
+        # music_bed_gain_db (R2). Both unconditional.
+        "sfx_content_hashes": sorted(sfx_content_hashes),
+        "sfx_gain_db": sfx_gain_db,
+        # R12: `atrim=0:{sfx_max_clip_s}` is a real mix input, same shape
+        # as `sfx_gain_db` / R2. Unconditional so a config bump cannot
+        # cache-HIT the old, shorter mix.
+        "sfx_max_clip_s": sfx_max_clip_s,
         "ffmpeg_version": ffmpeg_version,
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
@@ -244,6 +273,7 @@ def compute_run_fingerprint(
     shot_content_hashes: dict[str, str],
     render_settings: RenderSettings,
     ffmpeg_version: str,
+    secondary_content_hashes: dict[str, str] | None = None,
 ) -> str:
     """Fingerprint of one `group_into_runs` run (Track C C3 remainder).
 
@@ -261,7 +291,15 @@ def compute_run_fingerprint(
         # the re-encode when camera/media did not change.
         "shots": [shot.model_dump(mode="json") for shot in shots],
         "assets": [
-            {"shot_id": shot.id, "hash": shot_content_hashes.get(shot.id)} for shot in shots
+            {
+                "shot_id": shot.id,
+                "hash": shot_content_hashes.get(shot.id),
+                # Split-screen bottom panel. Empty string when the shot
+                # has no second still so a later resolve cannot cache-HIT
+                # the single-image encode (R2 / §7).
+                "secondary_hash": (secondary_content_hashes or {}).get(shot.id, ""),
+            }
+            for shot in shots
         ],
         "render_settings": {
             "width": render_settings.width,
@@ -280,6 +318,7 @@ def compute_shot_stream_fingerprint(
     asset_hash: str,
     render_settings: RenderSettings,
     ffmpeg_version: str,
+    secondary_asset_hash: str = "",
 ) -> str:
     """Fingerprint of one shot's normalised/zoompanned stream (C3 (d)).
 
@@ -293,6 +332,7 @@ def compute_shot_stream_fingerprint(
         "duration_s": shot.duration_s,
         "camera": shot.camera.model_dump(mode="json"),
         "asset_hash": asset_hash,
+        "secondary_asset_hash": secondary_asset_hash,
         "render_settings": {
             "width": render_settings.width,
             "height": render_settings.height,

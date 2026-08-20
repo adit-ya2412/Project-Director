@@ -78,7 +78,8 @@ def _valid_output() -> AssetPlannerOutput:
                 fallback_chain=[AssetStrategy.PUBLIC_DOMAIN, AssetStrategy.GENERATE_IMAGE],
                 licence_requirements=["public_domain"],
             ),
-        ]
+        ],
+        secondary_asset_plans=[],
     )
 
 
@@ -111,7 +112,8 @@ async def test_asset_planner_prompt_includes_each_shots_camera_movement(project_
                 fallback_chain=[AssetStrategy.HISTORICAL_SEARCH, AssetStrategy.GENERATE_IMAGE],
                 licence_requirements=["public_domain"],
             )
-        ]
+        ],
+        secondary_asset_plans=[],
     )
 
     async with async_session_factory() as session:
@@ -237,3 +239,68 @@ async def test_asset_plan_rejects_missing_licence_requirements(project_id, monke
                 scenes=[scene],
                 max_video_shots_per_project=settings.max_video_shots_per_project,
             )
+
+
+def _split_plan() -> AssetPlanShotOutput:
+    return AssetPlanShotOutput(
+        shot_id="sh_01",
+        entity="Leuna-Werke",
+        strategy=AssetStrategy.HISTORICAL_SEARCH,
+        search_queries=["Leuna Werke 1943"],
+        preferred_type=PreferredMediaType.IMAGE,
+        fallback_chain=[AssetStrategy.HISTORICAL_SEARCH, AssetStrategy.GENERATE_IMAGE],
+        licence_requirements=["public_domain"],
+    )
+
+
+async def test_split_frame_requires_a_secondary_plan(project_id, monkeypatch):
+    monkeypatch.setattr(settings, "planner_max_repair_attempts", 1)
+    shot = Shot(
+        id="sh_01",
+        order=0,
+        intent=ShotIntent.COMPARE,
+        duration_s=3.0,
+        prompt="Leuna plant",
+        secondary_prompt="Sasol plant",
+        camera=Camera(movement=CameraMovement.SPLIT_FRAME),
+    )
+    scene = Scene(id="sc_01", order=0, title="Compare", duration_s=3.0, shots=[shot])
+    missing = AssetPlannerOutput(asset_plans=[_split_plan()], secondary_asset_plans=[])
+    async with async_session_factory() as session:
+        provider = FakePlanningProvider(responses=[missing, missing])
+        planner = AssetPlanner(provider, LlmCallRepository(session))
+        with pytest.raises(PermanentError, match="secondary_asset_plans"):
+            await planner.plan(
+                project_id=project_id,
+                scenes=[scene],
+                max_video_shots_per_project=settings.max_video_shots_per_project,
+            )
+
+
+async def test_split_frame_attaches_the_secondary_plan(project_id):
+    shot = Shot(
+        id="sh_01",
+        order=0,
+        intent=ShotIntent.COMPARE,
+        duration_s=3.0,
+        prompt="Leuna plant",
+        secondary_prompt="Sasol plant",
+        camera=Camera(movement=CameraMovement.SPLIT_FRAME),
+    )
+    scene = Scene(id="sc_01", order=0, title="Compare", duration_s=3.0, shots=[shot])
+    bottom = _split_plan()
+    bottom.search_queries = ["Sasol Secunda"]
+    output = AssetPlannerOutput(asset_plans=[_split_plan()], secondary_asset_plans=[bottom])
+    async with async_session_factory() as session:
+        provider = FakePlanningProvider(responses=[output])
+        planner = AssetPlanner(provider, LlmCallRepository(session))
+        planned = await planner.plan(
+            project_id=project_id,
+            scenes=[scene],
+            max_video_shots_per_project=settings.max_video_shots_per_project,
+        )
+    attached = planned[0].shots[0]
+    assert attached.asset_plan is not None
+    assert attached.secondary_asset_plan is not None
+    assert attached.secondary_asset_plan.search_queries == ["Sasol Secunda"]
+    assert "secondary_prompt=Sasol plant" in provider.calls[0]["user_content"]

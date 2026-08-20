@@ -1,10 +1,10 @@
 # Motion, New Styles, Script Pre-flight, and Long-Form Video — Implementation Plan
 
-> **Status:** Originally plan-only (2026-08-17). Since then, built and verified against real ffmpeg/real Postgres/real live APIs: Track D (script pre-flight, all levels except the phrasing-rewrite L3), Track B Tier 1–2 (grade, extra transitions, text cards, punch-in), and Track A's A1/A2/A3/A4/A5/A6/A7 (motion clip input, duration fitting, the video path's one-gate model, the on-demand video endpoint pair, the Pexels video rung, and video-vs-image planner calibration). **A8 (the bake-off) was attempted 2026-08-18 with real spend (~$1.86) and found a real, previously-unknown collage bug affecting every project with a rich `visual_style` — fixed and verified, but A8's own question ("does synthetic motion blend next to real archival photography") is still open**, by the user's own choice to stop before re-running the video half. **§11 step 5 (orphan-run fix) and step 6 (music taxonomy + a real 54-track curated library, §5.1) are also now built and verified**, 2026-08-18 — see §12 for both. See §12 for the full chronological log; unmarked sections below are still design-only. ✅ **2026-08-20: Track C is COMPLETE** and moved to [`track_c_long_form_video.md`](track_c_long_form_video.md). ⚠ **Six items remain in this document — see §14, audited against real code:** narration speed (R8, blocked on a 10-min live ElevenLabs check needing a tiny spend, and by §13.13's own rule `retention_fast` is not honest to offer until it closes), SFX (entirely unbuilt), split-screen, 2.5D parallax, per-style music gains, and BPM/tempo-fit ranking (9 of 54 tracks carry a BPM).
+> **Status:** Originally plan-only (2026-08-17). Since then, built and verified against real ffmpeg/real Postgres/real live APIs: Track D (script pre-flight, all levels except the phrasing-rewrite L3), Track B Tier 1–2 (grade, extra transitions, text cards, punch-in), and Track A's A1/A2/A3/A4/A5/A6/A7 (motion clip input, duration fitting, the video path's one-gate model, the on-demand video endpoint pair, the Pexels video rung, and video-vs-image planner calibration). **A8 (the bake-off) was attempted 2026-08-18 with real spend (~$1.86) and found a real, previously-unknown collage bug affecting every project with a rich `visual_style` — fixed and verified, but A8's own question ("does synthetic motion blend next to real archival photography") is still open**, by the user's own choice to stop before re-running the video half. **§11 step 5 (orphan-run fix) and step 6 (music taxonomy + a real 54-track curated library, §5.1) are also now built and verified**, 2026-08-18 — see §12 for both. See §12 for the full chronological log; unmarked sections below are still design-only. ✅ **2026-08-20: Track C is COMPLETE** and moved to [`track_c_long_form_video.md`](track_c_long_form_video.md). ✅ **R8 (narration speed) closed 2026-08-20.** ✅ **Leftover items 5, 6, 2, and 3 (gains, BPM, SFX + 9-clip library, split-screen) closed 2026-08-20.** ⚠ **One leftover build remains — see §14.8:** R2's second half. **Split-screen closed 2026-08-20.** **Parallax is parked on Q10.** **A8 is last.**
 > **Scope:** four tracks — **A** (motion clip input), **B** (style catalogue), **C** (long-form), **D** (script pre-flight). A is the keystone for the motion half of B; D is independent and could ship first.
 > **Related:** [`13_Implementation_Guide.md`](../13_Implementation_Guide.md) §M7/M8/M9 and its Backlog, [`14_Captions_Plan.md`](../14_Captions_Plan.md), [`watermark_implementation_plan.md`](watermark_implementation_plan.md).
 > **Fixture:** project `58f0a5e6-008d-468e-862a-e365e463878e` / `backend/tests/fixtures/m8_test_project.json` — real Fischer-Tropsch timeline, 13 shots. Reuse it; do not plan a fresh one.
-> ⚠ **Read §13 before trusting any "BUILT" marker in this document.** A code-vs-plan review on 2026-08-18 found ten open discrepancies between what §12 records as built and what the code does, two of them blocking — including that `retention_fast` could not complete a planning run. **Update, same day: 8 of 10 items (R1/R2's blocking half, R3, R4, R6, R7, R9, R10) are now fixed and verified, plus R5 (a user-confirmed architecture decision). Only R2's second half (a lowest-priority product decision) and R8 (needs a real, tiny ElevenLabs spend, not yet confirmed) remain open.** See §13's own status line for the current per-item state.
+> ⚠ **Read §13 before trusting any "BUILT" marker in this document.** A code-vs-plan review on 2026-08-18 found ten open discrepancies between what §12 records as built and what the code does, two of them blocking — including that `retention_fast` could not complete a planning run. **Update, 2026-08-20: 9 of 10 items are fixed and verified (R1–R10 except R2's second half). R8 closed the same day as Track C.** Only R2's second half (a lowest-priority product decision) remains open. See §13's own status line for the current per-item state.
 
 ---
 
@@ -204,7 +204,7 @@ So **style is freely changeable right up to the gate and frozen after it.** The 
 
 - ⚠ **`compute_narration_content_hash` must include speed.** It currently keys on `(text, voice_id, model, output_format)`. Without speed in the key the cache **silently serves wrong-speed audio** on the second run. `voice_id` is already there, so this is an existing pattern, not new machinery. The render fingerprint inherits it transitively via the narration content hashes.
 - **Re-synthesis cost is cents**, not dollars — 662 characters on the fixture. Style freezes at the gate, so you synthesise once at the chosen speed; changing style pre-gate costs the same cents as any other style change.
-- ⚠ **Speed support on the configured ElevenLabs model is unverified.** Live schema check, ~10 minutes, same class of assumption as Pixabay. Do it before building.
+- ✅ **Speed support on the configured ElevenLabs model is verified, 2026-08-20.** Live schema check against `/with-timestamps` on `eleven_multilingual_v2`: `voice_settings.speed` accepted, 1.2 in range, alignment timestamps scale. See §12.
 - ⚠ **Speed and punctuation partially cancel.** Commas add TTS pauses (`D` grows); speed removes them (`D` shrinks). Do not tune the two independently.
 - ⚠ **Practical quality ceiling ~1.15–1.25×.** Past that ElevenLabs prosody degrades, and Hinglish will likely degrade earlier and differently than English — `hinglish_final_project` is the fixture for that.
 
@@ -505,7 +505,7 @@ M8 chose one bed per video, and its own reasoning was that *"at D7's 90-second c
 
 **Track C takes you to ten minutes. By that decision's own terms, long-form is the trigger to revisit it** — and `energy_arc`, which the Director writes today and which a single flat bed structurally cannot express, becomes meaningful for the first time. At 90 seconds it is close to decorative.
 
-### 5.5 Sound effects — genuinely missing
+### 5.5 Sound effects — **BUILT 2026-08-20, see §12**
 
 No SFX layer exists. For fast-cut that is a real gap: a punch-in without a whoosh reads as flat, and text cards want stingers.
 
@@ -620,17 +620,17 @@ The distinction is not "cartoon vs photo" — it is **"a look" vs "precise contr
 
 **Q4. Trim-or-hold for a short clip in a long shot?** **DECIDED 2026-08-18 — hold the last frame.** Settled with measured numbers from the real fixture (the HOLD direction is bounded at +0.5s; 6 of 8 held tails fall entirely inside their own outgoing dissolve), not as an abstract preference. *(Corrected 2026-08-18, §13.3/"R3": the bound is not symmetric — the TRIM direction is unbounded below the 3s Kling API floor, up to -2.2s at `retention_fast`'s 0.8s shot floor. The hold decision itself is unaffected; only the stated bound was wrong.)* See A2.
 
-**Q5. Target pacing bands per style.** Blocked on calibration data, not on a decision.
+**Q5. Target pacing bands per style.** **ANSWERED 2026-08-20 (§14.9) by watching real narrated renders — `_DEAD_STOP_CEILING_MULTIPLIER = 2.0` is VALIDATED, keep it.** The perceptual dead-stop boundary sits between 3.34 s (fine) and 4.97 s (stalls); the shipped 3.5 s ceiling lands correctly between them. ⚠ And **zero** fragments of the real script fall in 3.5–5.0 s, so narrowing further unlocks nothing — the 5 rejected fragments are 5.36–7.55 s and genuinely stall, meaning **the pre-flight's rejections are correct, not false positives.**
 
-**Q6. Preset seeds the Director, or overrides it?** (§4.1.) Cheapest honest answer is "seeds", with the preset winning on conflict.
+**Q6. Preset seeds the Director, or overrides it?** **ANSWERED 2026-08-20 (§14.9) — and the conflict this question named does not exist: `colour_palette` is written by the Director and read by NOTHING.** The real collision is `camera_language`, which lands in the same Shot Planner request as the style fragment with no stated precedence. Decision: suppress the Director's camera line when a style supplies camera instructions. *(Original text: cheapest honest answer is "seeds", with the preset winning on conflict.
 
-**Q7. What happens if a rewrite fails code validation?** Retry budget, or fall back to the style-change path?
+**Q7. What happens if a rewrite fails code validation?** **DECIDED 2026-08-20 (§14.9): ONE attempt only — never a retry budget.** The backstops are fixed and mechanical, so more attempts select for a rewrite that EVADES them rather than a better one — a third attempt can keep every number and name and still say “converted synthetic fuel into coal”. Current behaviour (return the attempted text plus the reasons, persist nothing) is correct and is now recorded so nobody “improves” it into a loop. ⚠ **And a NEW finding from the same pass: the pre-flight has no minimum-length check** — all four blocking checks guard “too long / too many”, so a 400-character script passes everything and silently yields a ~27-second video. Decision: add a minimum-length **warning** (never a block, per §3.1's own arithmetic-vs-taste split).
 
-**Q8. Hinglish calibration** — a single chars/sec constant may not hold for a script mixing Devanagari and Latin. `hinglish_final_project` is the fixture.
+**Q8. Hinglish calibration** — **ANSWERED 2026-08-20 (§14.9) against the live API: one constant DOES hold** (English 15.1, Hinglish 14.0, pure Hindi 14.9 chars/sec; `EN=14.4` within 5% of all three). ⚠ **`HI=12.9` is 15.5% too slow and causes false rejections — delete it.** And the real finding: **voice swings chars/sec by 36% versus ~8% for language**, so the config models the small variable and ignores the large one. *(Original text: a single chars/sec constant may not hold for a script mixing Devanagari and Latin.* `hinglish_final_project` is the fixture.
 
 **Q9. Does the diagnosis screen re-measure live as the user edits?** **DECIDED 2026-08-17** — yes, via the stateless `POST /{project_id}/script/preflight` (§3.5.3), which persists nothing, so every keystroke is a free re-check.
 
-**Q10. Does the parallax provider justify a GPU dependency?** Deferred until after A1 and Q1. The only item here that changes the deployment story.
+**Q10. Does the parallax provider justify a GPU dependency?** **ANSWERED 2026-08-20 (§14.9) — tested on real archival photos, verdict: BUILD IT.** The effect works and does **not** break up on 1936 reconnaissance film (user verdict on 5 animated photos) — which was the whole risk, since depth models are trained on modern photography. ⚠ **And the question was framed wrongly: it needs no GPU in the render path.** §2.7's own "provider, not filter" design means the renderer only opens a finished mp4, so parallax generation can run OUTSIDE the render container entirely — the real question is *where the provider runs*, not whether the render service needs a GPU. Three maintenance findings (release crashes on first use; animation off by default; grayscale input crashes — all cheap to fix at the provider boundary) and a six-step build plan are in §14.9.
 
 ---
 
@@ -997,7 +997,7 @@ Worked the review's own recommended order (§13.13), skipping nothing that didn'
 
 **Left open, deliberately:**
 - **R2's second half** (level 2's suggestions are iterative but presented as one-shot) - a product decision, explicitly the LOWEST-urgency item in §13.13's own order, not touched.
-- **R8** (ElevenLabs speed support - unverified, 10-minute live API check) - needs a real, tiny spend against the configured ElevenLabs account; not yet asked for or approved, so not done. ⚠ Per §13.13's own warning, `retention_fast` should not reach a real user until R1 (done) AND R8 (open) both close - the style is safe to plan and render now, but its narration will not yet match its cutting speed.
+- **R8** (ElevenLabs speed support) — ✅ **closed 2026-08-20**, see the matching §12 entry. Live-checked on the real `/with-timestamps` endpoint; `speed` is now on `NarrationRequest`, in `compute_narration_content_hash`, and `retention_fast` synthesises at 1.2×.
 
 ### 2026-08-18 — Three follow-up findings on the §13 review, from a second reviewer
 
@@ -1069,13 +1069,92 @@ Rendered `m8_test_project`'s real 13 shots through the real, unmodified `render_
 
 **Scope note on what was actually validated:** this implementation is zoom-only, centered (`x`/`y` unchanged from the existing zoom movements) — it snaps zoom level, it does not re-frame to a different part of the image. Real punch-in editing sometimes also re-centers; that variant is untested and would need its own check before being assumed to work as well.
 
+### 2026-08-20 — R8 closed: narration speed, live-checked then wired
+
+Parent plan §2.1 / §13.8 / §14.2. Three steps, in the order §14.2 required, one commit.
+
+**Live schema/behaviour check** against the configured ElevenLabs account, `eleven_multilingual_v2`, `POST /v1/text-to-speech/{voice_id}/with-timestamps` — the endpoint this codebase actually uses, not the convert docs. One 57-character English sentence, three calls (~171 billed characters):
+
+| body | HTTP | alignment chars | spoken duration |
+|---|---|---|---|
+| `{text, model_id}` (today's production) | 200 | 57 | 3.204 s |
+| `voice_settings.speed = 1.0` | 200 | 57 | 3.344 s |
+| `voice_settings.speed = 1.2` | 200 | 57 | 2.554 s |
+
+`speed` is accepted under `voice_settings`, not top-level. 1.2 is in range. Alignment stays character-level and scales with speed (D2 captions keep working). 1.0/1.2 duration ratio was 1.31, not a time-stretch 1.20 — ElevenLabs treats speed as a speaking-rate hint. Omitting `voice_settings` vs sending `speed: 1.0` is the same request intent; TTS non-determinism accounts for the 3.204 vs 3.344 gap. Probe audio is in `tmp/r8-speed-probe/` (gitignored).
+
+**Wiring, same change as the field itself:**
+
+- `NarrationRequest.speed` (default 1.0). `ElevenLabsNarrationProvider` sends `voice_settings: {speed}` only when the canonical value is not 1.0, so `documentary_archival` / `stillness` bodies stay byte-identical to pre-R8.
+- `compute_narration_content_hash` includes speed when it is not 1.0. Default 1.0 is omitted from the digest so every existing four-value cache row remains a hit at the API default. A 1.2 request cannot reuse 1.0 audio — the failure §2.1 named, and Track C's disk-fallback would have made worse.
+- Speed is style-owned, not a global Settings knob: `StylePacingBand.narration_speed`, `resolve_narration_speed`, 1.2 on `retention_fast`, 1.0 everywhere else. `NarrationStep` and `RenderStep` resolve from `timeline.metadata.render_style` so the mux lookup cannot drift from the write.
+- Clamped to the live-checked 0.7–1.2 band. `FakeNarrationProvider` scales its alignment rate so DRY_RUN `retention_fast` is actually faster.
+
+49 related tests green (`test_elevenlabs`, `test_styles`, narration persistence/step/voice-retry, render mux).
+
+**`retention_fast` is now honest to offer** by §13.13's own rule (R1 and R8 both closed). Hinglish quality at 1.2× was not part of this probe — `hinglish_final_project` is still the fixture if a listening pass is wanted.
+
+### 2026-08-20 — leftover item 5 closed: per-style music bed/duck gains
+
+Parent plan §5.2 / §14.5. One resolver, same shape as `resolve_narration_speed` — **not** stuffed into `ConstraintBundle`, which is planning bounds (R7's lesson: do not share one field across two jobs).
+
+`StylePacingBand.music_bed_gain_db` / `music_duck_gain_db` default to `None` (use the measured `settings` mix of −14 / −20). `resolve_music_gains(style)` uses `is not None`, so `0.0` is unity gain, not "unset." `RenderStep` resolves once and passes the same pair into the fingerprint and `mux_music`, so they cannot drift (R2).
+
+| style | bed | duck | vs archival |
+|---|---|---|---|
+| `documentary_archival` / unset | −14 | −20 | measured mix, unchanged |
+| `retention_fast` | −10 | −14 | louder, 4 dB of duck instead of 6 — "driving, barely ducked" |
+| `stillness` | −22 | −28 | 8 dB quieter — "near-absent" |
+
+The fast/stillness numbers are **offsets from the measured archival mix**, not a new listening pass. A later listen can retune the two overrides without touching the fingerprint machinery.
+
+46 related tests green (`test_styles`, `test_fingerprint`).
+
+### 2026-08-20 — leftover item 6 closed: BPM sourced, not invented; tempo-fit ranking
+
+Parent plan §5.2 / §5.3. **Did not invent 45 integers.** Looked up published tempos (Incompetech page `Tempo:`, ID3 `TBP`/`TBPM` on the files, Scott Holmes' own track page). Pixabay HTML does not publish BPM in a crawlable field; FMA drones have none; Incompetech lists Sad Trio as **0 bpm** (no pulse) so it stays `null`.
+
+**18 of 54** now have `bpm` (was 9). The other 36 stay `null` honestly. Ranking treats unknown as the middle band: a drone with no number still beats a published-*wrong* march, and still loses to a published-*fit* bed.
+
+`target_bpm = 240 / mean_shot_duration_s` (4-beat bar; 1.75 s → 137). `rank_music_candidates` is still lexicographic: duration floor, then tempo band (±20% of target), then term-overlap, then `source_id`. `SelectMusicStep` passes per-act (or whole-timeline) mean shot duration. Openverse/Pixabay candidates with no `bpm` keep working — the field defaults to `None`.
+
+19 related tests green (`test_music_ranking`, `test_local_music`, `test_select_music`, `test_music_library_integrity`).
+
+### 2026-08-20 — leftover item 2 closed: SFX layer + a 9-clip local library
+
+Parent plan §5.5. D6 split as written: `SfxPlan` on the Timeline is the palette; `derive_sfx_events` places whooshes on punch-in snaps (same frame offsets as `ken_burns.punch_in_frame_offsets`), stingers on text cards, transition hits on non-cut overlaps; `mux_sfx` amixes delayed overlays through `run_ffmpeg` (R-C7). Fingerprint hashes clip content hashes + `sfx_gain_db` (R2 / §7). Missing clips skip those events, never fail the run. `sfx_plan is None` (every pre-existing Timeline) is a no-op so render-only of old projects is not blocked.
+
+**Library, downloaded live from Openverse (Freesound), not invented:** 3 kinds × 3 short clips, CC0/CC-BY, `ffprobe`-measured durations, at `backend/storage/sfx_library/` with `LocalSfxProvider` as the default (`SFX_PROVIDER=local`; `openverse` still selectable). Ranking prefers clips ≤ 4 s. DRY_RUN uses `FakeMusicProvider` and skips the mux, same as music.
+
+77 related tests green (events, ranking, local provider, fingerprint, mux, library integrity, pipeline names). **Stopped here for review.** Next leftover is split-screen. A8 remains last. Parallax remains parked on Q10.
+
+### 2026-08-20 — leftover item 3 closed: split-screen (`SPLIT_FRAME`)
+
+Parent plan §2.6. The schema already promised it; `ken_burns.py` correctly still returns `None` (a split is not a `zoompan`). The pipeline change is the second still.
+
+**D6 split as written.** Creative: Shot Planner writes `prompt` (top) and `secondary_prompt` (bottom) when movement is `split_frame`; Asset Planner emits a matching `secondary_asset_plans` entry (same `shot_id`, stills only). Deterministic: `split_screen.py` letterboxes each still into half the 9:16 frame and `vstack`s them; `tpad` then holds duration the same way a static shot does. Xfade still sees one stream per shot — the extra input lives inside the per-shot encoder (C3 two-pass), so Track C's argv-length concern does not apply to the run graph.
+
+**Layout is top/bottom, not left/right.** 9:16 side-by-side would be two ~540×1920 strips. Top = primary, bottom = secondary.
+
+**Missing second still degrades to the pre-split static path**, never a fake split of one photograph. Motion on either panel is the same degrade (v1 is stills). Generation of a missing bottom panel still runs if the generation pass reaches the shot; a found top + missing bottom does not fail the run.
+
+**I5.** Both content hashes go into `compute_render_fingerprint` (sorted list) and `compute_shot_stream_fingerprint` / `compute_run_fingerprint` (dedicated `secondary_*` field, empty string when absent). Swapping the bottom panel misses the shot-stream cache. A20/A25 treat `secondary_prompt` / `secondary_asset_plan` as acquisition fields, same as the primary pair.
+
+**Binding.** One row per shot still. `secondary_asset_id` / `secondary_clip_id` on `shot_binding` (migration `b7e4c2a91d08`). Human override of the bottom panel is not in this slice — override still replaces the primary only.
+
+**Known residuals, not closed here:** cost estimate is still per-shot (two generates still hit the live cap); no gutter; no side-by-side layout toggle; human override of the bottom panel; Q6/Q7's three remaining code changes; R15's short-stinger curation.
+
+83 related tests green (filter arithmetic, fingerprint, shot/asset planner, real ffmpeg composite + degrade). Timeline-service and generate-timeline regressions also green. **Stopped here for review.** Next leftover is R2's second half. A8 last. Parallax parked on Q10.
+
+⚠ **Reviewed — see [§16](#16-code-vs-plan-review-of-split-screen-leftover-item-3-2026-08-20). Five findings (R16–R20), none of them one of the five residuals this entry already disclosed. All five fixed 2026-08-20 — answers sit under each finding in §16.**
+
 ---
 
 ## 13. Code-vs-plan review, 2026-08-18 — where the code does not match this document, and the fixes
 
 > **Method.** Read this plan in full, then verified its claims against the actual code and the real fixture files rather than against §12's own log. Every number below was produced by *running* the real functions (`check_feasibility`, `suggest_breaks`, `split_narration_fragments`, `build_duration_fit_fragment`, `grade_filter_fragment`, and the real `_motion_filter`/`_ken_burns_filter`/`_normalize_filter`) or read directly out of the fixture JSON — none is inferred from reading code. Where a finding is a wrong *justification* rather than a wrong *behaviour*, it says so.
 >
-> ⚠ **Status, updated 2026-08-18: R1 (both blocking items, which auto-closes R2's first half), R9, R7, R3, R4, R6, R5, and R10 are all FIXED and verified (see §12's matching entry for each) — only R2's second half (transitive suggestions, a product decision, explicitly lowest urgency) and R8 (ElevenLabs speed - needs a real, tiny spend, not yet confirmed) remain OPEN.** This section remains the record of what was found; §12 records what was done about it.
+> ⚠ **Status, updated 2026-08-20: R1 (both blocking items, which auto-closes R2's first half), R3, R4, R5, R6, R7, R8, R9, and R10 are all FIXED and verified (see §12's matching entry for each) — only R2's second half (transitive suggestions, a product decision, explicitly lowest urgency) remains OPEN.** This section remains the record of what was found; §12 records what was done about it.
 >
 > **The pattern behind R1, R2 and R4 is worth naming up front, because it is the same mistake three times and it is not a carelessness problem.** This project's verification standard is high *per unit* — §12 is full of "verified, not merely written," and it means it. All three of these slipped through because the check ran at the wrong **altitude**: the resolver was verified but not the run that calls it; the suggestion engine's mechanism was verified but not the user journey through it; two real sub-floor shot durations were found but not the fixture they were attributed to, nor the flag that made them legal. This is the same class of mistake §12's own 2026-08-17 method note already recorded once ("the first correction failed because it read the shared helper without reading the call site that supplies its validator") — recurring, so worth treating as a standing review rule rather than an incident.
 
@@ -1231,7 +1310,7 @@ Also: **`x or y` on numerics** — a `0` or `0.0` override falls through to the 
 
 **Fix:** give `StylePacingBand` an explicit `max_shot_duration_s_override: float | None = None`, set it to `3.5` for `retention_fast`, and stop reading `max_fragment_duration_s` in `resolve_constraint_bundle`. The values do not change today; the coupling does. In the same pass, replace the three `or`s with `if … is not None else`.
 
-### 13.8 R8 — Route 1 shipped without Route 2's speed component, which §2.5 forbids in bold — **OPEN, needs a real ElevenLabs API check (tiny real spend) — confirmation not yet requested**
+### 13.8 R8 — Route 1 shipped without Route 2's speed component, which §2.5 forbids in bold — **FIXED 2026-08-20, see §12**
 
 Verified absent everywhere: no `speed` in `Settings`, none in `NarrationRequest`, and `compute_narration_content_hash` (`app/providers/elevenlabs.py:57`) is still `f"{text}|{voice_id}|{model}|{output_format}"`. The ⚠ *"speed support on the configured ElevenLabs model is unverified — do it before building"* was never done.
 
@@ -1286,7 +1365,7 @@ Recorded because a review section that lists only faults misrepresents the state
 2. **R9** — one string. Free, and it is currently telling users something this document proved false.
 3. **R7** — decouple the diagnostic from the planning bound before Q5's calibration starts moving `_DEAD_STOP_CEILING_MULTIPLIER`, or that calibration will silently retune planning.
 4. **R6** and **R5** — decide what `None` means, and whether the grade is mutable. Both are one-way doors on output bytes, and both get more expensive after the first real project ships in a style.
-5. **R8** — the ElevenLabs speed check is 10 minutes and gates whether `retention_fast` is honest to offer. ⚠ `retention_fast` should not reach a real user until R1 and R8 are both closed.
+5. **R8** — ✅ closed 2026-08-20. `retention_fast` is now honest to offer (R1 and R8 both closed).
 6. **R3, R4, §13.11** — documentation and calibration corrections. No code depends on them, but R3's economics should reach §4.2 before A4's cap is tuned, and R4's bad citation should not be relied on by whoever next touches the floor.
 7. **R10** — before A8's bake-off is attempted, not after. Judging motion from a still frame is the one thing that pass exists to avoid.
 8. **R2's second half** (transitive suggestions) — product decision, lowest urgency, highest visible improvement to the pre-flight screen.
@@ -1296,43 +1375,39 @@ Recorded because a review section that lists only faults misrepresents the state
 ## 14. What remains in this plan — audit against real code, 2026-08-20
 
 > **Why this section exists.** Track C is complete and lives in its own document ([`track_c_long_form_video.md`](track_c_long_form_video.md), 1,556 lines, C0–C8 + frontend contract, three review rounds). With it closed, "what is left in the parent plan" stopped being answerable by reading §12's log top to bottom. **Every status below was verified by probing the code on 2026-08-20, not by trusting a marker.**
+>
+> **Standing process (2026-08-20):** implement **one leftover item**, record what landed and why in §12, update this section's status, **then stop for review**. Do not start the next leftover until asked. Do not commit unless asked.
 
 ### 14.1 The short answer
 
-**Six things remain. One is blocked on you, one is a decision, four are unbuilt work.**
+**One leftover build remains (R2's second half), plus A8 last.** Items 1, 2, 3, 5 and 6 closed 2026-08-20. Parallax is parked on Q10.
 
 | # | item | § | status probe | effort |
 |---|---|---|---|---|
-| **1** | **Narration speed (Route 2's voice half)** | §2.1, §2.5, §13.8 | ⚠ `speed` **absent** from `Settings`, `NarrationRequest`, and `compute_narration_content_hash` | ~0.5 d **after** a 10-min live check |
-| **2** | **Sound effects layer** | §5.5 | ⚠ `app/renderer/sfx.py` **absent** — nothing built | 3–4 d + curation |
-| **3** | **Split-screen (`SPLIT_FRAME`)** | §2.6 Tier 2 | correctly still a documented no-op in `ken_burns.py:87` | 3–5 d |
+| **1** | **Narration speed (Route 2's voice half)** | §2.1, §2.5, §13.8 | ✅ **closed 2026-08-20** — live-checked, hashed, 1.2× on `retention_fast` | done |
+| **2** | **Sound effects layer** | §5.5 | ✅ **closed 2026-08-20** — `sfx.py` + 9-clip Openverse library + `SelectSfxStep` | done |
+| **3** | **Split-screen (`SPLIT_FRAME`)** | §2.6 Tier 2 | ✅ **closed 2026-08-20** — two stills, top/bottom `vstack`, second `AssetPlan` | done |
 | **4** | **2.5D parallax** | §2.7 Tier 3 | ⚠ no provider module exists | 3–4 d + Q10 |
-| **5** | **Per-style music gains** | §5.2 | ⚠ **0** refs to `music_bed_gain_db` in `styles.py` | ~0.5 d |
-| **6** | **BPM + tempo-fit ranking** | §5.2, §5.3 | ⚠ **9 of 54** tracks have `bpm`; **0** refs to `bpm` in `music_ranking.py` | ~0.5 d + ear time |
+| **5** | **Per-style music gains** | §5.2 | ✅ **closed 2026-08-20** — `resolve_music_gains`, −10/−14 fast, −22/−28 stillness | done |
+| **6** | **BPM + tempo-fit ranking** | §5.2, §5.3 | ✅ **closed 2026-08-20** — 18/54 sourced BPM; ranking uses ±20% band; 36 stay null | done |
 
 **Plus two carried-over decisions:** A8's bake-off verdict (human viewing) and R2's second half (iterative punctuation suggestions — a product call).
 
-### 14.2 Item 1 — narration speed is the only thing gating a shipped style
+⚠ **All four items closed on 2026-08-20 were then reviewed against the code — see [§15](#15-code-vs-plan-review-of-the-four-items-closed-2026-08-20-r8-sfx-music-gains-bpm). Five findings (R11–R15), none of which reopened an item's design. All five fixed 2026-08-20 — answers sit under each finding in §15.**
 
-⚠ **This is the most consequential remaining item and it is not a coding problem.**
+### 14.2 Item 1 — narration speed is the only thing gating a shipped style — ✅ **CLOSED 2026-08-20**
 
-§2.5 says, in bold: *"Ship both routes together. Route 1 alone gives a fast-looking video over documentary-paced narration, which reads as mismatched rather than fast — and the punch-ins get blamed when the problem is the voice."*
+§2.5 said, in bold: *"Ship both routes together. Route 1 alone gives a fast-looking video over documentary-paced narration, which reads as mismatched rather than fast — and the punch-ins get blamed when the problem is the voice."*
 
-**What shipped is Route 1 in full** (punch-in, cuts-only, grade) **plus Route 2's structural half** (finest granularity, lowered floor, higher cap — all now working after §13.1's R1 fix) **and none of its voice half.** Probed 2026-08-20: no `speed` in `Settings`, none in `NarrationRequest`, and `compute_narration_content_hash` is still the four-value key.
+**What is now shipped is Route 1 in full** (punch-in, cuts-only, grade) **plus Route 2's structural half** (finest granularity, lowered floor, higher cap — R1) **and its voice half** (R8). Live-checked 2026-08-20 against `eleven_multilingual_v2` `/with-timestamps`: `voice_settings.speed` is accepted, 1.2 is in range, alignment timestamps scale. `NarrationRequest.speed` defaults to 1.0; `compute_narration_content_hash` includes speed when it is not 1.0 (so pre-R8 rows remain hits); `retention_fast` synthesises at 1.2× via `StylePacingBand.narration_speed`. See §12's 2026-08-20 entry.
 
-⚠ **§13.13's own rule stands unmet:** *"`retention_fast` should not reach a real user until R1 and R8 are both closed."* R1 is closed. **R8 is not**, so by this document's own standard `retention_fast` is not yet honest to offer.
+⚠ **§13.13's own rule is now met:** R1 and R8 are both closed, so `retention_fast` is honest to offer. Hinglish at 1.2× was not part of the schema probe — still a listening pass on `hinglish_final_project` if wanted, not a blocker.
 
-**Three steps, in order, and the first needs you:**
+⚠ **Quota consequence still stands:** ElevenLabs Starter is **60,000 characters/month** for Multilingual v2, a 10-minute video is ~8,640, and a speed change **re-synthesises every scene** (~14% of the monthly allowance). **Decide speed before synthesising a long project, not after** — see Track C §3.3. Default 1.0 does not bust existing cache.
 
-1. ⚠ **A live schema/behaviour check on `eleven_multilingual_v2` for `speed`** — ~10 minutes and a **tiny real spend** against the configured ElevenLabs account. **Not yet requested or approved**, which is the only reason this is still open. Track C's §11 Q4 established the target precisely: `ElevenLabsNarrationProvider` currently sends only `{"text", "model_id"}`, so `speed` is a change against that specific model's schema.
-2. **`speed` into `compute_narration_content_hash` in the same commit as the field itself.** §2.1 flagged this and it is the real hazard: a `speed` that reaches the API but not the cache key **silently serves wrong-speed audio on the second run**. Track C's §3.3 disk-fallback makes this worse, not better — a wrong-speed mp3 plus sidecar on disk would now be *restored* rather than re-synthesised.
-3. **`~1.2×` on `retention_fast`'s band**, with the ⚠ practical ceiling §2.1 records (~1.15–1.25×; Hinglish likely degrades earlier and differently — `hinglish_final_project` is the fixture).
+### 14.3 Item 2 — SFX is the largest genuinely unbuilt feature in this plan — ✅ **CLOSED 2026-08-20**
 
-⚠ **One quota consequence Track C measured that §2.1 could not have known:** ElevenLabs Starter is **60,000 characters/month** for Multilingual v2, a 10-minute video is ~8,640, and `speed` joining the hash **re-synthesises every scene**. So a single speed change on a long project costs ~14% of the monthly allowance. **Decide speed before synthesising a long project, not after** — see Track C §3.3.
-
-### 14.3 Item 2 — SFX is the largest genuinely unbuilt feature in this plan
-
-`app/renderer/sfx.py` does not exist; nothing in §5.5 is built. The design in §5.5 still holds and needs no revision:
+`app/renderer/sfx.py` exists; `SelectSfxStep` is in `DEFAULT_PIPELINE`; a 9-clip local library was downloaded from Openverse. The design in §5.5 held:
 
 - **Placement follows D6/21.2 exactly** — choosing the palette is creative → `sfx_plan` in the Timeline; placing and mixing is deterministic → the renderer, driven by events already there (`camera` punch-ins, `text_card`, transitions). No new per-SFX creative decisions.
 - **Source is the same Openverse provider, same licence gate, different query** — §5.5's own irony (Freesound "skews to sound effects" was a complaint about music search; for SFX it is the point).
@@ -1345,7 +1420,7 @@ Recorded because a review section that lists only faults misrepresents the state
 
 ### 14.4 Items 3–4 — the two Tier 2/3 pipeline changes, both correctly still absent
 
-**Split-screen.** `ken_burns.py:87` still returns `None` for `SPLIT_FRAME` with the honest reason recorded in its docstring: *"a real split-screen composite needs a SECOND source image… building that is a materially different pipeline change, not a `zoompan` expression."* ⚠ **§7's "scope honesty" caution is being kept** — declared in the schema, documented as a gap, not mis-implemented. It reaches into the Shot Planner and asset resolution (two assets per shot), which is why it is 3–5 d and not a filter.
+**Split-screen — ✅ closed 2026-08-20.** `ken_burns.py` still returns `None` for `SPLIT_FRAME` (correct: not a `zoompan`). The second still is `Shot.secondary_prompt` / `secondary_asset_plan`, bound on `ShotBinding.secondary_asset_id`, composited in `split_screen.py` as a 9:16 top/bottom `vstack`. Missing second still is the old static path. See §12.
 
 **2.5D parallax.** No provider module. §2.7's architecture is unchanged and is the right one: **treat parallax as a provider, not a filter** — still in, clip out, cached by content hash like `generated_clip`, so the renderer only ever sees an mp4 and I5 holds on the cached artifact. ⚠ Requires Track A's A1, which is built — so parallax is now unblocked technically and blocked only on **Q10** (does it justify a GPU dependency), the one item in this plan that changes the deployment story.
 
@@ -1353,13 +1428,13 @@ Recorded because a review section that lists only faults misrepresents the state
 
 The library itself landed (54 tracks, `LocalMusicProvider`, `MUSIC_PROVIDER=local`) and Track C's C7 added per-act selection on top. Two §5.2/§5.3 items did not land:
 
-**Per-style bed/duck gains (~0.5 d).** Probed: **0** references to `music_bed_gain_db` in `styles.py`. §5.2 calls this *"genuinely differentiating — archival wants the bed present, fast-cut wants it driving and barely ducked, stillness wants it near-absent."* ⚠ Both gains are already in `compute_render_fingerprint` (R2's own fix), so making them style-derived needs no new fingerprint work — it is a resolver change, and `resolve_constraint_bundle` is now the established place for exactly this.
+**Per-style bed/duck gains — ✅ closed 2026-08-20.** `resolve_music_gains` on `StylePacingBand`, not `ConstraintBundle` (planning bounds stay planning bounds). Archival keeps the measured −14/−20; `retention_fast` −10/−14; `stillness` −22/−28. Fingerprint and mux share one resolved pair. See §12.
 
-**BPM and tempo-fit ranking.** Probed: **9 of 54** tracks carry a `bpm`; `music_ranking.py` has **0** references to it. §5.2 said *"a human types it in — free now, awkward later"*; §12's music entry recorded that BPM was only filled where a source published it, deliberately not fabricated. ⚠ **That was the right call and it means §5.3's tempo-fit ranking has almost nothing to rank on** — 45 tracks would score as unknown. **Populating 45 integers by ear is the cheap moment; it does not get cheaper.** And §5.3's insight is unaffected and still good: cuts cannot land on beats (D1 makes narration the clock), so **rank tracks by how well their BPM fits the measured shot pacing** — a ranking criterion, not a timing change.
+**BPM and tempo-fit ranking — ✅ closed 2026-08-20.** 18 of 54 tracks now carry a published `bpm`; the other 36 stay `null` (Pixabay/FMA did not publish a number; Sad Trio is Incompetech `0 bpm`). Ranking: duration floor, then ±20% of `240 / mean_shot_duration_s`, then term-overlap. Unknown sits between fit and known-mismatch. See §12.
 
 ### 14.6 The two carried-over decisions
 
-**A8's bake-off.** §12 records the collage bug found *during* A8's bake-off, so it started. ⚠ **No verdict is recorded**, and §9 is explicit that this needs a human comparing outputs and does not compress. It is the question *"does synthetic motion blend beside a 1936 photograph"* — and Track C's R10 fix (`GET /shots/{id}/clip`, streaming real clip bytes) is what finally makes it answerable from the UI rather than from extracted stills.
+**A8's bake-off.** §12 records the collage bug found *during* A8's bake-off, so it started. ⚠ **No verdict is recorded**, and §9 is explicit that this needs a human comparing outputs and does not compress. It is the question *"does synthetic motion blend beside a 1936 photograph"* — and Track C's R10 fix (`GET /shots/{id}/clip`, streaming real clip bytes) is what finally makes it answerable from the UI rather than from extracted stills. **Moved to last in §14.8** (user, 2026-08-20): regenerate the 3 Kling clips (~$1.50) only after the remaining builds.
 
 **R2's second half.** §13.2's finding that level 2's punctuation suggestions are iterative but presented as one-shot — accepting all 7 leaves the reference fixture still infeasible; it takes two more rounds. Deliberately left as the lowest-urgency item. Still open, still a product call (return suggestions transitively, or add a `further_suggestions_available` flag and say so in §3.2).
 
@@ -1368,19 +1443,592 @@ The library itself landed (54 tracks, `LocalMusicProvider`, `MUSIC_PROVIDER=loca
 | track | state |
 |---|---|
 | **A** — motion clip input | A1/A2/A3/A5/A6 built; A4's prompt fix + per-project video cap built; A7 (Pexels video rung) built. **Only A8's verdict outstanding.** |
-| **B** — style catalogue | Tier 1 (grade, punch-in, `retention_fast` end-to-end) and Tier 2 (extra transitions, text cards) built. **Split-screen and Tier 3 outstanding; per-style gains outstanding.** |
+| **B** — style catalogue | Tier 1 (grade, punch-in, `retention_fast` end-to-end including narration speed) and Tier 2 (extra transitions, text cards, **split-screen closed 2026-08-20**) built. **Per-style gains closed 2026-08-20.** Tier 3 outstanding. |
 | **C** — long-form | ✅ **complete and closed 2026-08-20** — 658 tests pass in 17m51s, R-C1…R-C10 all closed — see [`track_c_long_form_video.md`](track_c_long_form_video.md). C0–C8, frontend contract §13, and three review rounds (§14/§15) with nine findings raised and fixed. |
 | **D** — script pre-flight | Levels 1–2 and level 3 (rewrite) all built. **Only R2's second half outstanding.** |
-| **Music** | Library + `LocalMusicProvider` + per-act beds built. **Per-style gains and BPM/tempo-fit outstanding. SFX entirely unbuilt.** |
-| **§13 review** | R1–R7, R9, R10 fixed and verified. **R8 (speed) open — see §14.2.** |
+| **Music** | Library + `LocalMusicProvider` + per-act beds + per-style gains + BPM/tempo-fit built. |
+| **SFX** | ✅ 9-clip local library + `SelectSfxStep` + `mux_sfx`. |
+| **§13 review** | R1–R10 except R2's second half fixed and verified. **R8 (speed) closed 2026-08-20 — see §14.2.** |
 
-⚠ **Open questions still genuinely open:** **Q5** (pacing bands per style — blocked on calibration data, and Track C's `_DEAD_STOP_CEILING_MULTIPLIER` is still the uncalibrated 2.0), **Q8** (Hinglish chars/sec constant), **Q10** (parallax GPU dependency). Q1–Q4, Q6, Q7, Q9 are closed.
+✅ **ALL OPEN QUESTIONS CLOSED 2026-08-20 — see §14.9 for each, with scenarios and decisions.** **Q5** pacing bands: `2.0` validated by watching real narrated renders. **Q6** style vs Director: the named conflict does not exist (`colour_palette` is read by nothing); the real collision is `camera_language`. **Q7** rewrite retry: one attempt only — plus a NEW finding, the pre-flight has no minimum-length check. **Q8** chars/sec: one constant holds; `HI=12.9` to be deleted; voice dominates language 5×. **Q10** parallax: **works on real archival film — build it**, and it needs no GPU in the render path. ⚠ **Five code changes are decided and NOT yet applied:** delete `script_chars_per_second_hi`; suppress the Director's `camera_language` under a style; make the rewrite entity check symmetric; add the minimum-length warning; resolve `colour_palette` (wire or drop). **Plus §15's five (R11–R15)** — and R11 (thread narration speed into the estimators) belongs in the *same pass* as the first and fourth of these: all three touch `preflight.py`'s rate function.
 
 ### 14.8 Suggested order for the remainder
 
-1. **Item 1's live speed check** — ⚠ needs your approval for a tiny spend, gates a shipped style, and is 10 minutes.
-2. **Items 5 and 6** — ~1 d together, and both are cheapest now: per-style gains reuse the existing resolver, and 45 BPM values by ear only get more awkward once the library is in use.
-3. **A8's verdict** — human viewing, now actually possible via `GET /shots/{id}/clip`.
-4. **SFX** — the largest remaining build, and §5.5's own advice is to do it *after* fast-cut ships, which it has. Copy C7's `assemble_act_bed` shape.
-5. **Split-screen**, then **parallax** behind Q10.
-6. **R2's second half** whenever the pre-flight screen gets attention.
+A8 last (user, 2026-08-20). Parallax parked on Q10 (user, 2026-08-20). One leftover item, then stop for review.
+
+1. ~~**Item 1 — narration speed (R8)**~~ — ✅ closed 2026-08-20.
+2. ~~**Item 5 — per-style music gains**~~ — ✅ closed 2026-08-20.
+3. ~~**Item 6 — BPM + tempo-fit ranking**~~ — ✅ closed 2026-08-20.
+4. ~~**SFX**~~ — ✅ closed 2026-08-20. Review findings R11–R15 ✅ fixed 2026-08-20 (see §15 answers).
+5. ~~**Split-screen** (`SPLIT_FRAME`)~~ — ✅ **closed 2026-08-20** (see §12). Review findings R16–R20 ✅ fixed and **re-verified 2026-08-20 — see [§16.9](#169-r16r20-confirmed-fixed--2026-08-20)** (483 tests, single alembic head, panel-swap and shot-swap both now caught by the render fingerprint). ⚠ **R16's fix removed the one sequencing constraint on the bottom-panel override**, so that residual is now free to be picked up whenever. The remaining split-screen item is the aesthetic call on padded panels, which needs a human watching real archival material.
+6. **R2's second half** — iterative punctuation suggestions; product call, lowest urgency. **Next leftover after this review.**
+7. **2.5D parallax** — parked on **Q10**. Not in the active queue.
+8. **A8 last** — regenerate 3 Kling clips (~$1.50) and a human watching whether synthetic motion blends beside 1936 photography. Keyframes already exist. Not started.
+
+### 14.9 Q6 and Q8 tested against real code and the real API, 2026-08-20
+
+> **Method.** Q6 by tracing every consumer of the Director's output in `app/` and assembling the exact prompt a styled request produces — no API call needed. Q8 by synthesising three real fixture scripts through the **live ElevenLabs API** and measuring the audio with `ffprobe`. Total spend: **2,027 characters, ~3.4% of the Starter monthly allowance.** Voice `0muxiGNHAVvmM1qWRtyV`, model `eleven_multilingual_v2`.
+
+#### Q8 — ANSWERED. One constant is right; the Hindi constant is wrong; **voice is the variable nobody modelled.**
+
+**Measured, same voice, three scripts:**
+
+| script | non-ASCII | real chars/sec | error using `EN=14.4` | error using `HI=12.9` |
+|---|---|---|---|---|
+| English (`captions_test_project`) | 1.4% | **15.1** | **+4.8%** | — |
+| Hinglish (`hinglish_final_project`) | 38.9% | **14.0** | **−2.6%** | +8.7% |
+| Pure Hindi (`hindi_test_project`) | 74.9% | **14.9** | **+3.5%** | **+15.5%** |
+
+**Q8 as written is answered: a single constant DOES hold.** The language axis spans only 14.0–15.1 chars/sec — about 8% — and one constant near 14.4 lands within 5% of all three, including pure Devanagari.
+
+⚠ **`script_chars_per_second_hi = 12.9` is wrong and should go.** It is 15.5% too slow on real Hindi — *most* wrong on the script it exists for — and 8.7% too slow on Hinglish. Because the pre-flight **over**-estimates duration, the effect is **false rejections**: a script gets refused as "too slow for this style" when it would have been fine, with a confident-looking number attached. The 15% non-ASCII threshold routes both Hindi and Hinglish into it, so today the routing rule makes the estimate worse for every script it fires on.
+
+⚠ **The real finding, and it is not what Q8 asked: voice dominates language by ~5×.** `captions_test_project` stores 42.50 s of measured narration; re-synthesising the same text with the current voice gives **57.77 s**. Same text, same model, different voice:
+
+| | chars/sec |
+|---|---|
+| English, the fixture's original voice | **20.5** |
+| English, current voice | **15.1** |
+
+**A 36% swing between voices, against ~8% across languages.** The config models the small variable and ignores the large one.
+
+**Two consequences worth carrying:**
+
+- ⚠ **`captions_test_project`'s stored `duration_s` values are stale** for the current voice (42.50 s vs a real 57.77 s). Anything asserting against them is asserting against a voice no longer in use. `hinglish_final_project` by contrast measured 48.20 s against a stored 48.00 s — **0.4% off, so that fixture's data is sound** and the discrepancy really is voice, not bad fixtures in general.
+- ✅ **`script_preflight_margin_fraction = 0.2` is now evidence-backed rather than guessed.** Per-scene chars/sec varies 13.0–18.0 (English), 11.8–16.4 (Hinglish), 14.2–16.1 (Hindi) — roughly ±16–20% around each mean. No constant can be tighter than that per scene, so **the 20% margin is correctly sized and should not be tightened.**
+
+**Decisions taken 2026-08-20:**
+
+1. **Collapse to one constant.** Delete `script_chars_per_second_hi` and the `_NON_ASCII_HINDI_THRESHOLD` routing in `preflight.py`; keep `script_chars_per_second_en = 14.4` as the single figure. Chosen over raising the threshold above 75%, which would leave dead machinery pretending to be a safeguard. ✅ **Applied 2026-08-20 with R11.**
+2. **Record the constant as voice-specific, not universal.** 14.4 is calibrated for `0muxiGNHAVvmM1qWRtyV`. The config comment should say so, so the next person does not read it as a property of English.
+3. **Defer per-voice calibration.** ⚠ **User confirmed 2026-08-20 that this voice will be in use "for some time,"** so a single constant tuned to it is adequate and per-voice machinery is not worth building yet.
+4. **Do it together with narration speed when that lands.** Speed scales chars/sec directly — at 1.2× this voice's 15.1 becomes ~18 — so the estimate has to be reopened for speed anyway (§14.2 item 1). **Per-voice and per-speed are one problem, and doing them in one pass is cheaper than twice.**
+
+#### Q6 — ANSWERED, and the conflict the question named does not exist
+
+**Q6 asked:** *"If the preset dictates a desaturated grade and the Director writes `colour_palette: ['warm amber']`, which wins?"*
+
+**Neither. `colour_palette` is read by nothing.** Verified by grepping every consumer in `app/`: the Director writes it on every project and no code path reads it. The colour grade comes from `STYLE_GRADES`, a fixed table keyed on the style name. **The specific conflict Q6 was written about is impossible.**
+
+**Where the Director's output actually goes:**
+
+| field | consumed by | collides with a style setting? |
+|---|---|---|
+| `visual_style` | Act / Scene / Shot planners + image-generation prompts | no — style has no visual-look prompt input |
+| **`camera_language`** | **Shot Planner only** | **YES — the real collision** |
+| `tone` | Act, Scene planners | no |
+| `historical_period` | Act, Scene, Shot planners | no |
+| `audience` | Act, Scene planners | no |
+| `constraints` | constraint/vision checks | no |
+| **`colour_palette`** | **nothing** | **dead field** |
+
+⚠ **The genuine defect is in camera, and it is a contradiction with no stated precedence.** For one `retention_fast` shot-planning request the model receives, in the system prompt:
+
+> *"Camera: prefer `punch_in` for most shots… **not the slow drift described in the base camera table above**."*
+> *"Transitions: `cut` only… **This overrides the base prompt's** dissolve-for-continuity guidance entirely."*
+
+and in the user message of the same request:
+
+> `camera_language: slow, deliberate pushes; let each image breathe`
+
+**The fragment carefully overrides the base prompt and says nothing about the Director's line, because whoever wrote it did not know that line would be there.** The model resolves the contradiction however it likes, per request — which makes `retention_fast`'s camera behaviour non-deterministic in a way invisible from the code.
+
+**And this is also the answer to the parent question of whether style reaches the Director at all: it does not.** `DirectorPlanner.plan(project_id, script)` takes the script only; its user content is literally `f"Script:\n\n{script}"`.
+
+**Decisions taken 2026-08-20:**
+
+1. **Suppress the Director's `camera_language` line when a style supplies camera instructions.** One conditional in the Shot Planner's prompt assembly. Chosen over §4.1's own suggestion of seeding the whole Director with the style, which is materially more machinery than the actual collision needs — camera is the *only* contested field.
+2. **Resolve `colour_palette` one way or the other.** Either wire it to the grade or drop it from `CreativeContext`. ⚠ **As it stands the Director spends output tokens on every project describing a palette nothing honours** — a promise the system does not keep.
+3. **Leave `visual_style`, `tone`, `historical_period`, `audience` and `constraints` alone.** They are uncontested, and the style has no competing input for any of them.
+
+⚠ **One limit on the Q6 evidence:** the collision was demonstrated by assembling the real prompt with a hand-written but realistic Director output, not with a live Director call. **The plumbing is verified from code** (`camera_language` reaching the Shot Planner, `colour_palette` reaching nobody); what a real Director writes for a real script has not been observed. One cheap LLM call would close that if the fix is contested.
+
+#### Still open after this pass
+
+| question | status |
+|---|---|
+| **Q5** — pacing bands per style | open. Needs a human watching renders; `_DEAD_STOP_CEILING_MULTIPLIER = 2.0` is still uncalibrated |
+| **Q7** — rewrite retry budget | open as a *decision*. Current behaviour (return the rejected text plus reasons, no retry) is probably right and should be written down before someone "improves" it into a retry loop, where more attempts against fixed checks means more chances for a bad rewrite to pass by luck |
+| **Q10** — parallax GPU dependency | **newly testable.** The dev machine has an AMD Radeon 680M (RDNA2) integrated GPU, so the effect can be evaluated locally at zero cost. ⚠ The production container has `h264_vaapi` compiled in but **`/dev/dri` is absent — no GPU passthrough**, so "is it worth having" is now answerable while "is it worth GPU hardware in production" is not affected |
+
+#### Q5 — ANSWERED 2026-08-20 by watching real renders: `_DEAD_STOP_CEILING_MULTIPLIER = 2.0` is VALIDATED
+
+**Method.** Built four `retention_fast`-shaped renders from the real Fischer-Tropsch archival photos — 9 shots, punch-in camera, cuts only, real narration through the live API — where the eight surrounding shots are **byte-identical across all four** and only the 5th shot's length changes. Shot durations set from *measured* audio, so narration remains the master clock exactly as production has it. Shared lines synthesised once and reused; cost **461 characters (~0.8%)**.
+
+| variant | middle shot | user verdict |
+|---|---|---|
+| `narrated_1_target` | 1.30 s | reads as rhythm |
+| `narrated_2_ceiling` | **3.34 s** | **"does not seem like it stopped"** |
+| `narrated_3_over` | **4.97 s** | **"from narrated 3 over it starts"** |
+| `narrated_4_longest` | 7.34 s | (worse) |
+
+**The perceptual boundary sits between 3.34 s and 4.97 s.** The shipped ceiling of 3.5 s is just above the last comfortable value and well below the first uncomfortable one. ✅ **2.0 is the right multiplier and should not be changed.**
+
+⚠ **And a second measurement makes narrowing it pointless.** Every fragment of the real script, at the measured 15.1 chars/sec:
+
+| band | fragments |
+|---|---|
+| under 3.5 s (accepted) | **8 of 13** — all in fact ≤ 2.72 s |
+| **3.5–5.0 s (the unresolved zone)** | **0 of 13** |
+| over 5.0 s (confirmed to stall) | **5 of 13** — 5.36 s to 7.55 s |
+
+**Nothing lives in the zone the experiment left unresolved**, so pinning the boundary more precisely would unlock zero scripts. The distribution is bimodal — very short clauses ("aircraft," 0.40 s) alternating with long run-on sentences (7.55 s) — which is a property of how the script is written.
+
+**Two conclusions that correct earlier framing in this document:**
+
+1. ✅ **The pre-flight's rejections are CORRECT, not false positives.** §14.9 and earlier review passes raised the possibility that an uncalibrated ceiling was needlessly refusing scripts. It is not: those 5 fragments genuinely stall, confirmed by watching. **The remedy is Track D's re-punctuation / rewrite (which took this script's fragment count 13 → 43), not a looser ceiling.**
+2. ⚠ **This reinforces §2.5.1: `max(fragment)` is the binding metric and the average is actively misleading.** `D/N` = 3.54 s suggests a script needing modest tightening. The real distribution has *no* typical fragment — it is 8 short and 5 far too long. An average over a bimodal distribution describes nothing that exists.
+
+**Side result worth keeping.** The eight short declarative lines measured **1.35–2.32 s** without being tuned to hit anything — so sentences of that shape naturally produce target-pace shots. That is a useful thing to tell a user writing for `retention_fast`: short declaratives land on target by themselves.
+
+⚠ **One limit.** Judged at normal narration speed. The ~1.2× speed setting (§14.2 item 1) is still unbuilt and will shorten every shot when it lands, so this ceiling wants a re-check then — the same "do it together with speed" note as Q8's constant. Also judged by one viewer on one script; a second opinion would cost only another few hundred characters.
+
+**Decision: keep `_DEAD_STOP_CEILING_MULTIPLIER = 2.0`. Q5 closes.** Q5's own framing — *"blocked on calibration data, not on a decision"* — was right, and the calibration data now exists.
+
+#### Q7 — DECIDED 2026-08-20: one attempt only, never a retry budget
+
+**What the code does today, traced not assumed.** `rewrite_script` makes exactly **one** LLM call — `provider.structured_complete`, deliberately **not** the `run_structured_with_repair` loop every other planner uses. Then three mechanical backstops run (`_validate_rewrite`):
+
+| backstop | comparison | catches |
+|---|---|---|
+| numeric tokens | `Counter` **both directions** | a changed, dropped **or invented** number |
+| capitalised entities | **set difference, one direction** | a dropped name (`Leuna-Werke`, `Sasol`) |
+| fragment count | must strictly increase | a rewrite that reworded without splitting anything |
+
+On failure it returns `accepted=False` **plus the attempted text and the reasons** — it never silently discards the attempt. Nothing persists unless the caller passes `persist=True` **and** the rewrite was accepted. There is no retry anywhere.
+
+**Decision: keep exactly this. Recorded as a decision rather than left as an accident**, because the obvious "improvement" is a downgrade and someone will propose it.
+
+⚠ **Why a retry budget is the actively dangerous option — the scenario that decides it.** Suppose "retry up to 3 times, feeding the rejection reasons back":
+
+| attempt | model returns | verdict |
+|---|---|---|
+| 1 | drops "1936" | rejected — numbers |
+| 2 | keeps 1936, turns `Leuna-Werke` into "the Leuna works" | rejected — entity dropped |
+| 3 | keeps every number and every name, but rephrases *"converted coal into synthetic fuel"* as *"converted synthetic fuel into coal"* | ✅ **ACCEPTED** |
+
+**Attempt 3 passes all three checks and is factually backwards.** The backstops are fixed and mechanical, so more attempts do not select for a *better* rewrite — they select for one that **evades the checks**. §3.3 says exactly this about its own safeguards: *"These are backstops, not proof — a rewrite can preserve every number and name and still shift meaning. The side-by-side diff shown to the user is the real safeguard."* A retry loop moves the decision from a human reading a diff to a model iterating against a filter, on historical content with no fact-check step anywhere in the pipeline.
+
+**Why the other option in Q7's own wording ("fall back to the style-change path") is not needed either.** The pre-flight *already* reports which styles a script suits, before any rewrite is attempted. Wiring that into the rewrite's failure path would just be the pre-flight talking twice.
+
+**Two scenarios showing the current behaviour is what the user actually wants:**
+
+- *No-op rejection.* The model returns genuinely nicer prose with the same sentence count → rejected: *"fragment count did not increase (13 → 13) — rewrite was a no-op for pacing purposes."* Correct: the request was faster cutting, not better writing, and accepting it would change the user's own words for zero pacing benefit — the worst trade available under this feature's "the user's words are never in the model's output" constraint (§3.2).
+- *End to end today.* `POST /script/rewrite` → `accepted=false`, the reasons, and the attempted text. The user reads the diff and either edits by hand, rewords themselves, or picks a slower style. **Nothing was persisted and nothing was spent beyond one call.**
+
+⚠ **One real asymmetry found while tracing, worth a small follow-up.** Numbers are compared **both ways** (a `Counter` equality catches missing *and* invented), but entities are a **one-way set difference** — a *dropped* name is caught, an *invented* one is not. So a rewrite that introduces "Sasol" into a sentence where it did not belong passes all three backstops. Less likely than dropping a name, and the diff would show it, but the asymmetry reads as unintentional rather than reasoned. **Making the entity check symmetric is a one-line change.**
+
+#### ⚠ NEW, found while deciding Q7: the pre-flight has no minimum-length check at all
+
+**The user's stated concern, 2026-08-20:** *"I don't want to be stuck with a script that fails later in production because it was too short."*
+
+Traced against the code, and **every one of the pre-flight's four blocking checks guards the same direction:**
+
+| check | guards against |
+|---|---|
+| total duration vs `bundle.max_video_duration_s` | too **long** |
+| average shot duration vs the style's target | too **slow** |
+| longest fragment vs the dead-stop ceiling | too **long** |
+| fragment count vs the shot cap | too **many** |
+
+⚠ **There is no minimum. Grepped for one — nothing exists.**
+
+**The scenario nobody guarded:**
+
+> A 400-character script, any style. Every check passes. Planning runs, narration is synthesised, assets resolve, the render completes — and the result is a **~27-second video** when three minutes were wanted. Nothing warned anyone, because "not enough script" is not a thing this system looks for.
+
+**That is the same shape as the failure the whole pre-flight exists to prevent** — a late, expensive discovery of a length problem — in the one direction it was never pointed at.
+
+**Decision: add a minimum-length check, and make it WARN, never block (user-confirmed 2026-08-20).**
+
+- **Cheap to build.** `estimate_duration_s` already computes the predicted duration and the bundle already carries a target; the comparison is a few lines over data that is already present.
+- **Needs no calibration.** Unlike Q5's pacing bands, nothing has to be watched or tuned — either the script reaches the requested length or it does not. And Q8 has now measured the chars/sec constant against the live API, so the estimate behind it is trustworthy to within ~5%.
+- ⚠ **Warn, not block, and this follows §3.1's own split rather than being a new rule:** *"feasibility is arithmetic, and hard-stopping someone on a fact is defensible. Suitability is a model's taste."* A short script is an arithmetic fact — but whether it is *wrong* is the author's judgement. A 40-second piece may be exactly what was intended. So report *"this script will produce ~27s; you asked for 3 minutes"* and let the human decide. **Blocking here would refuse someone their own deliberate choice, which is the one thing §3.1 is careful never to do.**
+- **Where it belongs:** alongside the existing checks in `check_feasibility`, but surfaced as a separate `warnings` list rather than appended to `violations` — `FeasibilityResult.passed` is `not self.violations`, so putting a warning in `violations` would block it by accident.
+
+#### Q10 — ANSWERED 2026-08-20: the effect works on real archival material. Verdict: BUILD IT, and it needs no GPU in the render path.
+
+**Method.** DepthFlow 1.0.0 installed into an **isolated throwaway venv** (`%TEMP%\depthflow-eval`, 5m39s) — deliberately *not* the project venv, which it would have polluted with `torch`, `transformers`, `moderngl`, `numpy`, `setuptools` and 55 more, making the venv diverge from what `backend/Dockerfile` builds. Ran against the real Fischer-Tropsch archival photos at 720×1280. Hardware: AMD Radeon 680M (RDNA2 integrated, Vulkan 1.4, AMD proprietary driver, 6 OpenCL compute units).
+
+**User verdict, 2026-08-20, on 5 animated photos:** *"the parallax is working good"* — and specifically that it does **not** break up on the reactor photograph. ✅ **That was the whole risk this test existed to expose:** depth models are trained on modern photography, and 1936 reconnaissance film is out of distribution — grain, scratches and blown-out sky could all have been read as geometry. They were not.
+
+**Measured cost:**
+
+| step | cost | notes |
+|---|---|---|
+| depth estimation | **~13–50 s per photo, CPU** | one-off, **cached** per photo thereafter |
+| parallax render | **~7–16 s per 4 s clip** | the shader step, on the iGPU |
+| Ken Burns (today, for comparison) | 6.5–7.7 s per 4 s | the thing parallax has to beat |
+| a 13-shot project | **~5 min of CPU once**, then normal | |
+
+⚠ Depth ran on **CPU** — `torch` installs as `2.13.0+cpu` because Windows has no CUDA and no official ROCm for AMD, so only the shader touched the Radeon. **These are not production throughput figures**, but they do establish the effect is cheap enough to be practical even without GPU-accelerated depth.
+
+#### ⚠ The deployment question was framed wrongly, and the plan's own architecture already answers it
+
+§2.7 asked *"does the parallax provider justify a GPU dependency"* and §10 called it *"the only item here that changes the deployment story."* **That framing assumed parallax runs inside the render service. It does not have to.**
+
+§2.7's own design — **"treat parallax as a provider, not a filter: still in, clip out, cached by content hash exactly like `generated_clip`"** — means the renderer only ever opens a finished mp4. So:
+
+| where the provider runs | needs GPU passthrough in the render container? |
+|---|---|
+| inside the render container | yes — ⚠ and `/dev/dri` is **absent** there today (verified: the image has `h264_vaapi` compiled in, no device to talk to) |
+| a separate worker | only that worker |
+| **a batch step, anywhere — including a dev machine** | **no** |
+
+**The real question is "where does the parallax provider run," not "does the render service need a GPU."** That is a materially lower bar than Q10 assumed, and it needs no architectural change — the caching boundary that makes it true is already specified and Track A's motion-clip input path (A1) that consumes the output is already built and reviewed.
+
+**Decision: build it, and run the provider OUTSIDE the render container.** Depth maps and clips are content-hash cached, so generation is a separate concern from rendering, exactly as generated clips already are.
+
+#### ⚠ Three maintenance findings — this needs a wrapper and a pin, not a bare `pip install`
+
+Every one of these was hit on first use, and all three are cheap to handle at the provider boundary — which is an argument *for* the provider design rather than against the feature.
+
+1. **The released version does not start.** `depthflow 1.0.0` calls `hasher.update()` with a `str` in `estimators/anything.py:37-38` and `estimators/__init__.py:27`; `hashlib`/`xxhash` require bytes. Three lines patched locally to proceed. ⚠ **A dependency whose current release crashes on import-to-first-use must be pinned and vendored-or-patched, not tracked loosely.**
+2. **Animation is OFF by default.** The bare `DepthScene` produces a depth-mapped **still**. Motion lives in preset subclasses (`Orbital`, `Vertical`, `Dolly`, `Circle`, `Zoom`) that override `update()` to drive `state.offset` / `state.isometric` / `state.zoom` per frame. ⚠ **This wasted the first evaluation round** — the initial clips were static and the user correctly reported *"they look like a normal picture."* The provider must select a preset explicitly; there is no useful default.
+3. **Single-channel grayscale input crashes it.** A `pix_fmt=gray` photo (5697×6134) raised `ValueError: Could not make a flat list of images` — the estimator's preprocessing got a 2-D array where it wanted 3-D. ⚠ **Grayscale is exactly what archival photography commonly is**, so this would have failed constantly in production: 1 of 4 photos on the first pass, reproducibly the same one. **Proven fix:** one `format=yuvj420p` conversion before handing the image over — re-ran and it rendered cleanly (5.5 MB output). **Normalise to 3-channel RGB at the provider boundary.**
+
+#### Suggested build plan (Tier 3, unchanged in priority)
+
+1. **`ParallaxProvider`, shaped exactly like `FalVideoProvider`'s cached half.** Still in → clip out, keyed on `(content_hash, preset, duration)`. The renderer stays untouched: it already accepts a motion clip (A1) and cannot tell how one was made.
+2. **Normalise input to 3-channel RGB** before the estimator (finding 3). Non-negotiable given the source material.
+3. **Pick the preset per style, not per shot.** `Orbital` and `Vertical` both read well; this is a style-level look decision (§2.2's line: global look → render settings, selected by the style), not a per-shot creative one, so it does **not** need a new Timeline field or a planner change.
+4. **Pin `depthflow` exactly and carry the three-line patch** (finding 1) — or vendor the estimator wrapper.
+5. **Run generation outside the render container**, so no GPU passthrough is needed where the video is assembled.
+6. ⚠ **Fingerprint discipline (§7's four-times-learned lesson).** The clip is cached by content hash, so the render fingerprint changes via the asset hash automatically — **but the preset choice must reach it too**, or switching from `Orbital` to `Vertical` serves a stale render. It rides `metadata.render_style` if the preset is style-derived (step 3), which is another reason to prefer that over a per-shot field.
+
+**Artifacts kept:** `~/Desktop/q10_parallax/` — `ANIM_orbital*.mp4`, `ANIM_vertical.mp4`, `ANIM_orbital_3_fixed.mp4` (the grayscale case, post-conversion), and `kenburns_*.mp4` for the A/B. The `parallax_0/1/2.mp4` files are the un-animated first round and should be ignored. Eval venv at `%TEMP%\depthflow-eval` (~1 GB), removable — nothing depends on it.
+
+---
+
+## 15. Code-vs-plan review of the four items closed 2026-08-20 (R8, SFX, music gains, BPM)
+
+> **Method.** Same standard §13 set for itself: every claim in §12's four new entries was checked against the code that now exists, and every number below was produced by **running** the real functions (`rank_music_candidates` against the real 54-track manifest, `rank_sfx_candidates` against the real 9-clip library, `mux_sfx` against a real silent mp4, `compute_render_fingerprint`'s actual parameter list) or counted out of the manifest JSON. Nothing here is inferred from reading a docstring — where a finding is a wrong *justification* rather than a wrong *behaviour*, it says so (§13's R4 distinction).
+>
+> **Tests re-run, not trusted:** 82 unit tests (`test_sfx`, `test_sfx_ranking`, `test_local_sfx`, `test_music_ranking`, `test_styles`, `test_fingerprint`, `test_elevenlabs`) and 6 DB-free integration tests (`test_mux_sfx`, `test_sfx_library_integrity`, `test_music_library_integrity`) all pass. The DB-backed integration suite was deliberately **not** re-run — it truncates the same Postgres the dev server uses, and nothing in these findings needs it.
+>
+> ⚠ **The through-line behind R11 and R14 is one mistake, not two: a value landed in the code that DOES the work, and never reached the code that ESTIMATES the work.** `resolve_narration_speed` has exactly two consumers — narration synthesis and the render's hash lookup. No estimator anywhere knows speed exists. That is the same wrong-**altitude** failure §13's own method note named as a standing review rule ("the resolver was verified but not the run that calls it"), arriving for the fourth time.
+
+### 15.1 R11 — BLOCKING for `retention_fast`'s pre-flight: R8 shipped speed into synthesis and into no estimator
+
+`retention_fast` now synthesises at **1.2×**, so its real delivery is ~18 chars/sec on the calibrated voice. But `preflight.py::_chars_per_second` still divides by `script_chars_per_second_en = 14.4`, and `check_feasibility(script, style)` **already has the style in hand** — it simply never asks what speed that style speaks at. Every `retention_fast` estimate is now ~20% too long, in the false-rejection direction:
+
+| pre-flight check | consequence of the 20% inflation |
+|---|---|
+| total duration vs `bundle.max_video_duration_s` | ⚠ **no margin at all.** `check_feasibility`'s own docstring says this check is deliberately *not* margin-widened, to mirror `Timeline._validate_structural_invariants`. So the whole 20% is pure false rejection — a script refused as "exceeds the project maximum" that would have fitted |
+| average shot duration vs `band.target_shot_duration_s` | ⚠ **`script_preflight_margin_fraction = 0.2` is now entirely consumed by the speed error**, leaving nothing for the ±16–20% per-scene variance §14.9's Q8 measured. The margin that Q8 declared "correctly sized and should not be tightened" has been spent without being touched |
+| longest fragment vs the dead-stop ceiling | false dead-stop violations on fragments that will not dead-stop |
+
+**`suggestions.py` is the worse half.** [`suggestions.py:140-145`] receives `band` — it knows the style — and still uses the unscaled rate to decide which fragments are too long to leave alone. So level 2 now proposes breaking fragments that do not need breaking, which feeds directly into **R2's still-open iterative-suggestion problem**: more suggested breaks, each of which the user must accept, none of which were necessary.
+
+⚠ **This is Q8's decision #4 not being kept.** That decision, recorded in §14.9 the same day, says per-voice and per-speed **are one problem** and "doing them in one pass is cheaper than twice." Speed landed alone. And the style affected is the one §13.13 declared *"now honest to offer"* on the strength of R1 and R8 both closing — so **`retention_fast`'s pre-flight is, as of R8, the least accurate it has ever been.**
+
+**Fix (small).** Thread `resolve_narration_speed(style)` into the rate: `_chars_per_second(script) * resolve_narration_speed(style)`. `estimate_duration_s(script)` needs a style parameter it currently lacks (two call sites plus `suggestions.py`). **Do it with the `script_chars_per_second_hi` deletion already decided in Q8** — they are the same function and the same one-pass argument applies.
+
+**Fixed 2026-08-20.** `_chars_per_second(style)` is now `script_chars_per_second_en * resolve_narration_speed(style)`. `estimate_duration_s` and `suggestions.suggest_breaks` take the style. Hindi/Hinglish routing and `script_chars_per_second_hi` are deleted (Q8). Short scripts get a `warnings` list, never a block (Q7). `retention_fast` estimates are 1.2× shorter; English and Hindi scripts of equal length now share one rate.
+
+### 15.2 R12 — `sfx_max_clip_s` changes output bytes and is not in the render fingerprint. §7's lesson, fifth occurrence.
+
+`render.py` passes `max_clip_s=settings.sfx_max_clip_s` into the mux, where it becomes a literal `atrim=0:1.500` in the filter graph. `compute_render_fingerprint` hashes `sfx_gain_db` and **not** this.
+
+> Change `SFX_MAX_CLIP_S` from 1.5 to 3.0 → identical fingerprint → **cache hit → the old, shorter mix is served as if it were the new one.**
+
+⚠ **This is the exact shape of R2** — a config value that changes output bytes with nowhere in the fingerprint to be caught — and it was introduced two paragraphs below §14.3's own written warning that *"every new render input enters `compute_render_fingerprint`… this document's own §7 lesson, hit four times."* Now five. **Fix: one more parameter, hashed unconditionally like `sfx_gain_db` beside it.**
+
+**Fixed 2026-08-20.** `sfx_max_clip_s` is a required fingerprint field, passed from `RenderStep` next to `sfx_gain_db`. Changing 1.5 → 3.0 now misses the cache. Test: `test_different_sfx_max_clip_changes_the_fingerprint`.
+
+### 15.3 R13 — `mux_sfx` fails the render on a silent video, in a subsystem whose contract is "never fail the run"
+
+`mux_sfx`'s docstring says the overlay will *"become the audio if the video is silent."* **It does not.** The filter graph references `[0:a]` unconditionally.
+
+**Verified by running it**, not by reading it: `mux_sfx` against a real silent 4 s mp4 with one overlay raises `PermanentError` (ffmpeg exit `4294967274`).
+
+**Reachable when `sfx_plan` has clips and both narration and music are absent:** music selection returning no track (`_music_segments` → `None`) plus a run where `NarrationStep` did not produce the active version (`produced_by != NARRATION`) — which is exactly the shape `tests/integration/test_narration_pipeline_ordering.py` constructs deliberately. `RENDER_ONLY_STEPS` can reach it too.
+
+⚠ **§12's own entry states the SFX contract as "Missing clips skip those events, never fail the run." This is the one path that fails the run** — and the single integration test muxes narration on first, so it never touches it. **Fix: either probe for an audio stream and drop `[0:a]` from the mix when there is none, or treat a silent input as the empty-overlay case and copy.**
+
+**Fixed 2026-08-20.** `_has_audio_stream` via ffprobe. If `[0:a]` exists it is the mix bed (`duration=first`). If not, an `anullsrc` of the video's length is the bed and the overlays *become* the audio — matching the docstring rather than copying a silent file. `test_mux_sfx_on_a_silent_video_becomes_the_audio` covers the crash path.
+
+### 15.4 R14 — tempo-fit outranks the creative brief, and a zero-relevance track wins. Measured on the real library.
+
+`_tempo_band` sits **above** term-overlap relevance in `rank_music_candidates`'s sort key. And `LocalMusicProvider.search` ignores the query entirely — it returns **all 54 tracks** for every request — so with `MUSIC_PROVIDER=local` (the default) ranking *is* the whole selection mechanism.
+
+**Real top picks, run against the shipped manifest at `video_duration_s=180`:**
+
+| Director's brief | no tempo target | with a 137 BPM target (`retention_fast`, 1.75 s shots) |
+|---|---|---|
+| ambient / drone / quiet / reflective | `nightshift-master`, relevance **0.500** | **"Delightful D"**, relevance **0.250** |
+| solemn / memorial / strings / mourning | `Dark Times` (48 BPM), relevance 0.250 | **"Delightful D"**, relevance **0.000** |
+
+⚠ **A track with zero term overlap takes the top slot on a solemn memorial brief, because it published a number inside the band.** One place down the same list, a somber drone with no BPM loses to a 120 BPM "Delightful D" on an industrial-war brief.
+
+**Why the module's own precedent does not justify this.** `music_ranking.py`'s docstring argues at length for lexicographic ordering over a soft blend — but it argues it for the **duration floor**, where the thing being excluded is a *defect*: a 2.5 s air horn is objectively unusable as a bed, so a hard guarantee is right. **Tempo is taste, not a defect.** Ranking a taste preference above the brief is a different decision than ranking a defect filter above it, and it was not separately argued.
+
+**Two further reasons tempo cannot support that position:**
+
+- `SelectMusicStep` runs **before** `NarrationStep`, so `mean_shot_duration_s` is a *pre-narration estimate*. Q8 measured per-scene chars/sec variance at ±16–20% — **the uncertainty in the target is as wide as the ±20% acceptance band itself.** A criterion cannot discriminate more finely than its own input error.
+- **R11 compounds it in a known direction:** the estimate feeding `target_bpm` is 20% too long for `retention_fast`, so the target BPM is ~20% too low, and the band selects slower music than intended on the one style where cutting tempo actually matters.
+
+**Fix: move `_tempo_band` below the relevance term.** Tempo becomes a tiebreaker among comparably-relevant tracks, which is what a ±20%-uncertain criterion over a 33%-populated field can actually support. The three properties §12 claimed for it (never discards; unknown beats a published mismatch; published-fit beats unknown) all survive — they just stop overriding mood.
+
+**Fixed 2026-08-20.** Sort key is now `(duration_floor, -relevance, tempo_band, source_id)`. Equal-relevance in-band vs mismatch still prefers the fit; a solemn memorial brief no longer loses to a zero-overlap 140 BPM track. Test: `test_term_overlap_outranks_tempo_fit`.
+
+### 15.5 R15 — two SFX length policies, 4.0 s and 1.5 s, neither aware of the other
+
+`rank_sfx_candidates` prefers clips ≤ **`_SFX_CEILING_S = 4.0`**. `mux_sfx` hard-cuts at **`sfx_max_clip_s = 1.5`** with `atrim` and **no fade**. The ranking therefore cannot express a preference for clips that survive the mix intact.
+
+**What the shipped library actually selects**, run through the real provider and ranker with the real `_DEFAULT_QUERIES`:
+
+| kind | picked | duration | after `atrim=0:1.5` |
+|---|---|---|---|
+| `whoosh` | `swosh_swoosh_whoosh_air_sound…` | 0.490 s | intact |
+| **`stinger`** | **`creepy_stinger_chuckle.mp3`** | **4.000 s** | ⚠ **cut off mid-sound at 1.5 s, no fade, on every text card** |
+| `transition` | `space_swoosh_brighter.mp3` | 1.013 s | intact |
+
+⚠ **The default stinger sits exactly on the ranking ceiling and is truncated by 62% of its length in the mix.** A hard `atrim` mid-waveform is an edge discontinuity, which is the standard way to produce an audible click.
+
+**Secondary, and it decides an aesthetic by accident:** all three stingers tie on relevance (all tagged `stinger`, queried with `stinger` / `cinematic impact`), so `source_id` — the I5 determinism tiebreak — picks the winner **alphabetically**: `creepy…` < `horror…` < `stinger_3…`. The neutral clip (`stinger_3_wav`, 1.995 s) is last of three. **A horror chuckle plays under archival documentary title cards because of the letter it starts with.**
+
+**Fix: tie `_SFX_CEILING_S` to `sfx_max_clip_s` so ranking and mixing share one length policy, and add a short `afade` out at the cut.** The tie-break exposure is separate and is a library-curation call, not a code one — three interchangeable clips per kind means alphabetical order will always decide.
+
+**Fixed 2026-08-20.** Ranking reads `settings.sfx_max_clip_s` (1.5), not a private 4.0. Clips that survive the mix intact rank first; among those that do not, shorter wins (less truncation) so `stinger_3` (1.995 s) beats `creepy_stinger_chuckle` (4.0 s) instead of alphabetical horror. Each overlay gets `afade=t=out` over the last 80 ms of the trim. The remaining library-taste call (horror vs neutral stinger when both fit) is unchanged and still a curation pass.
+
+### 15.6 Smaller items, all verified, none blocking
+
+- **`sfx_content_hashes`'s justifying comment is wrong.** It says clip bytes "are not in the Timeline (I2), so the hashes of the files actually mixed must be here" — but the hashes *are* in the Timeline, as `SfxClipSelection.content_hash`, and the whole timeline document is already hashed. The entry is redundant, not harmful, and it matches `music_content_hash`'s own precedent — but the stated reason does not hold (an R4-shaped wrong-justification, recorded so nobody builds on it).
+- **`sfx_gain_db` is hashed unconditionally, so every pre-SFX cached render misses exactly once.** Consistent with how the music gains, captions and watermark each landed; expect one re-render, not a bug.
+- **`FakeNarrationProvider` uses `request.speed or 1.0` without `canonical_narration_speed`** — the fake is unclamped where the real provider clamps to 0.7–1.2. Only reachable via a code-level band value outside the band, so theoretical today.
+- **`_pre_sfx_*.mp4` is written to `renders/`, not `work/`** — follows Track C's `_act_bed_` precedent, so consistent rather than wrong, but both are intermediates sitting in the output directory.
+- **`SelectSfxStep`'s docstring says it runs before the approval gate "so a human hears the whooshes."** The placement is right and matters (see §15.7), but nothing renders SFX until `RenderStep`, so nothing is audible at approval. The reason is wrong; the position is not.
+
+### 15.7 What was checked and holds up
+
+| claim in §12 | verified how |
+|---|---|
+| speed shares one canonical value between the hash and the request | `canonical_narration_speed` is called by **both** `compute_narration_content_hash` and the provider's body assembly — the failure mode named in §2.1 (a speed that reaches the API but not the hash) is structurally closed, not just avoided |
+| default 1.0 keeps pre-R8 cache rows as hits | 1.0 is omitted from the digest string entirely; the four-value key is byte-identical |
+| `resolve_music_gains` treats `0.0` as a real value | `is not None` throughout, never `or` — as its own docstring insists |
+| the fingerprint and `mux_music` cannot drift on gains | `render.py` resolves **one** `MusicGains` and passes the same pair to both. R2's lesson applied correctly this time |
+| 18 of 54 tracks carry BPM, 36 stay null | counted from the manifest; values 40–180; `_TEMPO_FIT_FRACTION = 0.20` matches the documented ±20% |
+| SFX placement reuses existing arithmetic rather than re-deriving it | `compute_shot_start_times` (D5-correct run/overlap math, explicitly not a naive running sum) and `punch_in_frame_offsets` — the transition event lands exactly on the next shot's start, which is the same number the crossfade uses |
+| `sfx_plan is None` is a no-op for pre-existing Timelines | both `_sfx_content_hashes` and `_sfx_overlays` return empty; render-only of an old project is genuinely unblocked |
+| the mux routes through `run_ffmpeg` | R-C7's semaphore is respected; no raw subprocess |
+
+✅ **One thing done right that is not obvious and deserves naming: `SelectSfxStep` is placed BEFORE `NarrationStep` in `DEFAULT_PIPELINE`.** Had it landed after, its `produced_by=SFX_SELECTION` version would have become the active one, `_resolve_narration_rows` would have returned `None` on its `produced_by != NARRATION` check, and **every narrated render would have silently gone silent** — a whole-product regression with no error message, discoverable only by watching a video. The same is true of `SelectMusicStep`, which sits in the same window. This is a real invariant of the pipeline order that neither step's docstring states, and it is worth stating somewhere before someone reorders the list for a good-looking reason.
+
+### 15.8 Recommended order
+
+1. **R13** (silent-video crash) — ✅ fixed 2026-08-20.
+2. **R12** (`sfx_max_clip_s` into the fingerprint) — ✅ fixed 2026-08-20.
+3. **R11** (speed into the estimators) — ✅ fixed 2026-08-20, in one pass with Q8's `script_chars_per_second_hi` deletion and Q7's minimum-length warning.
+4. **R15** (tie the SFX length policies, add the fade) — ✅ fixed 2026-08-20.
+5. **R14** (demote tempo below relevance) — ✅ fixed 2026-08-20.
+
+87 related tests green. **Stopped here for review.** Next leftover remains split-screen. A8 last.
+
+### 15.9 R11–R15 confirmed fixed, and §15.6's five minors closed — 2026-08-20
+
+> **Method: re-ran the experiment that produced each finding, not the docstring that now claims it is fixed.** Every confirmation below is the same call, on the same real data, that failed or mis-ranked when §15 was written. **463 tests pass** — the whole `tests/unit` tree plus the three DB-free integration suites (`test_mux_sfx`, `test_sfx_library_integrity`, `test_music_library_integrity`), re-run *after* the minor fixes below, not only after the five findings. `ruff check` clean. The DB-backed suite was again not re-run — it truncates the Postgres the dev server uses, and nothing here needs it.
+
+#### The five findings
+
+| | verified how | verdict |
+|---|---|---|
+| **R11** | `_chars_per_second(style)` now multiplies by `resolve_narration_speed(style)`. Same 2,200-char script: `retention_fast` **152.8 s → 127.3 s** (rate 14.40 → 17.28); `documentary_archival` and `stillness` **unchanged at 152.8 s**; a style-less legacy call still resolves 14.40 | ✅ **fixed.** The 20% inflation is gone and the two styles with no speed override are untouched, so no existing pre-flight verdict moved |
+| **R12** | `sfx_max_clip_s` is now a `compute_render_fingerprint` parameter, hashed unconditionally beside `sfx_gain_db` — **plus a dedicated regression test** (`test_different_sfx_max_clip_changes_the_fingerprint`) | ✅ **fixed and locked.** §7's lesson finally has a test rather than a comment |
+| **R13** | The exact call that raised `PermanentError` (ffmpeg exit `4294967274`) re-run: **succeeds, duration 4.000 s preserved, both streams present.** The fix probes for an audio stream and injects a duration-matched `anullsrc` as the mix base when there is none | ✅ **fixed.** The overlay now genuinely becomes the audio, which is what the docstring had been claiming all along |
+| **R14** | Relevance moved above `_tempo_band` in the sort key. Re-ran the two briefs that flipped: `ambient/drone/quiet` and `somber/industrial/war` now give the **same top pick with and without a 137 BPM target**. "Delightful D" at relevance **0.000** wins nothing | ✅ **fixed.** The one brief that still shifts (`solemn/memorial`) shifts *within equal relevance* — a known-mismatched 48 BPM losing to a pulseless track — which is tempo working as the tiebreaker it was documented to be |
+| **R15** | Ceiling now reads `settings.sfx_max_clip_s`; the trim gets an 80 ms `afade`; and — beyond what the review asked — clips that do **not** fit are ordered by **least truncation**. Default stinger pick: **4.000 s → 1.995 s** | ✅ **code fixed**, ⚠ **library residual, see below** |
+
+⚠ **R15's fix also solved the alphabetical problem for free, which is worth noting because it was raised as a separate curation issue.** The three stingers tie on relevance, so `source_id` used to decide the aesthetic and `creepy_stinger_chuckle` won on the letter C. Ordering the non-fitting clips by duration puts the neutral `stinger_3_wav` first instead. **A defect-magnitude tiebreak beat a curation problem** — worth remembering next time an aesthetic complaint looks like it needs a library change.
+
+#### ⚠ R15's one open residual: the library cannot satisfy the policy it can now express
+
+The three stinger clips are **1.995 s, 3.024 s and 4.000 s**. `sfx_max_clip_s` is **1.5 s**. So no stinger fits, and every text-card stinger is still trimmed — now by 25% instead of 62%, and faded rather than clicking, but the tail is still lost.
+
+**This is curation, not code.** The ranking can now express "prefer a clip that survives the mix"; there is simply nothing in the library that does. **One CC0 stinger under 1.5 s closes it** — the same `scripts/download_sfx_library.py` path the other nine came through. Deliberately left for a live-download pass rather than folded in here.
+
+#### §15.6's five minors, all closed — and two turned out to be worth more than "minor"
+
+1. **`FakeNarrationProvider` now clamps through `canonical_narration_speed`** rather than `request.speed or 1.0`. Verified: `speed=5.0` produces 18.0 chars/sec (15.0 × the clamped 1.2), not 75.0. The point is not tidiness — the real provider clamps, so an unclamped fake would make **DRY_RUN disagree with production about how long a scene takes**, which is the one thing this provider exists to get right.
+2. **The `sfx_content_hashes` comment now states the true reason.** The entry is *redundant* — every clip hash is already inside `SfxClipSelection.content_hash` in the hashed timeline document — and is kept only for the same one-obvious-line-per-mux-input convention `music_content_hash` follows. `sfx_gain_db` is the entry that genuinely has nowhere else to live. Recorded so nobody builds a load-bearing argument on a redundant field.
+3. **`SelectSfxStep`'s docstring no longer claims a human "hears the whooshes" at the approval gate.** Nothing renders SFX until `RenderStep`, well after approval. It runs early because the search is free (I6), and it must stay before `NarrationStep` — see 4.
+4. ⚠ **The ordering invariant from §15.7 is now written down, above `DEFAULT_PIPELINE` where a reorder would happen.** `NarrationStep` must be the last pre-approval step that appends a version, because every appending step stamps its own `produced_by` and `_resolve_narration_rows` resolves audio only for `produced_by == NARRATION`. **Moving `SelectMusicStep` or `SelectSfxStep` after narration — for a reason as plausible as "select music once the real durations are known" — silently drops narration from every render: no exception, no failed step, no log line, discoverable only by watching the video.** The comment says that, and says where such work belongs instead (after the approval gate, or re-stamping `produced_by`).
+5. **Both mux intermediates moved from `renders/` to `work_dir`** (`pre_sfx_*.mp4`, `music_bed_*.m4a` — the latter taking Track C's `_act_bed_` with it, since it had the same problem and set the precedent). `renders/` is the directory a human and `GET /projects/{id}/video` treat as the outputs; a half-mixed `_pre_sfx_final.mp4` sitting there is indistinguishable by name from a real render. Nothing globs either directory, so this is a rename with no other consumer.
+
+#### Two of the five older decided-but-unapplied changes landed with this batch
+
+- ✅ **`script_chars_per_second_hi` deleted** (Q8 decision #1) — folded into R11, which is exactly the one-pass argument that decision made.
+- ✅ **Q7's minimum-length WARNING**, wired end to end: its own `warnings` field (never `violations`, so `passed` is untouched), `settings.script_preflight_min_duration_s = 60.0`, and surfaced through `app/schemas/script_preflight.py` and `app/api/projects.py`. Verified: a 2-second script warns and **still passes**.
+
+⚠ **Three remain unapplied:** the Director's `camera_language` is still emitted unconditionally by the Shot Planner (Q6); the rewrite's entity check is still a one-way set difference, catching dropped names but not invented ones (Q7); and `colour_palette` is still *required* by the Director's own validator while being read by nothing (Q6) — so the Director still spends output tokens on every project describing a palette the system does not honour.
+
+#### §15 closes here
+
+R11–R15 fixed and re-verified, five minors closed, one library residual named. **Split-screen closed 2026-08-20.** Remaining: three Q6/Q7 code changes, R2's second half, parallax parked, A8 last.
+
+---
+
+## 16. Code-vs-plan review of split-screen (leftover item 3), 2026-08-20
+
+> **Method.** Same standard as §13 and §15: read the slice against the plan, then probed the real code. The fingerprint claims were tested by **calling all three fingerprint functions with swapped panel assets** and comparing digests; the resolver findings were traced through `is_satisfied` / `run` / `_ScratchBinding` and cross-checked against the attribute surface the resolve path actually touches; the renderer was exercised by the slice's own real-ffmpeg tests. **The slice's own 38 tests pass** (split-screen filter arithmetic, the real-ffmpeg composite and degrade, shot planner, asset planner, fragments); and a full sweep — the whole `tests/unit` tree plus the four DB-free integration suites — is **474 passed**, up from 463 before this slice, with no regression in the SFX, music, narration-speed or fingerprint work reviewed in §15. The DB-backed suite was not re-run (it truncates the Postgres the dev server uses).
+>
+> ⚠ **This slice is the best-disclosed one so far, and the review reflects that.** §12's entry volunteers five residuals unprompted — per-shot cost estimate, no gutter, no layout toggle, no bottom-panel override, and the outstanding Q6/Q7/R15 items. **None of the findings below is one of those.** Every one is something the entry either does not mention or states more confidently than the code supports.
+>
+> **The through-line: the second panel is a first-class render input everywhere the RENDERER looks at it, and a second-class one everywhere the WORKFLOW does.** The two lower fingerprint layers, the migration, the carry-forward, and the timeline service all treat it properly. `is_satisfied`, the failure record, the reuse-gap ledger and the top-level fingerprint do not.
+
+### 16.1 R16 — the render fingerprint cannot tell the top panel from the bottom one. Measured.
+
+§12's entry says: *"Both content hashes go into `compute_render_fingerprint` (sorted list) and `compute_shot_stream_fingerprint` / `compute_run_fingerprint` (dedicated `secondary_*` field...). Swapping the bottom panel misses the shot-stream cache."* **Both halves are true. The consequence of the parenthetical is not stated, and it is the one that matters.**
+
+**Measured — the same split shot, top and bottom assets exchanged:**
+
+| layer | swap detected? |
+|---|---|
+| `compute_shot_stream_fingerprint` | ✅ yes — `asset_hash` and `secondary_asset_hash` are separate keys |
+| `compute_run_fingerprint` | ✅ yes — separate `hash` / `secondary_hash` per shot |
+| **`compute_render_fingerprint`** | ❌ **no — identical digest** |
+
+⚠ **The render fingerprint is checked FIRST and short-circuits everything**, including both lower caches. So on a swap it returns a hit and the two correct layers are never consulted. The reason is `sorted(asset_content_hashes)` — a deliberate property, asserted by its own test (`test_asset_content_hash_order_does_not_matter`), whose stated purpose is *"two equivalent renders whose bindings merely got resolved in a different sequence must still fingerprint identically."* That reasoning is sound for resolution ORDER. It is not sound once the list contains two hashes whose **assignment** (top vs bottom) changes the pixels, because a flat sorted multiset cannot express assignment.
+
+**Reachability, stated honestly: not reachable through any endpoint today.** `override_shot_asset` writes `binding.asset_id` only, so a human cannot set the bottom panel — which is §12's own disclosed residual. ⚠ **That is exactly why this needs recording now: closing the disclosed residual (a bottom-panel override) is what makes this one reachable.** The fix for one opens the other, and whoever adds the override will not naturally think about a sorted list two modules away.
+
+**The same hole already exists one level up and IS reachable today**, pre-dating this slice: override shot A to shot B's image and shot B to shot A's, on two shots already carrying `asset_locked=True` (so the timeline document does not change either) — identical sorted multiset, identical fingerprint, stale render served. Narrow, but it means the class is real rather than theoretical.
+
+**Fix: pass assignment, not a bag.** Either hash `{shot_id: (primary_hash, secondary_hash)}` instead of a flat sorted list, or add a separate `secondary_content_hashes` mapping alongside it. The first also closes the pre-existing shot↔shot case.
+
+**Fixed 2026-08-20.** Replaced the sorted bag with `shot_media: [{shot_id, hash, secondary_hash}]` in timeline order. Swapping the two panels of one shot misses; swapping shot A and shot B's assets misses too (the locked-shot case). Tests: `test_swapping_top_and_bottom_panels_changes_the_fingerprint`, `test_swapping_two_shots_assets_changes_the_fingerprint`. Existing cache rows miss once, same as every prior R2-shaped field.
+
+### 16.2 R17 — `is_satisfied` ignores secondaries, so the re-entry guard written for them cannot fire
+
+`run()` carefully computes `needs_secondary` and re-enters a shot whose primary is already done but whose bottom panel is missing. **`is_satisfied` does not know secondaries exist:**
+
+```
+return all(bindings[s.id].state in self._done_states for s in shots)
+```
+
+The engine skips any step whose `is_satisfied` is true. So whenever every primary is done — the exact condition `needs_secondary` was written for — the step is skipped and `run()` is never called. **The re-entry guard is unreachable in its own scenario.**
+
+⚠ **This makes one of §12's claims false in the common case.** The entry says *"Generation of a missing bottom panel still runs if the generation pass reaches the shot."* The generation pass reaches a shot only if that shot's **primary** is not yet done. So: top panel found by free search (the normal outcome), bottom panel's search failed → `resolve_assets_generate` sees every primary `resolved`, returns satisfied, and is skipped. **The bottom panel never gets its generation attempt.** It runs only by luck — when some unrelated shot in the project still needs generation and drags the step into `run()`.
+
+**Fix: teach `is_satisfied` the same question `run()` asks** — a shot with a `secondary_asset_plan` and neither secondary id set is not done. One clause, and it makes the existing `needs_secondary` code do what it was written to do.
+
+**Fixed 2026-08-20.** `secondary_panel_done(shot, binding, done_states=)` is the shared question. `is_satisfied` requires it of every shot; `run()` uses the negation as `needs_secondary`. A search miss stamps `secondary_state=awaiting_generation`, so the search pass is satisfied and the generation pass is not — the bottom panel now gets its generation attempt without depending on some other shot still being unfinished. A recorded `failed` is done, so it is not retried forever (R18).
+
+### 16.3 R18 — the bottom panel's failure is discarded entirely: no state, no error, no log
+
+```python
+except Exception:  # noqa: BLE001 - missing bottom panel degrades
+    pass
+```
+
+**Three things are lost, and this is the only place in this step where that is true.** Every primary failure records `binding.state`, `binding.last_error` and `binding.attempts` — Principle 10 is *isolate* the failure, not erase it. Here:
+
+1. **No record.** The migration added `secondary_asset_id` / `secondary_clip_id` and **no `secondary_state`**, so "attempted and permanently failed" is indistinguishable from "never attempted". `scratch.last_error` is populated by the resolver and then thrown away.
+2. **No log line.** Nothing is emitted. A split shot silently becomes a single-image static shot, and the renderer's degrade path — correct and tested — makes the result look deliberate. ⚠ **A systematically broken bottom panel (a bad secondary query pattern, a licence gate excluding everything) produces plausible-looking videos and leaves no trace anywhere to find it by.**
+3. **Both error classes collapse.** `TransientError` is an `Exception`, so a network blip gets the same treatment as a permanent miss and never reaches the outer handler's retry semantics. So does the budget cap's `PermanentError` — **a run that stopped because it hit the spend cap is indistinguishable from one that could not find a photograph.** That is the one failure this codebase is most careful about elsewhere (`check_budget`'s own docstring: *"a retry storm against a paid API is the single most expensive failure mode this system has"*).
+
+**Fix: catch `TransientError` and `Exception` separately, log the degrade with the shot id and the reason, and persist it** — either a `secondary_state`/`secondary_last_error` pair, or at minimum append to `binding.last_error`. With R17's fix this also becomes the thing that stops a permanently-unfindable panel being re-attempted on every future run.
+
+**Fixed 2026-08-20.** `secondary_state` / `secondary_last_error` columns (migration `c8f5d3b02e19`), copied on carry-forward. `TransientError` logs `resolve_assets.secondary_transient` and leaves state unset so the step retries. Any other `Exception` (including the budget cap) logs `resolve_assets.secondary_failed` and stamps `failed`. The render still degrades to a single image; it is no longer silent.
+
+### 16.4 R19 — `_ScratchBinding` is a duck-typed stand-in for an ORM row, and R18 hides the failure mode
+
+The bottom panel reuses `_resolve_one_fake` / `_resolve_one_real` by passing a hand-written object with seven attributes instead of a `ShotBindingModel`. **The attribute surface the resolve path touches is:** `asset_id`, `clip_id`, `state`, `rung`, `last_error`, `attempts`, `cost_cents`, `secondary_asset_id`, `secondary_clip_id`, **`shot_id`**.
+
+`_ScratchBinding` defines the first seven. **`shot_id` is not defined** — today it is only read inside `_prewarm_video_frames`, which iterates real DB rows, so nothing breaks. ⚠ **But this is a live coupling with no test and no type check:** the day a resolver reads `binding.shot_id` (for a log line, a cache path, a metric), the scratch object raises `AttributeError`, R18's bare `except` swallows it, and **every split shot in the project quietly loses its bottom panel with no error anywhere.** Python's duck typing means neither mypy nor a review of the resolver would flag it.
+
+**Fix: construct an unattached `ShotBindingModel` instead** — same fields, real type, and a missing attribute becomes an error the type checker sees. Or give `_ScratchBinding` the full surface and a comment tying it to the resolver's contract.
+
+**Fixed 2026-08-20.** Deleted `_ScratchBinding`. The bottom panel now resolves against an unattached `ShotBindingModel` (`project_id`, `timeline_version`, `shot_id` set, never `session.add`'d). A missing attribute is a real ORM error, not a silent degrade.
+
+### 16.5 R20 — the reuse-gap ledger never learns about bottom panels
+
+The primary's resolve feeds the duplicate-image guard:
+
+```python
+used_hash = await self._resolve_one_real(...)
+if used_hash is not None:
+    used_at_s.setdefault(used_hash, []).append(shot_start)
+```
+
+The secondary's identical call **discards the return value.** So `used_at_s` — and therefore `reuse_gap_s(...)`, the mechanism that stops the same photograph appearing twice within a short window — is blind to every bottom panel. Two concrete consequences:
+
+- The **same still can be the top panel of one shot and the bottom panel of another** a couple of seconds later, and nothing notices.
+- A **later shot's primary can reuse an image already on screen as a bottom panel**, because that use was never recorded.
+
+⚠ Split-screen makes this worse than it sounds: a split shot shows **two** images at once, so it doubles the on-screen image count in exactly the region of the timeline where a repeat is most visible — both panels are simultaneously in frame with whatever the neighbouring shots show. **Fix: capture the secondary's `used_hash` and append it at the same `shot_start`.** Two lines.
+
+**Fixed 2026-08-20.** The secondary `_resolve_one_real` return value is appended to `used_at_s` at the same `shot_start` as the primary. A still already on screen as a bottom panel now penalises a later shot that would reuse it.
+
+### 16.6 Smaller items, all verified, none blocking
+
+- ⚠ **`framing=split` is handed to the Asset Planner for both panels with no instruction that it describes the COMPOSITE.** `_build_user_content` sends `framing={s.framing.value}` on the shot line, and the same line now carries `secondary_prompt`. The prompt file explains the two-plan structure well but never says "each panel is a single subject; `framing: split` is about the frame, not this photograph." A model that takes `framing=split` literally per panel writes a "split screen …" search query — which finds nothing on Commons — or generates a split image *inside* a split panel. Same shape as §14.9's Q6 finding: two instructions in one request with no stated precedence. One sentence in the prompt, or omit `framing` for split shots. **Fixed 2026-08-20.** Prompt now says each panel is one photograph; `framing: split` is the composite, not the search query.
+- **Nothing ties `framing` to `camera.movement`.** The shot-planner validator now enforces `split_frame ⇔ secondary_prompt` in both directions (good), but `framing: split` with `movement: static`, or `split_frame` with `framing: wide`, both validate. Two fields expressing one idea with no cross-check. **Fixed 2026-08-20.** `split_frame ⇔ framing=split` is now a validator pair, same symmetry as the prompt. Test: `test_split_frame_with_wide_framing_is_rejected`.
+- **No test covers a split shot inside a MULTI-shot run.** Both integration tests use a single-shot timeline, which exercises the dedicated `len(run) == 1 and split_in_run` path. The `_render_run_two_pass` path with a split shot plus an xfade neighbour — the more complex integration, and the one that has to keep "one stream per shot" true — is untested. The naming (`{run_stem}_s{index:03d}_top/_bot`) is index-unique so a collision looks unlikely, but that is an argument from reading, not a test. **Fixed 2026-08-20.** `test_split_shot_crossfades_with_a_neighbour` — split then a static neighbour, dissolve, duration 2.7 s, first-shot frame still red-over-blue.
+- **Panel letterboxing on real archival material is untested aesthetically.** Each 720×1280 frame gives two 720×640 panels (≈9:8). A 3:2 archival photo lands 720×480 inside that, so ~25% of each panel is padding. Correct behaviour, matching the plan's "never a fake split," but whether two heavily-padded halves read as a deliberate comparison on real 1936 photographs is the same kind of judgement Q5 and A8 needed a human for — and it has not been made.
+- **DRY_RUN exercises the composite properly** (`_resolve_one_fake` sets `asset_id`/`state` on the scratch, so a fake bottom panel resolves and renders), which is worth noting because it means the path is not generation-only.
+
+### 16.7 What was checked and holds up
+
+| claim | verified how |
+|---|---|
+| `ken_burns.py` still returns `None` for `SPLIT_FRAME` | unchanged — a split is not a `zoompan` expression, and the slice did not pretend otherwise |
+| the composite is real, top and bottom, at the pixel level | the slice's own integration test extracts a frame and asserts red at y=40 and blue at y=200. **This is the right standard** — the same frame-extraction standard §12's punch-in work set |
+| the degrade is real, not a fake split of one photograph | second integration test: one green image, both halves green, no split. Explicit and tested |
+| motion on either panel degrades rather than breaking | `render_timeline` skips a MOTION secondary before it can reach `should_composite_split`, so `bot_kind` is `None`; the asset planner and its validator additionally force `preferred_type=image` on both panels |
+| xfade still sees one stream per shot | the second input lives inside the per-shot encoder (C3's two-pass), so the run graph is unchanged and Track C's argv-length work is not disturbed. A single-shot split run is routed through the shot-stream path deliberately (`len(run) == 1 and split_in_run`) |
+| the GIF-flatten gate applies to the second still without colliding | `ensure_still_image(..., shot_id=f"{shot_id}__split")` — a distinct id, so the flattened bottom panel cannot overwrite the primary's |
+| both lower cache layers see the second panel | measured: shot-stream and run fingerprints both change on a swap, and both use `""` (not absent) when there is no secondary, so a later resolve cannot cache-hit the single-image encode |
+| the migration is correct | nullable, both FKs, a real `downgrade()`, correct `down_revision` chain |
+| a binding's second panel survives a re-plan | `ShotBindingRepository`'s carry-forward copies both new columns — easy to miss, and it was not missed |
+| A20/A25 treat the new fields as acquisition fields | `_acquisition_fields_changed` covers `secondary_prompt`/`secondary_asset_plan`, and the locked-shot drift rejection was extended with them. **This is the invariant that would have been silently wrong** if only the renderer had been updated |
+| the planner validation is symmetric | `split_frame ⇒ secondary_prompt` AND `secondary_prompt ⇒ split_frame`, both directions, in the same pass — the exact symmetry lesson Q7 raised about the rewrite's entity check, applied here without being asked |
+| the asset planner's per-plan rules were shared, not copied | `_plan_field_violations` was extracted so primary and secondary plans are validated by one function. A duplicated copy would have drifted |
+
+✅ **And the §12 entry itself is the most honest one in this log:** it volunteers the per-shot cost estimate, the missing gutter, the absent layout toggle, the missing bottom-panel override, and the still-open Q6/Q7/R15 items — without being asked, and before review. Two of the five findings above (R16's reachability, R17's contradiction) are only *findable* because the entry stated its claims precisely enough to check.
+
+### 16.8 Recommended order
+
+1. **R17** (`is_satisfied` learns about secondaries) — ✅ fixed 2026-08-20.
+2. **R18** (record and log the degrade) — ✅ fixed 2026-08-20.
+3. **R20** (feed the secondary's hash to `used_at_s`) — ✅ fixed 2026-08-20.
+4. **R16** (fingerprint by assignment, not a sorted bag) — ✅ fixed 2026-08-20. Bottom-panel override is now unblocked on the cache side.
+5. **R19** (real `ShotBindingModel` instead of the duck type) and §16.6's prompt/validator/multi-shot-test items — ✅ fixed 2026-08-20. Panel letterboxing on real archival photos is still a human judgement, same class as Q5/A8.
+
+102 related tests green (fingerprint assignment, `secondary_panel_done`, shot planner framing, split+xfade neighbour, timeline-service carry-forward). Fingerprint-cache and generate-timeline regressions also green. **Stopped here for review of these fixes.** Next leftover remains R2's second half. A8 last. Parallax parked.
+
+### 16.9 R16–R20 confirmed fixed — 2026-08-20
+
+> **Method: re-ran the experiment that produced each finding.** The fingerprint claims were re-tested by calling `compute_render_fingerprint` with the panels exchanged, with two shots' assets exchanged, and with the bottom panel absent; the resolver findings were re-traced through `is_satisfied` / `run` / the scratch object; the migration graph was parsed offline to confirm a single head. **483 tests pass** — the whole `tests/unit` tree plus the four DB-free integration suites, up from 474 before the fixes (the nine new tests are R16's two swap cases, the multi-shot crossfade, and the reinterpreted order test among them). `ruff check` clean.
+
+| | verified how | verdict |
+|---|---|---|
+| **R16** | `asset_content_hashes` is now `dict[str, str]` keyed by shot id, with a parallel `secondary_content_hashes` map, emitted as a `shot_media` list built by iterating `timeline.all_shots()` — **timeline order, no dict iteration, so I5 holds.** Measured: top/bottom swap **differs**, shot↔shot swap **differs**, missing bottom panel **differs**, identical inputs still identical | ✅ **fixed, and the pre-existing hole closed with it** |
+| **R17** | `secondary_panel_done(shot, binding, done_states=...)` is now a module-level predicate called by **both** `is_satisfied` and `run`'s `needs_secondary` | ✅ **fixed** — see below on why this shape matters |
+| **R18** | Migration `c8f5d3b02e19` adds `secondary_state` / `secondary_last_error`. `TransientError` and `Exception` are caught **separately**, both `logger.warning` with the shot id, both persist the error; transient leaves `secondary_state` null (so it retries), permanent marks `"failed"`. Carry-forward copies both new columns | ✅ **fixed** |
+| **R19** | The duck type is gone: an **unattached `ShotBindingModel`**, with a comment on why it is never `session.add`'d (a flush would collide with the unique constraint). Full attribute surface, `shot_id` included | ✅ **fixed** |
+| **R20** | `used_hash` is captured from the secondary resolve and appended to `used_at_s` at the same `shot_start` | ✅ **fixed, and then some** — see below |
+
+#### Two fixes that are better than what the review asked for
+
+1. ⚠ **R17 was fixed by extracting the QUESTION, not by adding a clause.** The finding was that `is_satisfied` and `run` disagreed about what "done" means. Patching `is_satisfied` alone would have fixed today's symptom and left two independent copies of the same predicate to drift apart again — which is precisely how the bug arose. `secondary_panel_done` has one definition and two call sites, so **the two cannot disagree a second time.** This is the §13-method lesson ("the resolver was verified but not the run that calls it") answered structurally rather than locally.
+2. ⚠ **R20's fix also closes a case the review did not raise.** `reuse_gaps_s(used_at_s, shot_start)` for the bottom panel is computed **after** the primary has appended its own hash — so the bottom panel now sees the top panel's use, and **a split shot can no longer pick the same photograph for both of its own panels.** That was reachable before (two panels, one query pool, no shared ledger) and would have been the most visible possible duplicate: the same image stacked on itself, in one frame.
+
+#### §16.6's smaller items — all four addressed
+
+- **The `framing=split` collision is resolved in the prompt**, and it names both failure modes the review described: *"`framing: split` describes the composite frame the renderer will build, not this panel — do not search for 'split screen' and do not ask an image model to generate a split image inside a panel."* Chosen over stripping `framing` from the user content, which would have lost real signal for every non-split shot.
+- **`framing` ↔ `camera.movement` is now cross-checked, symmetrically** (`split_frame ⇒ framing=split` and `framing=split ⇒ split_frame`), matching the shape the `secondary_prompt` check already had.
+- **`test_split_shot_crossfades_with_a_neighbour`** covers the multi-shot-run path — the `_render_run_two_pass` + xfade integration that was previously verified by reading only.
+- **Two R16 regression tests** (`test_swapping_top_and_bottom_panels_changes_the_fingerprint`, `test_swapping_two_shots_assets_changes_the_fingerprint`), and the old `test_asset_content_hash_order_does_not_matter` was correctly **reinterpreted rather than deleted** — it now asserts that dict *construction* order is irrelevant, which is the property that genuinely still holds.
+
+#### Three notes carried forward, none blocking
+
+1. ⚠ **`secondary_panel_done` reads the column through `getattr(binding, "secondary_state", None)`.** Now that the scratch object is a real `ShotBindingModel`, nothing needs the defensiveness — and it has a cost: if `c8f5d3b02e19` were ever unapplied, the attribute would resolve to `None`, `None` is not in `done_states`, so every split shot would be judged "not done" and **re-attempted on every run, including the paid generation rung** — a silent repeated spend instead of a loud `UndefinedColumn`. Prefer direct attribute access.
+2. **A budget-cap stop now marks the bottom panel terminally failed** (`PermanentError` → `secondary_state="failed"`), so raising the cap and re-running will not retry it. That matches exactly how a cap-stopped **primary** behaves, so it is consistent rather than wrong — and R18's real complaint is answered, because `secondary_last_error` now carries the cap message instead of the failure being erased.
+3. **The render fingerprint's payload key changed** (`asset_content_hashes` → `shot_media`), so every fingerprint computed before this fix is invalidated. Correct and harmless — a miss only ever means "render for real" — and the rename guarantees no accidental collision with an old digest. One re-render per existing project, same as the R2, captions, watermark and SFX additions each cost.
+
+#### Still outstanding on split-screen, unchanged by this pass
+
+**The aesthetic judgement.** Each 720×1280 frame yields two 720×640 panels, so a 3:2 archival photograph sits with roughly a quarter of its panel as padding. The behaviour is correct and deliberate ("never a fake split of one photograph"), but **whether two heavily-padded halves read as a deliberate comparison on real 1936 material is a human call that has not been made** — the same class of open question as Q5's pacing bands and A8's bake-off, and it does not compress into a test. §12's other four disclosed residuals (per-shot cost estimate, no gutter, no layout toggle, no bottom-panel override) also stand.
+
+⚠ **The R16/override pairing is now safe to unpick in either order.** With assignment in the fingerprint, building the bottom-panel override no longer risks serving a stale render on its first use — which was the one sequencing constraint §16.8 flagged.

@@ -145,6 +145,7 @@ def _shot_output(scene_id: str, duration_s: float) -> ShotPlannerOutput:
                 ),
                 transition_out=ShotTransitionOutput(type=TransitionType.CUT, duration_s=0.0),
                 prompt="archival photograph",
+                secondary_prompt="",
             ),
         ]
     )
@@ -164,7 +165,8 @@ def _asset_output(scene_id: str) -> AssetPlannerOutput:
                 fallback_chain=[AssetStrategy.HISTORICAL_SEARCH, AssetStrategy.GENERATE_IMAGE],
                 licence_requirements=["public_domain"],
             ),
-        ]
+        ],
+        secondary_asset_plans=[],
     )
 
 

@@ -16,12 +16,17 @@ from app.assets.music_ranking import (
     compute_duration_floor_s,
     music_candidate_relevance,
     rank_music_candidates,
+    target_bpm_for_mean_shot_duration,
 )
 from app.providers.base import TrackCandidate
 
 
 def _track(
-    source_id: str, title: str, tags: str = "", duration_s: float | None = None
+    source_id: str,
+    title: str,
+    tags: str = "",
+    duration_s: float | None = None,
+    bpm: int | None = None,
 ) -> TrackCandidate:
     return TrackCandidate(
         source_id=source_id,
@@ -30,6 +35,7 @@ def _track(
         licence="cc0",
         tags=tags,
         duration_s=duration_s,
+        bpm=bpm,
     )
 
 
@@ -138,3 +144,79 @@ def test_duration_floor_is_a_no_op_when_video_duration_is_unknown():
     long_ = _track("long", "unrelated", duration_s=99.0)
     ranked = rank_music_candidates([short, long_], query_terms=["documentary underscore"])
     assert ranked[0].source_id == "short"  # relevance alone still decides
+
+
+def test_target_bpm_is_four_beats_per_mean_shot():
+    """Plan §5.3: 1.75s shots ≈ 137 BPM on a 4-beat bar."""
+    assert target_bpm_for_mean_shot_duration(1.75) == 240.0 / 1.75
+    assert target_bpm_for_mean_shot_duration(0.0) is None
+
+
+def test_tempo_fit_prefers_a_published_in_band_bpm_over_a_mismatch():
+    """Equal relevance, equal duration: the 140 BPM industrial bed fits
+    a 1.75s (137 BPM) cut; the 60 BPM funeral bed does not."""
+    fit = _track("fit", "industrial ambient", duration_s=45.0, bpm=140)
+    mismatch = _track("mismatch", "industrial ambient", duration_s=45.0, bpm=60)
+    ranked = rank_music_candidates(
+        [mismatch, fit],
+        query_terms=["industrial"],
+        video_duration_s=60.0,
+        mean_shot_duration_s=1.75,
+    )
+    assert [c.source_id for c in ranked] == ["fit", "mismatch"]
+
+
+def test_unknown_bpm_ranks_between_a_fit_and_a_known_mismatch():
+    """A drone with no published tempo must not lose to a 180 BPM march
+    just because the march published a number, and must still lose to a
+    published-fit bed."""
+    fit = _track("fit", "industrial ambient", duration_s=45.0, bpm=140)
+    unknown = _track("drone", "industrial ambient", duration_s=45.0, bpm=None)
+    mismatch = _track("march", "industrial ambient", duration_s=45.0, bpm=180)
+    ranked = rank_music_candidates(
+        [mismatch, unknown, fit],
+        query_terms=["industrial"],
+        video_duration_s=60.0,
+        mean_shot_duration_s=1.75,
+    )
+    assert [c.source_id for c in ranked] == ["fit", "drone", "march"]
+
+
+def test_duration_floor_still_outranks_tempo_fit():
+    """Lexicographic: a 2.5s one-shot at the perfect BPM still loses to
+    a qualifying loop outside the band."""
+    perfect_but_short = _track(
+        "short", "industrial ambient", duration_s=2.5, bpm=137
+    )
+    long_mismatch = _track("long", "industrial ambient", duration_s=45.0, bpm=60)
+    ranked = rank_music_candidates(
+        [perfect_but_short, long_mismatch],
+        query_terms=["industrial"],
+        video_duration_s=60.0,
+        mean_shot_duration_s=1.75,
+    )
+    assert [c.source_id for c in ranked] == ["long", "short"]
+
+
+def test_term_overlap_outranks_tempo_fit():
+    """R14: a zero-relevance in-band track must not beat a matching
+    brief that happens to sit outside the BPM band."""
+    matching = _track("dark", "solemn memorial strings mourning", duration_s=45.0, bpm=48)
+    catchy = _track("edm", "unrelated dance pop", duration_s=45.0, bpm=140)
+    ranked = rank_music_candidates(
+        [catchy, matching],
+        query_terms=["solemn", "memorial", "strings", "mourning"],
+        video_duration_s=60.0,
+        mean_shot_duration_s=1.75,
+    )
+    assert ranked[0].source_id == "dark"
+
+
+def test_tempo_key_is_inert_when_mean_shot_duration_is_unknown():
+    """Callers that omit mean_shot_duration_s keep pre-§5.3 order."""
+    mismatch = _track("a", "industrial ambient", duration_s=45.0, bpm=180)
+    fit = _track("b", "industrial ambient", duration_s=45.0, bpm=140)
+    ranked = rank_music_candidates(
+        [mismatch, fit], query_terms=["industrial"], video_duration_s=60.0
+    )
+    assert [c.source_id for c in ranked] == ["a", "b"]  # source_id, equal relevance

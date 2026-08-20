@@ -74,6 +74,31 @@ async def test_synthesize_sends_voice_id_in_url_and_model_in_body(monkeypatch):
     assert seen_urls == ["https://api.elevenlabs.io/v1/text-to-speech/voice_123/with-timestamps"]
     assert seen_bodies[0]["text"] == _REQUEST.text
     assert seen_bodies[0]["model_id"] == "eleven_multilingual_v2"
+    # Default speed 1.0 is omitted so the pre-R8 body stays byte-identical.
+    assert "voice_settings" not in seen_bodies[0]
+
+
+async def test_synthesize_sends_speed_under_voice_settings(monkeypatch):
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "fake-key")
+    seen_bodies = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_bodies.append(json.loads(request.content))
+        return httpx.Response(200, json=_elevenlabs_response())
+
+    provider = ElevenLabsNarrationProvider(transport=httpx.MockTransport(handler))
+    await provider.synthesize(
+        NarrationRequest(
+            text=_REQUEST.text,
+            voice_id=_REQUEST.voice_id,
+            model=_REQUEST.model,
+            output_format=_REQUEST.output_format,
+            scene_id=_REQUEST.scene_id,
+            speed=1.2,
+        )
+    )
+
+    assert seen_bodies[0]["voice_settings"] == {"speed": 1.2}
 
 
 async def test_synthesize_persists_raw_alignment_never_normalized(monkeypatch):
@@ -190,3 +215,30 @@ def test_content_hash_is_stable_and_sensitive_to_every_input():
     assert base_hash != compute_narration_content_hash(
         text="hello", voice_id="v1", model="m1", output_format="o2"
     )
+    # Default 1.0 (and an explicit 1.0) keep the four-value pre-R8 key.
+    assert base_hash == compute_narration_content_hash(
+        text="hello", voice_id="v1", model="m1", output_format="o1", speed=1.0
+    )
+    assert base_hash != compute_narration_content_hash(
+        text="hello", voice_id="v1", model="m1", output_format="o1", speed=1.2
+    )
+
+
+async def test_fake_provider_scales_alignment_with_speed():
+    """DRY_RUN must not keep documentary-paced fake speech on a 1.2 style."""
+    from app.providers.fakes.narration import FakeNarrationProvider
+
+    slow = await FakeNarrationProvider().synthesize(_REQUEST)
+    fast = await FakeNarrationProvider().synthesize(
+        NarrationRequest(
+            text=_REQUEST.text,
+            voice_id=_REQUEST.voice_id,
+            model=_REQUEST.model,
+            output_format=_REQUEST.output_format,
+            scene_id=_REQUEST.scene_id,
+            speed=1.2,
+        )
+    )
+    slow_end = slow.alignment["character_end_times_seconds"][-1]
+    fast_end = fast.alignment["character_end_times_seconds"][-1]
+    assert slow_end / fast_end == pytest.approx(1.2)

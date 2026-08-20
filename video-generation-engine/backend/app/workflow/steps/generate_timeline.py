@@ -28,8 +28,11 @@ from app.script.styles import ConstraintBundle, resolve_constraint_bundle
 from app.timeline.duration import compute_timeline_duration
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
+from app.workflow.steps.select_sfx import default_sfx_plan
 
-_FAKE_PLANNER_OWNS = frozenset({"metadata", "creative_context", "music_plan", "scenes"})
+_FAKE_PLANNER_OWNS = frozenset(
+    {"metadata", "creative_context", "music_plan", "sfx_plan", "scenes"}
+)
 
 
 def _validate_against_style(timeline: Timeline) -> list[str]:
@@ -162,6 +165,8 @@ class GenerateTimelineStep:
             return  # already filled by a prior attempt
 
         fixture = await FakeTimelinePlanner().plan(project_id=ctx.project_id, script=script)
+        if fixture.sfx_plan is None:
+            fixture.sfx_plan = default_sfx_plan()
         await ctx.timeline_service.append_version(
             ctx.project_id,
             produced_by=ProducedBy.SHOT_PLANNER,
@@ -184,13 +189,15 @@ class GenerateTimelineStep:
             def _apply_director(base: Timeline) -> Timeline:
                 base.creative_context = creative_context
                 base.music_plan = music_plan
+                if base.sfx_plan is None:
+                    base.sfx_plan = default_sfx_plan()
                 return base
 
             await ctx.timeline_service.append_version(
                 ctx.project_id,
                 produced_by=ProducedBy.DIRECTOR,
                 transform=_apply_director,
-                owns=frozenset({"creative_context", "music_plan"}),
+                owns=frozenset({"creative_context", "music_plan", "sfx_plan"}),
             )
             timeline = await ctx.timeline_service.get_active(ctx.project_id)
             assert timeline is not None

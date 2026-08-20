@@ -76,6 +76,7 @@ async def _synthesize_and_persist_if_missing(
         voice_id=request.voice_id,
         model=request.model,
         output_format=request.output_format,
+        speed=request.speed,
     )
     async with async_session_factory() as session:
         repo = NarrationRepository(session)
@@ -149,6 +150,7 @@ async def test_row_persists_alignment_voice_model_and_character_count(project_id
         voice_id=request.voice_id,
         model=request.model,
         output_format=request.output_format,
+        speed=request.speed,
     )
     async with async_session_factory() as session:
         repo = NarrationRepository(session)
@@ -195,3 +197,37 @@ async def test_different_voice_id_is_a_cache_miss_and_calls_the_provider_again(
         project_id=project_id, scene_id="sc_03", request=request_b, provider=provider
     )
     assert call_count[0] == 2  # different voice_id -> different hash -> not a cache hit
+
+
+async def test_different_speed_is_a_cache_miss_and_calls_the_provider_again(
+    project_id, monkeypatch
+):
+    """R8: speed in the hash. A 1.2 request must not reuse 1.0 audio."""
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "fake-key")
+    call_count = [0]
+    provider = ElevenLabsNarrationProvider(transport=_counting_transport(call_count))
+
+    request_a = NarrationRequest(
+        text=_SCENE_TEXT,
+        voice_id="voice_abc",
+        model="eleven_multilingual_v2",
+        output_format="mp3_44100_128",
+        scene_id="sc_04",
+        speed=1.0,
+    )
+    request_b = NarrationRequest(
+        text=_SCENE_TEXT,
+        voice_id="voice_abc",
+        model="eleven_multilingual_v2",
+        output_format="mp3_44100_128",
+        scene_id="sc_04",
+        speed=1.2,
+    )
+
+    await _synthesize_and_persist_if_missing(
+        project_id=project_id, scene_id="sc_04", request=request_a, provider=provider
+    )
+    await _synthesize_and_persist_if_missing(
+        project_id=project_id, scene_id="sc_04", request=request_b, provider=provider
+    )
+    assert call_count[0] == 2

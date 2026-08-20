@@ -71,6 +71,7 @@ def test_default_pipeline_runs_narration_before_approval_and_generation_after():
         # search pass, before the approval gate - a human should hear
         # what the video will sound like before approving it.
         "select_music",
+        "select_sfx",
         "narration",
         "await_approval",
         "resolve_assets_generate",

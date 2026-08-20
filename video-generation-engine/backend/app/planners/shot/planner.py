@@ -38,7 +38,15 @@ from app.planners.shot.schemas import ShotPlannerOutput, ShotPlanOutput
 from app.prompts.loader import load_prompt, load_style_fragment
 from app.providers.base import PlanningLLMProvider
 from app.repositories.llm_call_repository import LlmCallRepository
-from app.schemas.timeline import Camera, CreativeContext, Scene, Shot, Transition
+from app.schemas.timeline import (
+    Camera,
+    CameraMovement,
+    CreativeContext,
+    Framing,
+    Scene,
+    Shot,
+    Transition,
+)
 from app.utils.bounded_gather import bounded_gather, planner_concurrency
 
 logger = get_logger(__name__)
@@ -196,6 +204,27 @@ def _make_validator(
                     f"shot {s.id} duration_s={s.duration_s} outside "
                     f"[{min_shot_duration_s}, {max_shot_duration_s}]"
                 )
+            is_split = s.camera.movement == CameraMovement.SPLIT_FRAME
+            has_secondary = bool(s.secondary_prompt.strip())
+            if is_split and not has_secondary:
+                violations.append(
+                    f"shot {s.id}: split_frame needs a non-empty secondary_prompt "
+                    "(the bottom panel) - do not put both subjects in `prompt`"
+                )
+            if has_secondary and not is_split:
+                violations.append(
+                    f"shot {s.id}: secondary_prompt is only for split_frame, "
+                    f"got {s.camera.movement.value}"
+                )
+            if is_split and s.framing != Framing.SPLIT:
+                violations.append(
+                    f"shot {s.id}: split_frame must use framing=split, got {s.framing.value}"
+                )
+            if s.framing == Framing.SPLIT and not is_split:
+                violations.append(
+                    f"shot {s.id}: framing=split is only for split_frame, "
+                    f"got {s.camera.movement.value}"
+                )
 
         total = sum(s.duration_s for s in shots)
         tolerance = max(1.0, 0.2 * scene.duration_s)
@@ -245,6 +274,7 @@ def _to_domain_shot(
             type=s.transition_out.type, duration_s=s.transition_out.duration_s
         ),
         prompt=s.prompt,
+        secondary_prompt=s.secondary_prompt,
         asset_plan=None,
     )
 

@@ -23,7 +23,8 @@ it - there is no prior version to carry anything from.
 
 A20's rule is per-shot, never all-or-nothing: a binding carries forward
 when its `shot_id` still exists in the new version AND that shot's
-acquisition-relevant fields (`prompt`, `asset_plan`) are unchanged.
+acquisition-relevant fields (`prompt`, `asset_plan`, `secondary_prompt`,
+`secondary_asset_plan`) are unchanged.
 Compared as parsed Pydantic values (both sides already went through the
 same JSON round-trip in `append_version`), not as raw byte strings - that
 is a strictly more correct interpretation of "byte-identical" than a
@@ -36,10 +37,10 @@ content.
 A human override (`POST /projects/{id}/shots/{shot_id}/override`, A9/A24)
 sets `Shot.asset_locked` and is a direct, deliberate conflict with A20:
 its binding carries forward UNCONDITIONALLY, even across a version whose
-`prompt`/`asset_plan` would otherwise have dropped it - see
+`prompt`/`asset_plan`/`secondary_*` would otherwise have dropped it - see
 `_carry_forward_bindings` below. The other half of that same decision
 lives in `append_version` itself: once a Shot is locked, no later version
-may change ITS `prompt` or `asset_plan` at all, ownership declarations
+may change ITS `prompt`/`asset_plan`/`secondary_*` at all, ownership declarations
 notwithstanding - see `_reject_locked_shot_drift`. Together these make "my
 photo is always in the plan" literally true rather than merely detected
 after the fact: a re-plan cannot even produce a Timeline where a locked
@@ -61,6 +62,7 @@ from app.repositories.timeline_repository import TimelineVersionRepository
 from app.schemas.timeline import (
     CreativeContext,
     ProducedBy,
+    Shot,
     Timeline,
     TimelineMetadata,
     TimelineStatus,
@@ -69,9 +71,21 @@ from app.timeline.additive import find_additive_violations
 from app.timeline.diff import TimelineDiff, compute_diff
 
 
+def _acquisition_fields_changed(left: Shot, right: Shot) -> bool:
+    """A20/A25: the fields that decide which media a shot acquires.
+    Split-screen's second panel is acquisition too — changing only the
+    bottom prompt must drop the binding, not serve the old pair."""
+    return (
+        left.prompt != right.prompt
+        or left.asset_plan != right.asset_plan
+        or left.secondary_prompt != right.secondary_prompt
+        or left.secondary_asset_plan != right.secondary_asset_plan
+    )
+
+
 def _reject_locked_shot_drift(old: Timeline, new: Timeline) -> list[str]:
     """A25 (M6.5): a Shot with `asset_locked=True` may never have its
-    `prompt` or `asset_plan` change in a later version - deliberately NOT
+    acquisition fields change in a later version - deliberately NOT
     expressible through `owns` (which grants blanket permission over a
     whole top-level path such as "scenes"; `NarrationStep` owns exactly
     that much to change `duration_s` freely). This check runs regardless
@@ -90,7 +104,7 @@ def _reject_locked_shot_drift(old: Timeline, new: Timeline) -> list[str]:
         new_shot = new_shots.get(shot_id)
         if new_shot is None:
             continue
-        if new_shot.prompt != old_shot.prompt or new_shot.asset_plan != old_shot.asset_plan:
+        if _acquisition_fields_changed(old_shot, new_shot):
             violations.append(
                 f"shot {shot_id}: asset_locked - prompt/asset_plan may not change (A25)"
             )
@@ -342,8 +356,9 @@ class TimelineService:
         """A11/A20 (M6.5) - see this module's docstring for why this lives
         here rather than as an opt-in helper. Per-shot, never all-or-
         nothing: a binding carries forward only when its `shot_id` still
-        exists in `new_timeline` AND that shot's `prompt`/`asset_plan` are
-        unchanged from `previous_timeline`. Narration changes only
+        exists in `new_timeline` AND that shot's acquisition fields
+        (`prompt`, `asset_plan`, `secondary_prompt`, `secondary_asset_plan`)
+        are unchanged from `previous_timeline`. Narration changes only
         durations, so in that case every binding carries; a re-plan can
         change a shot's `prompt`, and carrying a binding across that
         change would silently serve an asset acquired for a question no
@@ -372,9 +387,6 @@ class TimelineService:
             if previous_shot.asset_locked or new_shot.asset_locked:
                 await binding_repo.carry_forward(binding, new_timeline_version=new_timeline.version)
                 continue
-            if (
-                previous_shot.prompt != new_shot.prompt
-                or previous_shot.asset_plan != new_shot.asset_plan
-            ):
+            if _acquisition_fields_changed(previous_shot, new_shot):
                 continue  # acquisition-relevant fields changed - must re-resolve
             await binding_repo.carry_forward(binding, new_timeline_version=new_timeline.version)

@@ -75,6 +75,16 @@ def test_every_manifest_file_exists_and_is_real_decodable_audio():
         assert abs(float(duration_str) - entry["duration_s"]) < 0.5, path
 
 
+def test_published_bpm_values_are_positive_integers_or_null():
+    """Leftover item 6: BPM is typed in from a published source, never
+    guessed. Null remains valid (drones, unpublished Pixabay pages)."""
+    for entry in _manifest():
+        bpm = entry.get("bpm")
+        if bpm is None:
+            continue
+        assert isinstance(bpm, int) and bpm > 0, entry["file"]
+
+
 def test_every_manifest_entry_has_a_distinct_file_path():
     """`historical_epic/mid/epic_cinematic.mp3` and
     `emotional/driving/epic_cinematic.mp3` are two separate on-disk COPIES

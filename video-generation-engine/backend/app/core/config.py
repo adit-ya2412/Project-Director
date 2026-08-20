@@ -172,6 +172,15 @@ class Settings(BaseSettings):
     # change here, never a new call site.
     music_cost_cents_estimate: int = 0
 
+    # --- SFX (parent plan §5.5) ---
+    # "local" is a small curated library downloaded from Openverse
+    # (CC0/CC-BY, short clips). "openverse" stays available for a live
+    # search when the library has no hit for a kind.
+    sfx_provider: str = "local"
+    sfx_library_root: Path = Path("./storage/sfx_library")
+    sfx_gain_db: float = -8.0
+    sfx_max_clip_s: float = 1.5
+
     # --- Rendering ---
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
@@ -246,19 +255,18 @@ class Settings(BaseSettings):
     # --- Script pre-flight (motion_new_styles_and_long_form_videos.md
     # §3, Track D) - estimates a script's spoken duration BEFORE any
     # narration exists, from character count alone. Each constant is
-    # calibrated from exactly ONE real measured project per language
-    # (`m8_test_project`: 662 chars / 46.0s raw shot-duration sum =
-    # 14.4 chars/s; `hinglish_final_project`, ~39% Devanagari by
-    # character count: 686 chars / 53.07s = 12.9 chars/s) - a single
-    # data point, not a statistically robust sample. The margin below
-    # exists because of that, not because the arithmetic itself is
-    # uncertain: it only ever widens the estimate, and the pre-flight
-    # blocks (§3.1) only on an UNAMBIGUOUS mismatch, so a script within
-    # the margin of a style's band passes rather than getting a false
-    # block from calibration noise.
+    # Calibrated for the configured voice (`0muxiGNHAVvmM1qWRtyV`)
+    # against live Multilingual v2 (Q8, 2026-08-20): English 15.1,
+    # Hinglish 14.0, Hindi 14.9 — one constant near 14.4 lands within 5%
+    # of all three. The old `script_chars_per_second_hi = 12.9` was 15.5%
+    # too slow on real Hindi and is gone (R11 / Q8). Speed is applied by
+    # `preflight._chars_per_second` via `resolve_narration_speed(style)`.
     script_chars_per_second_en: float = 14.4
-    script_chars_per_second_hi: float = 12.9
     script_preflight_margin_fraction: float = 0.2
+    # Q7: warning-only floor. A 400-char script (~28 s) is legal; the
+    # author may have wanted that. `check_feasibility` reports it on
+    # `warnings`, never `violations`, so `passed` stays true.
+    script_preflight_min_duration_s: float = 60.0
 
     # --- Render style (motion_new_styles_and_long_form_videos.md, Track
     # B) - `documentary_archival` is today's existing behaviour, named

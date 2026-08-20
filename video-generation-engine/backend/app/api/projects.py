@@ -630,6 +630,7 @@ async def preflight_script(
         style=body.style,
         passed=feasibility.passed,
         violations=feasibility.violations,
+        warnings=feasibility.warnings,
         fragment_count=feasibility.fragment_count,
         estimated_total_duration_s=feasibility.estimated_total_duration_s,
         estimated_average_shot_duration_s=feasibility.estimated_average_shot_duration_s,
@@ -1869,11 +1870,11 @@ async def retry_narration_voice(
     dislike it, try another):
 
     - **Switching back is free.** The narration cache key is `hash(text
-      + voice_id + model + output_format)` (`compute_narration_content_hash`)
-      - voice_id is part of the hash, so a previously-used voice's audio
-      is still on disk under its own content hash and is never
-      re-synthesised, whatever DID change is (re-)synthesised once and
-      cached the same way.
+      + voice_id + model + output_format [+ speed if not 1.0])`
+      (`compute_narration_content_hash`) - voice_id and speed are part
+      of the hash, so a previously-used voice's audio is still on disk
+      under its own content hash and is never re-synthesised, whatever
+      DID change is (re-)synthesised once and cached the same way.
     - **Durations recompute, and a stale render is never served.**
       `NarrationStep` reconciles every shot's `duration_s` against the
       NEW voice's real spoken pace (D1, the master clock) in its own

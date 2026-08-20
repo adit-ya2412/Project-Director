@@ -81,6 +81,7 @@ from app.renderer.fingerprint import compute_render_fingerprint, get_ffmpeg_vers
 from app.renderer.grading import grade_filter_fragment
 from app.renderer.music import assemble_act_bed, mux_music
 from app.renderer.placeholder import render_placeholder
+from app.renderer.sfx import derive_sfx_events, mux_sfx
 from app.renderer.slideshow import RenderSettings, probe_duration_seconds, render_timeline
 from app.renderer.text_cards import (
     TextCardStyle,
@@ -102,6 +103,7 @@ from app.repositories.render_repository import RenderRepository
 from app.repositories.shot_binding_repository import ShotBindingRepository
 from app.schemas.project import ProjectStatus
 from app.schemas.timeline import ProducedBy, Timeline
+from app.script.styles import resolve_music_gains, resolve_narration_speed
 from app.timeline.acts import act_time_ranges, music_content_hash_for
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
@@ -198,13 +200,15 @@ async def render_video(
     output_path = project_dir / "renders" / output_filename
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    media_content_hashes: list[str] = []
+    media_content_hashes: dict[str, str] = {}
+    secondary_content_hashes: dict[str, str] = {}
     shot_images: dict[str, Path] = {}
+    shot_secondary_images: dict[str, Path] = {}
     for shot in timeline.all_shots():
         binding = bindings_by_shot.get(shot.id)
         path, content_hash = await _resolved_path_and_hash(ctx.session, binding)
         if content_hash is not None:
-            media_content_hashes.append(content_hash)
+            media_content_hashes[shot.id] = content_hash
         if path is None:
             path = work_dir / f"{shot.id}_placeholder.png"
             path.write_bytes(
@@ -215,6 +219,11 @@ async def render_video(
         # `render_timeline` itself - the one place that needs to make
         # that decision - see that function's own docstring.
         shot_images[shot.id] = path
+        sec_path, sec_hash = await _resolved_secondary_path_and_hash(ctx.session, binding)
+        if sec_hash is not None:
+            secondary_content_hashes[shot.id] = sec_hash
+        if sec_path is not None:
+            shot_secondary_images[shot.id] = sec_path
 
     narration_rows = await _resolve_narration_rows(ctx.session, timeline)
     narration_paths = (
@@ -271,19 +280,20 @@ async def render_video(
     )
 
     ffmpeg_version = await get_ffmpeg_version(render_settings.ffmpeg_binary)
+    # Leftover item 5: style-owned mix. Resolve once so the fingerprint
+    # and the mux_music call cannot drift (R2's own lesson).
+    music_gains = resolve_music_gains(timeline.metadata.render_style)
     fingerprint = compute_render_fingerprint(
         timeline=timeline,
         asset_content_hashes=media_content_hashes,
+        secondary_content_hashes=secondary_content_hashes,
         narration_content_hashes=narration_content_hashes,
         music_content_hash=music_content_hash,
         render_settings=render_settings,
-        # R2 (2026-08-16): these are read from config below, at mux time,
-        # exactly like `bed_gain_db=`/`duck_gain_db=` in the `mux_music`
-        # call further down - they belong in the fingerprint for the
-        # identical reason `render_settings` does, and until this fix
-        # they were the one real input this function didn't cover.
-        music_bed_gain_db=settings.music_bed_gain_db,
-        music_duck_gain_db=settings.music_duck_gain_db,
+        # R2 (2026-08-16): these are a real mux input. Style-resolved
+        # as of leftover item 5; still hashed unconditionally.
+        music_bed_gain_db=music_gains.bed_gain_db,
+        music_duck_gain_db=music_gains.duck_gain_db,
         burn_captions=render_settings.burn_captions,
         caption_font_hash=caption_font_hash,
         cue_list_hash=cue_hash,
@@ -292,6 +302,9 @@ async def render_video(
         watermark_params_hash=watermark_params_hash_value,
         burn_text_cards=render_settings.burn_text_cards,
         text_card_font_hash=text_card_font_hash,
+        sfx_content_hashes=_sfx_content_hashes(timeline),
+        sfx_gain_db=settings.sfx_gain_db,
+        sfx_max_clip_s=settings.sfx_max_clip_s,
         ffmpeg_version=ffmpeg_version,
     )
 
@@ -314,7 +327,12 @@ async def render_video(
         captioned_path = work_dir / f"captioned_{output_path.stem}.mp4"
         narrated_path = work_dir / f"narrated_{output_path.stem}.mp4"
         await render_timeline(
-            timeline, shot_images, render_settings, silent_path, work_dir=work_dir
+            timeline,
+            shot_images,
+            render_settings,
+            silent_path,
+            work_dir=work_dir,
+            shot_secondary_images=shot_secondary_images,
         )
 
         # The "video filter pass" (docs/plans/watermark_implementation_plan.md
@@ -421,25 +439,42 @@ async def render_video(
         else:
             await mux_narration(captioned_path, narration_paths, narrated_path, render_settings)
 
+        # Both intermediates live in `work_dir`, never beside the finished
+        # file in `renders/` (§15.6): every other stage of this pipeline
+        # already stages through the work directory, and `renders/` is
+        # the directory a human (and `GET /projects/{id}/video`) treats as
+        # "the outputs" - a half-mixed `_pre_sfx_final.mp4` sitting there
+        # is indistinguishable by name from a real render.
+        sfx_overlays = _sfx_overlays(timeline, ctx.project_id, fps=render_settings.fps)
+        mixed_path = work_dir / f"pre_sfx_{output_path.stem}.mp4" if sfx_overlays else output_path
         if music_segments is None:
-            narrated_path.replace(output_path)
+            narrated_path.replace(mixed_path)
         else:
             if len(music_segments) == 1:
                 music_path = music_segments[0][0]
             else:
                 music_path = await assemble_act_bed(
                     music_segments,
-                    output_path.parent / f"_act_bed_{output_path.stem}.m4a",
+                    work_dir / f"music_bed_{output_path.stem}.m4a",
                     render_settings,
                 )
             await mux_music(
                 narrated_path,
                 music_path,
                 narration_paths,
+                mixed_path,
+                render_settings,
+                bed_gain_db=music_gains.bed_gain_db,
+                duck_gain_db=music_gains.duck_gain_db,
+            )
+        if sfx_overlays:
+            await mux_sfx(
+                mixed_path,
+                sfx_overlays,
                 output_path,
                 render_settings,
-                bed_gain_db=settings.music_bed_gain_db,
-                duck_gain_db=settings.music_duck_gain_db,
+                gain_db=settings.sfx_gain_db,
+                max_clip_s=settings.sfx_max_clip_s,
             )
 
     duration_s = await probe_duration_seconds(output_path, render_settings.ffprobe_binary)
@@ -535,12 +570,14 @@ async def _resolve_narration_rows(
 
     narration_repo = NarrationRepository(session)
     rows: list[NarrationModel] = []
+    speed = resolve_narration_speed(timeline.metadata.render_style)
     for scene in timeline.scenes:
         content_hash = compute_narration_content_hash(
             text=scene.narration_text,
             voice_id=voice_id,
             model=settings.elevenlabs_model,
             output_format=settings.elevenlabs_output_format,
+            speed=speed,
         )
         row = await narration_repo.get_by_content_hash(content_hash)
         if row is None:
@@ -600,6 +637,31 @@ def _music_segments(timeline: Timeline, project_id: str) -> list[tuple[Path, flo
     return [(path, 0.0)]
 
 
+def _sfx_content_hashes(timeline: Timeline) -> list[str]:
+    if timeline.sfx_plan is None:
+        return []
+    return [clip.content_hash for clip in timeline.sfx_plan.clips]
+
+
+def _sfx_overlays(timeline: Timeline, project_id: str, *, fps: int) -> list[tuple[Path, float]]:
+    """`(path, offset_s)` overlays to mix, or empty when DRY_RUN / no clips."""
+    if settings.dry_run:
+        return []
+    if timeline.sfx_plan is None or not timeline.sfx_plan.clips:
+        return []
+    by_kind = {clip.kind: clip for clip in timeline.sfx_plan.clips}
+    overlays: list[tuple[Path, float]] = []
+    for event in derive_sfx_events(timeline, fps=fps):
+        clip = by_kind.get(event.kind)
+        if clip is None:
+            continue
+        path = settings.storage_root / project_id / "sfx" / f"{clip.content_hash}.mp3"
+        if not path.exists():
+            continue
+        overlays.append((path, event.offset_s))
+    return overlays
+
+
 async def _resolved_path_and_hash(session, binding) -> tuple[Path | None, str | None]:
     """The shot's resolved media path, and a content-identifying hash of
     it for the render fingerprint (M8 step 6) - `Asset.content_hash` for
@@ -617,6 +679,24 @@ async def _resolved_path_and_hash(session, binding) -> tuple[Path | None, str | 
         return Path(asset.local_path), asset.content_hash
     if binding.clip_id is not None:
         clip = await session.get(GeneratedClipModel, binding.clip_id)
+        if clip is None or not clip.local_path:
+            return None, None
+        return Path(clip.local_path), clip.prompt_hash
+    return None, None
+
+
+async def _resolved_secondary_path_and_hash(session, binding) -> tuple[Path | None, str | None]:
+    """Bottom panel of a split-screen shot. Same asset-before-clip
+    precedence as the primary. Missing is a degrade, not a placeholder."""
+    if binding is None:
+        return None, None
+    if binding.secondary_asset_id is not None:
+        asset = await session.get(AssetModel, binding.secondary_asset_id)
+        if asset is None or not asset.local_path:
+            return None, None
+        return Path(asset.local_path), asset.content_hash
+    if binding.secondary_clip_id is not None:
+        clip = await session.get(GeneratedClipModel, binding.secondary_clip_id)
         if clip is None or not clip.local_path:
             return None, None
         return Path(clip.local_path), clip.prompt_hash

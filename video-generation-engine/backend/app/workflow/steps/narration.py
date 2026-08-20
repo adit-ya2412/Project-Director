@@ -109,7 +109,7 @@ from app.providers.fakes.narration import FakeNarrationProvider
 from app.repositories.generated_clip_repository import GeneratedClipRepository
 from app.repositories.narration_repository import NarrationRepository
 from app.schemas.timeline import ProducedBy, Scene, Timeline, TimelineStatus
-from app.script.styles import resolve_constraint_bundle
+from app.script.styles import resolve_constraint_bundle, resolve_narration_speed
 from app.timeline.duration import compute_timeline_duration
 from app.timeline.narration_fit import SceneAlignment, reconcile_timeline_durations
 from app.utils.bounded_gather import narration_concurrency, reserve_then_gather
@@ -260,6 +260,7 @@ class NarrationStep:
         jobs: list[_SynthJob] = []
         queued_hashes: set[str] = set()
         hash_to_scene_ids: dict[str, list[str]] = {}
+        speed = resolve_narration_speed(timeline.metadata.render_style)
 
         for scene in timeline.scenes:
             content_hash = compute_narration_content_hash(
@@ -267,6 +268,7 @@ class NarrationStep:
                 voice_id=voice_id,
                 model=settings.elevenlabs_model,
                 output_format=settings.elevenlabs_output_format,
+                speed=speed,
             )
             hash_to_scene_ids.setdefault(content_hash, []).append(scene.id)
 
@@ -335,6 +337,7 @@ class NarrationStep:
                         model=settings.elevenlabs_model,
                         output_format=settings.elevenlabs_output_format,
                         scene_id=job.scene_id,
+                        speed=speed,
                     )
                 )
                 path = project_dir / f"{job.content_hash}.mp3"

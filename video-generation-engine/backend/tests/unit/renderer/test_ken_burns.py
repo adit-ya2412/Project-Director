@@ -20,9 +20,8 @@ def test_static_never_gets_a_zoompan_expression():
 
 
 def test_split_frame_never_gets_a_zoompan_expression():
-    """A real split-screen composite needs a second source image this
-    renderer's one-image-per-shot contract doesn't have - documented gap,
-    not a silent mis-implementation."""
+    """The composite lives in `split_screen.py` (two inputs). zoompan
+    still returns None so Ken Burns never pretends to split one image."""
     assert build_zoompan_expression(_camera(CameraMovement.SPLIT_FRAME), frames=90) is None
 
 

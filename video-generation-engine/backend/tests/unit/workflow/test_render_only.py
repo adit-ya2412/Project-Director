@@ -54,6 +54,7 @@ def test_every_paid_or_planning_step_is_excluded_from_the_precondition_check():
         "generate_timeline",
         "resolve_assets_search",
         "select_music",
+        "select_sfx",
         "await_approval",
         "narration",
         "resolve_assets_generate",

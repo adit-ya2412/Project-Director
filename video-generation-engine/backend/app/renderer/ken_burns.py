@@ -20,12 +20,10 @@ generate the whole shot's duration internally.
 ## Scope
 
 - `STATIC` and `SPLIT_FRAME` never touch `zoompan` - `STATIC` because
-  there is nothing to animate, `SPLIT_FRAME` because a real split-screen
-  composite needs a SECOND source image to split with, which this
-  renderer's one-image-per-shot contract doesn't have; building that is
-  a materially different pipeline change, not a `zoompan` expression, so
-  it renders as a plain static frame instead of pretending to split
-  (a known, documented gap, not silently mis-implemented).
+  there is nothing to animate, `SPLIT_FRAME` because the composite is
+  a second ffmpeg input (`app/renderer/split_screen.py`), not a
+  `zoompan` expression. This function still returns `None` for it;
+  `slideshow.py` dispatches on the same `None` plus a second still.
 - `SLOW_PUSH` always zooms in and `PULL_BACK` always zooms out -
   `camera.direction` is not consulted for either (the movement name
   already says which way), only for `SLOW_ZOOM` (which needs `direction`
@@ -78,12 +76,12 @@ class ZoompanExpression:
 
 
 def build_zoompan_expression(camera: Camera, *, frames: int) -> ZoompanExpression | None:
-    """`None` means "no motion" (STATIC, SPLIT_FRAME, or an intensity of
-    0) - the caller renders a plain static frame, byte-for-byte the same
-    path every shot used before this module existed. `frames` is the
-    shot's total OUTPUT frame count (`round(duration_s * fps)`, already
-    computed by the caller, which also owns that arithmetic - D5's own
-    "compute it in exactly one place" discipline applies here too)."""
+    """`None` means "no zoompan" (STATIC, SPLIT_FRAME, or an intensity of
+    0). STATIC is a plain tpad still; SPLIT_FRAME is a two-input
+    composite in `split_screen.py` when a second still exists, else the
+    same tpad path. `frames` is the shot's total OUTPUT frame count
+    (`round(duration_s * fps)`, already computed by the caller - D5's
+    "compute it in exactly one place" discipline)."""
     if camera.movement in (CameraMovement.STATIC, CameraMovement.SPLIT_FRAME):
         return None
     frames = max(frames, 1)
@@ -146,6 +144,25 @@ def build_zoompan_expression(camera: Camera, *, frames: int) -> ZoompanExpressio
 _MAX_PUNCH_ZOOM_DELTA = 0.9
 
 
+def punch_in_frame_offsets(
+    camera: Camera, *, frames: int, num_punches: int = 2
+) -> list[int] | None:
+    """Frame indices where a punch snaps, or None when the shot has no
+    punch (same guards as `build_punch_in_expression`). Shared with
+    `app/renderer/sfx.py` so a whoosh lands on the same frame the zoom
+    steps, not a reconstructed guess."""
+    if camera.intensity <= 0:
+        return None
+    frames = max(frames, 1)
+    last_frame = max(frames - 1, 1)
+    if num_punches < 1 or frames < num_punches * 2:
+        return None
+    max_zoom = 1.0 + camera.intensity * _MAX_PUNCH_ZOOM_DELTA
+    if max_zoom <= 1.0:
+        return None
+    return [round(last_frame * (i + 1) / (num_punches + 1)) for i in range(num_punches)]
+
+
 def build_punch_in_expression(
     camera: Camera, *, frames: int, num_punches: int = 2
 ) -> ZoompanExpression | None:
@@ -183,25 +200,11 @@ def build_punch_in_expression(
     both degrade to no motion, never a crash or a cramped, unreadable
     zoom pattern.
     """
-    if camera.intensity <= 0:
+    punch_frames = punch_in_frame_offsets(camera, frames=frames, num_punches=num_punches)
+    if not punch_frames:
         return None
     frames = max(frames, 1)
-    last_frame = max(frames - 1, 1)
-    if num_punches < 1 or frames < num_punches * 2:
-        # Too few frames to hold each punch level for a moment before the
-        # next one - a shot this short should stay static rather than
-        # render a smeared, unreadable zoom.
-        return None
-
     max_zoom = 1.0 + camera.intensity * _MAX_PUNCH_ZOOM_DELTA
-    if max_zoom <= 1.0:
-        return None
-
-    # Punch frame offsets: evenly spaced, none at frame 0 (the shot must
-    # visibly HOLD before the first punch, or there is nothing to punch
-    # FROM) and none past `last_frame` (the final level must still be
-    # holding, not still stepping, when the shot ends).
-    punch_frames = [round(last_frame * (i + 1) / (num_punches + 1)) for i in range(num_punches)]
     levels = [1.0 + (i + 1) * (max_zoom - 1.0) / num_punches for i in range(num_punches)]
 
     # Build the piecewise-constant zoom(on) expression from the LAST

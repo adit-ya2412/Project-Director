@@ -48,6 +48,9 @@ class ShotPlanOutput(BaseModel):
     camera: ShotCameraOutput
     transition_out: ShotTransitionOutput
     prompt: str
+    # Bottom panel of a split_frame shot. Empty string on every other
+    # movement (OpenAI strict mode: required, never omitted).
+    secondary_prompt: str
 
 
 class ShotPlannerOutput(BaseModel):

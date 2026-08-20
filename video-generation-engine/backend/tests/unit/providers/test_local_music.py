@@ -68,6 +68,7 @@ async def test_search_maps_manifest_fields_onto_the_candidate(tmp_path, monkeypa
     assert candidate.author == "Some Artist"
     assert candidate.licence == "pixabay_content_license"
     assert candidate.duration_s == 120.5
+    assert candidate.bpm == 90
     assert "documentary_dark" in candidate.tags
     assert "ambient" in candidate.tags
     assert "documentary" in candidate.tags  # the entry's own free-text tags

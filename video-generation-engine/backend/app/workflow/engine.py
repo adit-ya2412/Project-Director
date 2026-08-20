@@ -27,6 +27,7 @@ from app.workflow.steps.narration import NarrationStep
 from app.workflow.steps.render import RenderStep
 from app.workflow.steps.resolve_assets import GENERATION_RUNGS, SEARCH_RUNGS, ResolveAssetsStep
 from app.workflow.steps.select_music import SelectMusicStep
+from app.workflow.steps.select_sfx import SelectSfxStep
 
 logger = get_logger(__name__)
 
@@ -107,10 +108,26 @@ logger = get_logger(__name__)
 # `resolve_assets_search` does: Pixabay search is free, so I6 permits it,
 # and a human approving a video should hear what it will sound like
 # before approving - see that step's own docstring for the rest.
+#
+# ⚠ ORDERING INVARIANT, load-bearing and previously unwritten (§15.7):
+# `NarrationStep` must be the LAST step before the approval gate that
+# appends a timeline version. Every step that appends one stamps its own
+# `produced_by`, and `render.py::_resolve_narration_rows` resolves audio
+# ONLY for `produced_by == NARRATION` - by design, since that value is
+# the record that shot durations were reconciled against real spoken
+# timings (D1). So moving `SelectMusicStep` or `SelectSfxStep` after
+# narration - for any plausible-looking reason, e.g. "select music once
+# the real durations are known" - makes `SFX_SELECTION`/
+# `MUSIC_SELECTION` the active version's `produced_by` and silently
+# drops narration from every render. No exception, no failed step, no
+# log line: the video simply comes out silent, discoverable only by
+# watching it. Anything needing the reconciled durations belongs AFTER
+# the approval gate, or must re-stamp `produced_by=NARRATION`.
 DEFAULT_PIPELINE: list[WorkflowStep] = [
     GenerateTimelineStep(),
     ResolveAssetsStep(name="resolve_assets_search", permitted_strategies=SEARCH_RUNGS),
     SelectMusicStep(),
+    SelectSfxStep(),
     NarrationStep(),
     AwaitApprovalStep(),
     ResolveAssetsStep(name="resolve_assets_generate", permitted_strategies=GENERATION_RUNGS),

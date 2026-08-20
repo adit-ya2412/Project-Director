@@ -58,21 +58,30 @@ def test_every_registered_style_has_a_derived_or_absent_ceiling():
             assert band.max_fragment_duration_s == band.target_shot_duration_s * 2.0
 
 
-def test_hindi_calibration_selected_for_a_mixed_devanagari_script():
-    """Selection is by the SCRIPT'S OWN character composition, not a
-    `language` field (preflight.py's own docstring: the real
-    `hinglish_final_project` fixture's `language` field reads "en"
-    despite being ~39% Devanagari) - constructed here directly rather
-    than trusting fixture metadata."""
-    mixed_script = "यह एक इतिहास है। " * 20  # well over the 15% non-ASCII threshold
+def test_one_chars_per_second_constant_for_english_and_hindi():
+    """Q8 / R11: language no longer picks a slower Hindi constant.
+    Same character count → same estimate, any script."""
+    mixed_script = "यह एक इतिहास है। " * 20
     english_script = "This is a plain English sentence. " * 20
+    mixed_rate = len(mixed_script) / estimate_duration_s(mixed_script)
+    english_rate = len(english_script) / estimate_duration_s(english_script)
+    assert mixed_rate == pytest.approx(english_rate)
 
-    mixed_duration = estimate_duration_s(mixed_script)
-    english_duration = estimate_duration_s(english_script)
 
-    # Same rough length; a lower chars/sec constant means a LONGER
-    # estimated duration for the same character count.
-    assert mixed_duration / len(mixed_script) > english_duration / len(english_script)
+def test_retention_fast_estimate_is_shorter_because_of_speed():
+    """R11: 1.2× speaking rate must shrink D, not leave it at 14.4."""
+    script = "This is a plain English sentence. " * 20
+    archival = estimate_duration_s(script, "documentary_archival")
+    fast = estimate_duration_s(script, "retention_fast")
+    assert archival / fast == pytest.approx(1.2)
+
+
+def test_a_short_script_warns_and_does_not_fail():
+    """Q7: minimum length is a warning, never a block."""
+    result = check_feasibility("Short. " * 5, "documentary_archival")
+    assert result.passed
+    assert result.warnings
+    assert any("will produce" in w for w in result.warnings)
 
 
 def test_a_zero_shot_cap_override_is_honoured_not_treated_as_unset():

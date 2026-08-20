@@ -48,6 +48,18 @@ class StylePacingBand:
     affects the Shot Planner's pre-narration estimate, never real,
     reconciled shot lengths).
 
+    `narration_speed` is the ElevenLabs speaking-rate multiplier for
+    this style (parent plan §2.1 / R8). Default 1.0 is the API default
+    and keeps the pre-R8 four-value narration cache key. Only
+    `retention_fast` overrides it (~1.2×) — speed is a voice lever that
+    matches delivery to cutting, not a pacing lever that changes the
+    voice. Hashed into `compute_narration_content_hash`.
+
+    `music_bed_gain_db` / `music_duck_gain_db` are None to mean "use
+    `settings.*`" (parent plan §5.2 / leftover item 5). Archival keeps
+    the measured mix. Fast-cut and stillness override. `0.0` is a
+    legitimate value — resolve with `is not None`, never `or`.
+
     `max_shot_duration_s_override` is the Shot Planner's real validation
     bound - a SEPARATE number from `max_fragment_duration_s` below, fixed
     2026-08-18 (motion_new_styles_and_long_form_videos.md §13.7, "R7").
@@ -69,6 +81,9 @@ class StylePacingBand:
     max_shots_override: int | None
     min_shot_duration_s_override: float | None = None
     max_shot_duration_s_override: float | None = None
+    narration_speed: float = 1.0
+    music_bed_gain_db: float | None = None
+    music_duck_gain_db: float | None = None
 
     @property
     def max_fragment_duration_s(self) -> float | None:
@@ -103,13 +118,58 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
         max_shots_override=58,
         min_shot_duration_s_override=0.8,
         max_shot_duration_s_override=3.5,
+        narration_speed=1.2,
+        # §5.2: driving, barely ducked. Offsets from the measured
+        # archival mix (-14 / -20), not a new listening pass.
+        music_bed_gain_db=-10.0,
+        music_duck_gain_db=-14.0,
     ),
     "stillness": StylePacingBand(
         name="stillness",
         target_shot_duration_s=None,
         max_shots_override=None,
+        # §5.2: near-absent. 8 dB quieter bed than the measured mix.
+        music_bed_gain_db=-22.0,
+        music_duck_gain_db=-28.0,
     ),
 }
+
+
+def resolve_narration_speed(style: str | None) -> float:
+    """Style-owned speaking rate (parent plan §2.1 / R8).
+
+    Unknown / unset styles resolve to 1.0 — the ElevenLabs default and
+    the pre-R8 cache key — the same fallback `resolve_constraint_bundle`
+    uses for an unrecognised name.
+    """
+    band = STYLE_PACING_BANDS.get(style or settings.default_render_style)
+    if band is None:
+        return 1.0
+    return band.narration_speed
+
+
+@dataclass(frozen=True)
+class MusicGains:
+    """Resolved bed/duck mix for one style (parent plan §5.2)."""
+
+    bed_gain_db: float
+    duck_gain_db: float
+
+
+def resolve_music_gains(style: str | None) -> MusicGains:
+    """Style-owned music mix. None / unknown / archival fall through
+    to `settings.music_*_gain_db` (the measured mix, leftover item 5).
+    `0.0` is a real override — `is not None`, never `or`.
+    """
+    band = STYLE_PACING_BANDS.get(style or settings.default_render_style)
+    bed = settings.music_bed_gain_db
+    duck = settings.music_duck_gain_db
+    if band is not None:
+        if band.music_bed_gain_db is not None:
+            bed = band.music_bed_gain_db
+        if band.music_duck_gain_db is not None:
+            duck = band.music_duck_gain_db
+    return MusicGains(bed_gain_db=bed, duck_gain_db=duck)
 
 
 def get_pacing_band(style: str) -> StylePacingBand:

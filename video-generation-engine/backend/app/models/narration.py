@@ -4,12 +4,13 @@ actually synthesised; `content_hash` is the cache key.
 
 `content_hash` uniqueness is GLOBAL, not per-project - same discipline as
 `generated_clip.prompt_hash` (ladder rung 0). Synthesising identical text
-with the identical voice/model/output_format is a wasted paid call no
-matter which project asks for it, and ElevenLabs bills per character
+with the identical voice/model/output_format/speed is a wasted paid call
+no matter which project asks for it, and ElevenLabs bills per character
 either way. See `providers/elevenlabs.compute_narration_content_hash` for
 how the hash is built and why it excludes the returned audio bytes and
 alignment (the hash must be knowable BEFORE the paid call, so a cache hit
-can skip the call entirely).
+can skip the call entirely). Speed 1.0 is omitted from the digest so
+pre-R8 rows remain hits at the API default.
 
 `alignment` stores the RAW (non-normalized) alignment object returned by
 ElevenLabs' `/with-timestamps` endpoint - never `normalized_alignment`,

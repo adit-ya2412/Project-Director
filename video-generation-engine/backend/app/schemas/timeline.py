@@ -43,6 +43,9 @@ class ProducedBy(StrEnum):
     # already set (a step, not a planner or a person, can legitimately
     # produce a Timeline version).
     MUSIC_SELECTION = "music_selection"
+    # Leftover item 2 / §5.5: SFX palette acquisition, same D6 shape as
+    # music — a step, not a planner or a person.
+    SFX_SELECTION = "sfx_selection"
 
 
 class ShotIntent(StrEnum):
@@ -189,6 +192,14 @@ class Shot(BaseModel):
     transition_out: Transition = Field(default_factory=Transition)
     prompt: str = ""
     asset_plan: AssetPlan | None = None
+    # Split-screen second panel (plan §2.6). Empty/`None` on every
+    # non-split shot and every Timeline that predates this field.
+    # `prompt` is the TOP panel, `secondary_prompt` the BOTTOM; the
+    # renderer composites them when `camera.movement == split_frame`
+    # and both assets resolved. One still and no second asset is the
+    # pre-split static path, never a fake split of one photograph.
+    secondary_prompt: str = ""
+    secondary_asset_plan: AssetPlan | None = None
     # A human override (M6.5, A9/A10/A24/A25) sets this via an
     # `append_version` with `produced_by=HUMAN`. It lives on the Shot
     # itself, not only on the ShotBinding, so it is part of the immutable
@@ -346,6 +357,43 @@ class ActMusicBed(BaseModel):
     selected_track: MusicTrackSelection | None = None
 
 
+class SfxKind(StrEnum):
+    """One palette slot (plan §5.5). Placement is derived from Timeline
+    events; the kind only names which clip to overlay."""
+
+    WHOOSH = "whoosh"  # punch-in
+    STINGER = "stinger"  # text card
+    TRANSITION = "transition"  # non-cut xfade
+
+
+class SfxClipSelection(BaseModel):
+    """Provenance of one SFX clip, never its bytes (I2). Same shape as
+    `MusicTrackSelection`. Audio at `storage/{project}/sfx/{hash}.mp3`."""
+
+    kind: SfxKind
+    provider: str
+    track_id: str
+    source_url: str
+    licence: str
+    attribution: str = ""
+    content_hash: str
+
+
+class SfxPlan(BaseModel):
+    """Creative palette + acquired clips (plan §5.5, D6/21.2).
+
+    Queries are the creative half (which kinds of sounds). `clips` and
+    `selection_attempted` are filled by `SelectSfxStep`. Placement is
+    NOT stored here — the renderer derives offsets from punch-ins, text
+    cards, and transitions already on the Timeline.
+    """
+
+    queries: dict[str, list[str]] = Field(default_factory=dict)
+    licence_requirements: list[str] = Field(default_factory=list)
+    clips: list[SfxClipSelection] = Field(default_factory=list)
+    selection_attempted: bool = False
+
+
 class MusicPlan(BaseModel):
     mood: str = ""
     tempo: str = ""
@@ -403,6 +451,7 @@ class Timeline(BaseModel):
     metadata: TimelineMetadata = Field(default_factory=TimelineMetadata)
     creative_context: CreativeContext = Field(default_factory=CreativeContext)
     music_plan: MusicPlan | None = None
+    sfx_plan: SfxPlan | None = None
     scenes: list[Scene] = Field(default_factory=list)
 
     @field_validator("schema_version")

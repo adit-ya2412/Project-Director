@@ -193,13 +193,14 @@ class NarrationRequest:
     time is what makes the returned alignment line up with it directly,
     with no cross-scene offset arithmetic.
 
-    `voice_id`/`model`/`output_format` are explicit fields here rather
-    than baked into the provider instance (contrast `FalImageProvider`,
-    which reads its model id from settings) - together with `text` they
-    are exactly the four inputs the cache key hashes on
-    (`elevenlabs.compute_narration_content_hash`), and a per-project voice
+    `voice_id`/`model`/`output_format`/`speed` are explicit fields here
+    rather than baked into the provider instance (contrast
+    `FalImageProvider`, which reads its model id from settings) -
+    together with `text` they are the inputs the cache key hashes on
+    (`elevenlabs.compute_narration_content_hash`). A per-project voice
     (`Timeline.metadata.voice_id`) or language can vary the first three
-    independently of any global default.
+    independently of any global default; `speed` is style-owned
+    (parent plan §2.1 — 1.2 on `retention_fast`, 1.0 elsewhere).
     """
 
     text: str
@@ -207,6 +208,7 @@ class NarrationRequest:
     model: str
     output_format: str
     scene_id: str
+    speed: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -386,6 +388,10 @@ class TrackCandidate:
     relevance: float = 0.5
     author: str = ""
     duration_s: float | None = None
+    # Published tempo when a source recorded one (manifest / ID3 / the
+    # Incompetech page). None means unknown — never a guessed value.
+    # Ranked by `music_ranking.target_bpm_for_mean_shot_duration`.
+    bpm: int | None = None
     tags: str = ""
     # A provider-supplied, ready-to-use attribution string, when it has
     # one (Openverse does - a precise, licence-version-and-URL-correct

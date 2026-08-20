@@ -18,7 +18,14 @@ from app.planners.repair import run_structured_with_repair
 from app.prompts.loader import load_prompt
 from app.providers.base import PlanningLLMProvider
 from app.repositories.llm_call_repository import LlmCallRepository
-from app.schemas.timeline import ASSET_LADDER, AssetPlan, AssetStrategy, PreferredMediaType, Scene
+from app.schemas.timeline import (
+    ASSET_LADDER,
+    AssetPlan,
+    AssetStrategy,
+    CameraMovement,
+    PreferredMediaType,
+    Scene,
+)
 from app.utils.bounded_gather import bounded_gather, planner_concurrency
 
 
@@ -34,17 +41,59 @@ def _build_user_content(scene: Scene) -> str:
     shot_lines = "\n".join(
         f"- shot_id={s.id} | intent={s.intent.value} | framing={s.framing.value} | "
         f"camera={s.camera.movement.value} | prompt={s.prompt}"
+        + (f" | secondary_prompt={s.secondary_prompt}" if s.secondary_prompt.strip() else "")
         for s in scene.shots
     )
     return (
         f"Scene: {scene.title} (historical/visual context already set by the Director)\n"
         f"Shots in this scene, in order:\n{shot_lines}\n\n"
-        "Produce exactly one asset_plan per shot_id listed above, in the same order."
+        "Produce exactly one asset_plan per shot_id listed above, in the same order. "
+        "For every split_frame shot, also produce one secondary_asset_plans entry "
+        "with the same shot_id covering the BOTTOM panel (`secondary_prompt`). "
+        "secondary_asset_plans is empty when this scene has no split_frame shot. "
+        "Split-screen panels are stills (`preferred_type=image`); never video."
     )
+
+
+def _plan_field_violations(p: AssetPlanShotOutput, *, label: str) -> list[str]:
+    violations: list[str] = []
+    for sq in p.search_queries:
+        # Real archive search engines (Wikimedia Commons, stock
+        # APIs) match short, title-like keyword phrases - a
+        # natural-language sentence reliably returns zero results
+        # even when it accurately describes real, findable
+        # archival material (verified empirically: a 9-word
+        # descriptive phrase found nothing on Commons for a
+        # subject that a 2-word keyword query found instantly).
+        if len(sq.split()) > 6:
+            violations.append(
+                f"{label}: search query {sq!r} is too long "
+                f"({len(sq.split())} words) - search queries must be short "
+                "keyword phrases (max 6 words), not descriptive sentences"
+            )
+    if not p.fallback_chain:
+        violations.append(f"{label}: fallback_chain must not be empty")
+        return violations
+    if p.fallback_chain[0] != p.strategy:
+        violations.append(f"{label}: fallback_chain must start with strategy {p.strategy.value}")
+    indices = [ASSET_LADDER.index(step) for step in p.fallback_chain]
+    if indices != sorted(indices):
+        violations.append(
+            f"{label}: fallback_chain must follow the canonical ladder order: "
+            f"{[s.value for s in ASSET_LADDER]}"
+        )
+    if p.fallback_chain[-1] != AssetStrategy.GENERATE_IMAGE:
+        violations.append(f"{label}: fallback_chain must end in generate_image")
+    if not p.search_queries:
+        violations.append(f"{label}: search_queries must not be empty")
+    if not p.licence_requirements:
+        violations.append(f"{label}: licence_requirements must not be empty")
+    return violations
 
 
 def _make_validator(scene: Scene):
     expected_ids = [s.id for s in scene.shots]
+    split_ids = [s.id for s in scene.shots if s.camera.movement == CameraMovement.SPLIT_FRAME]
 
     def _validate(output: AssetPlannerOutput) -> list[str]:
         violations: list[str] = []
@@ -60,39 +109,29 @@ def _make_validator(scene: Scene):
         for p in plans:
             if p.shot_id not in expected_ids:
                 continue
-            for sq in p.search_queries:
-                # Real archive search engines (Wikimedia Commons, stock
-                # APIs) match short, title-like keyword phrases - a
-                # natural-language sentence reliably returns zero results
-                # even when it accurately describes real, findable
-                # archival material (verified empirically: a 9-word
-                # descriptive phrase found nothing on Commons for a
-                # subject that a 2-word keyword query found instantly).
-                if len(sq.split()) > 6:
-                    violations.append(
-                        f"shot {p.shot_id}: search query {sq!r} is too long "
-                        f"({len(sq.split())} words) - search queries must be short "
-                        "keyword phrases (max 6 words), not descriptive sentences"
-                    )
-            if not p.fallback_chain:
-                violations.append(f"shot {p.shot_id}: fallback_chain must not be empty")
-                continue
-            if p.fallback_chain[0] != p.strategy:
+            violations.extend(_plan_field_violations(p, label=f"shot {p.shot_id}"))
+            if p.shot_id in split_ids and p.preferred_type != PreferredMediaType.IMAGE:
                 violations.append(
-                    f"shot {p.shot_id}: fallback_chain must start with strategy {p.strategy.value}"
+                    f"shot {p.shot_id}: split_frame panels must be image, not "
+                    f"{p.preferred_type.value}"
                 )
-            indices = [ASSET_LADDER.index(step) for step in p.fallback_chain]
-            if indices != sorted(indices):
+
+        secondary = output.secondary_asset_plans
+        secondary_ids = [p.shot_id for p in secondary]
+        if sorted(secondary_ids) != sorted(split_ids):
+            violations.append(
+                f"secondary_asset_plans must cover exactly the split_frame shot_ids "
+                f"{split_ids} (got {secondary_ids})"
+            )
+        if len(secondary_ids) != len(set(secondary_ids)):
+            violations.append("secondary_asset_plans shot_ids must be unique")
+        for p in secondary:
+            violations.extend(_plan_field_violations(p, label=f"shot {p.shot_id} secondary"))
+            if p.preferred_type != PreferredMediaType.IMAGE:
                 violations.append(
-                    f"shot {p.shot_id}: fallback_chain must follow the canonical ladder order: "
-                    f"{[s.value for s in ASSET_LADDER]}"
+                    f"shot {p.shot_id} secondary: split_frame panels must be image, not "
+                    f"{p.preferred_type.value}"
                 )
-            if p.fallback_chain[-1] != AssetStrategy.GENERATE_IMAGE:
-                violations.append(f"shot {p.shot_id}: fallback_chain must end in generate_image")
-            if not p.search_queries:
-                violations.append(f"shot {p.shot_id}: search_queries must not be empty")
-            if not p.licence_requirements:
-                violations.append(f"shot {p.shot_id}: licence_requirements must not be empty")
 
         return violations
 
@@ -138,8 +177,15 @@ class AssetPlanner:
                 db_lock=db_lock,
             )
             plans_by_id = {p.shot_id: _to_domain(p) for p in output.asset_plans}
+            secondary_by_id = {p.shot_id: _to_domain(p) for p in output.secondary_asset_plans}
             new_shots = [
-                shot.model_copy(update={"asset_plan": plans_by_id[shot.id]}) for shot in scene.shots
+                shot.model_copy(
+                    update={
+                        "asset_plan": plans_by_id[shot.id],
+                        "secondary_asset_plan": secondary_by_id.get(shot.id),
+                    }
+                )
+                for shot in scene.shots
             ]
             return scene.model_copy(update={"shots": new_shots})
 

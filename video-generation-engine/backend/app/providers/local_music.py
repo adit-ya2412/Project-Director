@@ -81,6 +81,7 @@ def _candidate(entry: dict) -> TrackCandidate:
         licence=entry["license"],
         author=entry["artist"],
         duration_s=entry["duration_s"],
+        bpm=entry.get("bpm"),
         tags=tag_words,
         attribution=attribution,
     )

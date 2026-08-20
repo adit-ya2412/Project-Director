@@ -42,8 +42,27 @@ _API_BASE_URL = "https://api.elevenlabs.io"
 _REQUEST_TIMEOUT_S = 60.0
 
 
+# Live-checked 2026-08-20 against POST .../with-timestamps on
+# eleven_multilingual_v2: voice_settings.speed is accepted, 1.2 is in
+# range, and alignment timestamps scale with it (parent plan §2.1 / R8).
+# The published quality band is 0.7–1.2; the API default is 1.0.
+_DEFAULT_SPEED = 1.0
+_SPEED_MIN = 0.7
+_SPEED_MAX = 1.2
+
+
+def canonical_narration_speed(speed: float) -> float:
+    """Clamp and round so the value we hash is the value we send."""
+    return round(min(_SPEED_MAX, max(_SPEED_MIN, float(speed))), 3)
+
+
 def compute_narration_content_hash(
-    *, text: str, voice_id: str, model: str, output_format: str
+    *,
+    text: str,
+    voice_id: str,
+    model: str,
+    output_format: str,
+    speed: float = _DEFAULT_SPEED,
 ) -> str:
     """The cache key for a synthesis request - also the `{content_hash}`
     half of the D3 storage path `{project}/narration/{content_hash}.mp3`.
@@ -51,11 +70,21 @@ def compute_narration_content_hash(
     Hashes the REQUEST, not the response audio bytes, exactly like
     `generated_clip.prompt_hash` hashes the prompt rather than the
     generated image: an identical request must never be paid for twice,
-    and the request is fully determined by these four values before any
+    and the request is fully determined by these values before any
     network call happens.
+
+    `speed` is part of the key (parent plan §2.1 / R8). A speed that
+    reaches the API but not this hash silently serves wrong-speed audio
+    on the second run; Track C's disk-fallback would then restore that
+    wrong-speed mp3 rather than re-synthesise. Default 1.0 is omitted
+    from the digest so existing four-value rows (every project narrated
+    before R8) remain cache hits at the API default.
     """
-    digest_input = f"{text}|{voice_id}|{model}|{output_format}".encode()
-    return hashlib.sha256(digest_input).hexdigest()
+    digest_input = f"{text}|{voice_id}|{model}|{output_format}"
+    canonical = canonical_narration_speed(speed)
+    if canonical != _DEFAULT_SPEED:
+        digest_input += f"|{canonical:.3f}"
+    return hashlib.sha256(digest_input.encode()).hexdigest()
 
 
 class ElevenLabsNarrationProvider:
@@ -73,7 +102,13 @@ class ElevenLabsNarrationProvider:
 
         url = f"{_API_BASE_URL}/v1/text-to-speech/{request.voice_id}/with-timestamps"
         params = {"output_format": request.output_format}
-        payload = {"text": request.text, "model_id": request.model}
+        payload: dict = {"text": request.text, "model_id": request.model}
+        # Omit voice_settings at the API default so documentary_archival
+        # requests stay byte-identical to the pre-R8 body. Live-checked
+        # 2026-08-20: speed lives under voice_settings, not top-level.
+        speed = canonical_narration_speed(request.speed)
+        if speed != _DEFAULT_SPEED:
+            payload["voice_settings"] = {"speed": speed}
 
         try:
             async with httpx.AsyncClient(

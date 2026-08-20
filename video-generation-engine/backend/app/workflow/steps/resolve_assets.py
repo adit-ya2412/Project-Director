@@ -122,8 +122,10 @@ from app.assets.validation import (
 )
 from app.core.config import settings
 from app.core.errors import PermanentError, TransientError
+from app.core.logging import get_logger
 from app.models.asset import AssetModel
 from app.models.generated_clip import GeneratedClipModel
+from app.models.shot_binding import ShotBindingModel
 from app.providers.base import (
     AssetCandidate,
     AssetProvider,
@@ -153,6 +155,8 @@ from app.timeline.duration import compute_shot_start_times
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
 
+logger = get_logger(__name__)
+
 _SEARCH_STRATEGIES = frozenset(
     {
         AssetStrategy.PROJECT_ASSETS,
@@ -169,6 +173,18 @@ _ENTITY_ELIGIBLE_STRATEGIES = frozenset(
     {AssetStrategy.HISTORICAL_SEARCH, AssetStrategy.PUBLIC_DOMAIN}
 )
 _CANDIDATES_TO_FETCH_PER_RUNG = 5
+
+
+def secondary_panel_done(shot: Shot, binding, *, done_states: frozenset[str]) -> bool:
+    """R17: a split shot is not done while its bottom panel has neither
+    media nor a recorded outcome. Null `secondary_state` means never
+    attempted, which is not done."""
+    if shot.secondary_asset_plan is None:
+        return True
+    if binding.secondary_asset_id is not None or binding.secondary_clip_id is not None:
+        return True
+    state = getattr(binding, "secondary_state", None)
+    return state in done_states
 
 # The canonical ladder split (implementation guide, M6.5 build order + A5):
 # rungs 1-4 are free and run before approval; rungs 5-6 cost real money and
@@ -670,7 +686,11 @@ class ResolveAssetsStep:
         shots = timeline.all_shots()
         if len(bindings) < len(shots):
             return False
-        return all(bindings[s.id].state in self._done_states for s in shots)
+        return all(
+            bindings[s.id].state in self._done_states
+            and secondary_panel_done(s, bindings[s.id], done_states=self._done_states)
+            for s in shots
+        )
 
     async def run(self, ctx: RunContext) -> StepResult:
         timeline = await ctx.timeline_service.get_active(ctx.project_id)
@@ -746,11 +766,15 @@ class ResolveAssetsStep:
             binding = await binding_repo.get_or_create_pending(
                 project_uuid, timeline.version, shot.id
             )
-            if binding.state in self._done_states:
+            needs_secondary = not secondary_panel_done(
+                shot, binding, done_states=self._done_states
+            )
+            if binding.state in self._done_states and not needs_secondary:
                 continue  # already decided by this pass on a prior attempt/run
 
+            shot_start = start_times.get(shot.id, 0.0)
             try:
-                if settings.dry_run:
+                if binding.state not in self._done_states and settings.dry_run:
                     await self._resolve_one_fake(
                         shot,
                         binding,
@@ -761,8 +785,7 @@ class ResolveAssetsStep:
                         asset_repo=asset_repo,
                         clip_repo=clip_repo,
                     )
-                else:
-                    shot_start = start_times.get(shot.id, 0.0)
+                elif binding.state not in self._done_states:
                     used_hash = await self._resolve_one_real(
                         shot,
                         binding,
@@ -784,6 +807,76 @@ class ResolveAssetsStep:
                     )
                     if used_hash is not None:
                         used_at_s.setdefault(used_hash, []).append(shot_start)
+                if needs_secondary:
+                    panel_shot = shot.model_copy(
+                        update={
+                            "prompt": shot.secondary_prompt,
+                            "asset_plan": shot.secondary_asset_plan,
+                        }
+                    )
+                    # R19: unattached ORM row, not a duck type. Same
+                    # attribute surface as a real binding (`shot_id`
+                    # included). Never `session.add`'d — flush would
+                    # collide with the unique constraint.
+                    scratch = ShotBindingModel(
+                        project_id=project_uuid,
+                        timeline_version=timeline.version,
+                        shot_id=shot.id,
+                        state="pending",
+                    )
+                    try:
+                        if settings.dry_run:
+                            await self._resolve_one_fake(
+                                panel_shot,
+                                scratch,
+                                project_uuid=project_uuid,
+                                project_dir=project_dir,
+                                asset_provider=fake_asset_provider,
+                                image_provider=image_provider,
+                                asset_repo=asset_repo,
+                                clip_repo=clip_repo,
+                            )
+                            used_hash = None
+                        else:
+                            used_hash = await self._resolve_one_real(
+                                panel_shot,
+                                scratch,
+                                project_uuid=project_uuid,
+                                project_dir=project_dir,
+                                search_providers=search_providers,
+                                entity_provider=entity_provider,
+                                image_provider=image_provider,
+                                video_provider=video_provider,
+                                vision_provider=vision_provider,
+                                asset_repo=asset_repo,
+                                clip_repo=clip_repo,
+                                narration_repo=narration_repo,
+                                llm_call_repo=llm_call_repo,
+                                creative_context=timeline.creative_context,
+                                reuse_gap_s=reuse_gaps_s(used_at_s, shot_start),
+                                window_s=window_s,
+                                cap_cents=cap_cents,
+                            )
+                        binding.secondary_asset_id = scratch.asset_id
+                        binding.secondary_clip_id = scratch.clip_id
+                        binding.secondary_state = scratch.state
+                        binding.secondary_last_error = scratch.last_error
+                        binding.cost_cents = (binding.cost_cents or 0) + (scratch.cost_cents or 0)
+                        if used_hash is not None:
+                            used_at_s.setdefault(used_hash, []).append(shot_start)
+                    except TransientError as exc:
+                        logger.warning(
+                            "resolve_assets.secondary_transient",
+                            extra={"shot_id": shot.id, "error": str(exc)},
+                        )
+                        binding.secondary_last_error = str(exc)
+                    except Exception as exc:  # noqa: BLE001 - isolate, do not erase
+                        logger.warning(
+                            "resolve_assets.secondary_failed",
+                            extra={"shot_id": shot.id, "error": str(exc)},
+                        )
+                        binding.secondary_state = "failed"
+                        binding.secondary_last_error = str(exc)
             except TransientError as exc:
                 # Leave state as "pending" (not terminal) - eligible for
                 # another attempt on a future run, without failing the

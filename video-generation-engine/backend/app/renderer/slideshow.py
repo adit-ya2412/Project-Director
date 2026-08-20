@@ -10,7 +10,9 @@ when it was first proven, video-only.
 ## Ken Burns (M8 step 5)
 
 A shot whose `camera.movement` isn't `STATIC`/`SPLIT_FRAME` gets a
-`zoompan` filter instead of the plain static-frame path -
+`zoompan` filter instead of the plain static-frame path. `SPLIT_FRAME`
+with a second still is a `vstack` composite (`split_screen.py`), not
+a `zoompan`. Without a second still it takes the static tpad path.
 `app/renderer/ken_burns.py` owns the expression arithmetic (kept
 separate and unit-testable without shelling out); this module only
 builds the ffmpeg filter STRING around it. Every still input is a
@@ -61,6 +63,7 @@ from app.core.errors import PermanentError
 from app.core.logging import get_logger
 from app.renderer.ken_burns import WORKING_CANVAS_SCALE, ZoompanExpression, build_zoompan_expression
 from app.renderer.motion import MediaKind, MediaProbe, build_duration_fit_fragment, probe_media
+from app.renderer.split_screen import build_split_filter, should_composite_split
 from app.schemas.timeline import Shot, Timeline
 from app.timeline.duration import group_into_runs
 from app.utils.bounded_gather import bounded_gather, ffmpeg_run_concurrency
@@ -399,17 +402,29 @@ async def _encode_or_reuse_shot_stream(
     index: int,
     asset_hash: str,
     ffmpeg_version: str,
+    secondary_src: Path | None = None,
+    secondary_probe: MediaProbe | None = None,
+    secondary_asset_hash: str = "",
 ) -> Path:
     """Pass 1 of C3 (d): one shot's normalised stream, cached by
     `compute_shot_stream_fingerprint`. tpad, never `-loop 1 -t`.
+    Split-screen is two still inputs composited here, so xfade still
+    sees one stream per shot.
     """
     from app.renderer.fingerprint import compute_shot_stream_fingerprint
 
+    split = should_composite_split(
+        shot.camera.movement,
+        secondary_path=secondary_src,
+        top_kind=probe.kind,
+        bot_kind=secondary_probe.kind if secondary_probe is not None else None,
+    )
     fingerprint = compute_shot_stream_fingerprint(
         shot=shot,
         asset_hash=asset_hash,
         render_settings=settings,
         ffmpeg_version=ffmpeg_version,
+        secondary_asset_hash=secondary_asset_hash if split else "",
     )
     cache_dir = work_dir / "shot_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -422,16 +437,37 @@ async def _encode_or_reuse_shot_stream(
         )
         return dest
 
-    short = short_input_name(index, src, probe.kind, run_stem=run_stem)
-    stage_short_input(src, work_dir / short)
-    graph = _per_shot_filter(0, shot, probe, settings, "vout")
+    frames = max(round(shot.duration_s * settings.fps), 1)
+    hold_s = (frames - 1) / settings.fps
+    args = [settings.ffmpeg_binary, "-y"]
+    if split:
+        assert secondary_src is not None
+        short_top = f"{run_stem}_s{index:03d}_top{src.suffix.lower() or '.png'}"
+        short_bot = f"{run_stem}_s{index:03d}_bot{secondary_src.suffix.lower() or '.png'}"
+        stage_short_input(src, work_dir / short_top)
+        stage_short_input(secondary_src, work_dir / short_bot)
+        args += ["-framerate", str(settings.fps), "-i", short_top]
+        args += ["-framerate", str(settings.fps), "-i", short_bot]
+        graph = build_split_filter(
+            0,
+            1,
+            width=settings.width,
+            height=settings.height,
+            fps=settings.fps,
+            pixel_format=settings.pixel_format,
+            label="vout",
+            hold_s=hold_s,
+        )
+    else:
+        short = short_input_name(index, src, probe.kind, run_stem=run_stem)
+        stage_short_input(src, work_dir / short)
+        graph = _per_shot_filter(0, shot, probe, settings, "vout")
+        if probe.kind is MediaKind.STILL:
+            args += ["-framerate", str(settings.fps), "-i", short]
+        else:
+            args += ["-i", short]
     script_name = f"{dest.stem}.filter"
     (work_dir / script_name).write_text(graph, encoding="utf-8")
-    args = [settings.ffmpeg_binary, "-y"]
-    if probe.kind is MediaKind.STILL:
-        args += ["-framerate", str(settings.fps), "-i", short]
-    else:
-        args += ["-i", short]
     args += [
         filter_graph_file_flag(settings.ffmpeg_binary),
         script_name,
@@ -506,8 +542,14 @@ async def _render_run_two_pass(
     work_dir: Path,
     shot_content_hashes: dict[str, str],
     ffmpeg_version: str,
+    shot_secondary_images: dict[str, Path] | None = None,
+    secondary_probes: dict[str, MediaProbe] | None = None,
+    secondary_content_hashes: dict[str, str] | None = None,
 ) -> None:
     run_stem = output_path.stem
+    secondaries = shot_secondary_images or {}
+    sec_probes = secondary_probes or {}
+    sec_hashes = secondary_content_hashes or {}
 
     async def _one(item: tuple[int, Shot]) -> Path:
         index, shot = item
@@ -523,6 +565,9 @@ async def _render_run_two_pass(
             index=index,
             asset_hash=shot_content_hashes[shot.id],
             ffmpeg_version=ffmpeg_version,
+            secondary_src=secondaries.get(shot.id),
+            secondary_probe=sec_probes.get(shot.id),
+            secondary_asset_hash=sec_hashes.get(shot.id, ""),
         )
 
     gathered = await bounded_gather(
@@ -548,6 +593,9 @@ async def _render_run(
     work_dir: Path,
     shot_content_hashes: dict[str, str] | None = None,
     ffmpeg_version: str | None = None,
+    shot_secondary_images: dict[str, Path] | None = None,
+    secondary_probes: dict[str, MediaProbe] | None = None,
+    secondary_content_hashes: dict[str, str] | None = None,
 ) -> None:
     """Render one run (shots joined only by crossfades, no hard cuts) to
     a single MP4.
@@ -563,14 +611,44 @@ async def _render_run(
     Multi-shot runs use two-pass (C3 (d)): per-shot cached streams, then
     an xfade-only chain. A single-shot run stays one encode.
     """
-    if len(run) >= 2:
+    hashes = shot_content_hashes or {
+        shot.id: _file_content_hash(shot_images[shot.id]) for shot in run
+    }
+    secondaries = shot_secondary_images or {}
+    sec_probes = secondary_probes or {}
+    sec_hashes = secondary_content_hashes or {}
+    split_in_run = any(
+        should_composite_split(
+            shot.camera.movement,
+            secondary_path=secondaries.get(shot.id),
+            top_kind=media_probes[shot.id].kind,
+            bot_kind=sec_probes[shot.id].kind if shot.id in sec_probes else None,
+        )
+        for shot in run
+    )
+    if len(run) >= 2 or split_in_run:
         if ffmpeg_version is None:
             from app.renderer.fingerprint import get_ffmpeg_version
 
             ffmpeg_version = await get_ffmpeg_version(settings.ffmpeg_binary)
-        hashes = shot_content_hashes or {
-            shot.id: _file_content_hash(shot_images[shot.id]) for shot in run
-        }
+        if len(run) == 1 and split_in_run:
+            shot = run[0]
+            await _encode_or_reuse_shot_stream(
+                shot=shot,
+                src=shot_images[shot.id],
+                probe=media_probes[shot.id],
+                settings=settings,
+                dest=output_path,
+                work_dir=work_dir,
+                run_stem=output_path.stem,
+                index=0,
+                asset_hash=hashes[shot.id],
+                ffmpeg_version=ffmpeg_version,
+                secondary_src=secondaries.get(shot.id),
+                secondary_probe=sec_probes.get(shot.id),
+                secondary_asset_hash=sec_hashes.get(shot.id, ""),
+            )
+            return
         await _render_run_two_pass(
             run,
             shot_images,
@@ -580,6 +658,9 @@ async def _render_run(
             work_dir=work_dir,
             shot_content_hashes=hashes,
             ffmpeg_version=ffmpeg_version,
+            shot_secondary_images=secondaries,
+            secondary_probes=sec_probes,
+            secondary_content_hashes=sec_hashes,
         )
         return
     # M8 step 5: a Ken-Burns shot's frame count is computed HERE (the one
@@ -709,6 +790,9 @@ async def _render_or_reuse_run(
     work_dir: Path,
     shot_content_hashes: dict[str, str],
     ffmpeg_version: str,
+    shot_secondary_images: dict[str, Path] | None = None,
+    secondary_probes: dict[str, MediaProbe] | None = None,
+    secondary_content_hashes: dict[str, str] | None = None,
 ) -> Path:
     """Encode one run, or copy a previous encode of the same run.
 
@@ -723,6 +807,7 @@ async def _render_or_reuse_run(
         shot_content_hashes=shot_content_hashes,
         render_settings=settings,
         ffmpeg_version=ffmpeg_version,
+        secondary_content_hashes=secondary_content_hashes,
     )
     cache_dir = work_dir / "run_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -744,6 +829,9 @@ async def _render_or_reuse_run(
         work_dir=work_dir,
         shot_content_hashes=shot_content_hashes,
         ffmpeg_version=ffmpeg_version,
+        shot_secondary_images=shot_secondary_images,
+        secondary_probes=secondary_probes,
+        secondary_content_hashes=secondary_content_hashes,
     )
     _atomic_copy(run_path, cache_path)
     return run_path
@@ -756,6 +844,7 @@ async def render_timeline(
     output_path: Path,
     *,
     work_dir: Path,
+    shot_secondary_images: dict[str, Path] | None = None,
 ) -> Path:
     """Render an approved Timeline plus resolved shot images into a single
     MP4. Hard cuts between runs are joined losslessly via the concat
@@ -796,6 +885,17 @@ async def render_timeline(
             )
         )
 
+    resolved_secondary: dict[str, Path] = {}
+    secondary_probes: dict[str, MediaProbe] = {}
+    for shot_id, path in (shot_secondary_images or {}).items():
+        probe = await probe_media(path, ffprobe_binary=settings.ffprobe_binary)
+        if probe.kind is MediaKind.MOTION:
+            continue
+        secondary_probes[shot_id] = probe
+        resolved_secondary[shot_id] = await ensure_still_image(
+            path, shot_id=f"{shot_id}__split", work_dir=work_dir, settings=settings
+        )
+
     runs = group_into_runs(shots)
 
     # Lazy: fingerprint.py imports RenderSettings from this module.
@@ -803,6 +903,9 @@ async def render_timeline(
 
     ffmpeg_version = await get_ffmpeg_version(settings.ffmpeg_binary)
     shot_content_hashes = {shot.id: _file_content_hash(resolved_images[shot.id]) for shot in shots}
+    secondary_content_hashes = {
+        shot_id: _file_content_hash(path) for shot_id, path in resolved_secondary.items()
+    }
 
     async def _one_run(item: tuple[int, list[Shot]]) -> Path:
         index, run = item
@@ -815,6 +918,9 @@ async def render_timeline(
             work_dir,
             shot_content_hashes,
             ffmpeg_version,
+            shot_secondary_images=resolved_secondary,
+            secondary_probes=secondary_probes,
+            secondary_content_hashes=secondary_content_hashes,
         )
 
     gathered = await bounded_gather(

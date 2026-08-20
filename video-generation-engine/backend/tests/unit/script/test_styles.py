@@ -8,7 +8,13 @@ of flat `settings.*` values directly.
 import pytest
 
 from app.core.config import settings
-from app.script.styles import STYLE_PACING_BANDS, StylePacingBand, resolve_constraint_bundle
+from app.script.styles import (
+    STYLE_PACING_BANDS,
+    StylePacingBand,
+    resolve_constraint_bundle,
+    resolve_music_gains,
+    resolve_narration_speed,
+)
 
 
 def test_none_resolves_byte_identical_to_flat_settings():
@@ -125,6 +131,58 @@ def test_max_shot_duration_s_override_is_independent_of_the_dead_stop_ceiling():
     assert moved.max_fragment_duration_s == 2.0
     _min, max_shot_duration_s, _shots = resolve_constraint_bundle("retention_fast")
     assert max_shot_duration_s == band.max_shot_duration_s_override
+
+
+def test_retention_fast_narration_speed_is_1_2_and_others_stay_at_default():
+    """R8: speed is a style parameter. Default 1.0 keeps the pre-R8
+    four-value cache key; only retention_fast overrides it."""
+    assert resolve_narration_speed(None) == 1.0
+    assert resolve_narration_speed("documentary_archival") == 1.0
+    assert resolve_narration_speed("stillness") == 1.0
+    assert resolve_narration_speed("retention_fast") == 1.2
+    assert resolve_narration_speed("not_a_real_style") == 1.0
+    assert STYLE_PACING_BANDS["retention_fast"].narration_speed == 1.2
+
+
+def test_music_gains_are_style_owned_and_archival_keeps_the_measured_mix():
+    """Leftover item 5 / §5.2. Archival is today's measured mix;
+    retention_fast is louder and less ducked; stillness is quieter."""
+    archival = resolve_music_gains("documentary_archival")
+    assert archival == resolve_music_gains(None)
+    assert archival.bed_gain_db == settings.music_bed_gain_db == -14.0
+    assert archival.duck_gain_db == settings.music_duck_gain_db == -20.0
+
+    fast = resolve_music_gains("retention_fast")
+    assert fast.bed_gain_db == -10.0
+    assert fast.duck_gain_db == -14.0
+    assert fast.bed_gain_db > archival.bed_gain_db
+    assert (fast.bed_gain_db - fast.duck_gain_db) < (
+        archival.bed_gain_db - archival.duck_gain_db
+    )
+
+    still = resolve_music_gains("stillness")
+    assert still.bed_gain_db == -22.0
+    assert still.duck_gain_db == -28.0
+    assert still.bed_gain_db < archival.bed_gain_db
+
+    assert resolve_music_gains("not_a_real_style") == archival
+
+
+def test_a_zero_music_gain_override_is_honoured_not_treated_as_unset():
+    """Same `or`-trap as R7: 0.0 dB is unity gain, a real mix value."""
+    STYLE_PACING_BANDS["hypothetical_unity"] = StylePacingBand(
+        name="hypothetical_unity",
+        target_shot_duration_s=None,
+        max_shots_override=None,
+        music_bed_gain_db=0.0,
+        music_duck_gain_db=0.0,
+    )
+    try:
+        gains = resolve_music_gains("hypothetical_unity")
+        assert gains.bed_gain_db == 0.0
+        assert gains.duck_gain_db == 0.0
+    finally:
+        del STYLE_PACING_BANDS["hypothetical_unity"]
 
 
 def test_a_zero_override_is_honoured_not_treated_as_unset():

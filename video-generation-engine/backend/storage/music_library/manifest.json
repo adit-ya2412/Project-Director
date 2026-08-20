@@ -21,7 +21,7 @@
     "license": "cc-by-3.0",
     "mood": "documentary_dark",
     "energy": "ambient",
-    "bpm": null,
+    "bpm": 48,
     "duration_s": 183.7,
     "tags": "dark somber funereal bass strings"
   },
@@ -73,7 +73,7 @@
     "license": "cc-by-3.0",
     "mood": "documentary_dark",
     "energy": "mid",
-    "bpm": null,
+    "bpm": 73,
     "duration_s": 171.49,
     "tags": "dark quiet epic choir percussion synths"
   },
@@ -112,7 +112,7 @@
     "license": "cc-by-nc-4.0",
     "mood": "documentary_dark",
     "energy": "driving",
-    "bpm": null,
+    "bpm": 130,
     "duration_s": 193.91,
     "tags": "epic war intense trailer tragedy"
   },
@@ -177,7 +177,7 @@
     "license": "cc-by-4.0",
     "mood": "documentary_mystery",
     "energy": "mid",
-    "bpm": null,
+    "bpm": 110,
     "duration_s": 226.98,
     "tags": "laid-back detective jazz mystery"
   },
@@ -190,7 +190,7 @@
     "license": "cc-by-4.0",
     "mood": "documentary_mystery",
     "energy": "mid",
-    "bpm": null,
+    "bpm": 104,
     "duration_s": 159.29,
     "tags": "jazzy gumshoe mystery detective"
   },
@@ -424,7 +424,7 @@
     "license": "cc-by-3.0",
     "mood": "industrial",
     "energy": "mid",
-    "bpm": null,
+    "bpm": 139,
     "duration_s": 102.61,
     "tags": "music box bells bright mysterious somber"
   },
@@ -443,7 +443,7 @@
   },
   {
     "file": "industrial/driving/heavy_german_techno_beat.mp3",
-    "title": "Heavy German Techno Beat \u2013 Dark Industrial Instrumental",
+    "title": "Heavy German Techno Beat – Dark Industrial Instrumental",
     "artist": "HauntSync",
     "source": "pixabay",
     "source_url": "https://pixabay.com/music/techno-trance-heavy-german-techno-beat-dark-industrial-instrumental-403003/",
@@ -541,7 +541,7 @@
     "license": "cc-by-nc-4.0",
     "mood": "historical_epic",
     "energy": "mid",
-    "bpm": null,
+    "bpm": 175,
     "duration_s": 193.37,
     "tags": "epic cinematic orchestral"
   },
@@ -684,7 +684,7 @@
     "license": "cc-by-nc-4.0",
     "mood": "emotional",
     "energy": "driving",
-    "bpm": null,
+    "bpm": 175,
     "duration_s": 193.37,
     "tags": "epic cinematic orchestral uplifting"
   },
@@ -697,7 +697,7 @@
     "license": "cc-by-nc-4.0",
     "mood": "emotional",
     "energy": "driving",
-    "bpm": null,
+    "bpm": 130,
     "duration_s": 127.43,
     "tags": "inspiring uplifting emotional cinematic empires"
   }

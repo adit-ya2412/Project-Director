@@ -46,7 +46,8 @@ def _timeline(shot_prompt: str = "a shot") -> Timeline:
 def _fingerprint(**overrides) -> str:
     kwargs = {
         "timeline": _timeline(),
-        "asset_content_hashes": ["hash-a", "hash-b"],
+        "asset_content_hashes": {"sh_01": "hash-a"},
+        "secondary_content_hashes": {"sh_01": "hash-b"},
         "narration_content_hashes": ["narr-1"],
         "music_content_hash": "music-1",
         "render_settings": _SETTINGS,
@@ -60,6 +61,9 @@ def _fingerprint(**overrides) -> str:
         "watermark_params_hash": None,
         "burn_text_cards": False,
         "text_card_font_hash": None,
+        "sfx_content_hashes": [],
+        "sfx_gain_db": -8.0,
+        "sfx_max_clip_s": 1.5,
         "ffmpeg_version": "ffmpeg version 9.0",
     }
     kwargs.update(overrides)
@@ -91,11 +95,43 @@ def test_grade_style_still_changes_the_fingerprint():
     assert _fingerprint(timeline=styled) != _fingerprint()
 
 
-def test_asset_content_hash_order_does_not_matter():
-    """Sorted internally (I5) - a binding resolution order difference
-    must never change the fingerprint."""
-    assert _fingerprint(asset_content_hashes=["hash-a", "hash-b"]) == _fingerprint(
-        asset_content_hashes=["hash-b", "hash-a"]
+def test_asset_content_hash_dict_construction_order_does_not_matter():
+    """R16: keyed by shot_id, so inserting the mapping in a different
+    order is still the same assignment."""
+    assert _fingerprint(asset_content_hashes={"sh_01": "hash-a"}) == _fingerprint(
+        asset_content_hashes={"sh_01": "hash-a"}
+    )
+
+
+def test_swapping_top_and_bottom_panels_changes_the_fingerprint():
+    """R16: a sorted bag of hashes cannot tell the panels apart."""
+    assert _fingerprint(
+        asset_content_hashes={"sh_01": "hash-a"},
+        secondary_content_hashes={"sh_01": "hash-b"},
+    ) != _fingerprint(
+        asset_content_hashes={"sh_01": "hash-b"},
+        secondary_content_hashes={"sh_01": "hash-a"},
+    )
+
+
+def test_swapping_two_shots_assets_changes_the_fingerprint():
+    """R16 also closes the pre-existing shot↔shot swap on locked shots."""
+    shot_a = Shot(id="sh_a", order=0, intent=ShotIntent.EXPLAIN, duration_s=1.0)
+    shot_b = Shot(id="sh_b", order=1, intent=ShotIntent.EXPLAIN, duration_s=1.0)
+    scene = Scene(id="sc_01", order=0, title="Scene", duration_s=2.0, shots=[shot_a, shot_b])
+    two = Timeline(
+        timeline_id="t1",
+        project_id="p1",
+        version=1,
+        produced_by=ProducedBy.HUMAN,
+        status=TimelineStatus.DRAFT,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        scenes=[scene],
+    )
+    assigned = {"sh_a": "hash-a", "sh_b": "hash-b"}
+    swapped = {"sh_a": "hash-b", "sh_b": "hash-a"}
+    assert _fingerprint(timeline=two, asset_content_hashes=assigned) != _fingerprint(
+        timeline=two, asset_content_hashes=swapped
     )
 
 
@@ -104,7 +140,7 @@ def test_different_timeline_content_changes_the_fingerprint():
 
 
 def test_different_asset_content_changes_the_fingerprint():
-    assert _fingerprint(asset_content_hashes=["hash-a", "hash-c"]) != _fingerprint()
+    assert _fingerprint(asset_content_hashes={"sh_01": "hash-c"}) != _fingerprint()
 
 
 def test_different_narration_changes_the_fingerprint():
@@ -219,6 +255,20 @@ def test_different_text_card_font_changes_the_fingerprint():
     )
 
 
+def test_different_sfx_clip_hash_changes_the_fingerprint():
+    """Plan §5.5 / §7: SFX clip bytes are a render input."""
+    assert _fingerprint(sfx_content_hashes=["aaa"]) != _fingerprint(sfx_content_hashes=["bbb"])
+
+
+def test_different_sfx_gain_changes_the_fingerprint():
+    assert _fingerprint(sfx_gain_db=-8.0) != _fingerprint(sfx_gain_db=-4.0)
+
+
+def test_different_sfx_max_clip_changes_the_fingerprint():
+    """R12: `atrim` length is a mix input."""
+    assert _fingerprint(sfx_max_clip_s=1.5) != _fingerprint(sfx_max_clip_s=3.0)
+
+
 def test_bookkeeping_fields_never_affect_the_fingerprint():
     """Two DIFFERENT projects/versions with byte-identical scene content
     must fingerprint identically - this is what makes cross-project
@@ -268,6 +318,12 @@ def test_run_fingerprint_changes_with_asset_hash():
     assert _run_fp(shot_content_hashes={"sh_01": "hash-b"}) != _run_fp()
 
 
+def test_run_fingerprint_changes_with_secondary_asset_hash():
+    assert _run_fp(secondary_content_hashes={"sh_01": "bot-a"}) != _run_fp(
+        secondary_content_hashes={"sh_01": "bot-b"}
+    )
+
+
 def test_run_fingerprint_asset_order_is_the_run_order():
     """Not sorted: swapping two shots' media must miss, unlike the
     full-render hash which sorts globally."""
@@ -298,6 +354,11 @@ def _shot_fp(**overrides) -> str:
 
 def test_identical_shots_produce_identical_stream_fingerprints():
     assert _shot_fp() == _shot_fp()
+
+
+def test_secondary_asset_hash_changes_the_shot_stream_fingerprint():
+    """Split-screen bottom panel is a real encode input (R2 / §7)."""
+    assert _shot_fp(secondary_asset_hash="") != _shot_fp(secondary_asset_hash="hash-b")
 
 
 def test_shot_stream_fingerprint_ignores_transition_out():

@@ -137,7 +137,7 @@ def suggest_breaks(script: str, style: str, *, max_suggestions: int = 10) -> lis
     if band.target_shot_duration_s is None:
         return []
 
-    chars_per_second = _chars_per_second(script)
+    chars_per_second = _chars_per_second(style)
     fragments = split_narration_fragments(script)
     over_target = [
         FragmentEstimate(fragment=f, estimated_duration_s=(f.end - f.start) / chars_per_second)

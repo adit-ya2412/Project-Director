@@ -68,6 +68,15 @@ from app.providers.base import TrackCandidate
 
 _TAGS_HEAD_CHARS = 300
 _ABSOLUTE_FLOOR_S = 20.0
+# Plan §5.3: 1.75s shots ≈ 137 BPM on a 4-beat bar. Cuts cannot land on
+# beats (D1: narration is the clock), so this is a ranking criterion,
+# not a timing change. `60 * beats / duration`.
+_BEATS_PER_BAR = 4.0
+# Relative band around the target. A 1.75s (137 BPM) fast-cut accepts
+# ~110–164; a 3.54s archival cut (~68 BPM) accepts ~54–81. Unknown BPM
+# ranks between "in band" and "known mismatch" so a drone is not beaten
+# by a 180 BPM march just because the march published a number.
+_TEMPO_FIT_FRACTION = 0.20
 
 
 def music_candidate_relevance(query_terms: list[str], candidate: TrackCandidate) -> float:
@@ -92,24 +101,46 @@ def _meets_duration_floor(candidate: TrackCandidate, *, floor_s: float) -> bool:
     return candidate.duration_s is not None and candidate.duration_s >= floor_s
 
 
+def target_bpm_for_mean_shot_duration(mean_shot_duration_s: float) -> float | None:
+    """4-beat-bar BPM that would land one bar on the mean shot (plan §5.3).
+    `None` when duration is unknown — callers then skip the tempo key."""
+    if mean_shot_duration_s <= 0.0:
+        return None
+    return 60.0 * _BEATS_PER_BAR / mean_shot_duration_s
+
+
+def _tempo_band(candidate: TrackCandidate, *, target_bpm: float | None) -> int:
+    """0 = known and in-band, 1 = unknown, 2 = known and outside.
+    Inactive (`0` for everyone) when there is no target, so existing
+    callers that omit `mean_shot_duration_s` keep pre-§5.3 order."""
+    if target_bpm is None:
+        return 0
+    if candidate.bpm is None:
+        return 1
+    return 0 if abs(candidate.bpm - target_bpm) / target_bpm <= _TEMPO_FIT_FRACTION else 2
+
+
 def rank_music_candidates(
     candidates: list[TrackCandidate],
     *,
     query_terms: list[str],
     video_duration_s: float = 0.0,
+    mean_shot_duration_s: float = 0.0,
 ) -> list[TrackCandidate]:
-    """Candidates that meet the duration floor first (see module
-    docstring - a lexicographic preference, never a hard filter), highest
-    term-overlap relevance second, `source_id` last for determinism (I5)
-    - never dict/set iteration order, which is not guaranteed stable
-    across processes."""
+    """Lexicographic: duration floor, then term-overlap, then tempo-fit
+    band (R14: tempo is taste, not a defect — it must not beat the
+    brief), then `source_id` for I5. Tempo never discards. Unknown BPM
+    still sits between a fit and a known mismatch among comparably
+    relevant tracks."""
     floor_s = compute_duration_floor_s(video_duration_s)
+    target_bpm = target_bpm_for_mean_shot_duration(mean_shot_duration_s)
 
-    def _key(candidate: TrackCandidate) -> tuple[int, float, str]:
+    def _key(candidate: TrackCandidate) -> tuple[int, float, int, str]:
         meets_floor = _meets_duration_floor(candidate, floor_s=floor_s)
         return (
             0 if meets_floor else 1,
             -music_candidate_relevance(query_terms, candidate),
+            _tempo_band(candidate, target_bpm=target_bpm),
             candidate.source_id,
         )
 

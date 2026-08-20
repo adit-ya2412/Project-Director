@@ -52,6 +52,21 @@ class ShotBindingModel(Base):
     clip_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("generated_clip.id"), nullable=True
     )
+    # Split-screen bottom panel (plan §2.6). Null on every non-split
+    # shot and every row that predates this column. Same asset-vs-clip
+    # precedence as the primary pair: `secondary_asset_id` wins.
+    secondary_asset_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("asset.id"), nullable=True
+    )
+    secondary_clip_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("generated_clip.id"), nullable=True
+    )
+    # R18: "attempted and failed" must not look like "never attempted".
+    # Null on every non-split shot and every row that predates this
+    # column. Same vocabulary as `state` (resolved / awaiting_generation
+    # / failed / …).
+    secondary_state: Mapped[str | None] = mapped_column(String, nullable=True)
+    secondary_last_error: Mapped[str | None] = mapped_column(String, nullable=True)
     rung: Mapped[str | None] = mapped_column(String, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(String, nullable=True)

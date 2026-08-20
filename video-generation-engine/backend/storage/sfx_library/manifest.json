@@ -1,0 +1,110 @@
+[
+  {
+    "file": "whoosh/deep_whoosh_1.mp3",
+    "title": "Deep Whoosh #1",
+    "artist": "Kinoton",
+    "source": "openverse",
+    "source_url": "https://freesound.org/people/Kinoton/sounds/351256",
+    "license": "cc0",
+    "kind": "whoosh",
+    "duration_s": 3.156,
+    "tags": "whoosh",
+    "attribution": "\"Deep Whoosh #1\" by Kinoton is marked with CC0 1.0. To view the terms, visit https://creativecommons.org/publicdomain/zero/1.0/."
+  },
+  {
+    "file": "whoosh/swosh_swoosh_whoosh_air_sound_free_high_quality.mp3",
+    "title": "Swosh swoosh whoosh air sound, free, high quality",
+    "artist": "qubodup",
+    "source": "openverse",
+    "source_url": "https://freesound.org/people/qubodup/sounds/60026",
+    "license": "cc0",
+    "kind": "whoosh",
+    "duration_s": 0.49,
+    "tags": "whoosh",
+    "attribution": "\"Swosh swoosh whoosh air sound, free, high quality\" by qubodup is marked with CC0 1.0. To view the terms, visit https://creativecommons.org/publicdomain/zero/1.0/."
+  },
+  {
+    "file": "whoosh/swipe_whoosh.mp3",
+    "title": "Swipe Whoosh",
+    "artist": "qubodup",
+    "source": "openverse",
+    "source_url": "https://freesound.org/people/qubodup/sounds/60007",
+    "license": "cc0",
+    "kind": "whoosh",
+    "duration_s": 0.448,
+    "tags": "whoosh",
+    "attribution": "\"Swipe Whoosh\" by qubodup is marked with CC0 1.0. To view the terms, visit https://creativecommons.org/publicdomain/zero/1.0/."
+  },
+  {
+    "file": "stinger/stinger_3_wav.mp3",
+    "title": "Stinger 3.wav",
+    "artist": "AudioPapkin",
+    "source": "openverse",
+    "source_url": "https://freesound.org/people/AudioPapkin/sounds/441342",
+    "license": "cc0",
+    "kind": "stinger",
+    "duration_s": 1.995,
+    "tags": "stinger",
+    "attribution": "\"Stinger 3.wav\" by AudioPapkin is marked with CC0 1.0. To view the terms, visit https://creativecommons.org/publicdomain/zero/1.0/."
+  },
+  {
+    "file": "stinger/creepy_stinger_chuckle.mp3",
+    "title": "Creepy Stinger Chuckle",
+    "artist": "Dpoggioli",
+    "source": "openverse",
+    "source_url": "https://freesound.org/people/Dpoggioli/sounds/213609",
+    "license": "by",
+    "kind": "stinger",
+    "duration_s": 4.0,
+    "tags": "stinger",
+    "attribution": "\"Creepy Stinger Chuckle\" by Dpoggioli is licensed under CC BY 4.0. To view a copy of this license, visit https://creativecommons.org/licenses/by/4.0/."
+  },
+  {
+    "file": "stinger/horror_stinger_16_memory_flash_wav.mp3",
+    "title": "Horror Stinger 16_Memory Flash.wav",
+    "artist": "Ulrich_Wehner",
+    "source": "openverse",
+    "source_url": "https://freesound.org/people/Ulrich_Wehner/sounds/638395",
+    "license": "by",
+    "kind": "stinger",
+    "duration_s": 3.024,
+    "tags": "stinger",
+    "attribution": "\"Horror Stinger 16_Memory Flash.wav\" by Ulrich_Wehner is licensed under CC BY 4.0. To view a copy of this license, visit https://creativecommons.org/licenses/by/4.0/."
+  },
+  {
+    "file": "transition/space_swoosh_brighter.mp3",
+    "title": "Space Swoosh - brighter",
+    "artist": "GameAudio",
+    "source": "openverse",
+    "source_url": "https://freesound.org/people/GameAudio/sounds/220191",
+    "license": "cc0",
+    "kind": "transition",
+    "duration_s": 1.013,
+    "tags": "transition",
+    "attribution": "\"Space Swoosh - brighter\" by GameAudio is marked with CC0 1.0. To view the terms, visit https://creativecommons.org/publicdomain/zero/1.0/."
+  },
+  {
+    "file": "transition/swoosh_15_windy.mp3",
+    "title": "Swoosh 15 Windy",
+    "artist": "qubodup",
+    "source": "openverse",
+    "source_url": "https://freesound.org/people/qubodup/sounds/60002",
+    "license": "cc0",
+    "kind": "transition",
+    "duration_s": 0.416,
+    "tags": "transition",
+    "attribution": "\"Swoosh 15 Windy\" by qubodup is marked with CC0 1.0. To view the terms, visit https://creativecommons.org/publicdomain/zero/1.0/."
+  },
+  {
+    "file": "transition/swoosh_wind_09_flac.mp3",
+    "title": "swoosh wind 09.flac",
+    "artist": "qubodup",
+    "source": "openverse",
+    "source_url": "https://freesound.org/people/qubodup/sounds/59996",
+    "license": "cc0",
+    "kind": "transition",
+    "duration_s": 0.186,
+    "tags": "transition",
+    "attribution": "\"swoosh wind 09.flac\" by qubodup is marked with CC0 1.0. To view the terms, visit https://creativecommons.org/publicdomain/zero/1.0/."
+  }
+]

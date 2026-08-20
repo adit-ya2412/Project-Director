@@ -193,7 +193,8 @@ def main() -> None:
     start = time.monotonic()
     fingerprint = compute_render_fingerprint(
         timeline=timeline,
-        asset_content_hashes=[f"hash{i:03d}" for i in range(N_SHOTS)],
+        asset_content_hashes={f"s{i:03d}": f"hash{i:03d}" for i in range(N_SHOTS)},
+        secondary_content_hashes={},
         narration_content_hashes=[f"nhash{i:03d}" for i in range(N_SCENES)],
         music_content_hash="musichash",
         render_settings=render_settings,
@@ -207,6 +208,9 @@ def main() -> None:
         watermark_params_hash=None,
         burn_text_cards=False,
         text_card_font_hash=None,
+        sfx_content_hashes=[],
+        sfx_gain_db=-8.0,
+        sfx_max_clip_s=1.5,
         ffmpeg_version="7.1.5",
     )
     fingerprint_elapsed = time.monotonic() - start

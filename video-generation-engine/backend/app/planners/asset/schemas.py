@@ -25,3 +25,7 @@ class AssetPlanShotOutput(BaseModel):
 
 class AssetPlannerOutput(BaseModel):
     asset_plans: list[AssetPlanShotOutput]
+    # Bottom-panel plans for split_frame shots only. Empty when the
+    # scene has none. Same shot_id as the matching primary plan
+    # (OpenAI strict mode: required, never omitted).
+    secondary_asset_plans: list[AssetPlanShotOutput]

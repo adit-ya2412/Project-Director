@@ -70,7 +70,7 @@ from app.providers.pixabay_music import PixabayMusicProvider
 from app.renderer.slideshow import probe_duration_seconds
 from app.repositories.generated_clip_repository import GeneratedClipRepository
 from app.repositories.narration_repository import NarrationRepository
-from app.schemas.timeline import ActMusicBed, MusicTrackSelection, ProducedBy, Timeline
+from app.schemas.timeline import ActMusicBed, MusicTrackSelection, ProducedBy, Scene, Timeline
 from app.timeline.acts import group_scenes_by_act, uses_per_act_beds
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
@@ -88,6 +88,15 @@ _PROVIDERS: dict[str, Callable[[], MusicProvider]] = {
     "openverse": OpenverseMusicProvider,
     "pixabay": PixabayMusicProvider,
 }
+
+
+def _mean_shot_duration_s(scenes: list[Scene]) -> float:
+    """Plan §5.3: tempo-fit ranks against measured (here: planned) mean
+    shot length. Empty shot list → 0, which disables the tempo key."""
+    shots = [shot for scene in scenes for shot in scene.shots]
+    if not shots:
+        return 0.0
+    return sum(shot.duration_s for shot in shots) / len(shots)
 
 
 def _real_music_provider() -> MusicProvider:
@@ -131,6 +140,7 @@ class SelectMusicStep:
                     ctx,
                     timeline,
                     video_duration_s=act_duration_s,
+                    mean_shot_duration_s=_mean_shot_duration_s(scenes),
                     exclude_source_ids=exclude,
                 )
                 beds.append(ActMusicBed(act_id=act_id, selected_track=selection))
@@ -149,7 +159,10 @@ class SelectMusicStep:
             record = _record_acts
         else:
             selection = await self._select(
-                ctx, timeline, video_duration_s=timeline.metadata.total_duration_s
+                ctx,
+                timeline,
+                video_duration_s=timeline.metadata.total_duration_s,
+                mean_shot_duration_s=_mean_shot_duration_s(timeline.scenes),
             )
 
             def _record_one(base: Timeline) -> Timeline:
@@ -175,6 +188,7 @@ class SelectMusicStep:
         timeline: Timeline,
         *,
         video_duration_s: float,
+        mean_shot_duration_s: float = 0.0,
         exclude_source_ids: set[str] | frozenset[str] = frozenset(),
     ) -> MusicTrackSelection | None:
         plan = timeline.music_plan
@@ -215,6 +229,7 @@ class SelectMusicStep:
             # in the right ballpark, not exact. Per-act calls pass that
             # act's duration so a 90 s act does not inherit a 10 min floor.
             video_duration_s=video_duration_s,
+            mean_shot_duration_s=mean_shot_duration_s,
         )
         # C7: consecutive acts must not share a bed when any other
         # candidate exists. Repeating a bed from act 1 at act 4 is fine.
