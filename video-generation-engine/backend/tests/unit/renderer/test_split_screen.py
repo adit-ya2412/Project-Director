@@ -16,7 +16,25 @@ def test_panel_heights_sum_to_the_frame():
     assert sum(panel_heights(241)) == 241
 
 
-def test_split_filter_vstacks_two_letterboxed_panels():
+def test_split_filter_vstacks_two_crop_filled_panels():
+    fragment = build_split_filter(
+        0,
+        1,
+        width=240,
+        height=320,
+        fps=24,
+        pixel_format="yuv420p",
+        label="vout",
+        hold_s=1.458333,
+    )
+    assert "vstack=inputs=2" in fragment
+    assert "hstack=" not in fragment
+    assert "scale=240:160:force_original_aspect_ratio=increase" in fragment
+    assert "crop=240:160" in fragment
+    assert fragment.endswith("[vout]")
+
+
+def test_split_filter_hstacks_on_a_landscape_canvas():
     fragment = build_split_filter(
         0,
         1,
@@ -25,14 +43,12 @@ def test_split_filter_vstacks_two_letterboxed_panels():
         fps=24,
         pixel_format="yuv420p",
         label="vout",
-        hold_s=1.458333,
+        hold_s=1.0,
     )
-    assert "vstack=inputs=2" in fragment
-    assert "scale=320:120" in fragment
-    assert "tpad=stop_mode=clone:stop_duration=1.458333" in fragment
-    assert "[0:v]" in fragment
-    assert "[1:v]" in fragment
-    assert fragment.endswith("[vout]")
+    assert "hstack=inputs=2" in fragment
+    assert "vstack=" not in fragment
+    assert "scale=160:240:force_original_aspect_ratio=increase" in fragment
+    assert "crop=160:240" in fragment
 
 
 def test_should_composite_requires_two_stills_and_split_movement():

@@ -154,13 +154,22 @@ def test_override_before_approval_locks_the_shot_but_still_requires_approval(cli
     shot_id = awaiting["timeline"]["scenes"][0]["shots"][0]["id"]
     version_before = awaiting["timeline"]["version"]
 
-    overridden = trigger_and_wait(
-        client,
-        "post",
+    resp = client.post(
         f"/api/v1/projects/{project_id}/shots/{shot_id}/override",
         files={"file": ("override.png", _png_bytes((9, 9, 9)), "image/png")},
         data={"description": "a human-chosen photo for this exact shot"},
     )
+    assert resp.status_code == 202, resp.text
+    trigger = resp.json()
+    # First-gate override must not resume the engine (that re-runs
+    # narration and bounces the review UI to /progress).
+    assert trigger["joined_existing_run"] is True
+    assert trigger["state"] == "awaiting_approval"
+    progress_after = client.get(f"/api/v1/projects/{project_id}/progress").json()
+    assert progress_after["workflow_state"] == "awaiting_approval"
+    assert progress_after["current_step"] == "await_approval"
+
+    overridden = client.get(f"/api/v1/projects/{project_id}").json()
     assert overridden["status"] == "awaiting_approval"
     assert overridden["timeline"]["version"] > version_before
 

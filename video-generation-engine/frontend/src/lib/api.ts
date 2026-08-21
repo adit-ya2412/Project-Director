@@ -4,6 +4,8 @@ import type {
   ProgressResponse,
   RegenerateFailedResult,
   SceneApprovalResult,
+  ScriptPreflightResponse,
+  ScriptRewriteResponse,
   ShotProgress,
   Timeline,
   UploadedAssetResult,
@@ -70,10 +72,17 @@ export function getProject(projectId: string): Promise<Project> {
   return request(`/projects/${projectId}`);
 }
 
-export function createProject(name: string): Promise<Project> {
+export function createProject(
+  name: string,
+  opts?: { render_style?: string | null; frame_aspect?: string | null },
+): Promise<Project> {
   return request("/projects", {
     method: "POST",
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({
+      name,
+      ...(opts?.render_style ? { render_style: opts.render_style } : {}),
+      ...(opts?.frame_aspect ? { frame_aspect: opts.frame_aspect } : {}),
+    }),
   });
 }
 
@@ -84,6 +93,43 @@ export function uploadScript(
   return request(`/projects/${projectId}/script`, {
     method: "POST",
     body: JSON.stringify({ content }),
+  });
+}
+
+export function setRenderStyle(
+  projectId: string,
+  renderStyle: string,
+  frameAspect?: string | null,
+): Promise<Project> {
+  return request(`/projects/${projectId}/style`, {
+    method: "POST",
+    body: JSON.stringify({
+      render_style: renderStyle,
+      frame_aspect: frameAspect ?? null,
+    }),
+  });
+}
+
+export function preflightScript(
+  projectId: string,
+  script: string,
+  style: string,
+): Promise<ScriptPreflightResponse> {
+  return request(`/projects/${projectId}/script/preflight`, {
+    method: "POST",
+    body: JSON.stringify({ script, style }),
+  });
+}
+
+export function rewriteScript(
+  projectId: string,
+  script: string,
+  style: string,
+  persist = false,
+): Promise<ScriptRewriteResponse> {
+  return request(`/projects/${projectId}/script/rewrite`, {
+    method: "POST",
+    body: JSON.stringify({ script, style, persist }),
   });
 }
 

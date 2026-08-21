@@ -132,7 +132,10 @@ class GenerateTimelineStep:
         try:
             if await ctx.timeline_service.get_active(ctx.project_id) is None:
                 await ctx.timeline_service.create_initial(
-                    ctx.project_id, project.script, render_style=project.render_style
+                    ctx.project_id,
+                    project.script,
+                    render_style=project.render_style,
+                    frame_aspect=project.frame_aspect,
                 )
 
             if settings.dry_run:

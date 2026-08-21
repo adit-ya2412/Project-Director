@@ -68,7 +68,7 @@ function ProjectCard({ project }: { project: Project }) {
           isFailed && 'border-destructive/50 bg-destructive/[0.04]',
         )}
       >
-        <div className="aspect-[9/16] w-full max-h-56 overflow-hidden bg-secondary/40">
+        <div className={`${(project.render_width ?? 720) > (project.render_height ?? 1280) ? "aspect-video" : "aspect-[9/16]"} w-full max-h-56 overflow-hidden bg-secondary/40`}>
           <ThumbnailImg project={project} />
         </div>
         <div className="space-y-2 p-3">

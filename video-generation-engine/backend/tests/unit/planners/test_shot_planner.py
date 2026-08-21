@@ -530,3 +530,46 @@ async def test_split_frame_secondary_prompt_lands_on_the_shot(project_id):
         )
     assert planned[0].shots[0].secondary_prompt == "1930s map of the Ruhr"
     assert planned[0].shots[0].camera.movement == CameraMovement.SPLIT_FRAME
+
+
+_CAMERA_LINE = "slow, deliberate pushes; let each image breathe"
+
+
+async def test_retention_fast_omits_director_camera_language(project_id):
+    """Q6: style fragment owns camera; the Director's line must not
+    share the request."""
+    scene = _scene()
+    ctx = CreativeContext(camera_language=_CAMERA_LINE)
+    async with async_session_factory() as session:
+        provider = FakePlanningProvider(responses=[_valid_output_for(scene)])
+        planner = ShotPlanner(provider, LlmCallRepository(session))
+        await planner.plan(
+            project_id=project_id,
+            scenes=[scene],
+            creative_context=ctx,
+            min_shot_duration_s=1.0,
+            max_shot_duration_s=8.0,
+            max_shots_per_project=40,
+            render_style="retention_fast",
+        )
+    user = provider.calls[0]["user_content"]
+    assert "camera_language:" not in user
+    assert _CAMERA_LINE not in user
+
+
+async def test_documentary_archival_still_receives_director_camera_language(project_id):
+    scene = _scene()
+    ctx = CreativeContext(camera_language=_CAMERA_LINE)
+    async with async_session_factory() as session:
+        provider = FakePlanningProvider(responses=[_valid_output_for(scene)])
+        planner = ShotPlanner(provider, LlmCallRepository(session))
+        await planner.plan(
+            project_id=project_id,
+            scenes=[scene],
+            creative_context=ctx,
+            min_shot_duration_s=1.0,
+            max_shot_duration_s=8.0,
+            max_shots_per_project=40,
+            render_style="documentary_archival",
+        )
+    assert f"camera_language: {_CAMERA_LINE}" in provider.calls[0]["user_content"]

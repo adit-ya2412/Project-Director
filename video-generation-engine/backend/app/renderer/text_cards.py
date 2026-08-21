@@ -108,7 +108,7 @@ def serialize_text_card_ass(cues: list[TextCardCue], style: TextCardStyle) -> st
     render.py` composes both, plus the grade and the watermark, into one
     filter graph)."""
     width, height = style.resolution
-    font_size = max(round(height * style.font_size_fraction), 1)
+    font_size = max(round(max(width, height) * style.font_size_fraction), 1)
     fade_in_ms = round(_FADE_IN_S * 1000)
     fade_out_ms = round(_FADE_OUT_S * 1000)
 

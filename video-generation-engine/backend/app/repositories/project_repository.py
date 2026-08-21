@@ -30,7 +30,12 @@ from app.schemas.timeline import Timeline
 
 
 class ProjectRepository(Protocol):
-    async def create(self, name: str, render_style: str | None = None) -> Project: ...
+    async def create(
+        self,
+        name: str,
+        render_style: str | None = None,
+        frame_aspect: str | None = None,
+    ) -> Project: ...
     async def get(self, project_id: str) -> Project | None: ...
     async def update(self, project: Project) -> Project: ...
     async def list_all(self) -> list[Project]: ...
@@ -42,8 +47,13 @@ class InMemoryProjectRepository:
         self._projects: dict[str, Project] = {}
         self._lock = asyncio.Lock()
 
-    async def create(self, name: str, render_style: str | None = None) -> Project:
-        project = Project(name=name, render_style=render_style)
+    async def create(
+        self,
+        name: str,
+        render_style: str | None = None,
+        frame_aspect: str | None = None,
+    ) -> Project:
+        project = Project(name=name, render_style=render_style, frame_aspect=frame_aspect)
         async with self._lock:
             self._projects[project.id] = project
         return project
@@ -80,9 +90,17 @@ class PostgresProjectRepository:
         self._session = session
         self._timeline_repo = TimelineVersionRepository(session)
 
-    async def create(self, name: str, render_style: str | None = None) -> Project:
+    async def create(
+        self,
+        name: str,
+        render_style: str | None = None,
+        frame_aspect: str | None = None,
+    ) -> Project:
         model = ProjectModel(
-            name=name, status=ProjectStatus.CREATED.value, render_style=render_style
+            name=name,
+            status=ProjectStatus.CREATED.value,
+            render_style=render_style,
+            frame_aspect=frame_aspect,
         )
         self._session.add(model)
         await self._session.commit()
@@ -122,6 +140,10 @@ class PostgresProjectRepository:
         # means the caller didn't touch it this call, not "clear it".
         if project.render_style is not None:
             model.render_style = project.render_style
+        # None is a real value here (stillness default 16:9, or a
+        # non-stillness style that cannot carry an override). Always
+        # write, unlike render_style above.
+        model.frame_aspect = project.frame_aspect
 
         if project.script is not None:
             await self._append_script_if_changed(model.id, project.script)
@@ -187,13 +209,26 @@ class PostgresProjectRepository:
         script: ScriptModel | None,
         timeline_row: TimelineVersionModel | None,
     ) -> Project:
+        timeline = Timeline.model_validate(timeline_row.document) if timeline_row else None
+        if timeline is not None:
+            style = timeline.metadata.render_style or model.render_style
+            aspect = timeline.metadata.frame_aspect
+        else:
+            style = model.render_style
+            aspect = model.frame_aspect
+        from app.script.styles import resolve_render_format
+
+        frame = resolve_render_format(style, frame_aspect=aspect)
         return Project(
             id=str(model.id),
             name=model.name,
             status=ProjectStatus(model.status),
             script=script.content if script else None,
             render_style=model.render_style,
-            timeline=Timeline.model_validate(timeline_row.document) if timeline_row else None,
+            frame_aspect=aspect,
+            render_width=frame.width,
+            render_height=frame.height,
+            timeline=timeline,
             video_path=model.video_path,
             error=model.error,
             created_at=model.created_at,

@@ -103,7 +103,7 @@ from app.repositories.render_repository import RenderRepository
 from app.repositories.shot_binding_repository import ShotBindingRepository
 from app.schemas.project import ProjectStatus
 from app.schemas.timeline import ProducedBy, Timeline
-from app.script.styles import resolve_music_gains, resolve_narration_speed
+from app.script.styles import resolve_music_gains, resolve_narration_speed, resolve_render_format
 from app.timeline.acts import act_time_ranges, music_content_hash_for
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
@@ -145,9 +145,13 @@ class RenderStep:
         if timeline is None:
             return StepResult(outcome="failed", error="no active timeline to render")
 
+        frame = resolve_render_format(
+            timeline.metadata.render_style,
+            frame_aspect=timeline.metadata.frame_aspect,
+        )
         render_settings = RenderSettings(
-            width=settings.render_width,
-            height=settings.render_height,
+            width=frame.width,
+            height=frame.height,
             fps=settings.render_fps,
             pixel_format=settings.render_pixel_format,
             ffmpeg_binary=settings.ffmpeg_binary,
@@ -180,6 +184,7 @@ async def render_video(
     render_settings: RenderSettings,
     *,
     output_filename: str,
+    is_draft: bool = False,
 ) -> Path:
     """The whole render/mux pipeline, parameterised so `RenderStep` (the
     automated `final.mp4`) and the on-demand draft endpoint (`draft.mp4`,
@@ -492,6 +497,7 @@ async def render_video(
         height=render_settings.height,
         fps=render_settings.fps,
         duration_s=duration_s,
+        is_draft=is_draft,
     )
     return output_path
 

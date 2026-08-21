@@ -79,6 +79,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     Request,
     UploadFile,
 )
@@ -128,10 +129,10 @@ from app.schemas.script_preflight import (
     ScriptRewriteResponse,
     StyleSuitabilityOut,
 )
-from app.schemas.timeline import ProducedBy, Timeline, TimelineStatus
+from app.schemas.timeline import CameraMovement, ProducedBy, Timeline, TimelineStatus
 from app.script.preflight import check_feasibility
 from app.script.rewrite import rewrite_script
-from app.script.styles import STYLE_PACING_BANDS
+from app.script.styles import STYLE_PACING_BANDS, frame_aspect_error, resolve_draft_format
 from app.script.suggestions import suggest_breaks
 from app.script.suitability import check_suitability
 from app.timeline.duration import compute_shot_start_times
@@ -149,6 +150,7 @@ from app.workflow.trigger import WorkflowTriggerResult, start_workflow_run
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 _TERMINAL_SHOT_STATES = ("resolved", "generated")
+_OVERRIDE_PANELS = frozenset({"primary", "secondary"})
 
 
 def _unfilled_shot_ids(shots, bindings_by_shot: dict) -> list[str]:
@@ -250,10 +252,15 @@ class CreateProjectRequest(BaseModel):
     # - validated against `STYLE_PACING_BANDS` in `create_project` below,
     # same as `set_render_style`'s own check.
     render_style: str | None = None
+    # Stillness-only. `9:16` is a vertical Ken Burns reel; `16:9` / None
+    # is the default landscape contemplative frame. Rejected for any
+    # other style (`frame_aspect_error`).
+    frame_aspect: str | None = None
 
 
 class SetRenderStyleRequest(BaseModel):
     render_style: str
+    frame_aspect: str | None = None
 
 
 class SetGradeRequest(BaseModel):
@@ -395,7 +402,14 @@ async def create_project(
                 f"known styles: {sorted(STYLE_PACING_BANDS)}"
             ),
         )
-    return await repo.create(name=body.name, render_style=body.render_style)
+    aspect_err = frame_aspect_error(body.render_style, body.frame_aspect)
+    if aspect_err is not None:
+        raise HTTPException(status_code=400, detail=aspect_err)
+    return await repo.create(
+        name=body.name,
+        render_style=body.render_style,
+        frame_aspect=body.frame_aspect,
+    )
 
 
 @router.get("", response_model=list[Project])
@@ -476,12 +490,13 @@ async def set_render_style(
 
     **Same freeze check as `upload_script`, for the same reason**: once
     `GenerateTimelineStep` has created the initial Timeline (copying this
-    field into `Timeline.metadata.render_style`, frozen from then on),
-    this project's OWN `render_style` column is never read again -
-    changing it here would silently do nothing rather than silently
+    field into `Timeline.metadata.render_style` and `frame_aspect`, frozen
+    from then on), this project's OWN style columns are never read again -
+    changing them here would silently do nothing rather than silently
     invalidating anything, but refusing is still the honest answer
     (a user who thinks they just changed the style deserves to be told
     it is too late, not to have the request quietly no-op).
+    `frame_aspect` is stillness-only (`9:16` = vertical Ken Burns reel).
     """
     project = await _get_project_or_404(project_id, repo)
     if body.render_style not in STYLE_PACING_BANDS:
@@ -492,6 +507,9 @@ async def set_render_style(
                 f"known styles: {sorted(STYLE_PACING_BANDS)}"
             ),
         )
+    aspect_err = frame_aspect_error(body.render_style, body.frame_aspect)
+    if aspect_err is not None:
+        raise HTTPException(status_code=400, detail=aspect_err)
     active = await timeline_service.get_active(project_id)
     if active is not None:
         raise HTTPException(
@@ -502,6 +520,10 @@ async def set_render_style(
             ),
         )
     project.render_style = body.render_style
+    # Non-stillness styles cannot carry an override; stillness without
+    # a value is the 16:9 default. Always write, never keep a stale reel
+    # flag from a previous stillness choice.
+    project.frame_aspect = body.frame_aspect if body.render_style == "stillness" else None
     return await repo.update(project)
 
 
@@ -591,7 +613,13 @@ async def preflight_script(
       this script's punctuation can produce and what `style` needs.
       `suggested_breaks` (level 2, `app/script/suggestions.py`) is only
       populated in this case - a feasible script has nothing to suggest
-      breaking.
+      breaking. R2: the list is transitive (every round of marks in one
+      response). `further_suggestions_available` is True only if the
+      cap was hit while still infeasible. `suggestions_would_pass` is
+      True only if applying every returned mark makes feasibility pass
+      (R23) — the two flags are not inverses. `punctuation_cannot_fix`
+      is set when the remaining violation is not pace (R24: duration
+      against the 10-minute ceiling).
     - **Suitability** (`app/script/suitability.py`, one LLM call) - a
       judgement about subject/tone fit, always attempted regardless of
       the feasibility verdict, and always advisory: `suitability` is
@@ -613,7 +641,11 @@ async def preflight_script(
         )
 
     feasibility = check_feasibility(body.script, body.style)
-    suggestions = suggest_breaks(body.script, body.style) if not feasibility.passed else []
+    break_plan = (
+        suggest_breaks(body.script, body.style)
+        if not feasibility.passed
+        else None
+    )
 
     llm_provider = None if settings.dry_run else OpenAIPlanningProvider()
     suitability = await check_suitability(
@@ -650,8 +682,17 @@ async def preflight_script(
                 preview_after=s.preview_after,
                 reason=s.reason,
             )
-            for s in suggestions
+            for s in (break_plan.suggestions if break_plan is not None else [])
         ],
+        further_suggestions_available=(
+            break_plan.further_available if break_plan is not None else False
+        ),
+        suggestions_would_pass=(
+            break_plan.would_pass if break_plan is not None else False
+        ),
+        punctuation_cannot_fix=(
+            list(break_plan.unfixable) if break_plan is not None else []
+        ),
         suitability=(
             StyleSuitabilityOut(suitable=suitability.suitable, reason=suitability.reason)
             if suitability is not None
@@ -949,9 +990,13 @@ async def render_draft(
 
     purged = await purge_expired_drafts(session)
 
+    draft = resolve_draft_format(
+        timeline.metadata.render_style,
+        frame_aspect=timeline.metadata.frame_aspect,
+    )
     render_settings = RenderSettings(
-        width=settings.draft_width,
-        height=settings.draft_height,
+        width=draft.width,
+        height=draft.height,
         fps=settings.render_fps,
         pixel_format=settings.render_pixel_format,
         ffmpeg_binary=settings.ffmpeg_binary,
@@ -966,7 +1011,7 @@ async def render_draft(
     )
     try:
         output_path = await render_video(
-            ctx, timeline, render_settings, output_filename="draft.mp4"
+            ctx, timeline, render_settings, output_filename="draft.mp4", is_draft=True
         )
     except PermanentError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1291,6 +1336,23 @@ async def regenerate_failed_in_scene(
     )
 
 
+def apply_override_to_binding(binding, asset, *, panel: str) -> None:
+    """Write a human upload onto the primary or the split-screen bottom
+    panel. R16: assignment is already in the render fingerprint, so
+    swapping the bottom panel misses the cache."""
+    if panel == "secondary":
+        binding.secondary_asset_id = asset.id
+        binding.secondary_clip_id = None
+        binding.secondary_state = "resolved"
+        binding.secondary_last_error = None
+        return
+    binding.asset_id = asset.id
+    binding.clip_id = None
+    binding.state = "resolved"
+    binding.rung = "project_assets"
+    binding.last_error = None
+
+
 @router.post(
     "/{project_id}/shots/{shot_id}/override", status_code=202, response_model=WorkflowTriggerResult
 )
@@ -1300,6 +1362,7 @@ async def override_shot_asset(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     description: str = Form(""),
+    panel: str = Query("primary"),
     repo: ProjectRepository = Depends(get_repo),
     timeline_service: TimelineService = Depends(get_timeline_service),
     session: AsyncSession = Depends(get_db),
@@ -1322,23 +1385,44 @@ async def override_shot_asset(
     camera and transitions are never touched, so an override is always a
     free, instant swap, never a paid re-narration.
 
+    `panel=secondary` writes the split-screen bottom still and does
+    not change the top panel's binding. The shot is still
+    `asset_locked` (A25) regardless of panel — a later re-plan cannot
+    change this shot's `prompt` / `asset_plan` / `secondary_*` either.
+    That is conservative (the upload survives) and is the same lock a
+    primary override has always taken. Refuses unless the shot is
+    `split_frame`. Default `panel=primary` is the original contract.
+
     Validated and hashed on arrival exactly like the general upload
-    endpoint (A27). If the plan was already approved (or narration has
-    already run), the new locked version is immediately re-approved too -
-    the same "belt and braces" pattern `NarrationStep` already uses to
-    append-then-approve in two commits - so resuming via `POST /render`
-    below does not demand a redundant second human click for a decision
-    already made; a project that had never been approved yet is left in
-    DRAFT, so the human's first plan approval is still required as
-    normal.
+    endpoint (A27). If the plan was already approved, the new locked
+    version is immediately re-approved too - the same "belt and braces"
+    pattern `NarrationStep` already uses to append-then-approve in two
+    commits - so resuming does not demand a redundant second human click.
+    A project that had never been approved yet is left in DRAFT and the
+    workflow is NOT resumed: `NarrationStep.is_satisfied` keys off
+    `produced_by == NARRATION`, so a HUMAN override would look like
+    "narration is stale" and bounce the review UI to /progress. Approve
+    is what should start the next steps. Voice retry is a different
+    endpoint and still resumes.
     """
     await _get_project_or_404(project_id, repo)
     active = await timeline_service.get_active(project_id)
     if active is None:
         raise HTTPException(status_code=400, detail="no timeline to override a shot on yet")
-    if shot_id not in {s.id for s in active.all_shots()}:
+    shot = next((s for s in active.all_shots() if s.id == shot_id), None)
+    if shot is None:
         raise HTTPException(
             status_code=404, detail=f"shot {shot_id} not found in the active timeline"
+        )
+    if panel not in _OVERRIDE_PANELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"panel must be one of {sorted(_OVERRIDE_PANELS)}, got {panel!r}",
+        )
+    if panel == "secondary" and shot.camera.movement != CameraMovement.SPLIT_FRAME:
+        raise HTTPException(
+            status_code=400,
+            detail=f"shot {shot_id} is not split_frame; cannot override the bottom panel",
         )
 
     content = await file.read()
@@ -1378,6 +1462,9 @@ async def override_shot_asset(
     was_already_approved = active.status == TimelineStatus.APPROVED
 
     def _lock_shot(base: Timeline) -> Timeline:
+        # R22: `asset_locked` is shot-wide, not per panel. A bottom-panel
+        # override still freezes prompt/asset_plan/secondary_* against
+        # later re-plans so the upload cannot be planned away.
         for scene in base.scenes:
             for shot in scene.shots:
                 if shot.id == shot_id:
@@ -1393,21 +1480,36 @@ async def override_shot_asset(
 
     binding_repo = ShotBindingRepository(session)
     binding = await binding_repo.get_or_create_pending(project_uuid, new_timeline.version, shot_id)
-    binding.asset_id = asset.id
-    binding.clip_id = None
-    binding.state = "resolved"
-    binding.rung = "project_assets"
-    binding.last_error = None
+    apply_override_to_binding(binding, asset, panel=panel)
     await session.flush()
 
     if was_already_approved:
         await timeline_service.approve(project_id, new_timeline.version)
-    await session.commit()
+        await session.commit()
+        # Post-approval (the review backstop, or a swap on a finished
+        # video): resume so generate/render can continue. The first-gate
+        # path below must NOT resume — see that branch.
+        return await start_workflow_run(project_id, session, background_tasks)
 
-    # An active timeline (checked above) implies a script already exists
-    # (`create_initial` requires one) - `start_workflow_run` always has
-    # something to resume from here.
-    return await start_workflow_run(project_id, session, background_tasks)
+    await session.commit()
+    # Still at the first approval gate (DRAFT). Resuming would re-run
+    # NarrationStep because this HUMAN version is not `produced_by=
+    # NARRATION` — A29 says an override is never a re-narration, and the
+    # review UI bounced to /progress ("Recording narration") then back.
+    # The photo is already bound; Approve is what should start the next
+    # steps. Voice retry still resumes (it is a different endpoint).
+    run_row = await WorkflowRunRepository(session).get_latest(project_uuid)
+    if run_row is None:
+        raise HTTPException(
+            status_code=400,
+            detail="no workflow run to attach this override to",
+        )
+    return WorkflowTriggerResult(
+        project_id=project_id,
+        workflow_run_id=str(run_row.id),
+        state=run_row.state,
+        joined_existing_run=True,
+    )
 
 
 class GenerateShotImageRequest(BaseModel):
@@ -1580,6 +1682,8 @@ async def _generate_shot_image_now(
         narration_repo=narration_repo,
         creative_context=timeline.creative_context,
         cap_cents=budget_cap_cents_for(timeline),
+        style=timeline.metadata.render_style,
+        frame_aspect=timeline.metadata.frame_aspect,
     )
     await session.commit()
     return GenerateShotImageResult(
@@ -1694,6 +1798,8 @@ async def generate_shot_video(
             narration_repo=narration_repo,
             creative_context=active.creative_context,
             cap_cents=budget_cap_cents_for(active),
+            style=active.metadata.render_style,
+            frame_aspect=active.metadata.frame_aspect,
         )
     except PermanentError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2171,7 +2277,9 @@ async def get_video(project_id: str, repo: ProjectRepository = Depends(get_repo)
     )
 
 
-async def _resolve_bound_media_path(session: AsyncSession, binding) -> Path | None:
+async def _resolve_bound_media_path(
+    session: AsyncSession, binding, *, panel: str = "primary"
+) -> Path | None:
     """The shot's resolved media path, `asset_id` winning over `clip_id` -
     the SAME resolution rule `app/workflow/steps/render.py
     ::_resolved_path_and_hash` already applies for the renderer, kept as
@@ -2180,8 +2288,17 @@ async def _resolve_bound_media_path(session: AsyncSession, binding) -> Path | No
     endpoint has no use for, and the actual shared RULE is short enough
     that importing it would trade one line of duplication for a real
     cross-layer dependency (an API route reaching into a workflow step
-    module) neither side otherwise needs."""
+    module) neither side otherwise needs. `panel=secondary` is the
+    split-screen bottom still."""
     if binding is None:
+        return None
+    if panel == "secondary":
+        if binding.secondary_asset_id is not None:
+            asset = await session.get(AssetModel, binding.secondary_asset_id)
+            return Path(asset.local_path) if asset is not None and asset.local_path else None
+        if binding.secondary_clip_id is not None:
+            clip = await session.get(GeneratedClipModel, binding.secondary_clip_id)
+            return Path(clip.local_path) if clip is not None and clip.local_path else None
         return None
     if binding.asset_id is not None:
         asset = await session.get(AssetModel, binding.asset_id)
@@ -2196,6 +2313,7 @@ async def _resolve_bound_media_path(session: AsyncSession, binding) -> Path | No
 async def get_shot_asset(
     project_id: str,
     shot_id: str,
+    panel: str = Query("primary"),
     repo: ProjectRepository = Depends(get_repo),
     timeline_service: TimelineService = Depends(get_timeline_service),
     session: AsyncSession = Depends(get_db),
@@ -2235,13 +2353,19 @@ async def get_shot_asset(
         raise HTTPException(
             status_code=404, detail=f"shot {shot_id} not found in the active timeline"
         )
+    if panel not in _OVERRIDE_PANELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"panel must be one of {sorted(_OVERRIDE_PANELS)}, got {panel!r}",
+        )
 
     binding = await ShotBindingRepository(session).get(
         uuid.UUID(project_id), timeline.version, shot_id
     )
-    path = await _resolve_bound_media_path(session, binding)
+    path = await _resolve_bound_media_path(session, binding, panel=panel)
     if path is None or not path.exists():
-        raise HTTPException(status_code=404, detail=f"shot {shot_id} has no resolved media yet")
+        which = "bottom panel" if panel == "secondary" else "resolved media"
+        raise HTTPException(status_code=404, detail=f"shot {shot_id} has no {which} yet")
 
     no_cache_headers = {"Cache-Control": "no-cache"}
     if is_video_file(path):

@@ -11,9 +11,12 @@ from app.core.config import settings
 from app.script.styles import (
     STYLE_PACING_BANDS,
     StylePacingBand,
+    frame_aspect_error,
     resolve_constraint_bundle,
+    resolve_draft_format,
     resolve_music_gains,
     resolve_narration_speed,
+    resolve_render_format,
 )
 
 
@@ -140,6 +143,68 @@ def test_retention_fast_narration_speed_is_1_2_and_others_stay_at_default():
     assert resolve_narration_speed("documentary_archival") == 1.0
     assert resolve_narration_speed("stillness") == 1.0
     assert resolve_narration_speed("retention_fast") == 1.2
+
+
+def test_documentary_archival_is_1280x720_and_retention_fast_stays_portrait():
+    archival = resolve_render_format("documentary_archival")
+    assert (archival.width, archival.height) == (1280, 720)
+    assert archival.is_landscape
+    fast = resolve_render_format("retention_fast")
+    assert (fast.width, fast.height) == (720, 1280)
+    assert not fast.is_landscape
+    stillness = resolve_render_format("stillness")
+    assert (stillness.width, stillness.height) == (1280, 720)
+    assert stillness.is_landscape
+
+
+def test_stillness_9_16_is_a_vertical_reel_and_16_9_keeps_the_default():
+    reel = resolve_render_format("stillness", frame_aspect="9:16")
+    assert (reel.width, reel.height) == (720, 1280)
+    assert not reel.is_landscape
+    landscape = resolve_render_format("stillness", frame_aspect="16:9")
+    assert (landscape.width, landscape.height) == (1280, 720)
+    assert resolve_render_format("stillness", frame_aspect=None) == landscape
+    # Other styles ignore the reel flag at resolve time; the API rejects it.
+    assert resolve_render_format("retention_fast", frame_aspect="9:16").width == 720
+    assert resolve_render_format("documentary_archival", frame_aspect="9:16").width == 1280
+
+
+def test_frame_aspect_is_only_legal_on_stillness():
+    assert frame_aspect_error("stillness", None) is None
+    assert frame_aspect_error("stillness", "9:16") is None
+    assert frame_aspect_error("stillness", "16:9") is None
+    assert frame_aspect_error(None, None) is None
+    assert "only settable" in (frame_aspect_error("documentary_archival", "9:16") or "")
+    assert "only settable" in (frame_aspect_error("retention_fast", "16:9") or "")
+    assert "unknown" in (frame_aspect_error("stillness", "4:3") or "")
+
+
+def test_unknown_style_uses_the_default_style_format():
+    """§19.11 residual 3: unrecognised names follow documentary_archival,
+    not raw settings (720×1280)."""
+    default = resolve_render_format(None)
+    assert default == resolve_render_format("documentary_archival")
+    assert resolve_render_format("not_a_real_style") == default
+    assert (default.width, default.height) == (1280, 720)
+
+
+def test_draft_format_follows_the_style_aspect():
+    assert resolve_draft_format("retention_fast").width < resolve_draft_format(
+        "retention_fast"
+    ).height
+    draft = resolve_draft_format("documentary_archival")
+    assert draft.width > draft.height
+    assert (draft.width, draft.height) == (settings.draft_height, settings.draft_width)
+    still_draft = resolve_draft_format("stillness")
+    assert (still_draft.width, still_draft.height) == (
+        settings.draft_height,
+        settings.draft_width,
+    )
+    reel_draft = resolve_draft_format("stillness", frame_aspect="9:16")
+    assert (reel_draft.width, reel_draft.height) == (
+        settings.draft_width,
+        settings.draft_height,
+    )
     assert resolve_narration_speed("not_a_real_style") == 1.0
     assert STYLE_PACING_BANDS["retention_fast"].narration_speed == 1.2
 

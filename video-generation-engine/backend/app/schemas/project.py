@@ -40,6 +40,9 @@ class Project(BaseModel):
     # `ProjectModel.render_style`'s own docstring for the full contract;
     # `None` means "use settings.default_render_style".
     render_style: str | None = None
+    frame_aspect: str | None = None
+    render_width: int | None = None
+    render_height: int | None = None
     timeline: Timeline | None = None
     video_path: str | None = None
     error: str | None = None

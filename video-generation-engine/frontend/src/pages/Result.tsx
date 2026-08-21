@@ -197,7 +197,7 @@ export function Result() {
           <video
             key={project?.updated_at}
             controls
-            className="mx-auto max-h-[70vh] w-full max-w-sm rounded-md bg-black"
+            className={`mx-auto max-h-[70vh] w-full rounded-md bg-black ${(project?.render_width ?? 720) > (project?.render_height ?? 1280) ? "max-w-3xl" : "max-w-sm"}`}
             src={videoUrl(projectId)}
           />
           <div className="mt-3 flex justify-center gap-2">

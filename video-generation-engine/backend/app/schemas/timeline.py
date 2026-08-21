@@ -253,7 +253,10 @@ class Scene(BaseModel):
 class TimelineMetadata(BaseModel):
     language: str = "en"
     aspect_ratio: str = "9:16"
-    resolution: tuple[int, int] = (1080, 1920)
+    resolution: tuple[int, int] = (720, 1280)
+    # Stillness-only. `9:16` is a vertical Ken Burns reel; `16:9` / None
+    # is the default landscape contemplative frame. Frozen at create_initial.
+    frame_aspect: str | None = None
     fps: int = 30
     total_duration_s: float = Field(default=0.0, ge=0.0)
     # `None` falls back to `settings.elevenlabs_voice_id` (NarrationStep's
@@ -434,6 +437,8 @@ class CreativeContext(BaseModel):
     historical_period: str = ""
     audience: str = ""
     camera_language: str = ""
+    # Kept so timelines that predates Q6 still load. The Director no
+    # longer writes it; the grade is `STYLE_GRADES` keyed on style name.
     colour_palette: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
 

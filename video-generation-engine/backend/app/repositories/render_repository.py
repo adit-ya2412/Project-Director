@@ -30,19 +30,13 @@ class RenderRepository:
         return result.scalar_one_or_none()
 
     async def list_completed_drafts_older_than(
-        self, cutoff: datetime, *, width: int, height: int
+        self, cutoff: datetime
     ) -> list[RenderModel]:
-        """Completed rows at exactly the DRAFT dimensions (D3,
-        M8 step 6) created before `cutoff` - there is no separate
-        `is_draft` column, so width/height is the same distinguishing
-        signal the fingerprint itself already relies on (see
-        `app/renderer/fingerprint.py`) to tell a draft render apart from
-        a final one at otherwise-identical Timeline content."""
+        """Completed draft rows created before `cutoff` (§19.9)."""
         result = await self._session.execute(
             select(RenderModel).where(
                 RenderModel.status == "completed",
-                RenderModel.width == width,
-                RenderModel.height == height,
+                RenderModel.is_draft.is_(True),
                 RenderModel.created_at < cutoff,
             )
         )
@@ -63,6 +57,7 @@ class RenderRepository:
         height: int,
         fps: int,
         duration_s: float,
+        is_draft: bool = False,
     ) -> RenderModel:
         model = RenderModel(
             project_id=project_id,
@@ -74,6 +69,7 @@ class RenderRepository:
             height=height,
             fps=fps,
             duration_s=duration_s,
+            is_draft=is_draft,
         )
         self._session.add(model)
         await self._session.flush()

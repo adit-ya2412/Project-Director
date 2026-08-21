@@ -14,6 +14,7 @@ ranking logic, not Wikimedia/Pexels's HTTP behaviour (that's covered by
 the MockTransport-based provider tests instead).
 """
 
+import asyncio
 import hashlib
 import io
 import uuid as uuid_module
@@ -355,6 +356,60 @@ async def test_reuse_penalty_avoids_repeating_the_same_asset_across_shots(projec
     # Shot B must land on a *different* asset than shot A despite "popular"
     # having the higher raw relevance - the reuse penalty outweighs it.
     assert binding_a.asset_id != binding_b.asset_id
+
+
+async def test_search_pass_fetches_shots_concurrently(project_id, monkeypatch):
+    """Search I/O overlaps; a sequential loop would never have two
+    searches in flight. Rank/bind stays serial (reuse test above)."""
+    monkeypatch.setattr(settings, "dry_run", False)
+    monkeypatch.setattr(settings, "asset_search_concurrency", 4)
+    shots = [
+        _shot(f"sh_{i:02d}", licence_requirements=["cc0"]).model_copy(update={"order": i})
+        for i in range(4)
+    ]
+    await _seed_timeline(project_id, shots)
+
+    in_flight = 0
+    max_in_flight = 0
+    gate = asyncio.Event()
+    entered = 0
+
+    class _SlowSearch(_FakeSearchProvider):
+        async def search(self, query):
+            nonlocal in_flight, max_in_flight, entered
+            in_flight += 1
+            entered += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            if entered >= 4:
+                gate.set()
+            await gate.wait()
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            return await super().search(query)
+
+    bytes_by_id = {f"s{i}": _png_bytes((10 + i, 20, 30)) for i in range(4)}
+    provider = _SlowSearch(
+        "wikimedia",
+        "historical_search",
+        candidates_by_shot={
+            f"sh_{i:02d}": [
+                AssetCandidate(
+                    source_id=f"s{i}",
+                    source_url=f"http://example.test/s{i}",
+                    title="archival photo",
+                    licence="cc0",
+                    relevance=1.0,
+                    width=1080,
+                    height=1920,
+                )
+            ]
+            for i in range(4)
+        },
+        content_by_source_id=bytes_by_id,
+    )
+    _patch_providers(monkeypatch, provider)
+    await _run_step(project_id)
+    assert max_in_flight >= 2
 
 
 async def test_provenance_is_complete_on_a_stored_asset(project_id, monkeypatch):

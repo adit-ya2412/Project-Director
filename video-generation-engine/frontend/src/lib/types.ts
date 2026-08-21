@@ -23,6 +23,10 @@ export interface Project {
   name: string;
   status: ProjectStatus;
   script: string | null;
+  render_style?: string | null;
+  frame_aspect?: string | null;
+  render_width?: number | null;
+  render_height?: number | null;
   timeline: Timeline | null;
   video_path: string | null;
   error: string | null;
@@ -83,6 +87,7 @@ export interface TimelineMetadata {
   language: string;
   aspect_ratio: string;
   resolution: [number, number];
+  frame_aspect?: string | null;
   fps: number;
   total_duration_s: number;
   voice_id: string | null;
@@ -274,4 +279,60 @@ export interface RegenerateFailedResult {
   estimated_cost_cents: number;
   regenerated: boolean;
   results: GenerateShotImageResult[];
+}
+
+// -- POST /projects/{id}/script/preflight -----------------------------------
+
+export interface FragmentEstimate {
+  index: number;
+  text: string;
+  estimated_duration_s: number;
+}
+
+export interface BreakSuggestion {
+  offset: number;
+  mark: string;
+  preview_before: string;
+  preview_after: string;
+  reason: string;
+}
+
+export interface StyleSuitability {
+  suitable: boolean;
+  reason: string;
+}
+
+export interface ScriptPreflightResponse {
+  style: string;
+  passed: boolean;
+  violations: string[];
+  warnings: string[];
+  fragment_count: number;
+  estimated_total_duration_s: number;
+  estimated_average_shot_duration_s: number;
+  fragments: FragmentEstimate[];
+  suggested_breaks: BreakSuggestion[];
+  further_suggestions_available: boolean;
+  suggestions_would_pass: boolean;
+  punctuation_cannot_fix: string[];
+  suitability: StyleSuitability | null;
+}
+
+export interface RewriteFeasibility {
+  passed: boolean;
+  violations: string[];
+  fragment_count: number;
+  estimated_total_duration_s: number;
+  estimated_average_shot_duration_s: number;
+}
+
+export interface ScriptRewriteResponse {
+  attempted: boolean;
+  accepted: boolean;
+  rejection_reasons: string[];
+  rewritten_script: string;
+  original_fragment_count: number;
+  rewritten_fragment_count: number;
+  feasibility: RewriteFeasibility | null;
+  persisted: boolean;
 }

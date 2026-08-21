@@ -32,6 +32,9 @@ class ProjectModel(Base):
     # fragment-granularity decisions cannot be safely changed once
     # planning has started.
     render_style: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Stillness-only 9:16 reel vs 16:9 default. Frozen onto the Timeline
+    # at create_initial, same as render_style.
+    frame_aspect: Mapped[str | None] = mapped_column(String, nullable=True)
     # timezone=True: app.core.clock.utcnow() is tz-aware UTC everywhere else
     # in the app; a naive column would silently drop that on write.
     created_at: Mapped[datetime] = mapped_column(

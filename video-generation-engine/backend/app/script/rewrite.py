@@ -156,8 +156,8 @@ def _capitalized_entities(text: str) -> set[str]:
 
 def _validate_rewrite(original: str, rewritten: str) -> list[str]:
     """The three backstops from §3.3, in the order they're most likely
-    to catch a real problem: a changed fact first, a lost entity second,
-    a no-op rewrite last."""
+    to catch a real problem: a changed fact first, a lost or invented
+    entity second, a no-op rewrite last."""
     reasons: list[str] = []
 
     original_numbers = _numeric_tokens(original)
@@ -172,9 +172,14 @@ def _validate_rewrite(original: str, rewritten: str) -> list[str]:
             detail.append(f"added: {added}")
         reasons.append(f"numeric tokens changed ({'; '.join(detail)})")
 
-    dropped_entities = _capitalized_entities(original) - _capitalized_entities(rewritten)
+    original_entities = _capitalized_entities(original)
+    rewritten_entities = _capitalized_entities(rewritten)
+    dropped_entities = original_entities - rewritten_entities
+    invented_entities = rewritten_entities - original_entities
     if dropped_entities:
         reasons.append(f"capitalised entities dropped: {sorted(dropped_entities)}")
+    if invented_entities:
+        reasons.append(f"capitalised entities invented: {sorted(invented_entities)}")
 
     original_fragments = len(split_narration_fragments(original))
     rewritten_fragments = len(split_narration_fragments(rewritten))

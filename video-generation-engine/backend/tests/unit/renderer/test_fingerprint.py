@@ -389,3 +389,15 @@ def test_shot_stream_fingerprint_changes_with_camera():
         camera=Camera(movement=CameraMovement.SLOW_ZOOM),
     )
     assert _shot_fp(shot=moving) != _shot_fp()
+
+
+def test_split_panel_fit_changes_all_three_fingerprints(monkeypatch):
+    """Padded-panel verdict is a pixel input. Letterbox vs fill must miss
+    the full render, the per-run encode, and the shot-stream cache."""
+    fill_full = _fingerprint()
+    fill_run = _run_fp()
+    fill_shot = _shot_fp()
+    monkeypatch.setattr("app.renderer.fingerprint.SPLIT_PANEL_FIT", "letterbox")
+    assert _fingerprint() != fill_full
+    assert _run_fp() != fill_run
+    assert _shot_fp() != fill_shot

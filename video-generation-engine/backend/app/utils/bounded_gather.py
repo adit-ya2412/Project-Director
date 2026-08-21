@@ -76,6 +76,13 @@ def planner_concurrency() -> int:
     return max(1, settings.planner_concurrency)
 
 
+def asset_search_concurrency() -> int:
+    """In-flight cap for search I/O (Commons/Pexels/entity/download).
+    Rank/bind stays serial — this only overlaps waiting on the network.
+    Never less than 1 (a 0-cap config would deadlock the semaphore)."""
+    return max(1, settings.asset_search_concurrency)
+
+
 def ffmpeg_run_concurrency() -> int:
     """Local CPU cap for parallel run encodes (§3.2): `cpu_count - 2`,
     floored at 1 so a 1- or 2-core box still renders."""

@@ -29,15 +29,12 @@ file. This function deletes the row in the same pass specifically to
 avoid leaving that stale-row window open any longer than it has to, but
 the correctness of the cache does not depend on it doing so.
 
-## Identifying "a draft" without a dedicated column
+## Identifying a draft
 
-There is no `is_draft` flag on `render` - the same width/height pair
-(`settings.draft_width`/`draft_height`) that keeps a draft and a final
-render from ever colliding on one fingerprint (see
-`app/renderer/fingerprint.py`) is reused here to identify which
-completed rows this sweep is even allowed to touch. A final render at
-`settings.render_width`/`render_height` is never a candidate, no matter
-its age - only D3's own "draft" retention window applies to it.
+`render.is_draft` (plan §19.9). Width/height used to be the discriminator
+when there was one format; style-derived draft sizes made that unsafe
+(a landscape draft would not match `settings.draft_width/height`, and
+one style's final size could match another's draft).
 """
 
 from datetime import UTC, datetime, timedelta
@@ -60,9 +57,7 @@ async def purge_expired_drafts(session: AsyncSession, *, now: datetime | None = 
     on."""
     cutoff = (now or datetime.now(UTC)) - timedelta(days=settings.draft_retention_days)
     repo = RenderRepository(session)
-    expired = await repo.list_completed_drafts_older_than(
-        cutoff, width=settings.draft_width, height=settings.draft_height
-    )
+    expired = await repo.list_completed_drafts_older_than(cutoff)
     for row in expired:
         if row.output_path:
             path_obj = Path(row.output_path)

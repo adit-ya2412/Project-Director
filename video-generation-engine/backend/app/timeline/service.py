@@ -67,6 +67,7 @@ from app.schemas.timeline import (
     TimelineMetadata,
     TimelineStatus,
 )
+from app.script.styles import resolve_render_format
 from app.timeline.additive import find_additive_violations
 from app.timeline.diff import TimelineDiff, compute_diff
 
@@ -147,7 +148,12 @@ class TimelineService:
     # -- writes -------------------------------------------------------
 
     async def create_initial(
-        self, project_id: str, script: str, *, render_style: str | None = None
+        self,
+        project_id: str,
+        script: str,
+        *,
+        render_style: str | None = None,
+        frame_aspect: str | None = None,
     ) -> Timeline:
         """Bootstrap version 1: an empty Timeline, before any planner has
         run. Real content arrives via `append_version` (the Director's
@@ -177,7 +183,20 @@ class TimelineService:
             status=TimelineStatus.DRAFT,
             created_at=utcnow(),
             metadata=TimelineMetadata(
-                language=settings.default_language, render_style=render_style
+                language=settings.default_language,
+                render_style=render_style,
+                frame_aspect=frame_aspect,
+                aspect_ratio=resolve_render_format(
+                    render_style, frame_aspect=frame_aspect
+                ).aspect_ratio,
+                resolution=(
+                    resolve_render_format(
+                        render_style, frame_aspect=frame_aspect
+                    ).width,
+                    resolve_render_format(
+                        render_style, frame_aspect=frame_aspect
+                    ).height,
+                ),
             ),
             creative_context=CreativeContext(),
             scenes=[],

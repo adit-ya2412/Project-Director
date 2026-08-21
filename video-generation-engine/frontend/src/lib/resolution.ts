@@ -18,7 +18,28 @@ import type { Camera } from './types'
 
 export const RENDER_WIDTH = 720
 export const RENDER_HEIGHT = 1280
-const RENDER_ASPECT = RENDER_WIDTH / RENDER_HEIGHT // 9:16 portrait
+
+/** Mirrors `resolve_render_format` (backend/app/script/styles.py).
+ * Hardcoded because there is no settings endpoint; archival/stillness
+ * default 16:9, stillness + `9:16` is a vertical Ken Burns reel,
+ * retention_fast stays 9:16. */
+export function canvasForStyle(
+  style: string,
+  frameAspect?: string | null,
+): { width: number; height: number } {
+  if (style === "retention_fast") return { width: 720, height: 1280 }
+  if (style === "stillness" && frameAspect === "9:16") return { width: 720, height: 1280 }
+  return { width: 1280, height: 720 }
+}
+
+export function renderAspect(width = RENDER_WIDTH, height = RENDER_HEIGHT): number {
+  return width / height
+}
+
+export function frameAspectClass(width?: number | null, height?: number | null): string {
+  if (width && height && width > height) return "aspect-video"
+  return "aspect-[9/16]"
+}
 
 const MAX_ZOOM_DELTA = 0.5
 const MAX_PAN_ZOOM_DELTA = 0.3
@@ -44,15 +65,19 @@ export function effectiveKenBurnsZoom(camera: Camera | undefined): number {
  * source loses width, a very-tall source loses height. Using this instead
  * of the full source frame is F7's "score the post-crop region" note.
  */
-function usableSourceArea(width: number, height: number): number {
+function usableSourceArea(
+  width: number,
+  height: number,
+  targetWidth = RENDER_WIDTH,
+  targetHeight = RENDER_HEIGHT,
+): number {
   const sourceAspect = width / height
-  if (sourceAspect > RENDER_ASPECT) {
-    // Wider than the target: crop width, keep full height.
-    const usableWidth = height * RENDER_ASPECT
+  const targetAspect = renderAspect(targetWidth, targetHeight)
+  if (sourceAspect > targetAspect) {
+    const usableWidth = height * targetAspect
     return usableWidth * height
   }
-  // Taller/narrower than the target (or an exact match): crop height, keep full width.
-  const usableHeight = width / RENDER_ASPECT
+  const usableHeight = width / targetAspect
   return width * usableHeight
 }
 
@@ -75,10 +100,12 @@ export function computeResolutionWarning(
   width: number,
   height: number,
   camera?: Camera,
+  targetWidth = RENDER_WIDTH,
+  targetHeight = RENDER_HEIGHT,
 ): ResolutionWarning {
   const zoom = effectiveKenBurnsZoom(camera)
-  const targetArea = RENDER_WIDTH * RENDER_HEIGHT * zoom * zoom
-  const sourceArea = usableSourceArea(width, height)
+  const targetArea = targetWidth * targetHeight * zoom * zoom
+  const sourceArea = usableSourceArea(width, height, targetWidth, targetHeight)
   const upscale = Math.sqrt(targetArea / sourceArea)
 
   // Table from F7: <=1.5x fine, 1.5-2.5x soft, >=4x bad. The spec leaves
@@ -91,7 +118,7 @@ export function computeResolutionWarning(
 
   const upscaleText = `${upscale.toFixed(1)}×`
   const dims = `${Math.round(width)}×${Math.round(height)}`
-  const targetDims = `${RENDER_WIDTH}×${RENDER_HEIGHT}`
+  const targetDims = `${targetWidth}×${targetHeight}`
 
   let message: string
   if (verdict === 'fine') {

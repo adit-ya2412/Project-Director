@@ -25,7 +25,6 @@ class DirectorCreativeContext(BaseModel):
     historical_period: str
     audience: str
     camera_language: str
-    colour_palette: list[str]
     constraints: list[str]
 
 

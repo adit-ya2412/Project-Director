@@ -31,7 +31,9 @@ const PRE_APPROVAL_STEPS = STEP_ORDER.slice(
   0,
   STEP_ORDER.indexOf("await_approval") + 1,
 );
-const POST_APPROVAL_STEPS = STEP_ORDER.slice(STEP_ORDER.indexOf("narration"));
+const POST_APPROVAL_STEPS = STEP_ORDER.slice(
+  STEP_ORDER.indexOf("resolve_assets_generate"),
+);
 
 const SHOT_STATE_LABEL: Record<string, string> = {
   pending: "Pending",

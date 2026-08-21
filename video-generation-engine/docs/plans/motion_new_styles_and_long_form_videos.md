@@ -1,10 +1,10 @@
 # Motion, New Styles, Script Pre-flight, and Long-Form Video — Implementation Plan
 
-> **Status:** Originally plan-only (2026-08-17). Since then, built and verified against real ffmpeg/real Postgres/real live APIs: Track D (script pre-flight, all levels except the phrasing-rewrite L3), Track B Tier 1–2 (grade, extra transitions, text cards, punch-in), and Track A's A1/A2/A3/A4/A5/A6/A7 (motion clip input, duration fitting, the video path's one-gate model, the on-demand video endpoint pair, the Pexels video rung, and video-vs-image planner calibration). **A8 (the bake-off) was attempted 2026-08-18 with real spend (~$1.86) and found a real, previously-unknown collage bug affecting every project with a rich `visual_style` — fixed and verified, but A8's own question ("does synthetic motion blend next to real archival photography") is still open**, by the user's own choice to stop before re-running the video half. **§11 step 5 (orphan-run fix) and step 6 (music taxonomy + a real 54-track curated library, §5.1) are also now built and verified**, 2026-08-18 — see §12 for both. See §12 for the full chronological log; unmarked sections below are still design-only. ✅ **2026-08-20: Track C is COMPLETE** and moved to [`track_c_long_form_video.md`](track_c_long_form_video.md). ✅ **R8 (narration speed) closed 2026-08-20.** ✅ **Leftover items 5, 6, 2, and 3 (gains, BPM, SFX + 9-clip library, split-screen) closed 2026-08-20.** ⚠ **One leftover build remains — see §14.8:** R2's second half. **Split-screen closed 2026-08-20.** **Parallax is parked on Q10.** **A8 is last.**
+> **Status:** Originally plan-only (2026-08-17). Since then, built and verified against real ffmpeg/real Postgres/real live APIs: Track D (script pre-flight, all levels except the phrasing-rewrite L3), Track B Tier 1–2 (grade, extra transitions, text cards, punch-in), and Track A's A1/A2/A3/A4/A5/A6/A7 (motion clip input, duration fitting, the video path's one-gate model, the on-demand video endpoint pair, the Pexels video rung, and video-vs-image planner calibration). **A8 (the bake-off) was attempted 2026-08-18 with real spend (~$1.86) and found a real, previously-unknown collage bug affecting every project with a rich `visual_style` — fixed and verified, but A8's own question ("does synthetic motion blend next to real archival photography") is still open**, by the user's own choice to stop before re-running the video half. **§11 step 5 (orphan-run fix) and step 6 (music taxonomy + a real 54-track curated library, §5.1) are also now built and verified**, 2026-08-18 — see §12 for both. See §12 for the full chronological log; unmarked sections below are still design-only. ✅ **2026-08-20: Track C is COMPLETE** and moved to [`track_c_long_form_video.md`](track_c_long_form_video.md). ✅ **R8 (narration speed) closed 2026-08-20.** ✅ **Leftover items 5, 6, 2, and 3 (gains, BPM, SFX + 9-clip library, split-screen) closed 2026-08-20.** ✅ **R2's second half (transitive suggestions) closed 2026-08-20.** **Split-screen closed 2026-08-20.** ✅ **R15 library residual closed 2026-08-20** (one CC0 stinger under 1.5 s). ✅ **R23 / R24 closed 2026-08-20.** ✅ **Padded-panel aesthetic closed 2026-08-20 (crop-to-fill).** **Parallax is parked on Q10.** **A8 is last.**
 > **Scope:** four tracks — **A** (motion clip input), **B** (style catalogue), **C** (long-form), **D** (script pre-flight). A is the keystone for the motion half of B; D is independent and could ship first.
 > **Related:** [`13_Implementation_Guide.md`](../13_Implementation_Guide.md) §M7/M8/M9 and its Backlog, [`14_Captions_Plan.md`](../14_Captions_Plan.md), [`watermark_implementation_plan.md`](watermark_implementation_plan.md).
 > **Fixture:** project `58f0a5e6-008d-468e-862a-e365e463878e` / `backend/tests/fixtures/m8_test_project.json` — real Fischer-Tropsch timeline, 13 shots. Reuse it; do not plan a fresh one.
-> ⚠ **Read §13 before trusting any "BUILT" marker in this document.** A code-vs-plan review on 2026-08-18 found ten open discrepancies between what §12 records as built and what the code does, two of them blocking — including that `retention_fast` could not complete a planning run. **Update, 2026-08-20: 9 of 10 items are fixed and verified (R1–R10 except R2's second half). R8 closed the same day as Track C.** Only R2's second half (a lowest-priority product decision) remains open. See §13's own status line for the current per-item state.
+> ⚠ **Read §13 before trusting any "BUILT" marker in this document.** A code-vs-plan review on 2026-08-18 found ten open discrepancies between what §12 records as built and what the code does, two of them blocking — including that `retention_fast` could not complete a planning run. **Update, 2026-08-20: all ten §13 items are fixed and verified (R1–R10). R8 closed the same day as Track C; R2's second half (transitive suggestions) closed later the same day.** See §13's own status line for the current per-item state.
 
 ---
 
@@ -185,7 +185,7 @@ This is the correction that matters most. A style preset is **not** one bundle o
 - Asset search is free
 - Generation costs **dollars**
 
-So **style is freely changeable right up to the gate and frozen after it.** The frontend should present the picker at project creation and keep it live on the progress screen until approval; read-only afterwards.
+So **planner-facing style (`render_style`) is changeable until planning starts, then frozen.** The frontend should present the picker at project creation and keep it live until the first Timeline exists; after that `POST /style` returns 400. **Grade (`grade_style`) is a separate, mutable field** — `POST /grade` works at any time, including after render (R5 option 2). Do not build one picker that treats both as the same freeze.
 
 **Narration speed IS part of the preset — decided 2026-08-17, in v1.** It is the one style parameter that changes an input to narration rather than to the render, so it is called out separately here.
 
@@ -338,7 +338,7 @@ A style's preset should declare whether it has a pacing floor to check. For the 
 | Level | What it does | The user's words | Status |
 |---|---|---|---|
 | **1. Diagnose** | Shows the fragment table with predicted durations; highlights spans that are too long | untouched | **BUILT** (`preflight.py`) |
-| **2. Suggest breaks** | Proposes punctuation insertion points; accepted per-span | untouched | **BUILT** (`suggestions.py`) |
+| **2. Suggest breaks** | Proposes punctuation insertion points; accepted per-span. **Transitive (R2, 2026-08-20):** one response carries every round of marks, offsets into the original script. | untouched | **BUILT** (`suggestions.py`) |
 | **3. Rewrite phrasing** | Splits sentences by rephrasing, where punctuation cannot | changed | **not built — §3.3 is still design-only** |
 
 **The insight that makes levels 1–2 powerful:** the splitter breaks on **punctuation**, not meaning. So
@@ -1142,11 +1142,108 @@ Parent plan §2.6. The schema already promised it; `ken_burns.py` correctly stil
 
 **Binding.** One row per shot still. `secondary_asset_id` / `secondary_clip_id` on `shot_binding` (migration `b7e4c2a91d08`). Human override of the bottom panel is not in this slice — override still replaces the primary only.
 
-**Known residuals, not closed here:** cost estimate is still per-shot (two generates still hit the live cap); no gutter; no side-by-side layout toggle; human override of the bottom panel; Q6/Q7's three remaining code changes; R15's short-stinger curation.
+**Known residuals, not closed here:** cost estimate is still per-shot (two generates still hit the live cap); no gutter; no side-by-side layout toggle. Human override of the bottom panel, Q6/Q7's three remaining code changes, and R15's short-stinger curation all closed later the same day.
 
 83 related tests green (filter arithmetic, fingerprint, shot/asset planner, real ffmpeg composite + degrade). Timeline-service and generate-timeline regressions also green. **Stopped here for review.** Next leftover is R2's second half. A8 last. Parallax parked on Q10.
 
-⚠ **Reviewed — see [§16](#16-code-vs-plan-review-of-split-screen-leftover-item-3-2026-08-20). Five findings (R16–R20), none of them one of the five residuals this entry already disclosed. All five fixed 2026-08-20 — answers sit under each finding in §16.**
+⚠ **Reviewed — see [§16](#16-code-vs-plan-review-of-split-screen-leftover-item-3-2026-08-20). Five findings (R16–R20), none of which reopened the design. All five fixed 2026-08-20 — answers sit under each finding in §16.**
+
+### 2026-08-20 — R2's second half closed: transitive punctuation suggestions
+
+Parent plan §3.2 / §13.2. Chose the first of the two product options: **return the full set in one response**, not a `further_suggestions_available` flag that still makes the user guess. The flag exists anyway, True only when the length-derived cap is hit while the script is still infeasible.
+
+`suggest_breaks` applies each round, re-splits, keeps proposing until `check_feasibility` passes. Offsets are mapped back to the original script (`working_offset_to_original`) so the user still ticks marks against their own words. Previews are sliced from the original. A round's hits all map through the *previous* rounds' insertions only — folding the current round into the map lands mid-word (caught by the word-boundary test).
+
+On the reference fixture, R11's 1.2× rate means **one round of 6 is now enough** (N 13 → 19, passes). The 2026-08-18 table needed three rounds because it was measured at 14.4 chars/sec. The loop is still load-bearing: a synthetic of three 200-char sentences needs more than one midpoint split, and the transitive call includes those later marks. Accepting every returned suggestion passes pre-flight; `further_available` is False.
+
+7 related tests green (`test_suggestions`). **Stopped here for review.** Remaining in §14.8: Q6/Q7 residuals, bottom-panel override, R15 short stinger, parallax parked, A8 last.
+
+⚠ **Reviewed — see [§17.1](#171-r21-max_suggestions--40-is-the-last-length-blind-constant-in-a-pipeline-that-was-made-length-aware-everywhere-else). One finding (R21):** the cap was length-blind. ✅ **Fixed 2026-08-20** — `suggestion_cap = max(40, 2 × (ceil(D / target) − N))`, verified: the 196 s script now returns 120 marks and accepting all of them reaches feasibility.
+
+⚠ **That fix then exposed two further findings at long-form length — see [§18](#18-code-vs-plan-review-of-the-r21r22-fixes-and-the-r15-library-closure-2026-08-20).** **R23:** at 591 s and 1,188 s the loop returns `further_available=False` on a script the suggestions cannot make feasible — "ran out of legal breaks" and "now feasible" share one response shape. **R24:** the marks themselves push the duration estimate over the project cap (590.8 s → **611.6 s** against a 600 s maximum, ~20.8 s added by 360 inserted characters), so the loop fixes pace by creating a violation punctuation can never fix. One check on *which* violation remains closes both. ⚠ **Both were unreachable while the cap was 40 — the fix working, not failing.**
+
+### 2026-08-20 — Q6/Q7 residuals + split-screen bottom-panel override
+
+The three decided-but-unapplied code changes from §14.9, plus the split-screen residual R16 unblocked.
+
+**Q6 camera.** Shot Planner user content omits `camera_language` when `load_style_fragment("shot_planner", style)` is not None — today that is `retention_fast`. The style fragment is the only camera instruction on that request. `documentary_archival` / `stillness` still receive the Director's line. Tests: `test_retention_fast_omits_director_camera_language`, `test_documentary_archival_still_receives_director_camera_language`.
+
+**Q6 palette.** Dropped from the Director's structured output and prompt. Grade stays `STYLE_GRADES` keyed on style name — wiring a dead field into the grade would have *created* the conflict Q6 asked about. `CreativeContext.colour_palette` remains on the Timeline so old JSON still loads; new plans write `[]`. Director validator no longer requires it.
+
+**Q7 entity check.** `_validate_rewrite` now diffs capitalised entities both ways, same as numbers. Dropped names still reject; invented names (`Secunda` on the Fischer-Tropsch original) now reject too. Pronoun-swap and sentence-initial stoplist tests still pass.
+
+**Bottom-panel override.** `POST /shots/{id}/override?panel=secondary` writes `secondary_asset_id` / `secondary_state=resolved` and does not change the top panel's binding. The shot is still `asset_locked` regardless of panel (R22: conservative over-lock, same as a primary override — the upload cannot be planned away). Refuses unless the shot is `split_frame`. Default `panel=primary` is unchanged. `GET /shots/{id}/asset?panel=secondary` serves the bottom still. R16 already hashes assignment, so a bottom-panel swap misses the render cache.
+
+37 related tests green (rewrite, director, shot planner, override helper, generate-timeline). **Stopped here for review.**
+
+⚠ **Reviewed — see [§17.2](#172-r22--overriding-the-bottom-panel-locks-the-whole-shot-so-leaves-the-top-panel-alone-is-only-half-true). One finding (R22):** `_lock_shot` sets `asset_locked` regardless of `panel`. ✅ **Disclosed 2026-08-20** (docstring + this entry); flag split deferred. ✅ The Q6 camera fix is **better than §14.9 asked for** — keyed off whether a style fragment loaded, not off a style name, so future styles inherit the suppression.
+
+### 2026-08-20 — R15 library residual closed: one CC0 stinger under 1.5 s
+
+The ranker could already prefer a clip that survives `sfx_max_clip_s` (1.5 s). The library could not: the three stingers were 1.995 / 3.024 / 4.000 s, so every text-card overlay was still trimmed.
+
+**Curation, not code.** Same Openverse path as the other nine (`scripts/download_sfx_library.py --fill-short`, CC0/CC-BY gate, duration from real `ffprobe`, not the API's advertised number). Whoosh and transition already had mix-intact clips and were left alone.
+
+**Kept:** `stinger/timpani_sting.mp3` — *Timpani Sting* by nomiqbomi, Freesound via Openverse, **CC0**, **1.242 s**. Ranking the real stinger pool with `_DEFAULT_QUERIES` now picks it; the mix no longer cuts a text-card stinger. Library is 10 clips.
+
+Tests: `test_at_least_one_stinger_fits_the_mix_intact`, `test_ranking_picks_an_intact_stinger_from_the_real_library`. **Stopped here for review.** Remaining in §14.8: padded-panel aesthetic (human), parallax parked on Q10, A8 last.
+
+✅ **Reviewed — see §18.4. Closed, and verified against the file rather than the manifest:** `ffprobe` reports **1.241882 s** against the manifest's 1.242, and the real provider + ranker now pick a mix-intact clip for **all three** kinds (whoosh 0.490 s, stinger 1.242 s, transition 1.013 s). The R15 chain is complete end to end, and the 4.000 s horror chuckle that alphabetical tie-breaking used to select is now beaten on duration — **the curation fix removed the need for a tie-break change.**
+
+### 2026-08-20 — R23 / R24 closed: punctuation that cannot pass is no longer reported as success
+
+Parent plan §3.2 / §18. One check on *which* violation remains closes both findings.
+
+`further_available` still means "are there more marks?" (cap hit). New `would_pass` means "applying every returned mark makes `check_feasibility` pass." The two are not inverses. `unfixable` is why, when they are both False: the hard 10-minute ceiling, or no legal break left.
+
+**Duration against the length-aware cap below 600 s is not unfixable** — more fragments raise that cap, which is why R21's 196 s script starts over 116 s and still passes. `max_long_form_duration_s` does not move. If the script is already over 600 s, or if even the optimistic `(ceil(D/target) − N)` extra characters would push it over, the loop returns **zero marks** and `"this script is ~591s; the maximum is 600s, and punctuation cannot shorten it — cut words instead"`.
+
+Measured on the review's own scripts: 24 s and 196 s still `would_pass=True`; 590.8 s and 1,188 s now `would_pass=False`, `further_available=False`, unfixable set, 1,188 s with **0** marks (was 720). API: `suggestions_would_pass`, `punctuation_cannot_fix`. Inserted marks still count as full characters of speech — a comma is a pause, but changing that would make the loop's exit disagree with `check_feasibility` on the applied script.
+
+12 related tests green (`test_suggestions`). **Stopped here for review.** Remaining in §14.8: padded-panel aesthetic (human), parallax parked on Q10, A8 last.
+
+
+### 2026-08-20 — padded-panel aesthetic closed: crop-to-fill
+
+The leftover is a look, not a missing filter. Ran the **production** split-screen graph (`build_split_filter`, 720×1280) against real fixture stills, plus two alternatives, same photos:
+
+| layout | what it does |
+|---|---|
+| **letterbox (current)** | `scale=decrease` + `pad` — whole photograph, ~25% bar on 3:2 |
+| **crop-to-fill** | `scale=increase` + `crop` — panel full, edges discarded |
+| **letterbox + 16 px gutter** | same as current, plus a seam between the halves |
+
+Two pairs: two 3:2 plant stills (the review's padding case), and the Gorki reconnaissance map over a 3:2 plant (legend in the corner — the same crop Ken Burns already loses on this photo). Frames in `tmp/padded-panel/`. Probe: `scripts/padded_panel_probe.py`.
+
+**Verdict, user 2026-08-20: crop-to-fill.** `build_split_filter` now `scale=increase` + `crop` per panel, same cover as Ken Burns. Gorki legend is cropped — accepted. `SPLIT_PANEL_FIT = "fill"` is hashed into the full render, per-run, and shot-stream fingerprints so a letterbox revert cannot cache-HIT. Tests: `test_split_filter_vstacks_two_crop_filled_panels`, `test_split_panels_crop_to_fill_so_edges_are_content_not_pad`, `test_split_panel_fit_changes_all_three_fingerprints`. **Stopped here for review.** Remaining: parallax parked on Q10, A8 last.
+
+### 2026-08-20 — §18.6 unfixable message closed: projected branch names the projection
+
+`_cut_words_reason` is now only the already-over-600 s branch. The 591 s case uses `_projected_cut_words_reason`: *"this script is ~591s and would need ~218 more marks to reach this style's pace, which pushes it to ~603s against a 600s maximum; cut words instead."* Guard unchanged. 12 `test_suggestions` green. **Stopped here for review.** Next: §2.1 frontend guidance, then §19.1.
+
+### 2026-08-21 — §2.1 guidance + §19 format-per-style built
+
+**§2.1.** Frontend guidance now matches R5 option 2: `render_style` freezes when planning starts (`POST /style` 400); `grade_style` stays mutable via `POST /grade`.
+
+**§19.1.** `generation_prompt_hash` omits default 720×1280 (existing rows stay hits) and appends `|WxH` otherwise. All six `resolve_assets.py` keys use it (including the revised-prompt video attempt at line 1656 that §19.1's five-key list missed).
+
+**§19.9 `is_draft`.** Migration `d9e1a4c7b8f0`; retention sweep filters the flag, not draft dimensions. Backfill: 480×854 rows.
+
+**Format.** `resolve_render_format` / `resolve_draft_format`. `documentary_archival` 1280×720; `retention_fast` 720×1280; `stillness` still open (None → today's 9:16). Six call sites plus ranking. Captions/text cards size off the long side so 720×1280 and 1280×720 get the same 58 px. Landscape caption `MarginV` is 4% of height (no feed UI band). Split-screen `hstack` when width>height. Landscape generation prompt gets one composition line (portrait unchanged, so the cache stays a hit). `TimelineMetadata.aspect_ratio`/`resolution` populated at `create_initial`. Project response carries `render_width`/`render_height`. Frontend: `resolution.ts` takes a target canvas; review-gate / project-list / result player follow landscape vs portrait.
+
+**Orientation ranking.** Matching orientation breaks ties after the existing weighted score — not in the score, so it cannot override relevance or reuse (R14).
+
+**Apply migration `d9e1a4c7b8f0` before using drafts.** Existing `documentary_archival` projects re-render landscape and miss the generated-image cache (paid). **Stopped here for review.** `stillness` format still undecided. Parallax parked. A8 last.
+
+### 2026-08-21 — stillness keeps both formats (16:9 default + 9:16 reel)
+
+User: *"lets keep stillness with both option can we?"* — a short vertical Ken Burns reel without switching to `retention_fast`. Ken Burns is camera, not style (`slow_zoom`/`pan` on stillness; `punch_in` on fast). Format still rides frozen `render_style`, never mutable `grade_style`.
+
+**§19.12 required order, followed.** (1) Pin `generation_prompt_hash` baseline to `_CACHE_KEY_BASELINE = (720, 1280)` — a module constant, never `settings.render_width/height`. Existing 720×1280 rows stay hits. (2) Then stillness: default **1280×720**; `frame_aspect="9:16"` on the project (copied onto `Timeline.metadata` at `create_initial`) is a 720×1280 reel. Did **not** flip `settings.render_width/height` — 720×1280 is still `retention_fast` and the stillness reel, so residual 3's "format of exactly zero styles" no longer holds.
+
+**Surface.** `POST /projects` and `POST /{id}/style` accept optional `frame_aspect`; `frame_aspect_error` 400s it on any style that isn't `stillness`. Frozen with the style at planning start. Resolve/render/draft/ranking/generation all take `frame_aspect`. New-project picker: three styles, and when stillness is selected, 16:9 vs 9:16. Migration `e1a2b3c4d5f6` (`project.frame_aspect`).
+
+**Stopped here for review.** Parallax parked on Q10. A8 last.
 
 ---
 
@@ -1154,7 +1251,7 @@ Parent plan §2.6. The schema already promised it; `ken_burns.py` correctly stil
 
 > **Method.** Read this plan in full, then verified its claims against the actual code and the real fixture files rather than against §12's own log. Every number below was produced by *running* the real functions (`check_feasibility`, `suggest_breaks`, `split_narration_fragments`, `build_duration_fit_fragment`, `grade_filter_fragment`, and the real `_motion_filter`/`_ken_burns_filter`/`_normalize_filter`) or read directly out of the fixture JSON — none is inferred from reading code. Where a finding is a wrong *justification* rather than a wrong *behaviour*, it says so.
 >
-> ⚠ **Status, updated 2026-08-20: R1 (both blocking items, which auto-closes R2's first half), R3, R4, R5, R6, R7, R8, R9, and R10 are all FIXED and verified (see §12's matching entry for each) — only R2's second half (transitive suggestions, a product decision, explicitly lowest urgency) remains OPEN.** This section remains the record of what was found; §12 records what was done about it.
+> ⚠ **Status, updated 2026-08-20: R1–R10 are all FIXED and verified** (R2's second half closed the same day as the leftover split-screen review — see §12). This section remains the record of what was found; §12 records what was done about it.
 >
 > **The pattern behind R1, R2 and R4 is worth naming up front, because it is the same mistake three times and it is not a carelessness problem.** This project's verification standard is high *per unit* — §12 is full of "verified, not merely written," and it means it. All three of these slipped through because the check ran at the wrong **altitude**: the resolver was verified but not the run that calls it; the suggestion engine's mechanism was verified but not the user journey through it; two real sub-floor shot durations were found but not the fixture they were attributed to, nor the flag that made them legal. This is the same class of mistake §12's own 2026-08-17 method note already recorded once ("the first correction failed because it read the shared helper without reading the call site that supplies its validator") — recurring, so worth treating as a standing review rule rather than an incident.
 
@@ -1203,7 +1300,7 @@ violations = timeline.validate_constraints(
 
 ⚠ **The test matters more than the change.** A test that builds a `retention_fast` Timeline with 50 shots at 0.9s and asserts `validate_constraints` passes under the resolved bundle *and* fails under the flat settings is what stops this regressing a third time. Better still, one asserting that both call sites in this file resolve their bounds identically — the divergence, not the values, is the defect.
 
-### 13.2 R2 — BLOCKING: pre-flight certifies scripts that planning then rejects — **first half FIXED (auto-closed by R1), second half (transitive suggestions) still OPEN as a product decision, see §12**
+### 13.2 R2 — BLOCKING: pre-flight certifies scripts that planning then rejects — **first half FIXED (auto-closed by R1), second half FIXED 2026-08-20 (transitive suggestions)**
 
 Reproduced against the real fixture script by iterating `suggest_breaks` → apply → `check_feasibility`:
 
@@ -1220,6 +1317,8 @@ Reproduced against the real fixture script by iterating `suggest_breaks` → app
 ⚠ **Second, independent finding in the same table: level 2 is iterative and §3.2 does not say so.** §3.2 presents level 2 as one pass of per-span accept/reject. Accepting **every** suggestion on the reference fixture leaves the script still infeasible (`N`=20, 2.32s/shot against a 1.75s target). It takes two further rounds to pass. Nothing in `ScriptPreflightResponse` or in this plan signals that re-running yields more suggestions — so the honest reading of the current UX is "accept everything, still rejected, no path forward offered."
 
 **Fix:** either return the suggestions transitively (re-split after each proposed mark and keep proposing until the style's band is met, so one response carries the full set), or add a `further_suggestions_available: bool` to `ScriptPreflightResponse` and say so in §3.2. The first is better product for the same amount of code; the second is at least honest about a limitation. Silently requiring the user to guess is neither.
+
+**Fixed 2026-08-20.** Took the first option. `suggest_breaks` loops apply → re-split → propose until `check_feasibility` passes. Offsets stay in the original script. `further_suggestions_available` is on the response but is True only if the 40-mark cap was hit still infeasible — not a substitute for the loop. On the reference fixture, R11 made one round enough (6 marks, N 13 → 19); a longer synthetic still needs later rounds and they are included. Accepting every returned mark passes pre-flight.
 
 ### 13.3 R3 — A2's "gap bounded at ±0.5s" is false, and it fails worst exactly where this plan needs it most — **FIXED (documentation), see §12**
 
@@ -1368,7 +1467,7 @@ Recorded because a review section that lists only faults misrepresents the state
 5. **R8** — ✅ closed 2026-08-20. `retention_fast` is now honest to offer (R1 and R8 both closed).
 6. **R3, R4, §13.11** — documentation and calibration corrections. No code depends on them, but R3's economics should reach §4.2 before A4's cap is tuned, and R4's bad citation should not be relied on by whoever next touches the floor.
 7. **R10** — before A8's bake-off is attempted, not after. Judging motion from a still frame is the one thing that pass exists to avoid.
-8. **R2's second half** (transitive suggestions) — product decision, lowest urgency, highest visible improvement to the pre-flight screen.
+8. **R2's second half** (transitive suggestions) — ✅ closed 2026-08-20.
 
 ---
 
@@ -1380,18 +1479,18 @@ Recorded because a review section that lists only faults misrepresents the state
 
 ### 14.1 The short answer
 
-**One leftover build remains (R2's second half), plus A8 last.** Items 1, 2, 3, 5 and 6 closed 2026-08-20. Parallax is parked on Q10.
+**Leftover builds from §14.1 are closed.** R2's second half closed 2026-08-20. R15's short-stinger residual closed 2026-08-20. R23/R24 closed 2026-08-20. Parallax is parked on Q10. A8 is last.
 
 | # | item | § | status probe | effort |
 |---|---|---|---|---|
 | **1** | **Narration speed (Route 2's voice half)** | §2.1, §2.5, §13.8 | ✅ **closed 2026-08-20** — live-checked, hashed, 1.2× on `retention_fast` | done |
-| **2** | **Sound effects layer** | §5.5 | ✅ **closed 2026-08-20** — `sfx.py` + 9-clip Openverse library + `SelectSfxStep` | done |
+| **2** | **Sound effects layer** | §5.5 | ✅ **closed 2026-08-20** — `sfx.py` + 10-clip Openverse library (R15 short stinger added) + `SelectSfxStep` | done |
 | **3** | **Split-screen (`SPLIT_FRAME`)** | §2.6 Tier 2 | ✅ **closed 2026-08-20** — two stills, top/bottom `vstack`, second `AssetPlan` | done |
 | **4** | **2.5D parallax** | §2.7 Tier 3 | ⚠ no provider module exists | 3–4 d + Q10 |
 | **5** | **Per-style music gains** | §5.2 | ✅ **closed 2026-08-20** — `resolve_music_gains`, −10/−14 fast, −22/−28 stillness | done |
 | **6** | **BPM + tempo-fit ranking** | §5.2, §5.3 | ✅ **closed 2026-08-20** — 18/54 sourced BPM; ranking uses ±20% band; 36 stay null | done |
 
-**Plus two carried-over decisions:** A8's bake-off verdict (human viewing) and R2's second half (iterative punctuation suggestions — a product call).
+**Plus one carried-over decision:** A8's bake-off verdict (human viewing). R2's second half closed 2026-08-20.
 
 ⚠ **All four items closed on 2026-08-20 were then reviewed against the code — see [§15](#15-code-vs-plan-review-of-the-four-items-closed-2026-08-20-r8-sfx-music-gains-bpm). Five findings (R11–R15), none of which reopened an item's design. All five fixed 2026-08-20 — answers sit under each finding in §15.**
 
@@ -1407,7 +1506,7 @@ Recorded because a review section that lists only faults misrepresents the state
 
 ### 14.3 Item 2 — SFX is the largest genuinely unbuilt feature in this plan — ✅ **CLOSED 2026-08-20**
 
-`app/renderer/sfx.py` exists; `SelectSfxStep` is in `DEFAULT_PIPELINE`; a 9-clip local library was downloaded from Openverse. The design in §5.5 held:
+`app/renderer/sfx.py` exists; `SelectSfxStep` is in `DEFAULT_PIPELINE`; a local library was downloaded from Openverse (9 clips, then a 10th mix-intact stinger for R15). The design in §5.5 held:
 
 - **Placement follows D6/21.2 exactly** — choosing the palette is creative → `sfx_plan` in the Timeline; placing and mixing is deterministic → the renderer, driven by events already there (`camera` punch-ins, `text_card`, transitions). No new per-SFX creative decisions.
 - **Source is the same Openverse provider, same licence gate, different query** — §5.5's own irony (Freesound "skews to sound effects" was a complaint about music search; for SFX it is the point).
@@ -1436,7 +1535,7 @@ The library itself landed (54 tracks, `LocalMusicProvider`, `MUSIC_PROVIDER=loca
 
 **A8's bake-off.** §12 records the collage bug found *during* A8's bake-off, so it started. ⚠ **No verdict is recorded**, and §9 is explicit that this needs a human comparing outputs and does not compress. It is the question *"does synthetic motion blend beside a 1936 photograph"* — and Track C's R10 fix (`GET /shots/{id}/clip`, streaming real clip bytes) is what finally makes it answerable from the UI rather than from extracted stills. **Moved to last in §14.8** (user, 2026-08-20): regenerate the 3 Kling clips (~$1.50) only after the remaining builds.
 
-**R2's second half.** §13.2's finding that level 2's punctuation suggestions are iterative but presented as one-shot — accepting all 7 leaves the reference fixture still infeasible; it takes two more rounds. Deliberately left as the lowest-urgency item. Still open, still a product call (return suggestions transitively, or add a `further_suggestions_available` flag and say so in §3.2).
+**R2's second half — ✅ closed 2026-08-20.** Transitive suggestions: one response carries every round. See §12.
 
 ### 14.7 What is done, so the remaining list can be trusted
 
@@ -1445,12 +1544,12 @@ The library itself landed (54 tracks, `LocalMusicProvider`, `MUSIC_PROVIDER=loca
 | **A** — motion clip input | A1/A2/A3/A5/A6 built; A4's prompt fix + per-project video cap built; A7 (Pexels video rung) built. **Only A8's verdict outstanding.** |
 | **B** — style catalogue | Tier 1 (grade, punch-in, `retention_fast` end-to-end including narration speed) and Tier 2 (extra transitions, text cards, **split-screen closed 2026-08-20**) built. **Per-style gains closed 2026-08-20.** Tier 3 outstanding. |
 | **C** — long-form | ✅ **complete and closed 2026-08-20** — 658 tests pass in 17m51s, R-C1…R-C10 all closed — see [`track_c_long_form_video.md`](track_c_long_form_video.md). C0–C8, frontend contract §13, and three review rounds (§14/§15) with nine findings raised and fixed. |
-| **D** — script pre-flight | Levels 1–2 and level 3 (rewrite) all built. **Only R2's second half outstanding.** |
+| **D** — script pre-flight | Levels 1–2 and level 3 (rewrite) all built. **R2's second half closed 2026-08-20.** |
 | **Music** | Library + `LocalMusicProvider` + per-act beds + per-style gains + BPM/tempo-fit built. |
-| **SFX** | ✅ 9-clip local library + `SelectSfxStep` + `mux_sfx`. |
-| **§13 review** | R1–R10 except R2's second half fixed and verified. **R8 (speed) closed 2026-08-20 — see §14.2.** |
+| **SFX** | ✅ 10-clip local library + `SelectSfxStep` + `mux_sfx`. R15 short-stinger residual closed 2026-08-20. |
+| **§13 review** | R1–R10 all fixed and verified. **R8 (speed) and R2's second half closed 2026-08-20.** |
 
-✅ **ALL OPEN QUESTIONS CLOSED 2026-08-20 — see §14.9 for each, with scenarios and decisions.** **Q5** pacing bands: `2.0` validated by watching real narrated renders. **Q6** style vs Director: the named conflict does not exist (`colour_palette` is read by nothing); the real collision is `camera_language`. **Q7** rewrite retry: one attempt only — plus a NEW finding, the pre-flight has no minimum-length check. **Q8** chars/sec: one constant holds; `HI=12.9` to be deleted; voice dominates language 5×. **Q10** parallax: **works on real archival film — build it**, and it needs no GPU in the render path. ⚠ **Five code changes are decided and NOT yet applied:** delete `script_chars_per_second_hi`; suppress the Director's `camera_language` under a style; make the rewrite entity check symmetric; add the minimum-length warning; resolve `colour_palette` (wire or drop). **Plus §15's five (R11–R15)** — and R11 (thread narration speed into the estimators) belongs in the *same pass* as the first and fourth of these: all three touch `preflight.py`'s rate function.
+✅ **ALL OPEN QUESTIONS CLOSED 2026-08-20 — see §14.9 for each, with scenarios and decisions.** **Q5** pacing bands: `2.0` validated by watching real narrated renders. **Q6** style vs Director: the named conflict does not exist (`colour_palette` is read by nothing); the real collision is `camera_language`. **Q7** rewrite retry: one attempt only — plus a NEW finding, the pre-flight has no minimum-length check. **Q8** chars/sec: one constant holds; `HI=12.9` to be deleted; voice dominates language 5×. **Q10** parallax: **works on real archival film — build it**, and it needs no GPU in the render path. ✅ **The five decided code changes from this pass are all applied** (HI constant + min-length warning with R11; camera_language suppress, entity-check symmetry, colour_palette drop 2026-08-20).
 
 ### 14.8 Suggested order for the remainder
 
@@ -1459,11 +1558,18 @@ A8 last (user, 2026-08-20). Parallax parked on Q10 (user, 2026-08-20). One lefto
 1. ~~**Item 1 — narration speed (R8)**~~ — ✅ closed 2026-08-20.
 2. ~~**Item 5 — per-style music gains**~~ — ✅ closed 2026-08-20.
 3. ~~**Item 6 — BPM + tempo-fit ranking**~~ — ✅ closed 2026-08-20.
-4. ~~**SFX**~~ — ✅ closed 2026-08-20. Review findings R11–R15 ✅ fixed 2026-08-20 (see §15 answers).
-5. ~~**Split-screen** (`SPLIT_FRAME`)~~ — ✅ **closed 2026-08-20** (see §12). Review findings R16–R20 ✅ fixed and **re-verified 2026-08-20 — see [§16.9](#169-r16r20-confirmed-fixed--2026-08-20)** (483 tests, single alembic head, panel-swap and shot-swap both now caught by the render fingerprint). ⚠ **R16's fix removed the one sequencing constraint on the bottom-panel override**, so that residual is now free to be picked up whenever. The remaining split-screen item is the aesthetic call on padded panels, which needs a human watching real archival material.
-6. **R2's second half** — iterative punctuation suggestions; product call, lowest urgency. **Next leftover after this review.**
-7. **2.5D parallax** — parked on **Q10**. Not in the active queue.
-8. **A8 last** — regenerate 3 Kling clips (~$1.50) and a human watching whether synthetic motion blends beside 1936 photography. Keyframes already exist. Not started.
+4. ~~**SFX**~~ — ✅ closed 2026-08-20. Review findings R11–R15 ✅ fixed 2026-08-20 (see §15 answers). R15 library residual ✅ closed 2026-08-20 (`timpani_sting.mp3`, 1.242 s, CC0).
+5. ~~**Split-screen** (`SPLIT_FRAME`)~~ — ✅ **closed 2026-08-20** (see §12). Review findings R16–R20 ✅ fixed. Bottom-panel override ✅ **closed 2026-08-20** (`?panel=secondary`). Padded-panel aesthetic ✅ **closed 2026-08-20** — crop-to-fill (user verdict).
+6. ~~**R2's second half**~~ — ✅ closed 2026-08-20 (transitive suggestions; see §12).
+7. ~~**Q6/Q7 residuals**~~ — ✅ closed 2026-08-20 (camera_language suppress, entity-check both ways, colour_palette dropped from Director output). Reviewed R21/R22.
+8. ~~**R15 short stinger**~~ — ✅ closed 2026-08-20.
+9. ~~**R23 / R24**~~ — ✅ closed 2026-08-20 (`would_pass` + stop when punctuation cannot clear the hard duration ceiling).
+10. ~~**Padded-panel aesthetic**~~ — ✅ closed 2026-08-20. Crop-to-fill (user verdict on the bake-off frames).
+11. ~~**§18.6 unfixable message**~~ — ✅ closed 2026-08-20 (projected branch names the projection).
+12. ~~**§2.1 frontend style-picker guidance**~~ — ✅ closed 2026-08-21.
+13. ~~**§19 format per style**~~ — ✅ built 2026-08-21 (see §12). `stillness` dual-format (16:9 default + 9:16 Ken Burns reel) ✅ **closed 2026-08-21**. **Current stop: waiting on review of this slice.**
+14. **2.5D parallax** — parked on **Q10**. Not in the active queue.
+15. **A8 last** — regenerate 3 Kling clips (~$1.50) and a human watching whether synthetic motion blends beside 1936 photography. Keyframes already exist. Not started.
 
 ### 14.9 Q6 and Q8 tested against real code and the real API, 2026-08-20
 
@@ -1537,8 +1643,8 @@ and in the user message of the same request:
 
 **Decisions taken 2026-08-20:**
 
-1. **Suppress the Director's `camera_language` line when a style supplies camera instructions.** One conditional in the Shot Planner's prompt assembly. Chosen over §4.1's own suggestion of seeding the whole Director with the style, which is materially more machinery than the actual collision needs — camera is the *only* contested field.
-2. **Resolve `colour_palette` one way or the other.** Either wire it to the grade or drop it from `CreativeContext`. ⚠ **As it stands the Director spends output tokens on every project describing a palette nothing honours** — a promise the system does not keep.
+1. **Suppress the Director's `camera_language` line when a style supplies camera instructions.** One conditional in the Shot Planner's prompt assembly. Chosen over §4.1's own suggestion of seeding the whole Director with the style, which is materially more machinery than the actual collision needs — camera is the *only* contested field. ✅ **Applied 2026-08-20.**
+2. **Resolve `colour_palette` one way or the other.** Dropped from the Director's output schema and prompt; not wired to the grade (that would have *created* the Q6 conflict). Timeline field kept so old JSON loads. ✅ **Applied 2026-08-20.**
 3. **Leave `visual_style`, `tone`, `historical_period`, `audience` and `constraints` alone.** They are uncontested, and the style has no competing input for any of them.
 
 ⚠ **One limit on the Q6 evidence:** the collision was demonstrated by assembling the real prompt with a hand-written but realistic Director output, not with a live Director call. **The plumbing is verified from code** (`camera_language` reaching the Shot Planner, `colour_palette` reaching nobody); what a real Director writes for a real script has not been observed. One cheap LLM call would close that if the fix is contested.
@@ -1616,7 +1722,7 @@ On failure it returns `accepted=False` **plus the attempted text and the reasons
 - *No-op rejection.* The model returns genuinely nicer prose with the same sentence count → rejected: *"fragment count did not increase (13 → 13) — rewrite was a no-op for pacing purposes."* Correct: the request was faster cutting, not better writing, and accepting it would change the user's own words for zero pacing benefit — the worst trade available under this feature's "the user's words are never in the model's output" constraint (§3.2).
 - *End to end today.* `POST /script/rewrite` → `accepted=false`, the reasons, and the attempted text. The user reads the diff and either edits by hand, rewords themselves, or picks a slower style. **Nothing was persisted and nothing was spent beyond one call.**
 
-⚠ **One real asymmetry found while tracing, worth a small follow-up.** Numbers are compared **both ways** (a `Counter` equality catches missing *and* invented), but entities are a **one-way set difference** — a *dropped* name is caught, an *invented* one is not. So a rewrite that introduces "Sasol" into a sentence where it did not belong passes all three backstops. Less likely than dropping a name, and the diff would show it, but the asymmetry reads as unintentional rather than reasoned. **Making the entity check symmetric is a one-line change.**
+⚠ **One real asymmetry found while tracing, worth a small follow-up.** Numbers are compared **both ways** (a `Counter` equality catches missing *and* invented), but entities are a **one-way set difference** — a *dropped* name is caught, an *invented* one is not. So a rewrite that introduces "Sasol" into a sentence where it did not belong passes all three backstops. Less likely than dropping a name, and the diff would show it, but the asymmetry reads as unintentional rather than reasoned. **Making the entity check symmetric is a one-line change.** ✅ **Applied 2026-08-20** — invented names now reject, same as invented numbers.
 
 #### ⚠ NEW, found while deciding Q7: the pre-flight has no minimum-length check at all
 
@@ -1837,15 +1943,17 @@ Every one of these was hit on first use, and all three are cheap to handle at th
 | **R12** | `sfx_max_clip_s` is now a `compute_render_fingerprint` parameter, hashed unconditionally beside `sfx_gain_db` — **plus a dedicated regression test** (`test_different_sfx_max_clip_changes_the_fingerprint`) | ✅ **fixed and locked.** §7's lesson finally has a test rather than a comment |
 | **R13** | The exact call that raised `PermanentError` (ffmpeg exit `4294967274`) re-run: **succeeds, duration 4.000 s preserved, both streams present.** The fix probes for an audio stream and injects a duration-matched `anullsrc` as the mix base when there is none | ✅ **fixed.** The overlay now genuinely becomes the audio, which is what the docstring had been claiming all along |
 | **R14** | Relevance moved above `_tempo_band` in the sort key. Re-ran the two briefs that flipped: `ambient/drone/quiet` and `somber/industrial/war` now give the **same top pick with and without a 137 BPM target**. "Delightful D" at relevance **0.000** wins nothing | ✅ **fixed.** The one brief that still shifts (`solemn/memorial`) shifts *within equal relevance* — a known-mismatched 48 BPM losing to a pulseless track — which is tempo working as the tiebreaker it was documented to be |
-| **R15** | Ceiling now reads `settings.sfx_max_clip_s`; the trim gets an 80 ms `afade`; and — beyond what the review asked — clips that do **not** fit are ordered by **least truncation**. Default stinger pick: **4.000 s → 1.995 s** | ✅ **code fixed**, ⚠ **library residual, see below** |
+| **R15** | Ceiling now reads `settings.sfx_max_clip_s`; the trim gets an 80 ms `afade`; and — beyond what the review asked — clips that do **not** fit are ordered by **least truncation**. Default stinger pick: **4.000 s → 1.995 s**, then **1.242 s intact** once the library residual closed | ✅ **code fixed**; ✅ **library residual closed 2026-08-20, see below** |
 
 ⚠ **R15's fix also solved the alphabetical problem for free, which is worth noting because it was raised as a separate curation issue.** The three stingers tie on relevance, so `source_id` used to decide the aesthetic and `creepy_stinger_chuckle` won on the letter C. Ordering the non-fitting clips by duration puts the neutral `stinger_3_wav` first instead. **A defect-magnitude tiebreak beat a curation problem** — worth remembering next time an aesthetic complaint looks like it needs a library change.
 
-#### ⚠ R15's one open residual: the library cannot satisfy the policy it can now express
+#### ✅ R15's library residual closed 2026-08-20
 
-The three stinger clips are **1.995 s, 3.024 s and 4.000 s**. `sfx_max_clip_s` is **1.5 s**. So no stinger fits, and every text-card stinger is still trimmed — now by 25% instead of 62%, and faded rather than clicking, but the tail is still lost.
+The three stinger clips were **1.995 s, 3.024 s and 4.000 s**. `sfx_max_clip_s` is **1.5 s**. So no stinger fitted, and every text-card stinger was still trimmed — by 25% instead of 62%, and faded rather than clicking, but the tail was still lost.
 
-**This is curation, not code.** The ranking can now express "prefer a clip that survives the mix"; there is simply nothing in the library that does. **One CC0 stinger under 1.5 s closes it** — the same `scripts/download_sfx_library.py` path the other nine came through. Deliberately left for a live-download pass rather than folded in here.
+**This was curation, not code.** The ranking could express "prefer a clip that survives the mix"; there was simply nothing in the library that did. **One CC0 stinger under 1.5 s closed it** — same `scripts/download_sfx_library.py` path (`--fill-short`), live Openverse, real `ffprobe`.
+
+**Kept:** *Timpani Sting* by nomiqbomi (Freesound), CC0, **1.242 s**, `stinger/timpani_sting.mp3`. Default pick is now intact. Whoosh and transition already had mix-intact clips and were not replaced. See §12.
 
 #### §15.6's five minors, all closed — and two turned out to be worth more than "minor"
 
@@ -1860,11 +1968,11 @@ The three stinger clips are **1.995 s, 3.024 s and 4.000 s**. `sfx_max_clip_s` i
 - ✅ **`script_chars_per_second_hi` deleted** (Q8 decision #1) — folded into R11, which is exactly the one-pass argument that decision made.
 - ✅ **Q7's minimum-length WARNING**, wired end to end: its own `warnings` field (never `violations`, so `passed` is untouched), `settings.script_preflight_min_duration_s = 60.0`, and surfaced through `app/schemas/script_preflight.py` and `app/api/projects.py`. Verified: a 2-second script warns and **still passes**.
 
-⚠ **Three remain unapplied:** the Director's `camera_language` is still emitted unconditionally by the Shot Planner (Q6); the rewrite's entity check is still a one-way set difference, catching dropped names but not invented ones (Q7); and `colour_palette` is still *required* by the Director's own validator while being read by nothing (Q6) — so the Director still spends output tokens on every project describing a palette the system does not honour.
+✅ **The three remaining decided-but-unapplied changes landed 2026-08-20** — see §12. Shot Planner omits `camera_language` under a style that owns camera; rewrite entities compare both ways; Director no longer emits `colour_palette`.
 
 #### §15 closes here
 
-R11–R15 fixed and re-verified, five minors closed, one library residual named. **Split-screen closed 2026-08-20.** Remaining: three Q6/Q7 code changes, R2's second half, parallax parked, A8 last.
+R11–R15 fixed and re-verified, five minors closed, library residual closed 2026-08-20. **Split-screen, R2, and the Q6/Q7 residuals closed 2026-08-20.** **R23/R24 closed 2026-08-20.** **Padded-panel aesthetic closed 2026-08-20 (crop-to-fill).** Remaining: parallax parked, A8 last.
 
 ---
 
@@ -2029,6 +2137,491 @@ The secondary's identical call **discards the return value.** So `used_at_s` —
 
 #### Still outstanding on split-screen, unchanged by this pass
 
-**The aesthetic judgement.** Each 720×1280 frame yields two 720×640 panels, so a 3:2 archival photograph sits with roughly a quarter of its panel as padding. The behaviour is correct and deliberate ("never a fake split of one photograph"), but **whether two heavily-padded halves read as a deliberate comparison on real 1936 material is a human call that has not been made** — the same class of open question as Q5's pacing bands and A8's bake-off, and it does not compress into a test. §12's other four disclosed residuals (per-shot cost estimate, no gutter, no layout toggle, no bottom-panel override) also stand.
+**The aesthetic judgement.** Each 720×1280 frame yields two 720×640 panels, so a 3:2 archival photograph sits with roughly a quarter of its panel as padding. The behaviour is correct and deliberate ("never a fake split of one photograph"), but **whether two heavily-padded halves read as a deliberate comparison on real 1936 material is a human call.** ✅ **Made 2026-08-20: crop-to-fill.** Bake-off frames in `tmp/padded-panel/`; the Gorki legend is cropped, accepted. No gutter, no side-by-side toggle. Per-shot cost estimate still stands.
 
 ⚠ **The R16/override pairing is now safe to unpick in either order.** With assignment in the fingerprint, building the bottom-panel override no longer risks serving a stale render on its first use — which was the one sequencing constraint §16.8 flagged.
+
+---
+
+## 17. Code-vs-plan review of the last two slices — R2's second half, and the Q6/Q7 + bottom-panel override bundle, 2026-08-20
+
+> **Method.** Same standard as §13/§15/§16. `working_offset_to_original` was traced by hand against `apply_break_suggestions` on one- and two-insertion cases; the transitive loop was run against a **realistic long-form `retention_fast` script** (40 sentences, 3,389 chars, ~196 s estimated) at three different caps to find where it converges; the Q6/Q7 changes were read against their call sites; the override was traced through `_lock_shot` and the timeline service's own locking rules. **100 tests pass** (`tests/unit/script`, `tests/unit/planners`, `tests/unit/api`).
+>
+> **Both slices are clean, and one of them is better than the review that asked for it** (see §17.4 on the Q6 camera fix). **Two findings**, one per slice, and both are the same shape: **a claim that is true at the size it was tested and stops being true at production size.**
+
+### 17.1 R21 — `max_suggestions = 40` is the last length-blind constant in a pipeline that was made length-aware everywhere else
+
+§12's entry chose the better of R2's two product options: *"return the full set in one response, not a `further_suggestions_available` flag that still makes the user guess."* ✅ **That is the right choice and the loop genuinely delivers it — up to 40 marks.** Above 40 the implementation silently becomes the option the entry rejected.
+
+**Measured on a realistic long-form `retention_fast` script** (40 sentences, 3,389 chars, ~196 s at R11's corrected 17.28 chars/sec):
+
+| `max_suggestions` | marks returned | `further_available` | accepting ALL of them |
+|---|---|---|---|
+| **40 (the default)** | **40** | True | ❌ **still infeasible** — N=80, ~2.48 s/shot against a 1.75 s target |
+| 200 | **120** | False | ✅ feasible, N=160 |
+| 500 | 120 | False | ✅ feasible (converged) |
+
+⚠ **This script needs 120 marks and the default returns 40.** So the user accepts 40, is still refused, calls again, accepts more, is still refused, calls a third time — **which is R2's original defect verbatim** (*"accepting all 7 leaves the reference fixture still infeasible; it takes two more rounds"*), just relocated from the algorithm to the cap and moved from 7 marks to 40.
+
+**Why this is a real regression risk and not a nitpick: everything else in this bundle scales with length and this does not.** Same style, varying fragment count:
+
+| `n_fragments` | `max_shots_per_project` | `max_video_duration_s` | `max_suggestions` |
+|---|---|---|---|
+| 13 | 58 | 90 | **40** |
+| 80 | 124 | 232 | **40** |
+| 160 | 247 | 465 | **40** |
+
+Track C made the shot cap, the video-duration bound, the generated-video cap and the budget cap all length-aware. **`max_suggestions` is a bare constant sitting in the middle of that work**, and it binds at roughly the length where long-form begins — which is the whole point of Track C.
+
+✅ **Credit where it is due: the user is not misled, only made to iterate.** `further_available` is computed honestly and reaches the API as `further_suggestions_available` on `ScriptPreflightOut`, so the response says "there are more." That is why this is a finding about ergonomics and a length-blind constant, not about correctness.
+
+**Fix: derive the cap the same way the others are derived** — e.g. from the fragment count, or from `D / target_shot_duration_s` (the number of shots the script must reach) — or simply raise it well past any plausible script. The loop already has three independent termination conditions plus a `max_rounds` backstop, so the cap is not what keeps it safe.
+
+**Fixed 2026-08-20.** `suggestion_cap(script, style) = max(40, 2 × (ceil(D / target) − N))`. Floor 40 keeps the fixture at the old default; a 40-sentence ~196 s script gets a cap > 40 and converges in one response (`further_available` is False). Passing `max_suggestions=40` still reproduces the old refusal, locked by `test_a_length_blind_cap_of_40_is_not_enough_for_long_form`.
+
+### 17.2 R22 — overriding the bottom panel locks the whole shot, so "leaves the top panel alone" is only half true
+
+§12's entry and the endpoint's own docstring both say `panel=secondary` *"writes `secondary_asset_id` / `secondary_state=resolved` and leaves the top panel alone."* **True of the binding. Not true of the lock.**
+
+`override_shot_asset`'s `_lock_shot` transform runs **regardless of `panel`**:
+
+```python
+def _lock_shot(base: Timeline) -> Timeline:
+    for scene in base.scenes:
+        for shot in scene.shots:
+            if shot.id == shot_id:
+                shot.asset_locked = True
+```
+
+And per `app/timeline/service.py`'s own documented rules, `asset_locked` means two things: the binding carries forward **unconditionally**, and **"once a Shot is locked, no later version may change ITS `prompt`/`asset_plan`/`secondary_*` at all, ownership declarations notwithstanding"** (`_reject_locked_shot_drift`).
+
+**So the scenario:** a user sees a wrong bottom photograph, uploads a replacement for that panel only, and — without being told — **permanently freezes the top panel's prompt and asset plan against every future re-plan.** A later Director pass that would have improved the top panel's prompt is now rejected as locked-shot drift. The user asked to fix half a shot and froze all of it.
+
+⚠ **It is the safe direction** (their upload survives), which is why this is a finding about an unstated consequence rather than a bug. But `asset_locked` is a single flag being asked to carry two independent decisions — **the R7/§13.7 pattern exactly** (*"do not share one field across two jobs"*), and R7 is cited by name elsewhere in this same bundle's own design notes.
+
+**Untested.** `tests/unit/api/test_override_panel.py` has two tests, both against the pure `apply_override_to_binding` helper (primary does not clear secondary, secondary does not clear primary — both good). Nothing covers the lock.
+
+**Two ways out, and the cheap one is fine:** split the flag (`asset_locked` / `secondary_asset_locked`), which is the R7-consistent fix; or leave the behaviour and **say so** in the endpoint docstring and the §12 entry, since over-locking is the conservative error. Either is acceptable — silently claiming the top panel is untouched is not.
+
+**Fixed 2026-08-20 (disclosure).** Left the conservative over-lock: one `asset_locked` still covers both panels, so the upload cannot be planned away. The endpoint docstring and `_lock_shot` now say that a `panel=secondary` override freezes `prompt` / `asset_plan` / `secondary_*` against later re-plans, same as a primary override always did. Per-panel `secondary_asset_locked` waits until someone wants independent re-planning.
+
+### 17.3 Smaller items
+
+- **The §16 cross-reference blockquote is now orphaned.** It sits *after* the two new §12 entries with `---` rules on both sides, so it reads as though "Five findings (R16–R20)" applies to the Q6/Q7 slice rather than to split-screen. Move it back under the split-screen entry. Documentation only. **Fixed 2026-08-20** — moved under the split-screen §12 entry.
+- **The suggestion loop's `max_rounds = 20` is a second bare constant**, though a harmless one: the loop already exits on feasibility, on cap, and on "no new marks", so 20 is a backstop against a pathological non-converging script rather than a real bound. Worth one comment saying that, so nobody tunes it thinking it is the limiter. **Fixed 2026-08-20** — `_MAX_SUGGESTION_ROUNDS` comment names it as a backstop.
+
+### 17.4 What was checked and holds up
+
+| claim | verified how |
+|---|---|
+| the offset mapping is correct | traced `working_offset_to_original` by hand against `apply_break_suggestions` for one and two prior insertions, at positions before, on, and after each inserted mark. Correct in every case |
+| a hit landing ON a previously inserted mark cannot double-insert | it maps back to an original offset already in `seen_offsets` and is deduped. **This is the subtle case** and it is handled |
+| the round's own marks are correctly NOT folded into the map | the comment says it and the code does it — folding them would land mid-word, which is exactly what `test_every_suggestion_lands_on_a_word_boundary` catches |
+| previews come from the user's own words | `preview_before`/`preview_after` are re-sliced from `script`, not from the working copy, so the user reads their own text at their own offsets |
+| the loop terminates | three real exits (feasible / cap reached / no new marks) plus a `max_rounds` backstop. Convergence verified empirically: 120 marks, N=160, feasible |
+| the fixture claim | `test_accepting_every_suggestion_makes_the_fixture_feasible_for_retention_fast` passes, and the entry correctly attributes the drop from three rounds to one to **R11's rate fix**, not to the new loop — an honest attribution it would have been easy to take credit for |
+| **Q6 camera is coupled to the fragment, not to a style name** | `suppress_camera_language=style_fragment is not None`. ✅ **Better than §14.9 asked for** — that decision said "one conditional in the Shot Planner's prompt assembly", which invited a `== "retention_fast"` check. Keying off whether a style camera fragment actually loaded means **any future style that ships a fragment inherits the suppression automatically**, and one that does not still gets the Director's line |
+| Q6 palette was dropped, not wired | removed from the Director's structured output, prompt and validator; `CreativeContext.colour_palette` stays with `default_factory=list` so old Timeline JSON still loads. Wiring it into the grade would have *created* the conflict Q6 asked about — the entry says so and is right |
+| Q7's entity check is symmetric | both differences computed, distinct messages for dropped vs invented, matching the numeric check's existing shape. The pronoun-swap and sentence-initial stoplist tests still pass, so the stoplist was not loosened to make room |
+| the override's panel handling | `secondary_clip_id = None` clears the other half of the asset-vs-clip pair (same precedence discipline as the primary); non-`split_frame` shots are refused; `panel` is whitelist-validated on **both** the POST and the `GET …/asset` |
+| the override cannot cause a re-resolve loop | `secondary_state="resolved"` is in `TERMINAL_STATES`, so `secondary_panel_done` returns true and `ResolveAssetsStep` will not re-attempt (and cannot re-spend) on a human-supplied bottom panel |
+| R16 made this override safe | assignment is in the render fingerprint, so a bottom-panel swap misses the cache — the sequencing constraint §16.8 flagged is genuinely discharged, not just assumed |
+
+### 17.5 Recommended order
+
+1. **R22's disclosure** — ✅ fixed 2026-08-20 (docstring + `_lock_shot` comment + §12). Flag split deferred.
+2. **R21** — ✅ fixed 2026-08-20 (`suggestion_cap` from `D / target`).
+3. **R22's flag split** (`secondary_asset_locked`) — not done; over-lock disclosed and kept.
+4. §17.3's two documentation items — ✅ fixed 2026-08-20.
+
+**Stopped here for review of these fixes.**
+
+---
+
+## 18. Code-vs-plan review of the R21/R22 fixes and the R15 library closure, 2026-08-20
+
+> **Method.** Re-ran R21's own reproduction (the 196 s `retention_fast` script that needed 120 marks) and then **extended it to long-form lengths R21's fix had not been tested at** — 590 s and 1,188 s of estimated narration. The R15 closure was verified against the real file on disk with `ffprobe`, not against the manifest's own number. **234 tests pass** (`tests/unit/script`, `assets`, `providers`, `api`, plus the SFX library integrity suite).
+>
+> ✅ **R21, R22 and R15's residual are all genuinely closed** — see §18.4. **Two new findings, both in the same place: the transitive suggestion loop at long-form length.** R21's fix removed the cap that was hiding them.
+
+### 18.1 R23 — `further_available=False` on a script the suggestions cannot fix
+
+`suggestion_cap` now derives the limit, so the loop is free to propose as many marks as it wants. At long-form length it runs out of *punctuation* before it runs out of *problem*, and reports that as success:
+
+| script | est. duration | marks returned | cap | `further_available` | feasible after accepting ALL |
+|---|---|---|---|---|---|
+| 5 sentences | 24 s | 15 | 40 | False | ✅ yes |
+| 40 sentences | 196 s | 120 | 146 | False | ✅ yes — **R21's case, fixed** |
+| **120 sentences** | **591 s** | **360** | 436 | **False** | ❌ **no** |
+| **240 sentences** | **1,188 s** | **720** | 878 | **False** | ❌ **no** |
+
+The cap was not the limiter in either failing row (360 < 436, 720 < 878). The loop exited through:
+
+```python
+if added == 0:
+    return BreakSuggestionResult(suggestions=accumulated, further_available=False)
+```
+
+⚠ **"I ran out of legal breaks" and "the script is now feasible" return the identical response shape.** The user is handed 360 marks and a flag that says there is nothing more to be had, accepts every one of them, and pre-flight still refuses the script. **That is R2's original defect in its worst form yet** — not "you must ask again" (which `further_available=True` at least admits) but "this is everything, and it is not enough, and nothing here tells you so."
+
+**Fix: a third state.** `further_available` answers "are there more marks?" — it cannot also answer "will these marks work?" Return something that distinguishes *feasible-after-applying* from *exhausted-and-still-infeasible*, the same way `FeasibilityResult` was given a separate `warnings` list rather than overloading `violations` (Q7's own lesson, §14.9).
+
+**Fixed 2026-08-20.** `BreakSuggestionResult.would_pass` is that third state. `further_available` is unchanged (cap hit). Both False + `unfixable` is exhausted-and-still-infeasible. The 590.8 s script now returns `would_pass=False` and the cut-words reason, not 360 marks that look like a complete answer. Tests: `test_further_available_false_is_not_success_when_punctuation_cannot_pass`. API fields `suggestions_would_pass` / `punctuation_cannot_fix` so the preflight response cannot collapse the two either.
+
+### 18.2 R24 — the suggested marks push the duration estimate over the project cap. The loop fixes one violation by creating another.
+
+This is why the 591 s row above fails, and it is worth stating separately because it is not a signalling problem.
+
+**Before suggestions** (120 sentences, 10,209 chars): estimated **590.8 s**, under the 600 s project maximum. Pre-flight refuses it on **pace** — 4.9 s/shot against `retention_fast`'s 1.75 s target.
+
+**After accepting all 360 suggested marks:** N goes 120 → 480, so pace is fixed. And the only remaining violation is:
+
+> `estimated script duration ~611.6s exceeds the 600s project maximum`
+
+⚠ **The suggestions caused that.** Every mark is one more character, `estimate_duration_s` is `len(script) / chars_per_second`, so 360 marks add ~360 chars ≈ **20.8 s** at `retention_fast`'s 17.28 chars/sec. A script that was **9 seconds under** the duration cap ended up **11.6 seconds over** it, entirely because of the marks proposed to fix a different check.
+
+**Two consequences:**
+
+- **Any script within ~3.5% of `max_video_duration_s` can be pushed over it by its own suggestions.** The margin needed scales with the number of marks, which scales with length — so the longer the script, the likelier this is.
+- **The remaining violation is one punctuation can never fix.** No comma or full stop reduces a script's duration; only cutting words does. The loop keeps proposing marks against a violation its own marks are causing, and its exit test (`check_feasibility(working, style).passed`) can therefore never succeed.
+
+**Fix, and it is the same one both findings want: look at WHICH violation remains.** If the outstanding violations are not pace-related, punctuation is the wrong tool — stop, and say so ("this script is ~591 s; the maximum is 600 s, and punctuation cannot shorten it — cut words instead"). That single check closes R23's signalling gap and R24's futile-loop problem together. Secondarily, consider whether an inserted mark should count as a full character of speech at all: a comma is a pause, not a syllable, so charging it `1/17.28 s` of narration is a modelling choice worth a comment either way.
+
+**Fixed 2026-08-20.** `_unfixable_by_punctuation` is the which-violation check. It keys off `settings.max_long_form_duration_s` (the hard ceiling), **not** the length-aware cap: that one moves with fragment count, and treating it as unfixable would have regressed R21 (196 s starts over 116 s and still passes). Already over 600 s → zero marks. Optimistic `(ceil(D/target) − N)` extra characters projecting over 600 s → zero marks (the 590.8 s row: even the *minimum* 218 marks add ~12.6 s → ~603 s). Inserted marks still count as full characters; the modelling choice is a comment on that helper, not a silent change to `estimate_duration_s`. Tests: `test_a_script_over_the_hard_ceiling_is_not_padded_with_futile_marks`, `test_marks_that_would_push_over_the_ceiling_are_not_offered`.
+
+### 18.3 Smaller items
+
+- **Cost is fine, and here are the numbers so nobody re-derives them.** `suggest_breaks` now scales with length — 2 ms at 419 chars, 78 ms at 3.4 k, 491 ms at 10 k, **1.86 s at 20 k** (`_sentence_span` re-scans the script per candidate fragment, per round). ⚠ Looks alarming and is not: `POST /script/preflight` makes an LLM `check_suitability` call on the **same request**, unconditionally, which dominates that by an order of magnitude. `check_feasibility`'s "safe on every keystroke" claim is about `check_feasibility` itself, not this endpoint. No action — recorded so the measurement exists.
+- **`max_rounds = 20` is still a bare constant.** Harmless (three real exits precede it) but now that the cap can reach 878 it is worth one comment saying it is a non-convergence backstop, not a bound on output.
+
+  **Already present when this was written** — `_MAX_SUGGESTION_ROUNDS = 20` is commented: *"Backstop against a pathological non-converging script. The real exits are: feasible, cap reached, no new marks. Do not tune this thinking it is the limiter (R21)."* No further change.
+
+### 18.4 What was checked and holds up
+
+| claim | verified how |
+|---|---|
+| **R21 is fixed for the case that found it** | `suggestion_cap = max(40, 2 × (⌈D/target⌉ − N))`. On the 196 s script: cap 146, returns 120, `further_available=False`, and accepting all 120 **does** reach feasibility. The exact reproduction from §17.1 now passes |
+| the cap derivation is honest about being empirical | its docstring says the doubling exists because midpoint splits overshoot the ideal `needed − N`, and cites the measured 120-vs-73 gap rather than presenting `× 2` as principled |
+| the floor preserves old behaviour | `max(40, …)` means every script that used to get 40 still gets at least 40 — no short-form regression |
+| **R22 is disclosed precisely** | the endpoint docstring now states the exact consequence: *"The shot is still `asset_locked` (A25) regardless of panel — a later re-plan cannot change this shot's `prompt` / `asset_plan` / `secondary_*` either."* ✅ **That is the whole finding, in the place a caller reads.** §12's entry carries the same sentence. The flag split was deferred deliberately, which is a defensible call given the over-lock is the conservative direction |
+| **R15's library residual is closed, measured not asserted** | `stinger/timpani_sting.mp3` exists on disk (32,878 bytes) and **`ffprobe` reports 1.241882 s against the manifest's 1.242** — so the duration really was measured from the file, as the entry claims, not copied from the API |
+| all three SFX kinds now survive the mix intact | ran the real `LocalSfxProvider` + `rank_sfx_candidates` with the real `_DEFAULT_QUERIES`: whoosh 0.490 s, **stinger 1.242 s**, transition 1.013 s — every one under `sfx_max_clip_s` 1.5. **The R15 chain is now complete end to end**: ranking ceiling tied to the mix, fade at the trim, and a library that can satisfy the policy |
+| R15's aesthetic side-effect resolved itself | the 4.000 s `creepy_stinger_chuckle` — previously selected because `creepy` sorts before `horror` and `stinger_3` — is now beaten on duration by a neutral timpani. **The curation fix removed the need for a tie-break change** |
+| the licence gate held | the new clip is **CC0**, and the whoosh/transition slots were correctly left alone rather than re-curated for tidiness |
+
+### 18.5 Recommended order
+
+1. **R24 + R23 together** — ✅ **fixed 2026-08-20.** One check on which violations remain (`_unfixable_by_punctuation`) closes both. `would_pass` is the third state. See answers under each finding.
+2. §18.3's `max_rounds` comment — ✅ **already present** (R21). No further change.
+
+⚠ **Worth naming: R21's fix is what exposed R23/R24, and that is the fix working, not failing.** With the cap at 40 the loop never proposed enough marks to reach either edge — the bug was there and unreachable. Raising a limit and finding two failures behind it is the same pattern §13's own method note describes: *the check ran at the wrong altitude.* The altitude here was script length, and nothing in this feature had been exercised past ~200 s until now.
+
+### 18.6 R23–R24 confirmed fixed — 2026-08-20
+
+> **Method: re-ran §18's own reproduction at all four lengths** (24 s / 196 s / 591 s / 1,188 s), comparing the result's stated verdict against `check_feasibility` on the actually-applied script. **492 tests pass** — the whole `tests/unit` tree plus the SFX-library and split-screen integration suites, up from 474 at §16.9. `ruff check` clean.
+
+| script | est. | marks | `would_pass` | reality | matches? |
+|---|---|---|---|---|---|
+| 5 sentences | 24 s | 15 | True | passes | ✅ |
+| 40 sentences | 196 s | 120 | True | passes | ✅ |
+| **120 sentences** | **591 s** | **0** | False + `unfixable` | fails | ✅ |
+| **240 sentences** | **1,188 s** | **0** | False + `unfixable` | fails | ✅ |
+
+✅ **`would_pass` now matches reality at every length tested.** Both findings closed, and the API carries the distinction end to end: `suggestions_would_pass` and `unfixable` on `ScriptPreflightOut` alongside the existing `further_suggestions_available`.
+
+#### The fix is stronger than the review asked for, in two ways
+
+1. ⚠ **§18.2 asked the loop to *stop* when the remaining violation is not pace-related. It *projects* instead, so the futile marks are never proposed at all.** `_unfixable_by_punctuation` computes `(len(script) + min_marks) / chars_per_second` — the duration the script *would* reach after the minimum marks the pace check needs — and refuses up front. On the 591 s case that is **0 marks returned instead of 360**, with a reason instead of a silent False. The R24 arithmetic (marks are characters, characters are duration) has been turned into the guard against itself.
+2. ✅ **It keys off the HARD ceiling, not the length-aware one, and the docstring explains why.** `settings.max_long_form_duration_s` does not move; `bundle.max_video_duration_s` grows with fragment count — which is precisely why the 196 s script legitimately starts over its own bundle cap and still passes after suggestions. Using the wrong one of those two would have broken R21's case while fixing R24's. **That distinction is the subtle part of this fix and it is written down** rather than left for the next reader to rediscover.
+
+#### Three-state result, and the shape is right
+
+`BreakSuggestionResult` now answers three separate questions instead of overloading one flag — `further_available` ("are there more marks?"), `would_pass` ("will these work?"), `unfixable` ("why not, if not"). ✅ **Same discipline as `FeasibilityResult`'s separate `warnings` list** (Q7, §14.9) and as R7's "do not share one field across two jobs": the previous bug was one boolean being asked two questions.
+
+#### §18.3's two items, both closed
+
+- `_MAX_SUGGESTION_ROUNDS = 20` is now named, with exactly the warning the review asked for: *"Backstop against a pathological non-converging script. The real exits are: feasible, cap reached, no new marks. Do not tune this thinking it is the limiter (R21)."*
+- The cost measurement is recorded in §18.3 and needs no code change.
+
+#### Test coverage encodes the findings, including the subtle one
+
+- `test_further_available_false_is_not_success_when_punctuation_cannot_pass` — R23
+- `test_a_script_over_the_hard_ceiling_is_not_padded_with_futile_marks` — R24, direct case
+- **`test_marks_that_would_push_over_the_ceiling_are_not_offered` — R24's projected case**, which is the one that could regress silently if someone later swaps the hard ceiling for the bundle cap
+- `test_a_length_blind_cap_of_40_is_not_enough_for_long_form` — locks R21
+
+#### ⚠ One new small finding: the `unfixable` message reuses one string for two different conditions
+
+`_cut_words_reason` serves both branches of `_unfixable_by_punctuation`, and it only reads correctly for one of them:
+
+| branch | message | reads correctly? |
+|---|---|---|
+| `duration > ceiling` (1,188 s) | *"this script is ~1188s; the maximum is 600s…"* | ✅ yes |
+| **`projected > ceiling` (591 s)** | *"this script is ~591s; the maximum is 600s…"* | ❌ **591 is 9 s UNDER the stated maximum** |
+
+**The refusal is correct; the number offered as justification contradicts it.** The real arithmetic on that script: 590.8 s, 120 fragments, `retention_fast` needs 338 shots, so **218 marks minimum, which add ~12.6 s and project to 603.4 s** — 3.4 s over. A user reads "your script is 591 s, the limit is 600 s" and reasonably concludes it fits.
+
+**Fix: a second message for the projected branch** naming the projection — e.g. *"this script is ~591 s and would need ~218 more marks to reach this style's pace, which pushes it to ~603 s against a 600 s maximum; cut words instead."* The guard is right and the tests pin it; only the sentence handed to the user needs splitting.
+
+**Fixed 2026-08-20.** `_cut_words_reason` is the already-over branch only. `_projected_cut_words_reason` names duration, min marks, projected duration, and the ceiling. On the review's 591 s script the text is now *"this script is ~591s and would need ~218 more marks to reach this style's pace, which pushes it to ~603s against a 600s maximum; cut words instead."* The 1,188 s branch is unchanged. Tests: `test_marks_that_would_push_over_the_ceiling_are_not_offered` pins the projected sentence; the already-over test asserts `"would need"` is absent.
+
+#### ⚠ Still not done, from the same review round
+
+**§2.1's frontend guidance** (line 188) still reads *"keep it live on the progress screen until approval; read-only afterwards."* `set_render_style` returns **400 — "render style cannot be changed after planning has started"**, which is earlier than approval, and `grade_style` stays mutable *after* render via `POST /{project_id}/grade`, so it is not read-only afterwards either. **A picker built to §2.1 as written will 400.** This was flagged as a two-minute edit and is the one item from that list still open — see §13.5, where only option 1 carried the "correct the frontend guidance" clause and option 2 was the option chosen.
+
+---
+
+## 19. Format per style — design, 2026-08-20 — ✅ **BUILT 2026-08-21** (stillness: 16:9 default + 9:16 reel)
+
+> **Decision, user 2026-08-20:** *"I have problem with this vertical 9:16 for long form videos, I don't think long form videos on YT use this."* Correct, and the plan already agreed with itself: **§2.6 line 293 — *"The render is 9:16. Fast-cut and text-driven styles were born vertical and will feel native. Ken Burns and archival montage were born in 16:9 and fight the frame… A preset should declare which format it was designed for."*** That last sentence is the design; it was written, never built, and the render shipped 9:16 for everything.
+>
+> **Chosen shape: format is a property of the style**, resolved the same way `narration_speed` (R8) and `music_bed_gain_db` (leftover item 5) already are — not a global `Settings` value, and not derived from duration. Rejected alternatives: a global switch to 16:9 (loses `retention_fast`'s native frame), and a duration threshold (a script edit would silently rotate the video, and a 10-minute fast-cut piece would be forced landscape against its own style intent).
+
+### 19.1 ⚠ PREREQUISITE, and it is a real cache-correctness bug: generated-media keys do not include dimensions
+
+**Found while scoping this, and it must land first.** All five generated-media cache keys hash the prompt and the model, and nothing about size:
+
+```
+resolve_assets.py:366   sha256(f"{prompt}|{model_id}|{seed}")
+resolve_assets.py:532   sha256(f"{prompt}|{settings.fal_video_model}")
+resolve_assets.py:1339  sha256(f"{shot.prompt}|{image_provider.name}")
+resolve_assets.py:1428  sha256(f"{prompt}|{model_id}|{project_seed}")
+resolve_assets.py:1525  sha256(f"{prompt}|{model_id}|{seed}")
+```
+
+…while the request itself sends `image_size: {width: settings.render_width, height: settings.render_height}` (`fal_image.py:40`, fed from `resolve_assets.py:289/553/1334/1388`). **Dimensions are an input to the generated bytes and are absent from the key that decides whether to generate at all.**
+
+⚠ **Harmless today, because there is exactly one format. Format-per-style is what makes it reachable**, in two ways:
+
+- **Cross-style collision.** Two styles with different formats and the same shot prompt share one cache row. Whichever generates first wins, and the other silently receives a portrait image for a landscape frame (or the reverse), letterboxed by `_normalize_filter` into pillar-boxed bars down both sides. **No error, no re-generation, and it looks like a bad crop rather than a cache bug.**
+- **Existing projects.** Every generated image on disk today is 720×1280. A project re-rendered under a style that is now 16:9 gets a **cache hit on the portrait original** — so the one thing that should force a re-generation does not.
+
+**This is §7's lesson in the one cache nobody has audited for it.** §7 has now been hit five times in the *render* fingerprint (music gain → captions → watermark → grade → `sfx_max_clip_s`) and R16 closed it in the run/shot-stream layers. **The asset cache was never checked, because until now nothing could vary its inputs.**
+
+**Fix: add `{width}x{height}` to all five keys.** Every existing generated row misses once and re-generates — ⚠ **and that costs real money, unlike a render-cache miss.** So this needs a deliberate decision, not a silent rollout: either accept the one-time re-generation, or key only the *new* format so 720×1280 rows keep their current digest and only non-default formats get a new one (the same trick `compute_narration_content_hash` uses for `speed != 1.0`, which kept every pre-R8 row a hit). **The second option is strictly better here and has precedent in this codebase.**
+
+### 19.2 The shape
+
+```
+StylePacingBand:
+    render_width:  int | None = None   # None -> settings.render_width
+    render_height: int | None = None   # None -> settings.render_height
+
+resolve_render_format(style) -> RenderFormat(width, height)
+```
+
+`is not None` resolution, never `or` — same rule `resolve_music_gains` documents, and for the same reason (0 is not a legal size but the habit is what keeps these consistent).
+
+**Proposed values, one open question:**
+
+| style | format | why |
+|---|---|---|
+| `documentary_archival` | **1920×1080** | landscape archival sources in a landscape frame; §2.6's own "born in 16:9" |
+| `retention_fast` | **720×1280** (unchanged) | born vertical, cuts-only, text-driven — native to the feed |
+| `stillness` | **16:9 default; 9:16 reel option** | contemplative long-form is 1280×720; `frame_aspect="9:16"` is a vertical Ken Burns reel |
+
+### 19.3 What changes, precisely
+
+**Six call sites read `settings.render_width/height`** (`render.py:149`, `resolve_assets.py:289/553/1334/1388`, `assets/ranking.py:136`). Each becomes a `resolve_render_format(timeline.metadata.render_style)` call. ⚠ `ranking.py` reads `settings` at module-function level with no timeline in scope — **that one needs a signature change, not a substitution**, and it is the least obvious of the six.
+
+**Three things are genuinely pinned to 9:16 and must be fixed:**
+
+1. ⚠ **Caption and text-card font size keys off `height`** — `font_size = round(height * 0.045)` (captions) and `× 0.075` (text cards). At 720×1280 a caption is 58 px on a 720-wide frame, **≈8% of width**. At 1920×1080 it is 49 px on a 1920-wide frame, **≈2.5%** — about a third the relative size. **Flipping the config alone is a silent legibility regression.** Fix: key off `min(width, height)`, which reproduces today's vertical sizing exactly (min is 720 → 32 px… ⚠ *no*: `min(720,1280)=720`, `720×0.045=32 px`, which is smaller than today's 58 px). ⚠ **CORRECTED by §19.11 — this was wrong.** The long side (`max(w,h)`) preserves 58 px in both orientations, so no fraction change was needed. The original note, based on assuming `min`: **So the fraction must be re-derived, not just re-based** — pick the basis first, then solve the fraction to preserve the current vertical look, and record both numbers.
+2. **Caption `MarginV` is raised "to clear the platform UI band."** A vertical-feed assumption. On a 16:9 player there is no such band, so captions float high. Make the margin format-dependent, or zero the extra lift for landscape.
+3. **Split-screen is top/bottom by construction.** `split_screen.py`'s own docstring: *"9:16 makes a vertical stack the usable layout: a side-by-side split would be two ~540×1920 strips."* **At 16:9 that reasoning inverts** — side-by-side gives two clean 960×1080 panels; `vstack` gives two 1920×540 letterbox bars. Needs an `hstack` path selected by aspect, and `panel_heights()` gains a `panel_widths()` sibling. ⚠ The layout choice **must reach the render fingerprint** — it rides the format, which rides `render_style`, which is already hashed via the timeline dump, so this is free *provided* the layout is derived from format and never configured separately.
+
+**One thing gets better — ⚠ but see §19.8, which CORRECTS this against the real asset pool.** `_ken_burns_filter` pre-scales to `WORKING_CANVAS_SCALE = 1.6` and crops to fill **even at zoom=1.0** — §12 recorded it cutting the printed legend and compass rose off a real WWII reconnaissance photo. That is a landscape-source-in-a-vertical-frame problem. ⚠ **§2.6's backlog item at line 243 — *"'Landscape source in a vertical render' and 'zoom always targets frame centre' both resolve with one anchor point. Fix together"* (1–2 d) — narrows to the 9:16 styles only** once `documentary_archival` is landscape. It does not disappear (`retention_fast` still crops), but the style where it hurt most stops being affected.
+
+**Draft must follow the style's aspect.** `draft_width/height` (480×854) is 9:16. A landscape style previewed in a portrait draft would mislead exactly the review the draft exists for. Derive the draft from the resolved format at a fixed scale, rather than keeping two independent constants.
+
+### 19.4 What is already safe, and should not be re-solved
+
+- **The render fingerprint needs no change.** `width`/`height` are already in `render_settings` inside `compute_render_fingerprint`, and `compute_run_fingerprint` / `compute_shot_stream_fingerprint` both carry them too. So two styles at two formats are **provably distinct renders**, and a format change invalidates correctly. This is the one place the existing design absorbs the feature for free.
+- **Generated video follows automatically.** `fal_video` sends no aspect — Kling derives it from the keyframe image, which is generated at the resolved dimensions. So fixing §19.1 fixes the video rung with it.
+- **Asset ranking is orientation-agnostic** — `_quality_score` compares source *area* against target *area*, so it does not prefer portrait sources. ⚠ At 1920×1080 the target area is 2.25× larger, so archival photos need more upscale and score lower — but `_QUALITY_FLOOR_SCORE` floors it rather than rejecting, and the module docstring is explicit that penalising archival material for predating modern cameras is the defect it exists to avoid. **Worth a look at real numbers, not a redesign.**
+- **Watermark positioning is fraction-based**, so it lands correctly in either frame.
+- **`_normalize_filter`'s pad-to-fit** letterboxes any source into any frame — aspect-agnostic already.
+
+### 19.5 What must be measured before building, not after
+
+⚠ **Memory is the risk, not time.** C0's OOM was 185 shots at 720×1280: **10.61 GB peak**, fixed to **3.47 GB** by dropping `-loop 1 -t` for single-decode inputs. 1920×1080 is **2.25× the pixels**, which puts the *already-fixed* path near **7.8 GB** — uncomfortably close to where it died before the fix. **This is the same class of finding C0 caught only because someone probed rather than estimated, and it was the one thing §0–§11 never asked about.**
+
+**Encode time needs re-measuring, not multiplying.** C0's per-shot baseline is **5.1 s/shot motion, 3.7 s/shot static at 720×1280/30**, giving ~18.6 min for a 10-minute video at 1.86× realtime. Naive pixel scaling suggests ~40 min — but C0's own finding was that **the baseline dominates and the zoompan multiplier came in lower than guessed**, so extrapolation is exactly what it proved unreliable. Re-run the probe.
+
+⚠ **Superseded by §19.7: 1280×720 is the RECOMMENDATION, not the fallback** — it is the exact transpose of today's pixel count, so this probe stops being a prerequisite.
+
+**If 1920×1080 measures badly, 1280×720 is the fallback** — still 16:9, still correct for YouTube, only 1.78× the current pixels instead of 2.25×.
+
+### 19.6 Suggested build order — ⚠ SUPERSEDED by §19.10 (five more items found in the §19.9 completeness pass)
+
+1. **§19.1 first, on its own** — dimensions into the five generated-media keys, using the `speed != 1.0` trick so existing 720×1280 rows stay hits and nothing is re-paid for. This is a correctness fix that stands alone and is worth landing whether or not the rest proceeds.
+2. **Re-run C0's probe at 1920×1080** — peak RSS on a 185-shot dissolve-heavy run, plus s/shot motion and static. Decide 1080p vs 720p on the numbers. No feature code yet.
+3. **`resolve_render_format` + the six call sites**, `ranking.py` last since it needs a signature change.
+4. **Caption/text-card sizing basis**, with the current vertical look preserved by construction and both numbers recorded.
+5. **Split-screen `hstack` path**, layout derived from format so the fingerprint follows for free.
+6. **Draft dimensions derived from the resolved format.**
+7. **Decide `stillness`.** ⚠ Do not let it default silently — that is how `documentary_archival` ended up vertical in the first place.
+
+⚠ **One migration consequence to state plainly:** every existing project rendered as `documentary_archival` re-renders once, in landscape, and its Ken Burns framing changes (for the better — the legends stop being cropped). That is a visible change to already-delivered videos, not just a cache miss. **Worth confirming that is wanted before step 3 lands.**
+
+### 19.7 Resolution: **1280×720**, not 1920×1080 — and the memory probe stops being a prerequisite
+
+**Aspect and resolution are independent, and the cheapest 16:9 is free.**
+
+| | pixels | vs current |
+|---|---|---|
+| current 720×1280 | 921,600 | 1.00× |
+| **1280×720 (the transpose)** | **921,600** | **1.00×** |
+| 1600×900 | 1,440,000 | 1.56× |
+| 1920×1080 | 2,073,600 | 2.25× |
+
+1280×720 is literally 720×1280 with the numbers swapped. ✅ **So §19.5's memory risk evaporates for this option** — same pixel budget means C0's measured `5.1 s/shot` motion / `3.7 s/shot` static and its post-fix `3.47 GB` peak RSS all carry over unchanged. **The probe is no longer on the critical path**; it becomes a nice-to-have confirmation rather than a prerequisite.
+
+**And the source material argues for 720 as well.** Measured the real assets on disk — 20 images, of which 6 are generated at 1080×1920 (portrait only *because* the config is portrait) and **14 are genuinely searched archival**:
+
+| target | real searched assets that meet it |
+|---|---|
+| 1280×720 | **5 of 14** |
+| 1920×1080 | **2 of 14** |
+
+⚠ **At 1080p you pay 2.25× the encode for pixels the archival material does not have.** The largest two real scans (3908×2662, 2823×4096) would benefit; the other twelve would be upscaled. **Recommendation: 1280×720 for the 16:9 styles**, leaving headroom to raise it later if the source pool ever improves — a config value, and by then §19.1's cache-key fix makes raising it safe.
+
+### 19.8 ⚠ CORRECTION to §19.3: this project's archival pool is PORTRAIT, 11 to 3 — the Ken Burns benefit was overstated
+
+§19.3 claimed the landscape switch fixes `_ken_burns_filter`'s crop-to-fill problem, citing §2.6's *"archival montage was born in 16:9."* **Measured against the real assets, that is not true of this material.**
+
+Of the 14 genuinely searched assets: **11 portrait, 3 landscape.** Wikimedia returns scanned documents, vertical diagrams and portraits of people for this subject — not landscape reconnaissance frames. So in a 16:9 frame most of these stills would be **pillar-boxed** on the static path, or **cropped hard top-and-bottom** under Ken Burns at `WORKING_CANVAS_SCALE = 1.6`.
+
+**The framing problem does not get fixed by rotating the frame. It moves to the other axis and affects MORE shots, not fewer** — 11 instead of 3. §2.6's line is true of archival cinema in general and false of what this pipeline's searches actually retrieve, which is the only pool that matters.
+
+⚠ **The platform argument still decides it** — a 10-minute vertical documentary has nowhere to live on YouTube, and that is not negotiable by asset statistics. But it carries a requirement §19.3 did not name:
+
+> **`_quality_score` is orientation-agnostic** (it compares source *area* to target *area*), and **no prompt anywhere mentions aspect** — so nothing in asset ranking or in the Asset Planner's queries would bias toward landscape sources for a landscape style. Without that, a 16:9 style mostly produces shots with bars.
+
+**Add an orientation term to `rank_music_candidates`'s visual sibling** (`app/assets/ranking.py`), keyed off the resolved format — prefer sources whose orientation matches the frame, as a **reordering, never a filter**, exactly the lexicographic pattern `compute_duration_floor_s` established for music and R14 re-affirmed (a preference must not outrank the brief). ⚠ **And it must sit BELOW relevance**, which is R14's own lesson.
+
+### 19.9 What §19.1–19.6 missed — a completeness pass over the whole surface
+
+**Five more places carry the 9:16 assumption, and two of them are outside the backend entirely.**
+
+1. ⚠ **`retention.py` identifies drafts by matching the dimension pair, and has no `is_draft` column.** Its own docstring: *"There is no `is_draft` flag on `render` — the same width/height pair (`settings.draft_width`/`draft_height`) … is reused here to identify which completed rows this sweep is even allowed to touch. A final render at `settings.render_width`/`render_height` is never a candidate."* **§19.3 requires draft dimensions to follow the style's aspect — which breaks exactly this discriminator.** A landscape-style draft would no longer match `settings.draft_width/height`, so **the retention sweep would never clean it up and drafts accumulate forever**; and the coupling is fragile in the other direction too, since one style's *final* size could coincide with another's *draft* size and become eligible for deletion. **This needs a real `is_draft` flag** — the thing the module deliberately avoided when there was only one format. **Not optional, and it is the least visible item in this section.**
+
+2. ⚠ **`TimelineMetadata` already carries two aspect fields, both dead, and one already wrong.** `aspect_ratio: str = "9:16"` and `resolution: tuple[int, int] = (1080, 1920)`. Grepped every consumer in `app/`: **neither is read by anything** except `diff.py`'s `_METADATA_FIELDS` list. And **`resolution` is factually wrong today** — the render is 720×1280, not 1080×1920. This is `colour_palette`'s shape (Q6) except worse: a dead field asserting a specific false value rather than an empty one. **Either populate both from the resolved format (they are the natural place for it, and the diff already tracks them) or delete both.** Do not leave a field named `aspect_ratio` saying `"9:16"` in a system that renders 16:9.
+
+3. ⚠ **No prompt anywhere mentions aspect.** Zero hits for vertical/portrait/landscape/aspect across every file in `app/prompts/`. Generated images are shaped only by `image_size` in the request — **the prompt never tells the model the composition should be landscape or portrait.** A prompt written for a vertical frame ("a towering reactor rising above the plant") composes badly in landscape, and vice versa. §19.1 fixes the *cache key*; the *composition* stays format-blind until one derived line reaches the image-generation prompt. **These are two separate fixes and only one was named.**
+
+4. ⚠ **The frontend hardcodes 720×1280, and its author flagged the coupling.** `frontend/src/lib/resolution.ts`: `RENDER_WIDTH = 720`, `RENDER_HEIGHT = 1280`, with the comment *"hardcoded here since there's no settings endpoint; update both sides if that config ever changes."* **Format-per-style makes "update both sides" insufficient** — the value becomes per-project, not global. Worse, `usableSourceArea()` reimplements 9:16 crop-to-fill maths in TypeScript to drive **F7's resolution warnings on human override uploads**, so in landscape it would compute the wrong usable area and **give a human wrong advice about their own upload**. ⚠ **This needs an API surface exposing the resolved format per project — which does not exist today.** That is a new endpoint or a new field on the project response, and it is a prerequisite for the frontend half, not a follow-up.
+
+5. ⚠ **Four `aspect-[9/16]` boxes with `object-cover`, one of them in the review gate.** `AssetReviewGate.tsx` (two) and `ProjectList.tsx` (two). `object-cover` inside a 9:16 box **crops the sides off a landscape image** — so **the asset review gate would show a crop that is not what the render produces**, misrepresenting the exact decision it exists to support. `Result.tsx`'s player is `max-w-sm` + `max-h-[70vh]`, sized for portrait: a landscape video would render ~384 px wide in the middle of the page. All cosmetic except the review gate, which is a correctness problem for a human's judgement.
+
+**One more, and it is a rule rather than a gap:** ⚠ **format must ride `render_style` (frozen at planning start), never `grade_style` (mutable at any time).** R5 split those two deliberately. If format were ever attached to the mutable field, changing it after a render would re-render at a new aspect while **reusing generated assets made for the old one** — which §19.1's cache-key fix only prevents when the format is fixed before generation happens. **Freezing format with `render_style` is what makes §19.1 sufficient rather than merely helpful.**
+
+### 19.10 Revised build order — ✅ all eleven steps built 2026-08-21, see §19.11
+
+1. **§19.1 — dimensions into the five generated-media cache keys**, using the `speed != 1.0` trick so existing 720×1280 rows stay hits and nothing is re-paid for. Stands alone; worth landing regardless.
+2. **§19.9 item 1 — a real `is_draft` flag on `render`**, before draft dimensions become style-derived. Migration + the retention sweep's predicate. **Do this before step 4, not after.**
+3. **`resolve_render_format` + the six backend call sites**, `ranking.py` last (signature change). Format on `StylePacingBand`, frozen with `render_style`.
+4. **Draft dimensions derived from the resolved format** (safe once step 2 exists).
+5. **Caption/text-card sizing basis** — re-derive the fraction, preserve the current vertical look by construction, record both numbers.
+6. **Split-screen `hstack` path**, layout derived from format so the fingerprint follows for free.
+7. **§19.8's orientation term** in `app/assets/ranking.py`, below relevance (R14).
+8. **§19.9 item 3** — one derived aspect line into the image-generation prompt.
+9. **§19.9 item 2** — populate or delete `aspect_ratio` / `resolution`.
+10. **API surface for the resolved format**, then the frontend: `resolution.ts` reads it, the four `aspect-[9/16]` boxes and `Result.tsx`'s player follow it.
+11. ~~**Decide `stillness`.**~~ ✅ **DECIDED 2026-08-21: 16:9 default + 9:16 reel option — see §19.12**.
+
+⚠ **Two things to confirm before step 3 lands**, both visible rather than internal: every existing `documentary_archival` project re-renders in landscape with different framing (§19.6), and per §19.8 most of its real archival stills will be pillar-boxed or hard-cropped until step 7 changes what search prefers. **Steps 3 and 7 arguably belong in one slice for that reason** — shipping the format without the orientation preference is the version that looks worst.
+
+### 19.11 §19 built and confirmed — 2026-08-21
+
+> **Method: re-ran the measurements §19 was written from**, not the docstrings that now cite it. Formats resolved through the real `resolve_render_format` for all five style inputs; caption/text-card sizing recomputed at both orientations against the pre-change numbers; the orientation tiebreak exercised against a pool modelled on the real on-disk assets; the frontend traced from `timeline.metadata.resolution` to the F7 call site. **501 tests pass** (whole `tests/unit` tree plus the split-screen and SFX-library integration suites, up from 492). `ruff check` clean.
+
+| §19 item | verified how | verdict |
+|---|---|---|
+| **19.1** generated-media cache keys | one shared `generation_prompt_hash(*parts, width, height)`, six call sites, non-default formats append `\|WxH` and **720×1280 is omitted so every existing row stays a hit** — the `speed != 1.0` trick, as recommended | ✅ |
+| **19.7** resolution | `documentary_archival` → **1280×720**, `retention_fast` → 720×1280, draft **854×480 / 480×854**. Every format is the transpose of another, so **the pixel budget never changes and C0's numbers hold** | ✅ |
+| **19.9-1** `is_draft` | real `render.is_draft` column, repository predicate `RenderModel.is_draft.is_(True)`, and `retention.py`'s docstring rewritten off the dimension-matching discriminator | ✅ |
+| **19.2/19.3** the resolver | `StylePacingBand.render_width/height`, `is not None`, `RenderFormat.is_landscape`/`.aspect_ratio` helpers, and a comment stating format rides `render_style` and never `grade_style` | ✅ |
+| **19.3** caption/text-card sizing | see below — **better than the review proposed** | ✅ |
+| **19.3** caption `MarginV` | format-dependent: `0.16 × height` portrait (the platform-UI lift), `0.04 × height` landscape | ✅ |
+| **19.3** split-screen | `panel_widths()` sibling to `panel_heights()`; `hstack` landscape, `vstack` portrait, **derived from the canvas** so the fingerprint follows for free | ✅ |
+| **19.8** orientation term | `_orientation_score`, and see below — **it fires** | ✅ |
+| **19.9-2** metadata fields | `aspect_ratio` and `resolution` are now populated from `resolve_render_format` at `create_initial` and kept in sync on append. **No longer dead** | ✅ |
+| **19.9-3** prompt aspect | `_styled_prompt` appends *"Composed for a landscape 16:9 frame."* when the resolved frame is landscape | ✅ |
+| **19.9-4/5** API + frontend | `render_width`/`render_height` on the project response; `frameAspectClass(w,h)` used by **both** `AssetReviewGate` boxes and `ProjectList`; `Result.tsx`'s player width follows orientation; F7's `usableSourceArea`/`computeResolutionWarning` take the target frame and are **called with the timeline's canvas** | ✅ |
+
+#### Two fixes better than what §19 asked for
+
+1. ⚠ **§19.3's "the fraction must be re-derived" was wrong, and the implementation found the cleaner answer.** That note assumed a `min(width, height)` basis, which would have shrunk today's 58 px caption to 32 px. The build used **`max(width, height)` — the long side** — and the numbers fall out identically in both orientations:
+
+| | old (`height × 0.045`) | new (`max(w,h) × 0.045`) |
+|---|---|---|
+| portrait 720×1280 | 58 px | **58 px** |
+| landscape 1280×720 | — | **58 px** |
+| text card, portrait | 96 px | **96 px** |
+| text card, landscape | — | **96 px** |
+
+**No fraction change was needed at all.** The vertical look is preserved by construction rather than by re-tuning, which is strictly better than the review's own suggestion. Recorded as a correction to §19.3.
+
+2. ✅ **The orientation term is a pure tiebreak — and, checked against real data, that is enough.** It sits outside the weighted score entirely: `key=(-score, -orientation, content_hash)`. The review only asked for "below relevance" (R14's lesson); making it a tiebreak is more conservative, and the worry that it might therefore never fire does not survive measurement. Against a pool modelled on the four largest real on-disk assets, **all four tie at score 0.800** (relevance, period and quality all plateau), so the tiebreak decides every time:
+
+| frame | resulting order |
+|---|---|
+| portrait 9:16 | 1487×2048 → 1339×1600 → 2823×4096 → **3908×2662 last** |
+| landscape 16:9 | **3908×2662 first** → 1487×2048 → 1339×1600 → 2823×4096 |
+
+The single landscape source goes from last to first when the frame turns landscape. ⚠ **Ties are the common case in this pool, not the rare one** — which is why the conservative placement works here and is worth knowing before anyone "strengthens" it into the weighted score.
+
+#### ⚠ Three residuals, all narrow
+
+1. ~~⚠ **`generation_prompt_hash`'s omission baseline is a mutable setting**~~ — ✅ **pinned 2026-08-21** to `_CACHE_KEY_BASELINE = (720, 1280)`. Done first, before the stillness override, per the required order below.
+2. ⚠ **Pre-§19 persisted timelines carry `resolution = (1080, 1920)`** — the schema default, which was never any real render size. The frontend reads `timeline.metadata.resolution` for both the aspect box and F7's warnings, so **already-created projects compute against 2,073,600 px instead of 921,600** — a 1.5× inflated linear-upscale figure, so F7 warns on uploads that are actually fine. New projects are correct because `create_initial` now populates it. Schema default is now `(720, 1280)`. **Backfill of existing rows still open.**
+3. ~~**The unknown-style fallback yields a format no style selects.**~~ ✅ **closed 2026-08-21** — unrecognised names now use `settings.default_render_style`'s format (1280×720), same as `None`.
+
+#### Stillness format — closed 2026-08-21 (see §19.12)
+
+Default 16:9 (1280×720). Optional `frame_aspect="9:16"` is a vertical Ken Burns reel. Not `retention_fast`.
+
+**Unchanged and still requiring a human:** every existing `documentary_archival` project re-renders in landscape with different Ken Burns framing, and per §19.8 its portrait-majority archival stills will be pillar-boxed or hard-cropped — now mitigated for *new* searches by the orientation tiebreak, but not for assets already bound.
+
+### 19.12 `stillness` decided: **16:9 default + 9:16 reel option** — 2026-08-21, and the residual fixes have a required order
+
+**First decision (same day, then superseded below): 16:9 (1280×720), the same format as `documentary_archival`.** The reasoning still holds for the *default*. User then asked to keep both options — a short vertical Ken Burns reel without using `retention_fast`. **Built: default 16:9; `frame_aspect="9:16"` on the project is the reel.** §19.10 step 11 closes.
+
+**The code already made the argument.** `stillness` is not a structurally different style — it is a look-and-mix variant of `documentary_archival`:
+
+| | |
+|---|---|
+| constraint bundle | **byte-identical to `documentary_archival`** — §12 verified this directly rather than assuming it |
+| Shot Planner fragment | **none.** §12: *"`stillness` has no fragment yet and would need one to actually change planner behaviour, not just its (currently identical) constraint bundle"* |
+| pacing floor | `target_shot_duration_s = None`; §3.1 groups it with archival montage as *"reachable on any script"* |
+| grade / mix | desaturated (0.75) and slightly darker; music near-absent (−22 / −28) |
+
+Same planner, same archival sources, same Ken Burns, same crop behaviour — **so whatever frame suits archival montage suits this one by construction.** And it is the *most* long-form of the three: no pacing floor plus near-silent music plus a muted grade describes a slow contemplative piece, which is exactly the ten-minute-on-YouTube case. ⚠ **Leaving it 9:16 would put the SLOWEST style in the reel frame while the faster archival style got landscape** — the same inconsistency that opened this whole section, relocated rather than fixed.
+
+Cost is zero: 720×1280 → 1280×720 is the same pixel budget (§19.7).
+
+**The vertical-feed reading is no longer rejected — it is the optional reel.** User 2026-08-21: keep both. Ken Burns is camera (`slow_zoom`/`pan`), not a style, so a 9:16 stillness piece is a contemplative vertical reel, not a fast-cut one. `frame_aspect` is stillness-only, frozen onto the Timeline at `create_initial` with `render_style`. `retention_fast` and `documentary_archival` 400 if it is set.
+
+#### Settings default was NOT flipped
+
+The earlier note said that with stillness landscape, `settings.render_width/height` = 720×1280 would be the format of exactly zero styles, so flip it. **That no longer holds:** 720×1280 is still `retention_fast` *and* the stillness reel. Residual 3 closed by falling unknown names through `default_render_style` instead.
+
+#### ⚠ REQUIRED ORDER — followed 2026-08-21
+
+1. **First: pin `generation_prompt_hash`'s baseline to a module constant** (§19.11 residual 1). ✅ `_CACHE_KEY_BASELINE = (720, 1280)`.
+2. **Then: add `stillness`'s 16:9 override and the 9:16 reel flag.** ✅ Did **not** flip `settings.render_width/height`.
+
+⚠ **Backwards, a settings flip silently re-keys every generated asset and re-pays for all of it.** The baseline pin is what makes any later format change safe. `_DEFAULT_SPEED = 1.0` is a module constant for exactly this reason.
+
+```
+_CACHE_KEY_BASELINE = (720, 1280)   # frozen: the historical default. Never read settings here.
+```
+
+3. **Independently: §19.11 residual 2** — pre-§19 persisted timelines carry `resolution = (1080, 1920)`, so the frontend computes F7 warnings against 2.25× the real target area for already-created projects. Schema default is now `(720, 1280)`. Backfill of existing rows still open.
+
+#### ⚠ New human call created by this decision
+
+**Two of the three styles are now landscape, so the padded-panel question is no longer split-screen-only.** §19.8 measured this project's real archival pool at **11 portrait to 3 landscape** — so under `documentary_archival` *and* `stillness`, most stills will be pillar-boxed or hard-cropped until the §19.8 orientation tiebreak changes what new searches retrieve. That tiebreak does nothing for assets already bound.
+
+**This wants the same treatment Q5 and the punch-in spike got: render one and watch it.** It does not compress into a test, and it is now the largest open question in the plan rather than a split-screen footnote.

@@ -86,10 +86,20 @@ export function useTimeline(
   });
 }
 
+export interface CreateProjectInput {
+  name: string;
+  render_style?: string | null;
+  frame_aspect?: string | null;
+}
+
 export function useCreateProject() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (name: string) => api.createProject(name),
+    mutationFn: (input: CreateProjectInput) =>
+      api.createProject(input.name, {
+        render_style: input.render_style,
+        frame_aspect: input.frame_aspect,
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.projects }),
   });
 }

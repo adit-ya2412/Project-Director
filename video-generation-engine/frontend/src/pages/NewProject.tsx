@@ -8,24 +8,56 @@ import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { ResolutionWarningBadge } from '@/components/ResolutionWarning'
-import { useCreateProject } from '@/lib/queries'
+import { ScriptPreflightPanel } from '@/components/ScriptPreflight'
 import { wordCount } from '@/lib/format'
-import { computeResolutionWarning, readImageDimensions, type ResolutionWarning } from '@/lib/resolution'
+import {
+  canvasForStyle,
+  computeResolutionWarning,
+  readImageDimensions,
+  type ResolutionWarning,
+} from '@/lib/resolution'
 import { useToast } from '@/components/ui/toast'
 import { cn } from '@/lib/utils'
 import * as api from '@/lib/api'
 import { ApiError } from '@/lib/api'
 import { useQueryClient } from '@tanstack/react-query'
 import { qk } from '@/lib/queries'
+import { useScriptPreflight } from '@/lib/useScriptPreflight'
 
 const MIN_WORDS = 10
 const MAX_WORDS = 15
+
+const STYLES = [
+  {
+    id: 'documentary_archival',
+    label: 'Archival documentary',
+    hint: '16:9 · Ken Burns, YouTube long-form',
+    targetShotDurationS: null,
+  },
+  {
+    id: 'retention_fast',
+    label: 'Fast-cut reel',
+    hint: '9:16 · punchy cuts, short feed',
+    targetShotDurationS: 1.75,
+  },
+  {
+    id: 'stillness',
+    label: 'Stillness',
+    hint: 'Quiet, contemplative — pick a frame below',
+    targetShotDurationS: null,
+  },
+] as const
+
+type RenderStyle = (typeof STYLES)[number]['id']
+type FrameAspect = '16:9' | '9:16'
 
 interface AssetRow {
   key: string
   file: File
   description: string
   previewUrl: string
+  sourceWidth: number | null
+  sourceHeight: number | null
   resolution: ResolutionWarning | null
 }
 
@@ -42,24 +74,38 @@ export function NewProject() {
   const { toast } = useToast()
   const [name, setName] = useState('')
   const [script, setScript] = useState('')
+  const [style, setStyle] = useState<RenderStyle>('documentary_archival')
+  const [frameAspect, setFrameAspect] = useState<FrameAspect>('16:9')
   const [assets, setAssets] = useState<AssetRow[]>([])
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
+  const canvas = canvasForStyle(style, style === 'stillness' ? frameAspect : null)
 
-  const createProject = useCreateProject()
   const queryClient = useQueryClient()
+  const selectedStyle = STYLES.find((s) => s.id === style) ?? STYLES[0]
+  const preflight = useScriptPreflight({
+    name,
+    script,
+    style,
+    frameAspect: style === 'stillness' ? frameAspect : null,
+  })
+  const infeasible = Boolean(preflight.result && !preflight.result.passed && !preflight.stale)
 
   async function handleFilesSelected(fileList: FileList | null) {
     if (!fileList || fileList.length === 0) return
     const newRows: AssetRow[] = []
     for (const file of Array.from(fileList)) {
       let resolution: ResolutionWarning | null = null
+      let sourceWidth: number | null = null
+      let sourceHeight: number | null = null
       try {
         const { width, height } = await readImageDimensions(file)
+        sourceWidth = width
+        sourceHeight = height
         // No shot is bound yet at upload time, so this assumes 1x (no Ken
         // Burns zoom) — a provisional check, refined again per-shot at
         // Gate 1 once a specific shot (and its camera move) is known (F7).
-        resolution = computeResolutionWarning(width, height)
+        resolution = computeResolutionWarning(width, height, undefined, canvas.width, canvas.height)
       } catch {
         resolution = null
       }
@@ -68,6 +114,8 @@ export function NewProject() {
         file,
         description: '',
         previewUrl: URL.createObjectURL(file),
+        sourceWidth,
+        sourceHeight,
         resolution,
       })
     }
@@ -105,13 +153,30 @@ export function NewProject() {
 
     setSubmitting(true)
     try {
-      const project = await createProject.mutateAsync(name.trim())
-      await api.uploadScript(project.id, script)
+      const check =
+        preflight.result && !preflight.stale && !preflight.checking
+          ? preflight.result
+          : await preflight.runCheck()
+      if (!check) {
+        setFormError('Could not check this script against the style. See the message under the script.')
+        setSubmitting(false)
+        return
+      }
+      if (!check.passed) {
+        setFormError(
+          'This script cannot be cut in the selected style yet. Apply the suggested breaks (or rewrite) below, then generate.',
+        )
+        setSubmitting(false)
+        return
+      }
+
+      const projectId = await preflight.ensureProject()
+      await api.uploadScript(projectId, script)
 
       if (assets.length > 0) {
         try {
           await api.uploadAssets(
-            project.id,
+            projectId,
             assets.map((a) => ({ file: a.file, description: a.description.trim() })),
           )
         } catch (err) {
@@ -132,13 +197,13 @@ export function NewProject() {
       // Per the brief: trigger endpoints are moving to 202 + poll — fire
       // this and navigate immediately rather than waiting for it to
       // settle, whatever that takes on this backend build.
-      api.renderProject(project.id).catch(() => {
+      api.renderProject(projectId).catch(() => {
         // A failure here still surfaces normally: the project lands on
         // `failed` status and the progress screen (which polls
         // independently) shows it with a retry action.
       })
       queryClient.invalidateQueries({ queryKey: qk.projects })
-      navigate(`/projects/${project.id}/progress`)
+      navigate(`/projects/${projectId}/progress`)
     } catch (err) {
       setFormError(err instanceof ApiError ? String(err.detail) : 'Something went wrong creating the project.')
       setSubmitting(false)
@@ -149,7 +214,9 @@ export function NewProject() {
     <div className="mx-auto max-w-3xl">
       <h1 className="mb-1 text-xl font-semibold">New project</h1>
       <p className="mb-6 text-sm text-muted-foreground">
-        Paste a script, optionally add your own photos, then generate. Nothing is spent until you approve the plan.
+        Paste a script, pick a style, optionally add photos, then generate. Fast-cut checks
+        the script first so planning does not start on a pace it cannot hit. Nothing is spent
+        on generation until you approve the plan.
       </p>
 
       <form onSubmit={handleSubmit} className="space-y-6">
@@ -169,8 +236,83 @@ export function NewProject() {
 
         <Card>
           <CardHeader>
+            <CardTitle>Style</CardTitle>
+            <CardDescription>
+              Frozen once planning starts. Grade (colour, grain) stays changeable later.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-2 sm:grid-cols-3">
+              {STYLES.map((s) => {
+                const selected = style === s.id
+                return (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => setStyle(s.id)}
+                    className={cn(
+                      'rounded-md border px-3 py-2.5 text-left transition-colors',
+                      selected
+                        ? 'border-primary bg-primary/10'
+                        : 'border-border hover:border-primary/40 hover:bg-accent/40',
+                    )}
+                    aria-pressed={selected}
+                  >
+                    <div className="text-sm font-medium">{s.label}</div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">{s.hint}</div>
+                  </button>
+                )
+              })}
+            </div>
+            {style === 'stillness' && (
+              <div className="space-y-2">
+                <Label>Frame</Label>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    onClick={() => setFrameAspect('16:9')}
+                    className={cn(
+                      'rounded-md border px-3 py-2.5 text-left transition-colors',
+                      frameAspect === '16:9'
+                        ? 'border-primary bg-primary/10'
+                        : 'border-border hover:border-primary/40 hover:bg-accent/40',
+                    )}
+                    aria-pressed={frameAspect === '16:9'}
+                  >
+                    <div className="text-sm font-medium">16:9 landscape</div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">
+                      Long-form, YouTube. Default for stillness.
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFrameAspect('9:16')}
+                    className={cn(
+                      'rounded-md border px-3 py-2.5 text-left transition-colors',
+                      frameAspect === '9:16'
+                        ? 'border-primary bg-primary/10'
+                        : 'border-border hover:border-primary/40 hover:bg-accent/40',
+                    )}
+                    aria-pressed={frameAspect === '9:16'}
+                  >
+                    <div className="text-sm font-medium">9:16 portrait</div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">
+                      Short reel with Ken Burns camera — not a fast-cut style.
+                    </div>
+                  </button>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
             <CardTitle>Script</CardTitle>
-            <CardDescription>Narration is the script, verbatim — the pipeline never rewrites it.</CardDescription>
+            <CardDescription>
+              Once generation starts, narration is this text verbatim. Before that, Fast-cut can
+              suggest extra punctuation — or a rewrite — if the lines are too long to cut at its pace.
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <Alert>
@@ -197,6 +339,39 @@ export function NewProject() {
             <p className="text-xs text-muted-foreground">
               {scriptLines.length} non-empty line{scriptLines.length === 1 ? '' : 's'} → roughly that many shots.
             </p>
+            {script.trim() && (
+              <ScriptPreflightPanel
+                result={preflight.result}
+                checking={preflight.checking}
+                error={preflight.error}
+                stale={preflight.stale}
+                needsName={!name.trim()}
+                styleLabel={selectedStyle.label}
+                targetShotDurationS={selectedStyle.targetShotDurationS}
+                onApplyAll={() => {
+                  const next = preflight.applyBreaks(preflight.result?.suggested_breaks ?? [])
+                  if (next != null) setScript(next)
+                }}
+                onApplyOne={(index) => {
+                  const item = preflight.result?.suggested_breaks[index]
+                  if (!item) return
+                  const next = preflight.applyBreaks([item])
+                  if (next != null) setScript(next)
+                }}
+                onRewrite={() => {
+                  void preflight.runRewrite()
+                }}
+                rewriting={preflight.rewriting}
+                rewrite={preflight.rewrite}
+                rewriteError={preflight.rewriteError}
+                onUseRewrite={() => {
+                  const text = preflight.rewrite?.rewritten_script
+                  if (text) setScript(text)
+                  preflight.clearRewrite()
+                }}
+                onDismissRewrite={preflight.clearRewrite}
+              />
+            )}
           </CardContent>
         </Card>
 
@@ -282,6 +457,16 @@ export function NewProject() {
                 {assets.map((a, i) => {
                   const issue = descriptionIssues[i]
                   const n = wordCount(a.description)
+                  const resolution =
+                    a.sourceWidth && a.sourceHeight
+                      ? computeResolutionWarning(
+                          a.sourceWidth,
+                          a.sourceHeight,
+                          undefined,
+                          canvas.width,
+                          canvas.height,
+                        )
+                      : a.resolution
                   return (
                     <li key={a.key} className="flex gap-3 rounded-md border border-border p-3">
                       <img
@@ -312,7 +497,7 @@ export function NewProject() {
                             {issue ?? `${n} words — good`}
                           </span>
                         </div>
-                        {a.resolution && <ResolutionWarningBadge warning={a.resolution} />}
+                        {resolution && <ResolutionWarningBadge warning={resolution} />}
                       </div>
                     </li>
                   )
@@ -329,10 +514,26 @@ export function NewProject() {
           </Alert>
         )}
 
-        <div className="flex justify-end gap-2">
-          <Button type="submit" disabled={submitting} size="lg">
+        <div className="flex flex-col items-end gap-2">
+          {infeasible && (
+            <p className="text-xs text-destructive">
+              Fix the script against {selectedStyle.label} before generating — planning will fail
+              otherwise.
+            </p>
+          )}
+          <Button
+            type="submit"
+            disabled={submitting || preflight.checking || infeasible}
+            size="lg"
+          >
             <Upload className="h-4 w-4" />
-            {submitting ? 'Creating…' : 'Create and start generating'}
+            {submitting
+              ? 'Creating…'
+              : preflight.checking
+                ? 'Checking script…'
+                : infeasible
+                  ? 'Script does not fit this style'
+                  : 'Create and start generating'}
           </Button>
         </div>
       </form>

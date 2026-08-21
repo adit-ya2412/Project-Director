@@ -84,6 +84,11 @@ class StylePacingBand:
     narration_speed: float = 1.0
     music_bed_gain_db: float | None = None
     music_duck_gain_db: float | None = None
+    # None -> settings.render_width/height. `is not None`, never `or`
+    # (same rule as music gains). Format rides render_style, frozen at
+    # planning start — never grade_style (§19).
+    render_width: int | None = None
+    render_height: int | None = None
 
     @property
     def max_fragment_duration_s(self) -> float | None:
@@ -104,6 +109,9 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
         name="documentary_archival",
         target_shot_duration_s=None,
         max_shots_override=None,
+        # §19.7: 1280×720, the transpose of today's pixel count.
+        render_width=1280,
+        render_height=720,
     ),
     "retention_fast": StylePacingBand(
         # 90s / 1.75s/shot =~ 51 shots; budgeted to ~58 for headroom
@@ -123,6 +131,8 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
         # archival mix (-14 / -20), not a new listening pass.
         music_bed_gain_db=-10.0,
         music_duck_gain_db=-14.0,
+        render_width=720,
+        render_height=1280,
     ),
     "stillness": StylePacingBand(
         name="stillness",
@@ -131,6 +141,10 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
         # §5.2: near-absent. 8 dB quieter bed than the measured mix.
         music_bed_gain_db=-22.0,
         music_duck_gain_db=-28.0,
+        # Default 16:9 (long contemplative). `frame_aspect="9:16"` on the
+        # project opts into a vertical Ken Burns reel (§19.12).
+        render_width=1280,
+        render_height=720,
     ),
 }
 
@@ -170,6 +184,68 @@ def resolve_music_gains(style: str | None) -> MusicGains:
         if band.music_duck_gain_db is not None:
             duck = band.music_duck_gain_db
     return MusicGains(bed_gain_db=bed, duck_gain_db=duck)
+
+
+@dataclass(frozen=True)
+class RenderFormat:
+    """Resolved canvas for one style (plan §19)."""
+
+    width: int
+    height: int
+
+    @property
+    def is_landscape(self) -> bool:
+        return self.width > self.height
+
+    @property
+    def aspect_ratio(self) -> str:
+        return "16:9" if self.is_landscape else "9:16"
+
+
+_STILLNESS_REEL_ASPECT = "9:16"
+FRAME_ASPECTS = frozenset({"9:16", "16:9"})
+
+
+def frame_aspect_error(style: str | None, frame_aspect: str | None) -> str | None:
+    """None if legal. frame_aspect is only for stillness."""
+    if frame_aspect is None:
+        return None
+    if frame_aspect not in FRAME_ASPECTS:
+        return f"unknown frame_aspect {frame_aspect!r} - use 9:16 or 16:9"
+    if style != "stillness":
+        return "frame_aspect is only settable when render_style is stillness"
+    return None
+
+
+def resolve_render_format(
+    style: str | None, *, frame_aspect: str | None = None
+) -> RenderFormat:
+    """Style-owned canvas. Unknown names use the default style's format
+    (not raw settings). `stillness` is 16:9 unless `frame_aspect` is
+    `9:16` (vertical Ken Burns reel).
+    """
+    resolved = style if style in STYLE_PACING_BANDS else settings.default_render_style
+    if resolved == "stillness" and frame_aspect == _STILLNESS_REEL_ASPECT:
+        return RenderFormat(width=720, height=1280)
+    band = STYLE_PACING_BANDS[resolved]
+    width = settings.render_width
+    height = settings.render_height
+    if band.render_width is not None:
+        width = band.render_width
+    if band.render_height is not None:
+        height = band.render_height
+    return RenderFormat(width=width, height=height)
+
+
+def resolve_draft_format(
+    style: str | None, *, frame_aspect: str | None = None
+) -> RenderFormat:
+    """Same aspect as the style, at the draft short-side (480)."""
+    fmt = resolve_render_format(style, frame_aspect=frame_aspect)
+    short, long = settings.draft_width, settings.draft_height
+    if fmt.is_landscape:
+        return RenderFormat(width=long, height=short)
+    return RenderFormat(width=short, height=long)
 
 
 def get_pacing_band(style: str) -> StylePacingBand:

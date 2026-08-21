@@ -21,8 +21,8 @@ from app.schemas.timeline import (
 )
 
 _RENDER_SETTINGS = RenderSettings(
-    width=320,
-    height=240,
+    width=240,
+    height=320,
     fps=24,
     pixel_format="yuv420p",
     ffmpeg_binary=settings.ffmpeg_binary,
@@ -120,16 +120,42 @@ async def test_split_frame_stacks_two_stills_top_and_bottom(tmp_path: Path):
         check=True,
     )
     stream = json.loads(probe.stdout)["streams"][0]
-    assert stream["width"] == 320
-    assert stream["height"] == 240
+    assert stream["width"] == 240
+    assert stream["height"] == 320
     assert abs(float(stream["duration"]) - 1.5) < 0.15
 
     frame = tmp_path / "frame.png"
     _extract_frame(output, frame)
     pixels = Image.open(frame).convert("RGB")
     # Top panel is the top half; bottom panel the bottom half.
-    assert pixels.getpixel((160, 40))[0] > 200  # red
-    assert pixels.getpixel((160, 200))[2] > 200  # blue
+    assert pixels.getpixel((120, 40))[0] > 200  # red
+    assert pixels.getpixel((120, 280))[2] > 200  # blue
+
+
+async def test_split_panels_crop_to_fill_so_edges_are_content_not_pad(tmp_path: Path):
+    """A square still into a 3:2 panel: letterbox would pad the sides;
+    fill must put the photograph there instead."""
+    top = tmp_path / "top.png"
+    bot = tmp_path / "bot.png"
+    Image.new("RGB", (200, 200), color=(255, 0, 0)).save(top, format="PNG")
+    Image.new("RGB", (200, 200), color=(0, 0, 255)).save(bot, format="PNG")
+    output = tmp_path / "out.mp4"
+    await render_timeline(
+        _timeline([_split_shot()]),
+        {"sh_01": top},
+        _RENDER_SETTINGS,
+        output,
+        work_dir=tmp_path / "work",
+        shot_secondary_images={"sh_01": bot},
+    )
+    frame = tmp_path / "frame.png"
+    _extract_frame(output, frame)
+    pixels = Image.open(frame).convert("RGB")
+    # Left edge of each panel, well inside the half.
+    assert pixels.getpixel((4, 40))[0] > 200
+    assert pixels.getpixel((4, 280))[2] > 200
+    assert pixels.getpixel((236, 40))[0] > 200
+    assert pixels.getpixel((236, 280))[2] > 200
 
 
 async def test_split_frame_without_a_second_still_is_a_static_shot(tmp_path: Path):
@@ -148,8 +174,9 @@ async def test_split_frame_without_a_second_still_is_a_static_shot(tmp_path: Pat
     frame = tmp_path / "frame.png"
     _extract_frame(output, frame)
     pixels = Image.open(frame).convert("RGB")
-    assert pixels.getpixel((160, 40))[1] > 200
-    assert pixels.getpixel((160, 200))[1] > 200
+    # Static degrade letterboxes the 4:3 still into 240×320; sample the
+    # fitted image, not the pad.
+    assert pixels.getpixel((120, 160))[1] > 200
 
 
 async def test_split_shot_crossfades_with_a_neighbour(tmp_path: Path):
@@ -216,5 +243,5 @@ async def test_split_shot_crossfades_with_a_neighbour(tmp_path: Path):
         capture_output=True,
     )
     pixels = Image.open(frame).convert("RGB")
-    assert pixels.getpixel((160, 40))[0] > 200
-    assert pixels.getpixel((160, 200))[2] > 200
+    assert pixels.getpixel((120, 40))[0] > 200
+    assert pixels.getpixel((120, 280))[2] > 200

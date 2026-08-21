@@ -88,6 +88,11 @@ from the generation-side one above (`check_generated_image_constraints`,
 "does this violate Y"), sharing only the provider and the `llm_call`
 audit mechanism.
 
+Search I/O (Commons/Pexels/entity/download) fans out across shots with
+`bounded_gather` (`asset_search_concurrency`, default 8). Rank, vision
+check, and bind stay serial in timeline order so C4's reuse window sees
+earlier picks. Wikimedia's RateLimiter still caps Commons at 5 calls/s.
+
 Per-shot failure isolation (Principle 10) is enforced throughout: one
 shot failing (or hitting the budget cap, or exhausting its constraint
 retries) marks that binding `failed` and processing continues with the
@@ -100,8 +105,10 @@ reaches the approval gate, showing nothing was found rather than
 blocking on it.
 """
 
+import asyncio
 import hashlib
 import uuid as uuid_module
+from dataclasses import dataclass
 from pathlib import Path
 
 from app.assets.constraint_check import (
@@ -151,7 +158,9 @@ from app.repositories.llm_call_repository import LlmCallRepository
 from app.repositories.narration_repository import NarrationRepository
 from app.repositories.shot_binding_repository import TERMINAL_STATES, ShotBindingRepository
 from app.schemas.timeline import AssetStrategy, CreativeContext, PreferredMediaType, Shot
+from app.script.styles import RenderFormat, resolve_render_format
 from app.timeline.duration import compute_shot_start_times
+from app.utils.bounded_gather import asset_search_concurrency, bounded_gather
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
 
@@ -175,6 +184,25 @@ _ENTITY_ELIGIBLE_STRATEGIES = frozenset(
 _CANDIDATES_TO_FETCH_PER_RUNG = 5
 
 
+@dataclass
+class _PrefetchedRung:
+    """One search-rung's fetched, gated, hashed bytes — ranking happens
+    later, in timeline order, so C4 reuse can see earlier picks."""
+
+    strategy: AssetStrategy
+    provider_name: str
+    entity_provider_name: str | None
+    entries: list[tuple[AssetCandidate, str, bytes, str]]
+
+
+@dataclass
+class _PendingShot:
+    shot: Shot
+    binding: ShotBindingModel
+    needs_secondary: bool
+    shot_start: float
+
+
 def secondary_panel_done(shot: Shot, binding, *, done_states: frozenset[str]) -> bool:
     """R17: a split shot is not done while its bottom panel has neither
     media nor a recorded outcome. Null `secondary_state` means never
@@ -185,6 +213,14 @@ def secondary_panel_done(shot: Shot, binding, *, done_states: frozenset[str]) ->
         return True
     state = getattr(binding, "secondary_state", None)
     return state in done_states
+
+
+def _raise_if_prefetch_failed(
+    result: tuple[list[_PrefetchedRung], list[_PrefetchedRung] | None] | Exception,
+) -> tuple[list[_PrefetchedRung], list[_PrefetchedRung] | None]:
+    if isinstance(result, Exception):
+        raise result
+    return result
 
 # The canonical ladder split (implementation guide, M6.5 build order + A5):
 # rungs 1-4 are free and run before approval; rungs 5-6 cost real money and
@@ -219,7 +255,27 @@ def _project_seed(project_id: str) -> int:
 _MAX_VISUAL_STYLE_WORDS = 15
 
 
-def _styled_prompt(shot: Shot, creative_context: CreativeContext) -> str:
+# Frozen historical default. Never read settings here — flipping
+# `render_width/height` must not re-key every existing generate (§19.12).
+_CACHE_KEY_BASELINE = (720, 1280)
+
+
+def generation_prompt_hash(*parts: object, width: int, height: int) -> str:
+    """Cache key for a generated image/clip. 720×1280 is omitted so
+    existing rows stay hits (same trick as narration `speed != 1.0`).
+    Non-baseline formats append `|WxH` (§19.1)."""
+    digest = "|".join(str(p) for p in parts)
+    if (width, height) != _CACHE_KEY_BASELINE:
+        digest += f"|{width}x{height}"
+    return hashlib.sha256(digest.encode()).hexdigest()
+
+
+def _styled_prompt(
+    shot: Shot,
+    creative_context: CreativeContext,
+    *,
+    frame: RenderFormat | None = None,
+) -> str:
     """`creative_context.visual_style` describes the WHOLE video's visual
     arc (ADR-010), often as an explicit multi-part sequence - the real
     m8_test_project's own value reads "black-and-white WWII coal
@@ -257,9 +313,15 @@ def _styled_prompt(shot: Shot, creative_context: CreativeContext) -> str:
     `visual_style` puts its multi-era sequencing earlier than 15 words
     in."""
     if not creative_context.visual_style:
-        return shot.prompt
-    capped_style = " ".join(creative_context.visual_style.split()[:_MAX_VISUAL_STYLE_WORDS])
-    return f"{shot.prompt}, {capped_style}"
+        base = shot.prompt
+    else:
+        capped_style = " ".join(creative_context.visual_style.split()[:_MAX_VISUAL_STYLE_WORDS])
+        base = f"{shot.prompt}, {capped_style}"
+    # Portrait is today's default; appending would bust every existing
+    # generated-image cache row. Landscape is the new format (§19.9).
+    if frame is not None and frame.is_landscape:
+        return f"{base} Composed for a landscape 16:9 frame."
+    return base
 
 
 async def generate_image_real(
@@ -273,6 +335,8 @@ async def generate_image_real(
     narration_repo: NarrationRepository,
     creative_context: CreativeContext,
     cap_cents: int | None = None,
+    style: str | None = None,
+    frame_aspect: str | None = None,
 ) -> tuple[GeneratedClipModel, bool]:
     """Module-level (not a step method) so both `ResolveAssetsStep` and
     the per-shot `/generate` endpoint call the identical path - one
@@ -280,14 +344,15 @@ async def generate_image_real(
     `(clip, cache_hit)` so a caller (the endpoint, Task 6) can report
     whether THIS call actually cost anything or reused an already-paid-for
     image - the workflow step ignores both, same as it always has."""
-    prompt = _styled_prompt(shot, creative_context)
+    frame = resolve_render_format(style, frame_aspect=frame_aspect)
+    prompt = _styled_prompt(shot, creative_context, frame=frame)
     clip, cache_hit = await _generate_image_once(
         shot,
         base_prompt=prompt,
         project_uuid=project_uuid,
         project_dir=project_dir,
-        width=settings.render_width,
-        height=settings.render_height,
+        width=frame.width,
+        height=frame.height,
         model_id=settings.fal_image_model,
         image_provider=image_provider,
         clip_repo=clip_repo,
@@ -363,7 +428,7 @@ async def _generate_image_once(
     seed = project_seed if attempt_index == 0 else varied_seed(project_seed, attempt_index)
 
     prompt = base_prompt
-    prompt_hash = hashlib.sha256(f"{prompt}|{model_id}|{seed}".encode()).hexdigest()
+    prompt_hash = generation_prompt_hash(prompt, model_id, seed, width=width, height=height)
 
     cached = await clip_repo.get_by_prompt_hash(prompt_hash)
     if cached is not None:
@@ -506,6 +571,8 @@ async def submit_video_generation(
     narration_repo: NarrationRepository,
     creative_context: CreativeContext,
     cap_cents: int | None = None,
+    style: str | None = None,
+    frame_aspect: str | None = None,
 ) -> tuple[GeneratedClipModel, bool]:
     """`POST /{project_id}/shots/{shot_id}/generate/video`'s own logic
     (Track A's A6, 2026-08-18), module-level so the endpoint calls it
@@ -528,8 +595,11 @@ async def submit_video_generation(
     actually did the ~few-seconds keyframe generation just now" - see
     A6's own note in the plan for why that is unremarkable, not a design
     smell)."""
-    prompt = _styled_prompt(shot, creative_context)
-    prompt_hash = hashlib.sha256(f"{prompt}|{settings.fal_video_model}".encode()).hexdigest()
+    frame = resolve_render_format(style, frame_aspect=frame_aspect)
+    prompt = _styled_prompt(shot, creative_context, frame=frame)
+    prompt_hash = generation_prompt_hash(
+        prompt, settings.fal_video_model, width=frame.width, height=frame.height
+    )
 
     cached = await clip_repo.get_by_prompt_hash(prompt_hash)
     if cached is not None and cached.status == "completed":
@@ -550,8 +620,8 @@ async def submit_video_generation(
         shot,
         base_prompt=prompt,
         project_uuid=project_uuid,
-        width=settings.render_width,
-        height=settings.render_height,
+        width=frame.width,
+        height=frame.height,
         model_id=settings.fal_image_model,
         image_provider=image_provider,
         clip_repo=clip_repo,
@@ -618,6 +688,8 @@ async def generate_video_real(
     narration_repo: NarrationRepository,
     creative_context: CreativeContext,
     cap_cents: int | None = None,
+    style: str | None = None,
+    frame_aspect: str | None = None,
 ) -> None:
     """`ResolveAssetsStep`'s per-attempt entrypoint for a video shot -
     poll first (`poll_video_job`; advances a job already in flight from a
@@ -649,6 +721,8 @@ async def generate_video_real(
         narration_repo=narration_repo,
         creative_context=creative_context,
         cap_cents=cap_cents,
+        style=style,
+        frame_aspect=frame_aspect,
     )
 
 
@@ -762,6 +836,7 @@ class ResolveAssetsStep:
             start_times=start_times,
         )
 
+        pending: list[_PendingShot] = []
         for shot in timeline.all_shots():
             binding = await binding_repo.get_or_create_pending(
                 project_uuid, timeline.version, shot.id
@@ -770,9 +845,67 @@ class ResolveAssetsStep:
                 shot, binding, done_states=self._done_states
             )
             if binding.state in self._done_states and not needs_secondary:
-                continue  # already decided by this pass on a prior attempt/run
+                continue
+            pending.append(
+                _PendingShot(
+                    shot=shot,
+                    binding=binding,
+                    needs_secondary=needs_secondary,
+                    shot_start=start_times.get(shot.id, 0.0),
+                )
+            )
 
-            shot_start = start_times.get(shot.id, 0.0)
+        # Search I/O overlaps across shots; rank/bind below stays serial
+        # so reuse_gap_s sees earlier picks in timeline order (C4).
+        prefetched: list[tuple[list[_PrefetchedRung], list[_PrefetchedRung] | None] | Exception] | None = (
+            None
+        )
+        if (
+            pending
+            and not settings.dry_run
+            and self._search_permitted
+            and search_providers is not None
+        ):
+            db_lock = asyncio.Lock()
+
+            async def _prefetch_pending(
+                item: _PendingShot,
+            ) -> tuple[list[_PrefetchedRung], list[_PrefetchedRung] | None]:
+                primary = await self._prefetch_search_rungs(
+                    item.shot,
+                    search_providers=search_providers,
+                    entity_provider=entity_provider,
+                    creative_context=timeline.creative_context,
+                    db_lock=db_lock,
+                )
+                secondary_rungs: list[_PrefetchedRung] | None = None
+                if item.needs_secondary:
+                    panel_shot = item.shot.model_copy(
+                        update={
+                            "prompt": item.shot.secondary_prompt,
+                            "asset_plan": item.shot.secondary_asset_plan,
+                        }
+                    )
+                    secondary_rungs = await self._prefetch_search_rungs(
+                        panel_shot,
+                        search_providers=search_providers,
+                        entity_provider=entity_provider,
+                        creative_context=timeline.creative_context,
+                        db_lock=db_lock,
+                    )
+                return primary, secondary_rungs
+
+            prefetched = await bounded_gather(
+                pending,
+                _prefetch_pending,
+                concurrency=asset_search_concurrency(),
+            )
+
+        for index, item in enumerate(pending):
+            shot = item.shot
+            binding = item.binding
+            needs_secondary = item.needs_secondary
+            shot_start = item.shot_start
             try:
                 if binding.state not in self._done_states and settings.dry_run:
                     await self._resolve_one_fake(
@@ -784,6 +917,8 @@ class ResolveAssetsStep:
                         image_provider=image_provider,
                         asset_repo=asset_repo,
                         clip_repo=clip_repo,
+                        style=timeline.metadata.render_style,
+                        frame_aspect=timeline.metadata.frame_aspect,
                     )
                 elif binding.state not in self._done_states:
                     used_hash = await self._resolve_one_real(
@@ -804,6 +939,13 @@ class ResolveAssetsStep:
                         reuse_gap_s=reuse_gaps_s(used_at_s, shot_start),
                         window_s=window_s,
                         cap_cents=cap_cents,
+                        style=timeline.metadata.render_style,
+                        frame_aspect=timeline.metadata.frame_aspect,
+                        prefetched_rungs=(
+                            None
+                            if prefetched is None
+                            else _raise_if_prefetch_failed(prefetched[index])[0]
+                        ),
                     )
                     if used_hash is not None:
                         used_at_s.setdefault(used_hash, []).append(shot_start)
@@ -835,6 +977,8 @@ class ResolveAssetsStep:
                                 image_provider=image_provider,
                                 asset_repo=asset_repo,
                                 clip_repo=clip_repo,
+                                style=timeline.metadata.render_style,
+                                frame_aspect=timeline.metadata.frame_aspect,
                             )
                             used_hash = None
                         else:
@@ -856,6 +1000,13 @@ class ResolveAssetsStep:
                                 reuse_gap_s=reuse_gaps_s(used_at_s, shot_start),
                                 window_s=window_s,
                                 cap_cents=cap_cents,
+                                style=timeline.metadata.render_style,
+                                frame_aspect=timeline.metadata.frame_aspect,
+                                prefetched_rungs=(
+                                    None
+                                    if prefetched is None
+                                    else _raise_if_prefetch_failed(prefetched[index])[1]
+                                ),
                             )
                         binding.secondary_asset_id = scratch.asset_id
                         binding.secondary_clip_id = scratch.clip_id
@@ -969,6 +1120,8 @@ class ResolveAssetsStep:
         image_provider: ImageProvider | None,
         asset_repo: AssetRepository,
         clip_repo: GeneratedClipRepository,
+        style: str | None = None,
+        frame_aspect: str | None = None,
     ) -> None:
         strategy = shot.asset_plan.strategy if shot.asset_plan else AssetStrategy.GENERATE_IMAGE
 
@@ -1022,7 +1175,193 @@ class ResolveAssetsStep:
             project_dir=project_dir,
             image_provider=image_provider,
             clip_repo=clip_repo,
+            style=style,
+            frame_aspect=frame_aspect,
         )
+
+    async def _prefetch_search_rungs(
+        self,
+        shot: Shot,
+        *,
+        search_providers: dict[AssetStrategy, AssetProvider],
+        entity_provider: WikipediaEntityAssetProvider | None,
+        creative_context: CreativeContext,
+        db_lock: asyncio.Lock | None,
+    ) -> list[_PrefetchedRung]:
+        """Search + download + licence/relevance gates. No ranking — that
+        needs reuse_gap_s from earlier binds, so it stays serial."""
+        asset_plan = shot.asset_plan
+        chain = asset_plan.fallback_chain if asset_plan else []
+        licence_requirements = set(asset_plan.licence_requirements) if asset_plan else set()
+        search_terms = (asset_plan.search_queries if asset_plan else []) or [shot.id]
+        entity = (asset_plan.entity if asset_plan else "").strip()
+        entity_candidates: list[AssetCandidate] = []
+        entity_candidates_fetched = False
+        rungs: list[_PrefetchedRung] = []
+
+        for strategy in chain:
+            if strategy not in _SEARCH_STRATEGIES:
+                break
+            if strategy not in self._permitted_strategies:
+                continue
+            if strategy not in search_providers:
+                continue
+            provider = search_providers[strategy]
+            query = AssetQuery(
+                search_terms=asset_plan.search_queries if asset_plan else [],
+                preferred_type=asset_plan.preferred_type.value if asset_plan else "image",
+                shot_id=shot.id,
+                historical_period=creative_context.historical_period,
+            )
+            if strategy == AssetStrategy.PROJECT_ASSETS and db_lock is not None:
+                async with db_lock:
+                    candidates = await provider.search(query)
+            else:
+                candidates = await provider.search(query)
+
+            entity_eligible_rung = strategy in _ENTITY_ELIGIBLE_STRATEGIES
+            if entity and not entity_candidates_fetched and entity_eligible_rung:
+                assert entity_provider is not None
+                entity_candidates = await entity_provider.resolve_entity(entity)
+                entity_candidates_fetched = True
+
+            pool = candidates + (entity_candidates if entity_eligible_rung else [])
+            eligible = (
+                pool
+                if strategy == AssetStrategy.PROJECT_ASSETS
+                else [
+                    c
+                    for c in pool
+                    if not licence_requirements or c.licence in licence_requirements
+                ]
+            )
+            if not eligible:
+                continue
+            relevant = [
+                c for c in eligible if passes_relevance_gate(candidate_relevance(search_terms, c))
+            ]
+            if not relevant:
+                continue
+
+            fetched_candidates: list[tuple[AssetCandidate, str, bytes, str]] = []
+            for candidate in relevant[:_CANDIDATES_TO_FETCH_PER_RUNG]:
+                fetched = await provider.fetch(candidate)
+                content_hash = hashlib.sha256(fetched.content).hexdigest()
+                fetched_candidates.append(
+                    (candidate, content_hash, fetched.content, fetched.attribution)
+                )
+
+            seen_hashes: set[str] = set()
+            deduped: list[tuple[AssetCandidate, str, bytes, str]] = []
+            for entry in fetched_candidates:
+                if entry[1] in seen_hashes:
+                    continue
+                seen_hashes.add(entry[1])
+                deduped.append(entry)
+            if not deduped:
+                continue
+            rungs.append(
+                _PrefetchedRung(
+                    strategy=strategy,
+                    provider_name=provider.name,
+                    entity_provider_name=entity_provider.name if entity_provider is not None else None,
+                    entries=deduped,
+                )
+            )
+        return rungs
+
+    async def _pick_from_rungs(
+        self,
+        shot: Shot,
+        binding,
+        *,
+        rungs: list[_PrefetchedRung],
+        search_terms: list[str],
+        project_uuid: uuid_module.UUID,
+        project_dir,
+        vision_provider: VisionConstraintProvider | None,
+        asset_repo: AssetRepository,
+        llm_call_repo: LlmCallRepository,
+        creative_context: CreativeContext,
+        reuse_gap_s: dict[str, float],
+        window_s: float,
+        style: str | None,
+        frame_aspect: str | None,
+    ) -> str | None:
+        frame = resolve_render_format(style, frame_aspect=frame_aspect)
+        for rung in rungs:
+            ranked = rank_candidates(
+                [(c, h) for c, h, _, _ in rung.entries],
+                search_terms=search_terms,
+                historical_period=creative_context.historical_period,
+                reuse_gap_s=reuse_gap_s,
+                window_s=window_s,
+                shot_id=shot.id,
+                target_width=frame.width,
+                target_height=frame.height,
+            )
+            by_hash = {h: (c, content, attribution) for c, h, content, attribution in rung.entries}
+            checked_top_candidate = False
+            for rank_result in ranked:
+                candidate, content, attribution = by_hash[rank_result.content_hash]
+                existing = await asset_repo.get_by_content_hash(
+                    project_uuid, rank_result.content_hash
+                )
+                if existing is not None:
+                    binding.asset_id = existing.id
+                    binding.state = "resolved"
+                    binding.rung = rung.strategy.value
+                    return rank_result.content_hash
+
+                is_video_candidate = candidate.media_kind == "video"
+                try:
+                    if is_video_candidate:
+                        ext, _width, _height = await validate_and_identify_video(
+                            content, ffprobe_binary=settings.ffprobe_binary
+                        )
+                    else:
+                        ext, _width, _height = validate_and_identify_image(content)
+                except PermanentError:
+                    continue
+
+                if not checked_top_candidate and not is_video_candidate:
+                    checked_top_candidate = True
+                    if not candidate.entity_curated:
+                        verdict = await check_candidate_plausibility(
+                            provider=vision_provider,
+                            llm_call_repo=llm_call_repo,
+                            project_id=project_uuid,
+                            image=content,
+                            image_content_type=mime_type_for_extension(ext),
+                            shot_prompt=shot.prompt,
+                            search_subject=" / ".join(search_terms),
+                        )
+                        if verdict.confidently_wrong:
+                            break
+
+                path = project_dir / "assets" / f"{rank_result.content_hash}.{ext}"
+                path.write_bytes(content)
+                found_by = (
+                    rung.entity_provider_name
+                    if candidate.entity_curated and rung.entity_provider_name is not None
+                    else rung.provider_name
+                )
+                asset = await asset_repo.insert(
+                    project_id=project_uuid,
+                    provider=found_by,
+                    source_url=candidate.source_url,
+                    type=candidate.media_kind,
+                    local_path=str(path),
+                    licence=candidate.licence,
+                    attribution=attribution or candidate.author or None,
+                    content_hash=rank_result.content_hash,
+                    confidence=rank_result.score,
+                )
+                binding.asset_id = asset.id
+                binding.state = "resolved"
+                binding.rung = rung.strategy.value
+                return rank_result.content_hash
+        return None
 
     async def _resolve_one_real(
         self,
@@ -1044,243 +1383,53 @@ class ResolveAssetsStep:
         reuse_gap_s: dict[str, float],
         window_s: float,
         cap_cents: int | None = None,
+        style: str | None = None,
+        frame_aspect: str | None = None,
+        prefetched_rungs: list[_PrefetchedRung] | None = None,
     ) -> str | None:
         """Walks the shot's fallback_chain across real search providers,
         restricted to `self._permitted_strategies`. Returns the
         content_hash it resolved to (for reuse-penalty tracking across
         the rest of this run), or None if it deferred to the generation
-        pass or fell through to generation itself."""
-        asset_plan = shot.asset_plan
-        chain = asset_plan.fallback_chain if asset_plan else []
-        licence_requirements = set(asset_plan.licence_requirements) if asset_plan else set()
+        pass or fell through to generation itself.
 
+        `prefetched_rungs` is the search I/O already done in parallel
+        across shots; ranking still happens here so reuse can see
+        earlier picks. `None` means fetch now (generation pass, or a
+        caller that did not prefetch).
+        """
+        asset_plan = shot.asset_plan
         search_terms = (asset_plan.search_queries if asset_plan else []) or [shot.id]
-        entity = (asset_plan.entity if asset_plan else "").strip()
-        # Fetched at most once per shot, at the first Wikimedia-backed rung
-        # reached in the chain - reused as-is on any later rung (A1/A2,
-        # M6.5): the entity itself doesn't change between rungs, so
-        # re-fetching would just repeat the same network call for no
-        # benefit.
-        entity_candidates: list[AssetCandidate] = []
-        entity_candidates_fetched = False
 
         if self._search_permitted:
-            assert search_providers is not None
-            for strategy in chain:
-                if strategy not in _SEARCH_STRATEGIES:
-                    break  # reached a generation rung in the chain - stop searching
-                if strategy not in self._permitted_strategies:
-                    continue  # not one of THIS pass's permitted rungs - try the next
-
-                provider = search_providers[strategy]
-                query = AssetQuery(
-                    search_terms=asset_plan.search_queries if asset_plan else [],
-                    preferred_type=asset_plan.preferred_type.value if asset_plan else "image",
-                    shot_id=shot.id,
-                    historical_period=creative_context.historical_period,
+            rungs = prefetched_rungs
+            if rungs is None:
+                assert search_providers is not None
+                rungs = await self._prefetch_search_rungs(
+                    shot,
+                    search_providers=search_providers,
+                    entity_provider=entity_provider,
+                    creative_context=creative_context,
+                    db_lock=None,
                 )
-                candidates = await provider.search(query)
-
-                # Only merged in on the Wikimedia-backed rungs, not on
-                # every rung the fallback chain happens to reach
-                # afterwards: `fetch` below is called on *this rung's*
-                # provider, and a candidate's bytes must be downloaded
-                # with the Wikimedia User-Agent Commons requires
-                # (implementation guide, M6 notes - a generic UA is
-                # silently blocklisted by upload.wikimedia.org) rather
-                # than whatever the current provider (e.g. Pexels)
-                # happens to send.
-                entity_eligible_rung = strategy in _ENTITY_ELIGIBLE_STRATEGIES
-                if entity and not entity_candidates_fetched and entity_eligible_rung:
-                    assert entity_provider is not None
-                    entity_candidates = await entity_provider.resolve_entity(entity)
-                    entity_candidates_fetched = True
-
-                # Entity-sourced candidates are pooled with the free-text
-                # ones from here on and run through the exact same gates
-                # - NOT exempted from either. An earlier version of this
-                # step skipped the relevance gate for entity candidates on
-                # the theory that a human filing an image under a subject
-                # makes it relevant by construction; measured against the
-                # live API, that premise is false (see
-                # WikipediaEntityAssetProvider's docstring - a Wikipedia
-                # article legitimately embeds off-topic images alongside
-                # the one that actually matches a given shot). A bad
-                # entity guess must fail exactly as gracefully as a bad
-                # free-text query: fall through to the next rung, not win
-                # by default.
-                pool = candidates + (entity_candidates if entity_eligible_rung else [])
-
-                # Licence is a hard gate, never a ranking factor
-                # (implementation guide, Phase M6 advice) - a candidate
-                # whose licence isn't acceptable is discarded outright,
-                # not deprioritised. `project_assets` is exempt (M6.5,
-                # A23 only ever names the relevance gate for uploads):
-                # `licence_requirements` is written by the Asset Planner
-                # with no visibility into whether an upload even exists
-                # for this project (A3), so it can never have been chosen
-                # with a human's own upload in mind - requiring an
-                # uploaded photo to happen to satisfy a licence string
-                # written for searching Wikimedia/Pexels would be an
-                # arbitrary rejection of media the human already vetted
-                # themselves by choosing to supply it.
-                eligible = (
-                    pool
-                    if strategy == AssetStrategy.PROJECT_ASSETS
-                    else [
-                        c
-                        for c in pool
-                        if not licence_requirements or c.licence in licence_requirements
-                    ]
-                )
-                if not eligible:
-                    continue
-
-                # Relevance is a hard gate too, same principle, applied
-                # identically to every candidate regardless of source: a
-                # candidate whose title/description has no genuine term
-                # overlap with what the shot actually asked for is
-                # discarded here, before it is ever downloaded or ranked -
-                # never merely deprioritised (see app/assets/relevance.py
-                # for the real production failures this is fixing - a
-                # query returning a crucifixion painting or a Portuguese
-                # railway station scored a perfect "relevance" of 1.0
-                # under the old rank-position-only field).
-                relevant = [
-                    c
-                    for c in eligible
-                    if passes_relevance_gate(candidate_relevance(search_terms, c))
-                ]
-                if not relevant:
-                    continue  # nothing on this rung is actually about the subject
-
-                fetched_candidates: list[tuple[AssetCandidate, str, bytes, str]] = []
-                for candidate in relevant[:_CANDIDATES_TO_FETCH_PER_RUNG]:
-                    fetched = await provider.fetch(candidate)
-                    content_hash = hashlib.sha256(fetched.content).hexdigest()
-                    fetched_candidates.append(
-                        (candidate, content_hash, fetched.content, fetched.attribution)
-                    )
-
-                # Dedupe by content hash before ranking - the same image
-                # can arrive under different URLs, and must not be ranked
-                # as two separate options.
-                seen_hashes: set[str] = set()
-                deduped: list[tuple[AssetCandidate, str, bytes, str]] = []
-                for entry in fetched_candidates:
-                    if entry[1] in seen_hashes:
-                        continue
-                    seen_hashes.add(entry[1])
-                    deduped.append(entry)
-
-                ranked = rank_candidates(
-                    [(c, h) for c, h, _, _ in deduped],
-                    search_terms=search_terms,
-                    historical_period=creative_context.historical_period,
-                    reuse_gap_s=reuse_gap_s,
-                    window_s=window_s,
-                    shot_id=shot.id,
-                )
-
-                by_hash = {h: (c, content, attribution) for c, h, content, attribution in deduped}
-                # M6.5, A16 -> A30: at most one vision call per RUNG, ever
-                # - the first candidate this loop would otherwise accept
-                # (not necessarily ranked[0]; a corrupt-bytes candidate
-                # ahead of it is skipped for free, below). Verifying the
-                # rest of the same pool "multiplies cost for no extra
-                # signal" per A30's own reasoning, so once this slot is
-                # spent (checked or deliberately skipped for being
-                # entity-curated) no other candidate in THIS rung is
-                # considered at all - a rejection abandons the rung.
-                checked_top_candidate = False
-                for rank_result in ranked:
-                    candidate, content, attribution = by_hash[rank_result.content_hash]
-
-                    existing = await asset_repo.get_by_content_hash(
-                        project_uuid, rank_result.content_hash
-                    )
-                    if existing is not None:
-                        binding.asset_id = existing.id
-                        binding.state = "resolved"
-                        binding.rung = strategy.value
-                        return rank_result.content_hash
-
-                    is_video_candidate = candidate.media_kind == "video"
-                    try:
-                        if is_video_candidate:
-                            ext, _width, _height = await validate_and_identify_video(
-                                content, ffprobe_binary=settings.ffprobe_binary
-                            )
-                        else:
-                            ext, _width, _height = validate_and_identify_image(content)
-                    except PermanentError:
-                        continue  # this candidate's bytes are bad - try the next-ranked one
-
-                    # A7 (2026-08-18): a searched VIDEO candidate skips the
-                    # plausibility check entirely, rather than inventing a
-                    # frame-extraction step to feed it to an image vision
-                    # API. This is not a lowered bar relative to what
-                    # generated video already gets - A5 already removed
-                    # every automated content check from a GENERATED
-                    # video's keyframe (the human at the gate is the check
-                    # now); a searched video getting the identical
-                    # treatment is consistent, not a new gap.
-                    if not checked_top_candidate and not is_video_candidate:
-                        checked_top_candidate = True
-                        # A2/A30: entity-curated candidates are exempt - a
-                        # human already curated those; this check exists
-                        # to catch free-text search's honest mistakes, not
-                        # to second-guess a curation the same way A24
-                        # already refuses to let an automated heuristic
-                        # overrule a human override.
-                        if not candidate.entity_curated:
-                            verdict = await check_candidate_plausibility(
-                                provider=vision_provider,
-                                llm_call_repo=llm_call_repo,
-                                project_id=project_uuid,
-                                image=content,
-                                image_content_type=mime_type_for_extension(ext),
-                                shot_prompt=shot.prompt,
-                                search_subject=" / ".join(search_terms),
-                            )
-                            if verdict.confidently_wrong:
-                                # Drops this candidate AND abandons this
-                                # rung - falls through to the next
-                                # strategy in the fallback chain, exactly
-                                # like a licence/relevance rejection.
-                                break
-
-                    path = project_dir / "assets" / f"{rank_result.content_hash}.{ext}"
-                    path.write_bytes(content)
-                    # Provenance reflects how this candidate was actually
-                    # found (M6.5) - `entity_provider.name`
-                    # ("wikipedia_entity") for an entity-curated hit,
-                    # `provider.name` ("wikimedia") for a free-text one,
-                    # even though both were fetched through the same
-                    # rung's WikimediaAssetProvider instance above.
-                    found_by = (
-                        entity_provider.name
-                        if candidate.entity_curated and entity_provider is not None
-                        else provider.name
-                    )
-                    asset = await asset_repo.insert(
-                        project_id=project_uuid,
-                        provider=found_by,
-                        source_url=candidate.source_url,
-                        type=candidate.media_kind,
-                        local_path=str(path),
-                        licence=candidate.licence,
-                        attribution=attribution or candidate.author or None,
-                        content_hash=rank_result.content_hash,
-                        confidence=rank_result.score,
-                    )
-                    binding.asset_id = asset.id
-                    binding.state = "resolved"
-                    binding.rung = strategy.value
-                    return rank_result.content_hash
-
-                # Every fetched candidate in this rung failed validation -
-                # move on to the next strategy in the fallback chain.
+            picked = await self._pick_from_rungs(
+                shot,
+                binding,
+                rungs=rungs,
+                search_terms=search_terms,
+                project_uuid=project_uuid,
+                project_dir=project_dir,
+                vision_provider=vision_provider,
+                asset_repo=asset_repo,
+                llm_call_repo=llm_call_repo,
+                creative_context=creative_context,
+                reuse_gap_s=reuse_gap_s,
+                window_s=window_s,
+                style=style,
+                frame_aspect=frame_aspect,
+            )
+            if picked is not None:
+                return picked
 
         if not self._generation_permitted:
             # A5/A6/A21: this pass may only search - every permitted rung
@@ -1303,6 +1452,8 @@ class ResolveAssetsStep:
                 narration_repo=narration_repo,
                 creative_context=creative_context,
                 cap_cents=cap_cents,
+                style=style,
+                frame_aspect=frame_aspect,
             )
         else:
             await generate_image_real(
@@ -1315,6 +1466,8 @@ class ResolveAssetsStep:
                 narration_repo=narration_repo,
                 creative_context=creative_context,
                 cap_cents=cap_cents,
+                style=style,
+                frame_aspect=frame_aspect,
             )
         return None
 
@@ -1327,16 +1480,24 @@ class ResolveAssetsStep:
         project_dir,
         image_provider: ImageProvider,
         clip_repo: GeneratedClipRepository,
+        style: str | None = None,
+        frame_aspect: str | None = None,
     ) -> None:
+        frame = resolve_render_format(style, frame_aspect=frame_aspect)
         result = await image_provider.generate(
             ImageRequest(
                 prompt=shot.prompt,
-                width=settings.render_width,
-                height=settings.render_height,
+                width=frame.width,
+                height=frame.height,
                 shot_id=shot.id,
             )
         )
-        prompt_hash = hashlib.sha256(f"{shot.prompt}|{image_provider.name}".encode()).hexdigest()
+        prompt_hash = generation_prompt_hash(
+            shot.prompt,
+            image_provider.name,
+            width=frame.width,
+            height=frame.height,
+        )
         clip = await clip_repo.get_by_prompt_hash(prompt_hash)
         if clip is None:
             path = project_dir / "clips" / f"{prompt_hash}.png"
@@ -1425,7 +1586,9 @@ class ResolveAssetsStep:
         on a false positive (M6.5 -> gate redesign)."""
         project_seed = _project_seed(str(project_uuid))
         prompt = base_prompt
-        prompt_hash = hashlib.sha256(f"{prompt}|{model_id}|{project_seed}".encode()).hexdigest()
+        prompt_hash = generation_prompt_hash(
+            prompt, model_id, project_seed, width=width, height=height
+        )
 
         cached = await clip_repo.get_by_prompt_hash(prompt_hash)
         if cached is not None:
@@ -1522,7 +1685,7 @@ class ResolveAssetsStep:
                 project_seed, attempt, settings.max_generation_attempts_per_shot
             )
             prompt = build_revised_prompt(base_prompt, violated_constraints)
-            prompt_hash = hashlib.sha256(f"{prompt}|{model_id}|{seed}".encode()).hexdigest()
+            prompt_hash = generation_prompt_hash(prompt, model_id, seed, width=width, height=height)
 
             cached = await clip_repo.get_by_prompt_hash(prompt_hash)
             if cached is not None:
@@ -1653,7 +1816,7 @@ class ResolveAssetsStep:
                 project_seed, attempt, settings.max_generation_attempts_per_shot
             )
             prompt = build_revised_prompt(base_prompt, violated_constraints)
-            prompt_hash = hashlib.sha256(f"{prompt}|{model_id}|{seed}".encode()).hexdigest()
+            prompt_hash = generation_prompt_hash(prompt, model_id, seed, width=width, height=height)
 
             cached = await clip_repo.get_by_prompt_hash(prompt_hash)
             if cached is not None:

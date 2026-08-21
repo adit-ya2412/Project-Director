@@ -104,6 +104,7 @@ import json
 
 from app.core.errors import PermanentError
 from app.renderer.slideshow import RenderSettings
+from app.renderer.split_screen import SPLIT_PANEL_FIT
 from app.schemas.timeline import Shot, Timeline
 
 # Mirrors `app.timeline.service._BOOKKEEPING_FIELDS` exactly (kept as its
@@ -263,6 +264,9 @@ def compute_render_fingerprint(
         # cache-HIT the old, shorter mix.
         "sfx_max_clip_s": sfx_max_clip_s,
         "ffmpeg_version": ffmpeg_version,
+        # Padded-panel verdict 2026-08-20: crop-to-fill. A letterbox
+        # revert must miss every cached split encode (§7).
+        "split_panel_fit": SPLIT_PANEL_FIT,
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
@@ -308,6 +312,7 @@ def compute_run_fingerprint(
             "pixel_format": render_settings.pixel_format,
         },
         "ffmpeg_version": ffmpeg_version,
+        "split_panel_fit": SPLIT_PANEL_FIT,
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
@@ -340,5 +345,6 @@ def compute_shot_stream_fingerprint(
             "pixel_format": render_settings.pixel_format,
         },
         "ffmpeg_version": ffmpeg_version,
+        "split_panel_fit": SPLIT_PANEL_FIT,
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()

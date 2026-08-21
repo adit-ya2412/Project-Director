@@ -66,7 +66,6 @@ def _director_output() -> DirectorOutput:
             historical_period="1936-1945",
             audience="general",
             camera_language="static and slow push",
-            colour_palette=["#2b2b28", "#8a7f6b"],
             constraints=["no swastika imagery"],
         ),
         music_plan=DirectorMusicPlan(

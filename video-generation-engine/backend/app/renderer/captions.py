@@ -348,9 +348,15 @@ def serialize_ass(cues: list[CaptionCue], style: CaptionStyle) -> str:
     """Pure. Fixed decimal precision, stable ordering, no `datetime.now()`
     or other non-deterministic content anywhere (I5, doc §5)."""
     width, height = style.resolution
-    font_size = max(round(height * style.font_size_fraction), 1)
-    outline = max(round(height * style.outline_fraction), 1)
+    # Long side so 720×1280 and 1280×720 get the same 58 px caption
+    # (§19.3). Portrait keeps today's height-based size.
+    axis = max(width, height)
+    font_size = max(round(axis * style.font_size_fraction), 1)
+    outline = max(round(axis * style.outline_fraction), 1)
     margin_v = max(round(height * style.margin_v_fraction), 0)
+    if width > height:
+        # No vertical-feed UI band on landscape (§19.3).
+        margin_v = max(round(height * 0.04), 0)
 
     lines = [
         "[Script Info]",

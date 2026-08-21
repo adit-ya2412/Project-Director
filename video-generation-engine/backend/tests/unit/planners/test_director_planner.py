@@ -34,7 +34,6 @@ def _valid_output() -> DirectorOutput:
             historical_period="1936-1945",
             audience="general",
             camera_language="static and slow push; no whip pans",
-            colour_palette=["#2b2b28", "#8a7f6b", "#d9d2c5"],
             constraints=["no swastika imagery"],
         ),
         music_plan=DirectorMusicPlan(
@@ -58,6 +57,7 @@ async def test_director_plan_produces_creative_context_and_music_plan(project_id
 
     assert creative_context.tone == "sober documentary"
     assert creative_context.historical_period == "1936-1945"
+    assert creative_context.colour_palette == []
     assert music_plan.energy_arc == EnergyArc.BUILD
     assert len(provider.calls) == 1
 

@@ -259,3 +259,21 @@ def test_results_are_sorted_descending_by_score():
     # Not just trivially sorted (`rank_candidates` always sorts) - the
     # order must actually track increasing title/query overlap.
     assert [r.candidate.source_id for r in ranked] == ["c4", "c3", "c2", "c1", "c0"]
+
+
+def test_matching_orientation_outranks_mismatch_at_equal_relevance():
+    """§19.8: preference, not a filter. Same title so equal relevance."""
+    portrait = _candidate(source_id="port", width=720, height=1280)
+    landscape = _candidate(source_id="land", width=1280, height=720)
+    ranked = rank_candidates(
+        [(landscape, "h-land"), (portrait, "h-port")],
+        target_width=1280,
+        target_height=720,
+    )
+    assert ranked[0].candidate.source_id == "land"
+    ranked_portrait_frame = rank_candidates(
+        [(landscape, "h-land"), (portrait, "h-port")],
+        target_width=720,
+        target_height=1280,
+    )
+    assert ranked_portrait_frame[0].candidate.source_id == "port"

@@ -22,8 +22,8 @@ def _validate(output: DirectorOutput) -> list[str]:
     for field_name in ("tone", "visual_style", "historical_period", "audience", "camera_language"):
         if not getattr(ctx, field_name).strip():
             violations.append(f"creative_context.{field_name} must not be empty")
-    if not ctx.colour_palette:
-        violations.append("creative_context.colour_palette must not be empty")
+    # Q6: `colour_palette` is not collected. The grade is `STYLE_GRADES`
+    # keyed on the style name; a Director-written palette was never read.
 
     plan = output.music_plan
     if not plan.mood.strip():

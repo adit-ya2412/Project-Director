@@ -111,9 +111,18 @@ def _snap_fragment_boundaries(
 
 
 def _build_user_content(
-    scene: Scene, creative_context: CreativeContext, fragments: list[NarrationFragment]
+    scene: Scene,
+    creative_context: CreativeContext,
+    fragments: list[NarrationFragment],
+    *,
+    suppress_camera_language: bool = False,
 ) -> str:
     numbered_fragments = "\n".join(f"{f.index}. {f.text}" for f in fragments)
+    camera_line = (
+        ""
+        if suppress_camera_language
+        else f"- camera_language: {creative_context.camera_language}\n"
+    )
     return (
         f"Scene: {scene.title}\n"
         f"Narrative purpose: {scene.narrative_purpose}\n"
@@ -129,7 +138,7 @@ def _build_user_content(
         "Director's creative context:\n"
         f"- historical_period: {creative_context.historical_period}\n"
         f"- visual_style: {creative_context.visual_style}\n"
-        f"- camera_language: {creative_context.camera_language}\n"
+        f"{camera_line}"
     )
 
 
@@ -320,7 +329,15 @@ class ShotPlanner:
                 agent=self.name,
                 prompt_version=self._PROMPT_VERSION,
                 system_prompt=system_prompt,
-                user_content=_build_user_content(scene, creative_context, fragments),
+                user_content=_build_user_content(
+                    scene,
+                    creative_context,
+                    fragments,
+                    # Q6: a style fragment that owns camera must not share
+                    # the request with the Director's camera_language —
+                    # the two contradict with no stated precedence.
+                    suppress_camera_language=style_fragment is not None,
+                ),
                 response_model=ShotPlannerOutput,
                 validate=_make_validator(
                     scene, fragments, min_shot_duration_s, max_shot_duration_s

@@ -28,7 +28,7 @@ import { translateError } from "@/lib/errors";
 import { shotAssetSource } from "@/lib/asset-source";
 import { AssetSourceBadge } from "@/components/AssetSourceBadge";
 import { ResolutionWarningBadge } from "@/components/ResolutionWarning";
-import { computeResolutionWarning } from "@/lib/resolution";
+import { computeResolutionWarning, frameAspectClass } from "@/lib/resolution";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -125,6 +125,9 @@ function ShotImage({
   camera: Camera | undefined;
   onExpand: () => void;
 }) {
+  const { data: timeline } = useTimeline(projectId);
+  const canvasWidth = timeline?.metadata.resolution?.[0];
+  const canvasHeight = timeline?.metadata.resolution?.[1];
   const [errored, setErrored] = useState(false);
   const [naturalSize, setNaturalSize] = useState<{
     width: number;
@@ -144,7 +147,7 @@ function ShotImage({
 
   if (!hasImage) {
     return (
-      <div className="flex aspect-[9/16] w-36 shrink-0 flex-col items-center justify-center gap-1.5 rounded-md border border-dashed border-warning/40 bg-warning/5 p-2 text-center">
+      <div className={`flex ${frameAspectClass(canvasWidth, canvasHeight)} w-36 shrink-0 flex-col items-center justify-center gap-1.5 rounded-md border border-dashed border-warning/40 bg-warning/5 p-2 text-center`}>
         <Sparkles className="h-5 w-5 text-warning" />
         <span className="text-xs text-warning">
           {shot.state === "pending" ? "Still searching…" : "No picture yet"}
@@ -165,7 +168,7 @@ function ShotImage({
           key={mediaVersion}
           src={shotAssetUrl(projectId, shot.shot_id)}
           alt=""
-          className="aspect-[9/16] w-36 rounded-md border border-border object-cover transition-opacity hover:opacity-90"
+          className={`${frameAspectClass(canvasWidth, canvasHeight)} w-36 rounded-md border border-border object-cover transition-opacity hover:opacity-90`}
           onError={() => setErrored(true)}
           onLoad={(e) => {
             const img = e.currentTarget;
@@ -187,6 +190,8 @@ function ShotImage({
             naturalSize.width,
             naturalSize.height,
             camera,
+            canvasWidth,
+            canvasHeight,
           )}
         />
       )}
@@ -577,7 +582,7 @@ export function AssetReviewGate() {
     );
     toast({
       title: "Approved",
-      description: "Moving on to narration and generation.",
+      description: "Generating remaining images, then rendering.",
     });
     navigate(`/projects/${projectId}/progress`);
   }

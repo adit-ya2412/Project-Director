@@ -7,6 +7,7 @@ this one (a mechanical word cap) is what actually worked.
 """
 
 from app.schemas.timeline import CreativeContext, Shot, ShotIntent
+from app.script.styles import RenderFormat
 from app.workflow.steps.resolve_assets import _MAX_VISUAL_STYLE_WORDS, _styled_prompt
 
 
@@ -57,3 +58,15 @@ def test_the_cap_is_a_word_count_not_a_character_count():
     words = appended.split()
     assert len(words) == _MAX_VISUAL_STYLE_WORDS
     assert words[-1] == f"word{_MAX_VISUAL_STYLE_WORDS - 1}"  # not a partial word
+
+
+def test_landscape_frame_appends_a_composition_line():
+    cc = CreativeContext(visual_style="archival")
+    result = _styled_prompt(
+        _shot(), cc, frame=RenderFormat(width=1280, height=720)
+    )
+    assert result.endswith("Composed for a landscape 16:9 frame.")
+    portrait = _styled_prompt(
+        _shot(), cc, frame=RenderFormat(width=720, height=1280)
+    )
+    assert "Composed for" not in portrait

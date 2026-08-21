@@ -51,6 +51,7 @@ async def _insert_render_row(
         height=height,
         fps=30,
         duration_s=1.0,
+        is_draft=(width, height) == (settings.draft_width, settings.draft_height),
     )
     # `insert_completed` always stamps `created_at` via the column's own
     # `server_default=func.now()` - overridden here directly so the test

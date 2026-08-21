@@ -12,6 +12,7 @@ import pytest
 from app.core.errors import PermanentError, TransientError
 from app.utils import bounded_gather as gather_mod
 from app.utils.bounded_gather import (
+    asset_search_concurrency,
     bounded_gather,
     ffmpeg_run_concurrency,
     narration_concurrency,
@@ -162,6 +163,15 @@ def test_narration_cap_is_elevenlabs_starter_concurrency(monkeypatch):
     assert narration_concurrency() == 3
     monkeypatch.setattr(settings, "narration_concurrency", 0)
     assert narration_concurrency() == 1
+
+
+def test_asset_search_cap_floors_at_one(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "asset_search_concurrency", 8)
+    assert asset_search_concurrency() == 8
+    monkeypatch.setattr(settings, "asset_search_concurrency", 0)
+    assert asset_search_concurrency() == 1
 
 
 def test_shot_and_asset_planner_share_one_cap(monkeypatch):

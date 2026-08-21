@@ -291,6 +291,10 @@ class Settings(BaseSettings):
     max_concurrent_image_jobs: int = 4
     max_concurrent_video_jobs: int = 2
     max_concurrent_asset_downloads: int = 8
+    # Search I/O fan-out (Commons/Pexels/entity/download). Rank and bind
+    # stay serial so C4 reuse sees earlier picks in timeline order.
+    # Wikimedia's own RateLimiter still caps Commons at 5 calls/s.
+    asset_search_concurrency: int = 8
 
     # Track C §3.2 / §11 Q4: four consumers of `bounded_gather`, four
     # different quantities. A semaphore approximates TPM; per-call

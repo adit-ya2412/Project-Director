@@ -48,9 +48,23 @@ class ScriptPreflightResponse(BaseModel):
     estimated_total_duration_s: float
     estimated_average_shot_duration_s: float
     fragments: list[FragmentEstimateOut]
-    # Level 2 (plan §3.2) - only populated when `passed` is False; a
-    # feasible script has nothing to suggest breaking.
+    # Level 2 (plan §3.2 / R2) - only populated when `passed` is False; a
+    # feasible script has nothing to suggest breaking. Transitive: one
+    # response carries every round of marks, offsets into the original.
     suggested_breaks: list[BreakSuggestionOut]
+    # True only when the (length-derived) cap was hit while the script is
+    # still infeasible and another legal break exists. Does NOT mean
+    # "accepting these will pass" — that is `suggestions_would_pass`
+    # (R23). False + empty unfixable + would_pass True is the success
+    # shape; False + unfixable is exhausted-and-still-infeasible.
+    further_suggestions_available: bool = False
+    # R23: True iff applying every `suggested_breaks` mark makes
+    # feasibility pass. Independent of `further_suggestions_available`.
+    suggestions_would_pass: bool = False
+    # R23 / R24: why punctuation cannot finish the job (hard duration
+    # ceiling, or no legal break left). Empty when would_pass is True
+    # or when the cap is the limiter.
+    punctuation_cannot_fix: list[str] = Field(default_factory=list)
     # Suitability (warning, LLM judgement) - `None` means no verdict was
     # computed (DRY_RUN, or no LLM provider configured), never a
     # fabricated opinion (`app/script/suitability.py`'s own docstring).

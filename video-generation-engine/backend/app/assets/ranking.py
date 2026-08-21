@@ -126,14 +126,16 @@ class RankedCandidate:
     components: dict[str, float]
 
 
-def _quality_score(candidate: AssetCandidate) -> float:
+def _quality_score(
+    candidate: AssetCandidate, *, target_width: int, target_height: int
+) -> float:
     """Adequacy for the render, not raw resolution (see module docstring
     for the defect this fixes: raw pixel count systematically penalises
     archival material for predating modern cameras)."""
     if not candidate.width or not candidate.height:
         return 0.5
     source_area = candidate.width * candidate.height
-    target_area = settings.render_width * settings.render_height
+    target_area = target_width * target_height
     linear_upscale_needed = math.sqrt(target_area / source_area)
 
     if linear_upscale_needed <= _QUALITY_FULL_SCORE_UPSCALE:
@@ -193,6 +195,19 @@ def _reuse_penalty_component(gap_s: float, window_s: float) -> float:
     return 1.0 - (gap_s / window_s)
 
 
+def _orientation_score(
+    candidate: AssetCandidate, *, target_width: int, target_height: int
+) -> float:
+    """1.0 when source and frame share landscape/portrait, else 0.
+    Unknown dimensions sit in the middle. Reordering only — never a
+    hard filter (§19.8)."""
+    if not candidate.width or not candidate.height:
+        return 0.5
+    source_landscape = candidate.width > candidate.height
+    target_landscape = target_width > target_height
+    return 1.0 if source_landscape == target_landscape else 0.0
+
+
 def rank_candidates(
     candidates_with_hash: list[tuple[AssetCandidate, str]],
     *,
@@ -202,6 +217,8 @@ def rank_candidates(
     reuse_gap_s: Mapping[str, float] | None = None,
     window_s: float | None = None,
     shot_id: str = "",
+    target_width: int | None = None,
+    target_height: int | None = None,
 ) -> list[RankedCandidate]:
     """Highest score first. `candidates_with_hash` must already be
     deduped by content hash - this function does not dedupe - and already
@@ -217,16 +234,19 @@ def rank_candidates(
     search_terms = search_terms or []
     gaps = reuse_gap_s if reuse_gap_s is not None else {h: 0.0 for h in already_used_hashes}
     window = window_s if window_s is not None else settings.asset_reuse_window_s
+    tw = target_width if target_width is not None else settings.render_width
+    th = target_height if target_height is not None else settings.render_height
     ranked = []
     for candidate, content_hash in candidates_with_hash:
         gap = gaps.get(content_hash)
         components = {
             "relevance": candidate_relevance(search_terms, candidate),
-            "quality": _quality_score(candidate),
+            "quality": _quality_score(candidate, target_width=tw, target_height=th),
             "period_match": _period_match_score(candidate, historical_period),
             "licence": _licence_score(candidate),
             "reuse_penalty": (_reuse_penalty_component(gap, window) if gap is not None else 0.0),
             "entity_curated": 1.0 if candidate.entity_curated else 0.0,
+            "orientation": _orientation_score(candidate, target_width=tw, target_height=th),
         }
         score = (
             _W_RELEVANCE * components["relevance"]
@@ -242,7 +262,12 @@ def rank_candidates(
             )
         )
 
-    ranked.sort(key=lambda r: r.score, reverse=True)
+    # §19.8: matching orientation breaks ties. It is not in the weighted
+    # score so it cannot override relevance or reuse (R14). Equal-score
+    # pairs (same title, same area) are the case it is built for.
+    ranked.sort(
+        key=lambda r: (-r.score, -r.components["orientation"], r.content_hash)
+    )
     for rank in ranked[:5]:
         logger.info(
             "asset.ranking.candidate",

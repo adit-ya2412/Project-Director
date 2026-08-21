@@ -85,6 +85,14 @@ def test_a_dropped_entity_is_rejected():
     assert any("Fischer" in r for r in reasons)
 
 
+def test_an_invented_entity_is_rejected():
+    """Q7: numbers already compare both ways; entities must too."""
+    rewritten = _ORIGINAL + " The plant at Secunda expanded."
+    reasons = _validate_rewrite(_ORIGINAL, rewritten)
+    assert any("capitalised entities invented" in r for r in reasons)
+    assert any("Secunda" in r for r in reasons)
+
+
 def test_a_pronoun_swap_on_second_mention_is_not_penalised():
     """§3.3's own scope: entities are checked as a SET, not a multiset -
     a legitimate rephrase can drop a repeated mention in favour of a

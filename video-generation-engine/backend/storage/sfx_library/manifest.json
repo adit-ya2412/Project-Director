@@ -72,6 +72,18 @@
     "attribution": "\"Horror Stinger 16_Memory Flash.wav\" by Ulrich_Wehner is licensed under CC BY 4.0. To view a copy of this license, visit https://creativecommons.org/licenses/by/4.0/."
   },
   {
+    "file": "stinger/timpani_sting.mp3",
+    "title": "Timpani Sting",
+    "artist": "nomiqbomi",
+    "source": "openverse",
+    "source_url": "https://freesound.org/people/nomiqbomi/sounds/578588",
+    "license": "cc0",
+    "kind": "stinger",
+    "duration_s": 1.242,
+    "tags": "stinger",
+    "attribution": "\"Timpani Sting\" by nomiqbomi is marked with CC0 1.0. To view the terms, visit https://creativecommons.org/publicdomain/zero/1.0/."
+  },
+  {
     "file": "transition/space_swoosh_brighter.mp3",
     "title": "Space Swoosh - brighter",
     "artist": "GameAudio",
