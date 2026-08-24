@@ -12,9 +12,12 @@ floor that REORDERS rather than DISCARDS was chosen over both a hard
 gate (risks selecting nothing on a thin pool) and a pure weighted/soft
 score (risks a short clip still winning on relevance alone)."""
 
+import pytest
+
 from app.assets.music_ranking import (
     compute_duration_floor_s,
     music_candidate_relevance,
+    pick_seeded_top,
     rank_music_candidates,
     target_bpm_for_mean_shot_duration,
 )
@@ -182,12 +185,100 @@ def test_unknown_bpm_ranks_between_a_fit_and_a_known_mismatch():
     assert [c.source_id for c in ranked] == ["fit", "drone", "march"]
 
 
+# -- M10 / analysis.md C2.2: the project-seeded near-tie pick ----------------
+
+_QUERY = ["documentary", "strings"]
+
+
+def _seeded_pool() -> list[TrackCandidate]:
+    """Identical title+tags => identical relevance => the whole pool is a
+    near-tie band the seed may choose from (the B2 scenario: every
+    documentary-ish brief produces several near-equivalent candidates and
+    plain source_id ordering always crowned the same one)."""
+    return [
+        _track(
+            "doc_strings",
+            "Documentary Music Strings",
+            tags="documentary strings",
+            duration_s=60.0,
+        ),
+        _track(
+            "war_underscore",
+            "Documentary Music Strings",
+            tags="documentary strings",
+            duration_s=60.0,
+        ),
+        _track(
+            "archive_bed",
+            "Documentary Music Strings",
+            tags="documentary strings",
+            duration_s=60.0,
+        ),
+    ]
+
+
+def test_seeded_pick_is_deterministic_per_project():
+    """I5: same project + same pool -> same pick, every time."""
+    first = pick_seeded_top(_seeded_pool(), query_terms=_QUERY, seed="project-1")
+    second = pick_seeded_top(_seeded_pool(), query_terms=_QUERY, seed="project-1")
+    assert first.source_id == second.source_id
+
+
+def test_different_projects_pick_different_tracks():
+    """The actual B2 defect: same brief, different projects must not all
+    land on the one source_id-sorted winner."""
+    picks = {
+        pick_seeded_top(_seeded_pool(), query_terms=_QUERY, seed=f"project-{i}").source_id
+        for i in range(8)
+    }
+    assert len(picks) >= 2
+
+
+def test_seed_cannot_promote_a_candidate_below_the_duration_floor():
+    short = _track(
+        "air_horn",
+        "Documentary Music Strings",
+        tags="documentary strings",
+        duration_s=10.0,
+    )
+    proper = _track(
+        "proper_bed",
+        "Documentary Music Strings",
+        tags="documentary strings",
+        duration_s=60.0,
+    )
+    ranked = rank_music_candidates([short, proper], query_terms=_QUERY, video_duration_s=90.0)
+    for seed in ("a", "b", "c", "d"):
+        chosen = pick_seeded_top(ranked, query_terms=_QUERY, video_duration_s=90.0, seed=seed)
+        assert chosen.source_id == "proper_bed"
+
+
+def test_seed_cannot_promote_a_clearly_worse_match():
+    """Outside the epsilon band the seed has no power at all - quality
+    still owns the decision; variety only breaks ties."""
+    strong = _track("exact_match", "wartime documentary underscore strings", duration_s=60.0)
+    weak = _track("party_mix", "upbeat party dance celebration", duration_s=60.0)
+    terms = ["wartime documentary underscore"]
+    ranked = rank_music_candidates([weak, strong], query_terms=terms)
+    for seed in ("a", "b", "c"):
+        chosen = pick_seeded_top(ranked, query_terms=terms, seed=seed)
+        assert chosen.source_id == "exact_match"
+
+
+def test_single_candidate_returns_it_for_any_seed():
+    solo = _track("only_choice", "Documentary Music Strings", tags="documentary strings")
+    assert pick_seeded_top([solo], query_terms=_QUERY, seed="whatever").source_id == "only_choice"
+
+
+def test_empty_pool_raises():
+    with pytest.raises(ValueError):
+        pick_seeded_top([], query_terms=_QUERY, seed="whatever")
+
+
 def test_duration_floor_still_outranks_tempo_fit():
     """Lexicographic: a 2.5s one-shot at the perfect BPM still loses to
     a qualifying loop outside the band."""
-    perfect_but_short = _track(
-        "short", "industrial ambient", duration_s=2.5, bpm=137
-    )
+    perfect_but_short = _track("short", "industrial ambient", duration_s=2.5, bpm=137)
     long_mismatch = _track("long", "industrial ambient", duration_s=45.0, bpm=60)
     ranked = rank_music_candidates(
         [perfect_but_short, long_mismatch],

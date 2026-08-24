@@ -63,6 +63,8 @@ meeting the floor - unverified is not the same as long enough, and
 silently trusting a missing value would defeat the point of the floor.
 """
 
+import hashlib
+
 from app.assets.relevance import term_overlap_relevance
 from app.providers.base import TrackCandidate
 
@@ -145,3 +147,59 @@ def rank_music_candidates(
         )
 
     return sorted(candidates, key=_key)
+
+
+# M10 / analysis.md C2.2: how close a challenger's relevance must sit to
+# the best candidate's before it counts as a near-tie the project seed may
+# choose from. 0.05 of a 0-1 term-overlap score: wide enough that a title
+# like "Documentary Music Strings" does not permanently own every
+# documentary-ish brief by a hair of overlap, narrow enough that a seed
+# can never promote a genuinely worse match past a clearly better one.
+_SEED_RELEVANCE_EPSILON = 0.05
+
+
+def pick_seeded_top(
+    ranked: list[TrackCandidate],
+    *,
+    query_terms: list[str],
+    video_duration_s: float = 0.0,
+    mean_shot_duration_s: float = 0.0,
+    seed: str,
+) -> TrackCandidate:
+    """M10, finally implemented (analysis.md C2.2): among the candidates
+    that tie with the best on `(duration_floor, tempo_band)` AND sit
+    within `_SEED_RELEVANCE_EPSILON` of its relevance, pick by
+    `sha256("{seed}:{source_id}")` instead of plain `source_id`.
+
+    Same project -> same pick (I5 holds); two projects with the same
+    brief -> different picks, which is exactly the "every project got
+    'Documentary Music Strings'" defect this closes (analysis.md B2).
+    `rank_music_candidates` above stays untouched and pure; only this
+    final choice reads the project id, which is in scope at its call
+    site and nowhere else.
+
+    The epsilon matters as much as the hash: an exact-ties-only seed
+    would change nothing for that defect, because the over-fitting title
+    wins relevance OUTRIGHT - the seed needs a band of near-equivalents
+    to choose inside. A candidate outside the band can never be promoted:
+    quality still owns the decision; variety only breaks the tie."""
+    if not ranked:
+        raise ValueError("pick_seeded_top called with no candidates")
+    best = ranked[0]
+    floor_s = compute_duration_floor_s(video_duration_s)
+    target_bpm = target_bpm_for_mean_shot_duration(mean_shot_duration_s)
+    best_relevance = music_candidate_relevance(query_terms, best)
+    pool = [
+        candidate
+        for candidate in ranked
+        if abs(music_candidate_relevance(query_terms, candidate) - best_relevance)
+        <= _SEED_RELEVANCE_EPSILON
+        and (0 if _meets_duration_floor(candidate, floor_s=floor_s) else 1)
+        == (0 if _meets_duration_floor(best, floor_s=floor_s) else 1)
+        and _tempo_band(candidate, target_bpm=target_bpm)
+        == _tempo_band(best, target_bpm=target_bpm)
+    ]
+    return min(
+        pool,
+        key=lambda c: hashlib.sha256(f"{seed}:{c.source_id}".encode()).hexdigest(),
+    )

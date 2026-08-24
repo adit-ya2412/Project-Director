@@ -161,6 +161,7 @@ def compute_render_fingerprint(
     render_settings: RenderSettings,
     music_bed_gain_db: float,
     music_duck_gain_db: float,
+    music_gain_offset_db: float,
     burn_captions: bool,
     caption_font_hash: str | None,
     cue_list_hash: str | None,
@@ -172,6 +173,9 @@ def compute_render_fingerprint(
     sfx_content_hashes: list[str],
     sfx_gain_db: float,
     sfx_max_clip_s: float,
+    sfx_whoosh_enabled: bool,
+    sfx_normalize_target_db: float,
+    sfx_kind_gain_overrides_db: dict[str, float | None],
     ffmpeg_version: str,
     secondary_content_hashes: dict[str, str] | None = None,
 ) -> str:
@@ -220,6 +224,11 @@ def compute_render_fingerprint(
         # is a deliberately conservative choice, not an oversight.
         "music_bed_gain_db": music_bed_gain_db,
         "music_duck_gain_db": music_duck_gain_db,
+        # Decision 7 (analysis.md, 2026-08-24): the uploaded track's dB
+        # offset changes the mixed loudness directly, so flipping it must
+        # miss the cache - same unconditional-presence rule as the gains
+        # above (R2). 0.0 on every provider-selected track.
+        "music_gain_offset_db": music_gain_offset_db,
         # Captions (2026-08-17), same unconditional-presence rule as the
         # gains above - see this module's own docstring.
         "burn_captions": burn_captions,
@@ -263,6 +272,21 @@ def compute_render_fingerprint(
         # as `sfx_gain_db` / R2. Unconditional so a config bump cannot
         # cache-HIT the old, shorter mix.
         "sfx_max_clip_s": sfx_max_clip_s,
+        # Decisions 5 + 5a (analysis.md, 2026-08-24): the per-style WHOOSH
+        # gate decides which overlay events get mixed at all, so flipping
+        # it changes output bytes. Style-derived (render_style in the
+        # timeline dump above already moves it indirectly), but hashed
+        # explicitly anyway per this module's own R2 rule: one obvious
+        # line per real mux input, present unconditionally.
+        "sfx_whoosh_enabled": sfx_whoosh_enabled,
+        # C3c (analysis.md, decision 5b): the normalization target and the
+        # per-kind dB offsets are real mix inputs - changing either
+        # changes output samples even with byte-identical clips.
+        # Unconditional presence per this module's R2 rule. Clip peaks
+        # and durations themselves ride in via the timeline document
+        # above, so they need no separate entry here.
+        "sfx_normalize_target_db": sfx_normalize_target_db,
+        "sfx_kind_gain_overrides_db": sfx_kind_gain_overrides_db,
         "ffmpeg_version": ffmpeg_version,
         # Padded-panel verdict 2026-08-20: crop-to-fill. A letterbox
         # revert must miss every cached split encode (§7).

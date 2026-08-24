@@ -24,6 +24,21 @@ _DEFAULT_MAX_CLIP_S = 1.5
 _FADE_OUT_S = 0.08
 
 
+@dataclass(frozen=True)
+class SfxOverlay:
+    """One scheduled SFX event's complete mix inputs: WHERE it lands, HOW
+    LOUD it plays (`volume_factor`, precomputed by the caller from C3c's
+    normalization math), and WHERE its trim starts (`trim_start_s`, C3d's
+    end-alignment for clips that exceed the ceiling). `mux_sfx` never
+    re-measures or re-decides anything - rendering stays a pure function
+    of what the caller assembled."""
+
+    path: Path
+    offset_s: float
+    volume_factor: float
+    trim_start_s: float = 0.0
+
+
 async def _has_audio_stream(path: Path, ffprobe_binary: str) -> bool:
     """R13: mux_sfx used to assume `[0:a]` exists."""
     process = await asyncio.create_subprocess_exec(
@@ -50,9 +65,15 @@ class SfxEvent:
     offset_s: float
 
 
-def derive_sfx_events(timeline: Timeline, *, fps: int) -> list[SfxEvent]:
+def derive_sfx_events(timeline: Timeline, *, fps: int, whoosh_enabled: bool) -> list[SfxEvent]:
     """Whoosh at each punch-in snap, stinger at each text-card start,
-    transition SFX at each non-cut overlap. Sorted for I5."""
+    transition SFX at each non-cut overlap. Sorted for I5.
+
+    `whoosh_enabled` is resolved from the style ONCE by the caller and
+    handed in here (review of P2, analysis.md RV2): the same single
+    value must gate both this derivation and `compute_render_fingerprint`,
+    so the two cannot drift apart the way two independent resolutions
+    could."""
     shots = timeline.all_shots()
     starts = compute_shot_start_times(shots)
     events: list[SfxEvent] = []
@@ -73,36 +94,45 @@ def derive_sfx_events(timeline: Timeline, *, fps: int) -> list[SfxEvent]:
             overlap_start = start_s + shot.duration_s - transition.duration_s
             events.append(SfxEvent(kind=SfxKind.TRANSITION, offset_s=max(overlap_start, 0.0)))
     events.sort(key=lambda event: (event.offset_s, event.kind.value))
+    # Decisions 5 + 5a (analysis.md, 2026-08-24): a style can opt out of
+    # the WHOOSH layer entirely (`retention_fast` - two punch-ins per
+    # ~1.75s shot made one clip play ~100 times per reel). Stinger and
+    # transition events are untouched: on a fastcut reel they are the
+    # only remaining kinds, and both stay rare (D3). The CALLER owns the
+    # style resolution - see this function's docstring (RV2).
+    if not whoosh_enabled:
+        events = [event for event in events if event.kind != SfxKind.WHOOSH]
     return events
 
 
 async def mux_sfx(
     video_path: Path,
-    overlays: list[tuple[Path, float]],
+    overlays: list[SfxOverlay],
     output_path: Path,
     settings: RenderSettings,
     *,
-    gain_db: float,
     max_clip_s: float = _DEFAULT_MAX_CLIP_S,
 ) -> Path:
-    """Delay each `(path, offset_s)` overlay and amix onto `video_path`'s
-    existing audio, or *become* the audio if the video is silent (R13).
-    Each overlay is faded out at the trim so a hard `atrim` is not a
-    click (R15). Empty overlays is a no-op copy."""
+    """Mix `overlays` onto `video_path`'s existing audio, or *become* the
+    audio if the video is silent (R13). Each overlay is trimmed (C3d:
+    end-aligned when the caller set `trim_start_s`, so the impact
+    transient survives the ceiling), faded out at the trim so a hard
+    `atrim` is not a click (R15), scaled by its OWN precomputed volume
+    factor (C3c: per-clip normalization - there is no global gain here
+    any more), delayed, and amixed. Empty overlays is a no-op copy."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if not overlays:
         if video_path.resolve() != output_path.resolve():
             output_path.write_bytes(video_path.read_bytes())
         return output_path
 
-    ordered = sorted(overlays, key=lambda item: item[1])
-    gain_linear = 10 ** (gain_db / 20)
+    ordered = sorted(overlays, key=lambda item: item.offset_s)
     fade_s = min(_FADE_OUT_S, max_clip_s / 2)
     fade_start = max(max_clip_s - fade_s, 0.0)
     has_audio = await _has_audio_stream(video_path, settings.ffprobe_binary)
     args: list[str] = [settings.ffmpeg_binary, "-y", "-i", str(video_path)]
-    for path, _offset in ordered:
-        args += ["-i", str(path)]
+    for overlay in ordered:
+        args += ["-i", str(overlay.path)]
     silence_index: int | None = None
     if not has_audio:
         duration_s = await probe_duration_seconds(video_path, settings.ffprobe_binary)
@@ -122,13 +152,24 @@ async def mux_sfx(
         mix_labels.append("[0:a]")
     else:
         mix_labels.append(f"[{silence_index}:a]")
-    for index, (_path, offset_s) in enumerate(ordered, start=1):
-        delay_ms = max(int(round(offset_s * 1000)), 0)
+    for index, overlay in enumerate(ordered, start=1):
+        delay_ms = max(int(round(overlay.offset_s * 1000)), 0)
         label = f"s{index}"
+        # C3d: end-aligned trim when the caller knows the clip outgrew
+        # the ceiling - keep the TAIL (impact transient), not the head.
+        # Both branches produce exactly `max_clip_s` seconds, so the
+        # fade-out timing below is identical either way.
+        if overlay.trim_start_s > 0:
+            atrim = (
+                f"atrim=start={overlay.trim_start_s:.3f}:"
+                f"end={overlay.trim_start_s + max_clip_s:.3f}"
+            )
+        else:
+            atrim = f"atrim=0:{max_clip_s:.3f}"
         filter_parts.append(
-            f"[{index}:a]atrim=0:{max_clip_s:.3f},asetpts=PTS-STARTPTS,"
+            f"[{index}:a]{atrim},asetpts=PTS-STARTPTS,"
             f"afade=t=out:st={fade_start:.3f}:d={fade_s:.3f},"
-            f"volume={gain_linear:.6f},adelay={delay_ms}:all=1[{label}]"
+            f"volume={overlay.volume_factor:.6f},adelay={delay_ms}:all=1[{label}]"
         )
         mix_labels.append(f"[{label}]")
     n_inputs = len(mix_labels)

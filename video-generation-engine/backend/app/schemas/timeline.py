@@ -268,6 +268,16 @@ class TimelineMetadata(BaseModel):
     # switching voices safe (the narration cache is keyed on voice_id
     # too, so a previously-used voice is never re-synthesised).
     voice_id: str | None = None
+    # `None` falls back to `settings.elevenlabs_language_code` (itself
+    # None - no hint - by default). A human sets this directly via
+    # `POST /projects/{id}/narration/retry-language` (2026-08-24, same
+    # shape as `voice_id`/N1 just above) for a project whose script
+    # code-switches languages (Hindi/Hinglish) and needs ElevenLabs'
+    # `language_code` hint to stop stalling at script-switch boundaries
+    # - see `providers/elevenlabs.py`'s `compute_narration_content_hash`
+    # docstring for why this is safe to flip experimentally (same cache-
+    # key argument `voice_id` already makes).
+    language_code: str | None = None
     # Set once, permanently, by `NarrationStep`'s own reconciliation
     # (never reset by anything downstream) the moment every shot's
     # `duration_s` is replaced with a real, measured spoken duration
@@ -351,6 +361,14 @@ class MusicTrackSelection(BaseModel):
     attribution: str = ""
     content_hash: str
 
+    # Decision 7 (analysis.md, 2026-08-24): per-track loudness offset in dB
+    # a human set at upload time (`POST /{id}/music/upload`'s slider).
+    # 0.0 for every provider-selected track, so old timelines and auto
+    # selections are byte-identical in behaviour. Applied ON TOP of the
+    # style's `music_bed_gain_db` at mux time and hashed into the render
+    # fingerprint - moving the slider must miss the cache (R2).
+    gain_offset_db: float = 0.0
+
 
 class ActMusicBed(BaseModel):
     """Track C C7: one bed for one act. Empty `act_beds` on MusicPlan
@@ -380,6 +398,16 @@ class SfxClipSelection(BaseModel):
     licence: str
     attribution: str = ""
     content_hash: str
+    # C3c/C3d (analysis.md, decision 5b): the clip's MEASURED peak
+    # loudness (dBFS, ffmpeg volumedetect at selection/upload time) and
+    # real length (ffprobe). Both None on every pre-C3c timeline and
+    # under DRY_RUN; None means the renderer falls back to the flat
+    # `sfx_gain_db` and a head-trim - exactly yesterday's behaviour.
+    # Storing them here puts them inside the hashed timeline document,
+    # so a re-measured/re-selected clip invalidates the render cache
+    # through existing plumbing (no new fingerprint inputs for these).
+    peak_dbfs: float | None = None
+    duration_s: float | None = None
 
 
 class SfxPlan(BaseModel):

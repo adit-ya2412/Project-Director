@@ -137,6 +137,30 @@ def _db_to_linear(gain_db: float) -> float:
     return 10 ** (gain_db / 20)
 
 
+def offset_bed_and_duck_gain_db(
+    bed_gain_db: float, duck_gain_db: float, gain_offset_db: float
+) -> tuple[float, float]:
+    """Applies the human's per-track dB offset (`gain_offset_db` - the
+    BGM upload slider, analysis.md decision 7) to BOTH the bed and the
+    duck gain, so the whole envelope shifts together and the style's duck
+    DEPTH (`bed_gain_db - duck_gain_db`) is preserved.
+
+    Analysis.md RV6: `_volume_chain` below computes
+    `relative_duck = duck_linear / bed_linear` and applies that RATIO on
+    top of an unconditional `volume=bed_linear` - which makes the level
+    during a narration window resolve to the ABSOLUTE `duck_gain_db`,
+    independent of the bed. Offsetting the bed alone therefore does not
+    move the ducked floor at all; it only changes how far above that
+    fixed floor the bed sits. Once the offset drops the bed below the
+    duck gain (`gain_offset_db < duck_gain_db - bed_gain_db`, i.e. more
+    negative than the style's own duck depth), `relative_duck` exceeds
+    1.0 and ducking INVERTS - music gets LOUDER, not quieter, under
+    narration. Applying the offset to both gains keeps `relative_duck`
+    identical to the un-offset style mix for every offset value, so
+    ducking can never invert."""
+    return bed_gain_db + gain_offset_db, duck_gain_db + gain_offset_db
+
+
 async def compute_narration_intervals(
     narration_paths: list[Path], ffprobe_binary: str
 ) -> list[tuple[float, float]]:

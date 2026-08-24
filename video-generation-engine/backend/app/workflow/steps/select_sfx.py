@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 
+from app.assets.sfx_levels import measure_peak_dbfs
 from app.assets.sfx_ranking import rank_sfx_candidates
 from app.core.config import settings
 from app.core.errors import PermanentError
@@ -133,18 +134,27 @@ class SelectSfxStep:
             except Exception:  # noqa: BLE001
                 continue
             content_hash = hashlib.sha256(fetched.content).hexdigest()
+            peak_dbfs: float | None = None
+            duration_s: float | None = None
             if not settings.dry_run:
                 path = settings.storage_root / ctx.project_id / "sfx" / f"{content_hash}.mp3"
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(fetched.content)
                 try:
-                    duration = await probe_duration_seconds(path, settings.ffprobe_binary)
+                    duration_s = await probe_duration_seconds(path, settings.ffprobe_binary)
                 except PermanentError:
                     path.unlink(missing_ok=True)
                     continue
-                if duration <= 0:
+                if duration_s <= 0:
                     path.unlink(missing_ok=True)
                     continue
+                # C3c: measure once, at selection time - the value is
+                # stored on the clip (inside the hashed timeline
+                # document), so the renderer never re-measures and a
+                # different measurement can only arrive with a different
+                # selection. A failed probe stores None -> flat-gain
+                # fallback; never fatal (this module's docstring).
+                peak_dbfs = await measure_peak_dbfs(path, ffmpeg_binary=settings.ffmpeg_binary)
             return SfxClipSelection(
                 kind=kind,
                 provider=provider.name,
@@ -153,5 +163,7 @@ class SelectSfxStep:
                 licence=candidate.licence,
                 attribution=fetched.attribution or candidate.author,
                 content_hash=content_hash,
+                peak_dbfs=peak_dbfs,
+                duration_s=duration_s,
             )
         return None

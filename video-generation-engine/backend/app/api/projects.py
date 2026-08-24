@@ -93,13 +93,20 @@ from app.assets.cost import (
     estimate_project_cost_cents,
     total_project_spend_cents,
 )
+from app.assets.music_upload import music_upload_warnings
+from app.assets.sfx_levels import measure_peak_dbfs
+from app.assets.sfx_override import apply_sfx_clip_override
 from app.assets.thumbnails import (
     cached_resized_image,
     cached_video_frame,
     is_video_file,
     shot_frame_cache_path,
 )
-from app.assets.validation import mime_type_for_extension, validate_and_identify_image
+from app.assets.validation import (
+    mime_type_for_extension,
+    validate_and_identify_audio,
+    validate_and_identify_image,
+)
 from app.core.config import settings
 from app.core.errors import PermanentError
 from app.db.session import get_db
@@ -129,7 +136,15 @@ from app.schemas.script_preflight import (
     ScriptRewriteResponse,
     StyleSuitabilityOut,
 )
-from app.schemas.timeline import CameraMovement, ProducedBy, Timeline, TimelineStatus
+from app.schemas.timeline import (
+    CameraMovement,
+    MusicTrackSelection,
+    ProducedBy,
+    SfxClipSelection,
+    SfxKind,
+    Timeline,
+    TimelineStatus,
+)
 from app.script.preflight import check_feasibility
 from app.script.rewrite import rewrite_script
 from app.script.styles import STYLE_PACING_BANDS, frame_aspect_error, resolve_draft_format
@@ -256,6 +271,17 @@ class CreateProjectRequest(BaseModel):
     # is the default landscape contemplative frame. Rejected for any
     # other style (`frame_aspect_error`).
     frame_aspect: str | None = None
+    # ISO 639-1 hint for ElevenLabs' `language_code` param (2026-08-24).
+    # Set here so a code-switched (Hindi/Hinglish, Spanish/Spanglish,
+    # Arabic, ...) project's FIRST narration pass already uses the
+    # right hint, instead of paying for a wrong-hint pass and correcting
+    # it afterwards via `POST /narration/retry-language`. No validation
+    # against a fixed language list, same lack-of-validation precedent
+    # as `voice_id` - ElevenLabs itself silently ignores a code its
+    # model doesn't support, so a typo here degrades gracefully rather
+    # than needing this codebase to maintain its own copy of ElevenLabs'
+    # supported-language list.
+    language_code: str | None = None
 
 
 class SetRenderStyleRequest(BaseModel):
@@ -274,6 +300,15 @@ class UploadedAssetResult(BaseModel):
     asset_id: str
     filename: str
     duplicate: bool
+
+
+class MusicUploadResult(WorkflowTriggerResult):
+    """`POST /{id}/music/upload`'s response - a trigger result (the upload
+    resumes the engine like every human correction) plus the decision-6a/
+    6b length warnings, computed BEFORE the 202 so the client can show
+    them while the re-render runs."""
+
+    warnings: list[str] = []
 
 
 class RetryMusicSelectionRequest(BaseModel):
@@ -296,6 +331,16 @@ class RetryNarrationVoiceRequest(BaseModel):
     # wasted version bump), so an actual new voice is always the point of
     # calling this.
     voice_id: str
+
+
+class RetryNarrationLanguageRequest(BaseModel):
+    # Unlike voice_id, None is a meaningful, real value here - it is how
+    # a project explicitly clears a previously-set hint and goes back to
+    # ElevenLabs' own language auto-detection (settings.
+    # elevenlabs_language_code defaults to None for the same reason: most
+    # projects narrate in one language and need no hint at all). ISO
+    # 639-1, e.g. "hi" for a Hindi/Hinglish code-switched script.
+    language_code: str | None = None
 
 
 class UploadScriptRequest(BaseModel):
@@ -409,6 +454,7 @@ async def create_project(
         name=body.name,
         render_style=body.render_style,
         frame_aspect=body.frame_aspect,
+        language_code=body.language_code,
     )
 
 
@@ -641,11 +687,7 @@ async def preflight_script(
         )
 
     feasibility = check_feasibility(body.script, body.style)
-    break_plan = (
-        suggest_breaks(body.script, body.style)
-        if not feasibility.passed
-        else None
-    )
+    break_plan = suggest_breaks(body.script, body.style) if not feasibility.passed else None
 
     llm_provider = None if settings.dry_run else OpenAIPlanningProvider()
     suitability = await check_suitability(
@@ -687,12 +729,8 @@ async def preflight_script(
         further_suggestions_available=(
             break_plan.further_available if break_plan is not None else False
         ),
-        suggestions_would_pass=(
-            break_plan.would_pass if break_plan is not None else False
-        ),
-        punctuation_cannot_fix=(
-            list(break_plan.unfixable) if break_plan is not None else []
-        ),
+        suggestions_would_pass=(break_plan.would_pass if break_plan is not None else False),
+        punctuation_cannot_fix=(list(break_plan.unfixable) if break_plan is not None else []),
         suitability=(
             StyleSuitabilityOut(suitable=suitability.suitable, reason=suitability.reason)
             if suitability is not None
@@ -1943,6 +1981,291 @@ async def retry_music_selection(
     )
 
 
+# Decision 7 (analysis.md, 2026-08-24): sane bounds on the upload slider -
+# wide enough for any mastering mismatch C1a #4 describes, tight enough
+# that a fat-fingered value cannot push the bed into clipping or silence.
+_MUSIC_GAIN_OFFSET_DB_MIN = -40.0
+_MUSIC_GAIN_OFFSET_DB_MAX = 24.0
+
+
+@router.post("/{project_id}/music/upload", status_code=202, response_model=MusicUploadResult)
+async def upload_music(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    gain_offset_db: float = Form(0.0),
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    session: AsyncSession = Depends(get_db),
+) -> MusicUploadResult:
+    """C1 (analysis.md, resolved decisions 2/6a/6b/7): a human's own BGM.
+
+    The fourth instance of the "automated creative choice, human redo"
+    shape (after the per-shot override, music retry, and narration retry)
+    - with the same `_resume_after_human_correction` tail: record as
+    HUMAN via `append_version`, re-approve if already approved, resume
+    the engine so the render fingerprint (changed by the new
+    `content_hash`) produces a fresh render.
+
+    Safety rails, each traced against a concrete failure mode in
+    analysis.md C1a:
+
+    - the bytes are ffprobe-validated HERE (`validate_and_identify_audio`,
+      A27), never trusted from the extension;
+    - the file is stored under its REAL container extension and
+      `_music_file` globs by content hash, so a .wav/.m4a/.ogg/.flac
+      upload resolves at render time instead of raising "file missing"
+      (C1a #1);
+    - `act_beds` is explicitly cleared, so `_music_segments`'s two-or-
+      more-beds branch can never silently keep playing the old per-act
+      tracks over an uploaded single bed (C1a #5 - the failure that ships
+      looking done);
+    - length NEVER rejects (decision 6a/6b): short tracks loop and long
+      tracks trim from the start exactly as `mux_music` always behaved;
+      the response carries human-readable warnings instead;
+    - `gain_offset_db` rides on top of the style bed gain and is hashed
+      into the render fingerprint (decision 7 / R2).
+
+    Licence is `user_supplied` - A24's precedent: a human's own file is
+    judged by the human; no CC0/CC-BY gate applies."""
+    await _get_project_or_404(project_id, repo)
+    active = await timeline_service.get_active(project_id)
+    if active is None:
+        raise HTTPException(status_code=400, detail="no timeline to attach music to yet")
+    if active.music_plan is None:
+        raise HTTPException(status_code=400, detail="this timeline has no music_plan")
+    if not _MUSIC_GAIN_OFFSET_DB_MIN <= gain_offset_db <= _MUSIC_GAIN_OFFSET_DB_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"gain_offset_db must be between {_MUSIC_GAIN_OFFSET_DB_MIN:g} and "
+                f"{_MUSIC_GAIN_OFFSET_DB_MAX:g}"
+            ),
+        )
+
+    content = await file.read()
+    try:
+        ext, track_duration_s = await validate_and_identify_audio(
+            content, ffprobe_binary=settings.ffprobe_binary
+        )
+    except PermanentError as exc:
+        raise HTTPException(status_code=400, detail=f"{file.filename}: {exc}") from exc
+
+    content_hash = hashlib.sha256(content).hexdigest()
+    music_dir = settings.storage_root / project_id / "music"
+    music_dir.mkdir(parents=True, exist_ok=True)
+    (music_dir / f"{content_hash}.{ext}").write_bytes(content)
+
+    filename = (file.filename or "").strip()
+    attribution = (
+        f"Supplied by the project owner ({filename})"
+        if filename
+        else "Supplied by the project owner"
+    )
+
+    def _set_uploaded_track(base: Timeline) -> Timeline:
+        assert base.music_plan is not None
+        base.music_plan.selected_track = MusicTrackSelection(
+            provider="project_music",
+            track_id=f"{content_hash}.{ext}",
+            source_url="",
+            licence="user_supplied",
+            attribution=attribution,
+            content_hash=content_hash,
+            gain_offset_db=gain_offset_db,
+        )
+        # An upload IS an attempt outcome: SelectMusicStep must not think
+        # this project still needs a search when the engine resumes.
+        base.music_plan.selection_attempted = True
+        # Decision 2 (analysis.md): ONE bed for the whole video. Without
+        # this explicit clear, `_music_segments`'s len(beds) >= 2 branch
+        # wins over `selected_track` and the render keeps playing the old
+        # auto-picked per-act beds - success in the UI, wrong audio on
+        # disk, no error anywhere (C1a #5).
+        base.music_plan.act_beds = []
+        return base
+
+    video_duration_s = sum(shot.duration_s for shot in active.all_shots())
+    warnings_ = music_upload_warnings(track_duration_s, video_duration_s)
+
+    result = await _resume_after_human_correction(
+        project_id,
+        active,
+        timeline_service=timeline_service,
+        session=session,
+        background_tasks=background_tasks,
+        transform=_set_uploaded_track,
+        owns=frozenset({"music_plan"}),
+    )
+    return MusicUploadResult(**result.model_dump(), warnings=warnings_)
+
+
+@router.post(
+    "/{project_id}/sfx/{kind}/override", status_code=202, response_model=WorkflowTriggerResult
+)
+async def override_sfx_kind(
+    project_id: str,
+    kind: SfxKind,
+    background_tasks: BackgroundTasks,
+    file: UploadFile | None = File(None),
+    enabled: bool = Form(True),
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    session: AsyncSession = Depends(get_db),
+) -> WorkflowTriggerResult:
+    """C3f (analysis.md, decision 4): human control over ONE SFX kind -
+    replace its clip with an uploaded file, or disable the kind outright.
+    No clip-picker UI (decision 4); `kind` is validated by FastAPI against
+    the `SfxKind` enum (whoosh / stinger / transition).
+
+    Exactly one of two operations per call:
+
+    - **`file` supplied** → ffprobe-validated here (`validate_and_identify_audio`,
+      A27), hashed, stored at `storage/{project}/sfx/{sha256}.{real_ext}`,
+      and that kind's entry in `sfx_plan.clips` is replaced. The glob
+      lookup `_sfx_overlays` already uses (C1a #1 fix) means a .wav/.m4a/
+      .ogg upload resolves at render time. Licence is `user_supplied`
+      (A24 - a human's own file is judged by the human).
+    - **`file` omitted + `enabled=false`** → every clip of that kind is
+      REMOVED from `sfx_plan.clips`. Disable costs nothing extra: the
+      renderer's `by_kind.get(kind)` miss already skips an absent kind,
+      and `sfx_content_hashes` shrinking changes the render fingerprint,
+      so the re-render is correct, not coincidental.
+
+    Recorded via the correction family's shared tail
+    (`_resume_after_human_correction`, `owns={"sfx_plan"}`) - HUMAN
+    provenance per I3, re-approve if approved, backgrounded resume so the
+    changed fingerprint produces a fresh render.
+
+    Deliberately NOT built (decision 4): a clip-picker UI. The undo path
+    for an override or disable applied here is `POST /sfx/retry`
+    (`retry_sfx_selection`, below), which resets the kind and re-runs
+    selection."""
+    await _get_project_or_404(project_id, repo)
+    active = await timeline_service.get_active(project_id)
+    if active is None:
+        raise HTTPException(status_code=400, detail="no timeline to override sfx on yet")
+    if active.sfx_plan is None:
+        raise HTTPException(status_code=400, detail="this timeline has no sfx_plan")
+
+    if file is None and enabled:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "nothing to do: supply an audio file to replace this kind's "
+                "clip, or enabled=false to disable the kind"
+            ),
+        )
+    if file is not None and not enabled:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "conflicting request: uploading a file replaces the kind's "
+                "clip (always enabled) - send either a file or enabled=false"
+            ),
+        )
+
+    replacement: SfxClipSelection | None = None
+    if file is not None:
+        content = await file.read()
+        try:
+            ext, upload_duration_s = await validate_and_identify_audio(
+                content, ffprobe_binary=settings.ffprobe_binary
+            )
+        except PermanentError as exc:
+            raise HTTPException(status_code=400, detail=f"{file.filename}: {exc}") from exc
+
+        content_hash = hashlib.sha256(content).hexdigest()
+        sfx_dir = settings.storage_root / project_id / "sfx"
+        sfx_dir.mkdir(parents=True, exist_ok=True)
+        stored_path = sfx_dir / f"{content_hash}.{ext}"
+        stored_path.write_bytes(content)
+        # C3c/C3d: measure the uploaded clip once, here - same contract as
+        # SelectSfxStep (None on failure -> flat-gain fallback at render).
+        upload_peak_dbfs = await measure_peak_dbfs(
+            stored_path, ffmpeg_binary=settings.ffmpeg_binary
+        )
+
+        filename = (file.filename or "").strip()
+        replacement = SfxClipSelection(
+            kind=kind,
+            provider="project_sfx",
+            track_id=f"{content_hash}.{ext}",
+            source_url="",
+            licence="user_supplied",
+            attribution=(
+                f"Supplied by the project owner ({filename})"
+                if filename
+                else "Supplied by the project owner"
+            ),
+            content_hash=content_hash,
+            peak_dbfs=upload_peak_dbfs,
+            duration_s=upload_duration_s,
+        )
+
+    def _apply_override(base: Timeline) -> Timeline:
+        assert base.sfx_plan is not None
+        base.sfx_plan.clips = apply_sfx_clip_override(base.sfx_plan.clips, kind, replacement)
+        return base
+
+    return await _resume_after_human_correction(
+        project_id,
+        active,
+        timeline_service=timeline_service,
+        session=session,
+        background_tasks=background_tasks,
+        transform=_apply_override,
+        owns=frozenset({"sfx_plan"}),
+    )
+
+
+@router.post("/{project_id}/sfx/retry", status_code=202, response_model=WorkflowTriggerResult)
+async def retry_sfx_selection(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    session: AsyncSession = Depends(get_db),
+) -> WorkflowTriggerResult:
+    """C3f / review of P5 RV8: the UNDO for per-kind SFX overrides and
+    disables. `SelectSfxStep`'s skip check is
+    `bool(sfx_plan.clips) or sfx_plan.selection_attempted`, so without
+    this endpoint a disable was a ONE-WAY door - and not only for whoosh:
+    stinger (every text-card shot, every style) and transition
+    (non-cut xfades on archival/stillness) are equally disable-able and
+    were equally unrecoverable.
+
+    Exact mirror of `retry_music_selection`'s shape: reset `clips` to
+    empty and `selection_attempted` to False via a normal
+    `append_version` (I3), then resume through the correction family's
+    shared tail - resuming re-runs `SelectSfxStep` for real against the
+    local library. Previously uploaded override FILES remain on disk
+    under their content hashes but become unreferenced (hash dedup means
+    a future re-upload of the same bytes writes nothing new)."""
+    await _get_project_or_404(project_id, repo)
+    active = await timeline_service.get_active(project_id)
+    if active is None:
+        raise HTTPException(status_code=400, detail="no timeline to retry sfx selection on yet")
+    if active.sfx_plan is None:
+        raise HTTPException(status_code=400, detail="this timeline has no sfx_plan to retry")
+
+    def _reset_sfx_plan(base: Timeline) -> Timeline:
+        assert base.sfx_plan is not None
+        base.sfx_plan.clips = []
+        base.sfx_plan.selection_attempted = False
+        return base
+
+    return await _resume_after_human_correction(
+        project_id,
+        active,
+        timeline_service=timeline_service,
+        session=session,
+        background_tasks=background_tasks,
+        transform=_reset_sfx_plan,
+        owns=frozenset({"sfx_plan"}),
+    )
+
+
 @router.post("/{project_id}/narration/retry", status_code=202, response_model=WorkflowTriggerResult)
 async def retry_narration_voice(
     project_id: str,
@@ -2022,6 +2345,55 @@ async def retry_narration_voice(
         session=session,
         background_tasks=background_tasks,
         transform=_set_voice,
+        owns=frozenset({"metadata"}),
+    )
+
+
+@router.post(
+    "/{project_id}/narration/retry-language",
+    status_code=202,
+    response_model=WorkflowTriggerResult,
+)
+async def retry_narration_language(
+    project_id: str,
+    body: RetryNarrationLanguageRequest,
+    background_tasks: BackgroundTasks,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    session: AsyncSession = Depends(get_db),
+) -> WorkflowTriggerResult:
+    """Same shape as `retry_narration_voice` (N1) just above, for the
+    `language_code` hint ElevenLabs' `language_code` parameter uses
+    (2026-08-24, added while fixing a Hindi/Hinglish narration quality
+    issue - see `hinglish_voice_probe.py`). `NarrationStep.run` already
+    reads `timeline.metadata.language_code or settings
+    .elevenlabs_language_code`, so this endpoint is the write half of
+    that read, exactly like `retry_narration_voice` is for `voice_id`.
+
+    Every property that endpoint's own docstring argues for `voice_id`
+    holds here for the identical reason: `language_code` is part of
+    `compute_narration_content_hash`, so switching it (or clearing it
+    back to `None`) never re-pays for a hash already synthesised, and
+    `RenderStep`'s fingerprint/cache-hit checks invalidate the same way.
+    Unlike voice_id, `None` is accepted here - it is the explicit "clear
+    the hint" case, not an empty-string mistake to reject.
+    """
+    await _get_project_or_404(project_id, repo)
+    active = await timeline_service.get_active(project_id)
+    if active is None:
+        raise HTTPException(status_code=400, detail="no timeline to retry narration on yet")
+
+    def _set_language(base: Timeline) -> Timeline:
+        base.metadata.language_code = body.language_code
+        return base
+
+    return await _resume_after_human_correction(
+        project_id,
+        active,
+        timeline_service=timeline_service,
+        session=session,
+        background_tasks=background_tasks,
+        transform=_set_language,
         owns=frozenset({"metadata"}),
     )
 

@@ -61,6 +61,7 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.assets.sfx_levels import effective_gain_db, end_aligned_trim_start
 from app.core.config import settings
 from app.core.errors import EngineError, PermanentError, TransientError
 from app.models.asset import AssetModel
@@ -79,9 +80,9 @@ from app.renderer.captions import (
 )
 from app.renderer.fingerprint import compute_render_fingerprint, get_ffmpeg_version
 from app.renderer.grading import grade_filter_fragment
-from app.renderer.music import assemble_act_bed, mux_music
+from app.renderer.music import assemble_act_bed, mux_music, offset_bed_and_duck_gain_db
 from app.renderer.placeholder import render_placeholder
-from app.renderer.sfx import derive_sfx_events, mux_sfx
+from app.renderer.sfx import SfxOverlay, derive_sfx_events, mux_sfx
 from app.renderer.slideshow import RenderSettings, probe_duration_seconds, render_timeline
 from app.renderer.text_cards import (
     TextCardStyle,
@@ -102,8 +103,13 @@ from app.repositories.narration_repository import NarrationRepository
 from app.repositories.render_repository import RenderRepository
 from app.repositories.shot_binding_repository import ShotBindingRepository
 from app.schemas.project import ProjectStatus
-from app.schemas.timeline import ProducedBy, Timeline
-from app.script.styles import resolve_music_gains, resolve_narration_speed, resolve_render_format
+from app.schemas.timeline import ProducedBy, SfxKind, Timeline
+from app.script.styles import (
+    resolve_music_gains,
+    resolve_narration_speed,
+    resolve_render_format,
+    resolve_sfx_whoosh_enabled,
+)
 from app.timeline.acts import act_time_ranges, music_content_hash_for
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
@@ -288,6 +294,22 @@ async def render_video(
     # Leftover item 5: style-owned mix. Resolve once so the fingerprint
     # and the mux_music call cannot drift (R2's own lesson).
     music_gains = resolve_music_gains(timeline.metadata.render_style)
+    # Decisions 5 + 5a (analysis.md, 2026-08-24): resolve ONCE beside the
+    # music gains and hand the SAME value both to the fingerprint below
+    # and to `_sfx_overlays`/`derive_sfx_events` further down - one
+    # resolution feeding both consumers is what makes drift structurally
+    # impossible, the same pattern as `music_gains` (review of P2,
+    # analysis.md RV2; leftover item 5 / R2's own lesson).
+    sfx_whoosh_enabled = resolve_sfx_whoosh_enabled(timeline.metadata.render_style)
+    # Decision 7 (analysis.md, 2026-08-24): the uploaded track's dB offset
+    # (0.0 for every provider-selected track). Resolved once beside the
+    # style gains so the fingerprint below and the mux_music call share
+    # it - same single-resolution pattern as `music_gains`.
+    music_gain_offset_db = (
+        timeline.music_plan.selected_track.gain_offset_db
+        if timeline.music_plan is not None and timeline.music_plan.selected_track is not None
+        else 0.0
+    )
     fingerprint = compute_render_fingerprint(
         timeline=timeline,
         asset_content_hashes=media_content_hashes,
@@ -299,6 +321,7 @@ async def render_video(
         # as of leftover item 5; still hashed unconditionally.
         music_bed_gain_db=music_gains.bed_gain_db,
         music_duck_gain_db=music_gains.duck_gain_db,
+        music_gain_offset_db=music_gain_offset_db,
         burn_captions=render_settings.burn_captions,
         caption_font_hash=caption_font_hash,
         cue_list_hash=cue_hash,
@@ -310,6 +333,18 @@ async def render_video(
         sfx_content_hashes=_sfx_content_hashes(timeline),
         sfx_gain_db=settings.sfx_gain_db,
         sfx_max_clip_s=settings.sfx_max_clip_s,
+        sfx_whoosh_enabled=sfx_whoosh_enabled,
+        # C3c (analysis.md, decision 5b): normalization target + per-kind
+        # offsets are real mix inputs - changing either changes output
+        # samples even with byte-identical clips. Unconditional presence
+        # per the R2 rule (clip peaks/durations ride in via the timeline
+        # document above; these knobs live outside it).
+        sfx_normalize_target_db=settings.sfx_normalize_target_db,
+        sfx_kind_gain_overrides_db={
+            "whoosh": settings.sfx_whoosh_gain_db,
+            "stinger": settings.sfx_stinger_gain_db,
+            "transition": settings.sfx_transition_gain_db,
+        },
         ffmpeg_version=ffmpeg_version,
     )
 
@@ -450,7 +485,12 @@ async def render_video(
         # the directory a human (and `GET /projects/{id}/video`) treats as
         # "the outputs" - a half-mixed `_pre_sfx_final.mp4` sitting there
         # is indistinguishable by name from a real render.
-        sfx_overlays = _sfx_overlays(timeline, ctx.project_id, fps=render_settings.fps)
+        sfx_overlays = _sfx_overlays(
+            timeline,
+            ctx.project_id,
+            fps=render_settings.fps,
+            whoosh_enabled=sfx_whoosh_enabled,
+        )
         mixed_path = work_dir / f"pre_sfx_{output_path.stem}.mp4" if sfx_overlays else output_path
         if music_segments is None:
             narrated_path.replace(mixed_path)
@@ -463,14 +503,27 @@ async def render_video(
                     work_dir / f"music_bed_{output_path.stem}.m4a",
                     render_settings,
                 )
+            offset_bed_gain_db, offset_duck_gain_db = offset_bed_and_duck_gain_db(
+                music_gains.bed_gain_db, music_gains.duck_gain_db, music_gain_offset_db
+            )
             await mux_music(
                 narrated_path,
                 music_path,
                 narration_paths,
                 mixed_path,
                 render_settings,
-                bed_gain_db=music_gains.bed_gain_db,
-                duck_gain_db=music_gains.duck_gain_db,
+                # Decision 7 (analysis.md, 2026-08-24) / RV6 fix
+                # (analysis.md, 2026-08-24): the human's dB offset shifts
+                # the WHOLE envelope - bed and ducked floor alike -
+                # preserving the style's duck depth. A prior version
+                # applied the offset to the bed only, which left
+                # `_volume_chain`'s ducked level pinned at the style's
+                # absolute `duck_gain_db` and inverted ducking (music got
+                # LOUDER under narration) once the offset passed roughly
+                # -4 to -6 dB depending on style. See
+                # `offset_bed_and_duck_gain_db`'s own docstring.
+                bed_gain_db=offset_bed_gain_db,
+                duck_gain_db=offset_duck_gain_db,
             )
         if sfx_overlays:
             await mux_sfx(
@@ -478,7 +531,6 @@ async def render_video(
                 sfx_overlays,
                 output_path,
                 render_settings,
-                gain_db=settings.sfx_gain_db,
                 max_clip_s=settings.sfx_max_clip_s,
             )
 
@@ -562,17 +614,24 @@ async def _resolve_narration_rows(
     if timeline.produced_by != ProducedBy.NARRATION:
         return None
 
-    # Mirrors NarrationStep's own voice resolution exactly (same fallback
-    # order) - it must, since the content hash below is only a cache hit
-    # if computed identically to how NarrationStep computed it when the
-    # row was written. Both steps run within the same workflow run's
-    # process, so `settings` cannot have changed between them.
+    # Mirrors NarrationStep's own voice AND language_code resolution
+    # exactly (same fallback order for both) - it must, since the content
+    # hash below is only a cache hit if computed identically to how
+    # NarrationStep computed it when the row was written. A previous
+    # version of this function read `settings.elevenlabs_language_code`
+    # directly instead of resolving it the same way NarrationStep does
+    # (`Timeline.metadata.language_code or settings...`) - correct only
+    # by accident when metadata.language_code happened to be unset for
+    # every project, and a real mux failure the first time a project set
+    # it (2026-08-24: "no narration row exists... cannot mux audio that
+    # was never persisted").
     voice_id = timeline.metadata.voice_id or settings.elevenlabs_voice_id
     if not voice_id:
         raise PermanentError(
             "timeline is produced_by=narration but no voice_id can be resolved - "
             "narration cannot have run without one"
         )
+    language_code = timeline.metadata.language_code or settings.elevenlabs_language_code
 
     narration_repo = NarrationRepository(session)
     rows: list[NarrationModel] = []
@@ -584,6 +643,7 @@ async def _resolve_narration_rows(
             model=settings.elevenlabs_model,
             output_format=settings.elevenlabs_output_format,
             speed=speed,
+            language_code=language_code,
         )
         row = await narration_repo.get_by_content_hash(content_hash)
         if row is None:
@@ -597,8 +657,15 @@ async def _resolve_narration_rows(
 
 
 def _music_file(project_id: str, content_hash: str) -> Path:
-    path = settings.storage_root / project_id / "music" / f"{content_hash}.mp3"
-    if not path.exists():
+    """Glob lookup on the content hash, not a hard-coded `.mp3` (analysis.md
+    C1a #1): an uploaded track keeps its real container's extension
+    (`validate_and_identify_audio`), so `music/` may hold `{hash}.wav`,
+    `.m4a`, `.ogg`, or `.flac`. The hash is hex, so it is glob-safe."""
+    path = next(
+        iter((settings.storage_root / project_id / "music").glob(f"{content_hash}.*")),
+        None,
+    )
+    if path is None:
         raise PermanentError(
             f"timeline has a selected music track (content_hash {content_hash}) but its "
             "audio file is missing on disk - cannot mux music that was never persisted"
@@ -649,22 +716,54 @@ def _sfx_content_hashes(timeline: Timeline) -> list[str]:
     return [clip.content_hash for clip in timeline.sfx_plan.clips]
 
 
-def _sfx_overlays(timeline: Timeline, project_id: str, *, fps: int) -> list[tuple[Path, float]]:
-    """`(path, offset_s)` overlays to mix, or empty when DRY_RUN / no clips."""
+def _sfx_overlays(
+    timeline: Timeline, project_id: str, *, fps: int, whoosh_enabled: bool
+) -> list[SfxOverlay]:
+    """Full mix inputs per scheduled SFX event, or empty when DRY_RUN /
+    no clips. Per clip (C3c): its stored peak measurement - or the flat
+    `sfx_gain_db` fallback when unmeasured - is turned into a volume
+    factor through `sfx_normalize_target_db` and the optional per-kind
+    offset. Per clip (C3d): its stored duration becomes an end-aligned
+    trim start when it exceeds `sfx_max_clip_s`. Both values live on the
+    clip inside the hashed timeline document, so this whole assembly is
+    deterministic (I5)."""
     if settings.dry_run:
         return []
     if timeline.sfx_plan is None or not timeline.sfx_plan.clips:
         return []
     by_kind = {clip.kind: clip for clip in timeline.sfx_plan.clips}
-    overlays: list[tuple[Path, float]] = []
-    for event in derive_sfx_events(timeline, fps=fps):
+    kind_offsets = {
+        SfxKind.WHOOSH: settings.sfx_whoosh_gain_db,
+        SfxKind.STINGER: settings.sfx_stinger_gain_db,
+        SfxKind.TRANSITION: settings.sfx_transition_gain_db,
+    }
+    overlays: list[SfxOverlay] = []
+    for event in derive_sfx_events(timeline, fps=fps, whoosh_enabled=whoosh_enabled):
         clip = by_kind.get(event.kind)
         if clip is None:
             continue
-        path = settings.storage_root / project_id / "sfx" / f"{clip.content_hash}.mp3"
-        if not path.exists():
+        # Same glob fix as `_music_file` (C1a #1): override uploads store
+        # non-mp3 extensions too.
+        path = next(
+            iter((settings.storage_root / project_id / "sfx").glob(f"{clip.content_hash}.*")),
+            None,
+        )
+        if path is None:
             continue
-        overlays.append((path, event.offset_s))
+        gain_db = effective_gain_db(
+            clip.peak_dbfs,
+            target_db=settings.sfx_normalize_target_db,
+            fallback_db=settings.sfx_gain_db,
+            kind_offset_db=kind_offsets.get(event.kind),
+        )
+        overlays.append(
+            SfxOverlay(
+                path=path,
+                offset_s=event.offset_s,
+                volume_factor=10 ** (gain_db / 20),
+                trim_start_s=end_aligned_trim_start(clip.duration_s, settings.sfx_max_clip_s),
+            )
+        )
     return overlays
 
 

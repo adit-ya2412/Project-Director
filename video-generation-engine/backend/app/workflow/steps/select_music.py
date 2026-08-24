@@ -59,7 +59,7 @@ import uuid as uuid_module
 from collections.abc import Callable
 
 from app.assets.cost import budget_cap_cents_for, check_budget, total_project_spend_cents
-from app.assets.music_ranking import rank_music_candidates
+from app.assets.music_ranking import pick_seeded_top, rank_music_candidates
 from app.core.config import settings
 from app.core.errors import PermanentError
 from app.providers.base import MusicProvider, MusicSearchQuery
@@ -240,11 +240,27 @@ class SelectMusicStep:
         preferred = [c for c in ranked if c.source_id not in exclude_source_ids]
         ranked = preferred or ranked
 
+        # M10 / analysis.md C2.2: break near-ties by a PROJECT-seeded hash,
+        # not plain source_id - two projects with the same brief must not
+        # land on the same track ("Documentary Music Strings" owned every
+        # documentary brief before this). Quality still decides outside
+        # the near-tie band; see pick_seeded_top's own docstring.
+        if not ranked:
+            return None
+        chosen = pick_seeded_top(
+            ranked,
+            query_terms=plan.search_terms,
+            video_duration_s=video_duration_s,
+            mean_shot_duration_s=mean_shot_duration_s,
+            seed=ctx.project_id,
+        )
+        ordered = [chosen] + [c for c in ranked if c.source_id != chosen.source_id]
+
         clip_repo = GeneratedClipRepository(ctx.session)
         narration_repo = NarrationRepository(ctx.session)
         cap_cents = budget_cap_cents_for(timeline)
 
-        for candidate in ranked:
+        for candidate in ordered:
             try:
                 already_spent = await total_project_spend_cents(
                     clip_repo=clip_repo, narration_repo=narration_repo, project_id=project_uuid

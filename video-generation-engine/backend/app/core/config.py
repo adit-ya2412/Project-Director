@@ -92,7 +92,34 @@ class Settings(BaseSettings):
     # --- ElevenLabs (M5+) ---
     elevenlabs_api_key: str | None = None
     elevenlabs_voice_id: str | None = None
-    elevenlabs_model: str = "eleven_multilingual_v2"
+    # Switched from eleven_multilingual_v2 on 2026-08-24: live A/B probe
+    # (backend/scripts/hinglish_voice_probe.py) against a real Hindi/
+    # English code-switched line showed multilingual_v2 stalling hard at
+    # every script boundary (~30% of total duration was silence, longest
+    # gap 0.9s) regardless of voice_settings.stability tuning, while v3
+    # produced natural-length pauses (~9-11% silence, longest gap 0.3s).
+    # Confirmed by ear, not just the silence-gap numbers. See that
+    # script's docstring for the full probe. CAVEAT: v3's voice_settings.
+    # speed did not reproduce R8's clean, monotonic scaling when re-
+    # checked live the same day - repeat identical requests at the same
+    # speed varied by >1s of duration, and 1.0-vs-1.2 (the actual
+    # production range) was not reliably distinguishable. `speed` is
+    # still wired through for v3, but retention_fast's audible pacing
+    # boost should be re-verified by ear, not assumed.
+    elevenlabs_model: str = "eleven_v3"
+    # ISO 639-1 hint sent as `language_code`. Documented as unsupported
+    # (silently ignored) on eleven_multilingual_v2; on eleven_v3 the
+    # probe above found it accepted (200 OK, no error) alongside a
+    # slightly cleaner switch-boundary pause pattern than the v3
+    # default, confirmed by ear. Global default is None (no hint) - this
+    # codebase narrates BOTH English-only and Hindi/Hinglish projects
+    # (see hindi_test_project.json / hinglish_test_project.json /
+    # m8_test_project.json fixtures), so forcing "hi" here would
+    # mispronounce every English-only project's narration AND bust its
+    # narration cache. Same shape as `elevenlabs_voice_id`: a global
+    # fallback, overridden per-project by `Timeline.metadata
+    # .language_code` (`retry_narration_language`, 2026-08-24).
+    elevenlabs_language_code: str | None = None
     elevenlabs_output_format: str = "mp3_44100_128"
     # Pre-approval estimate and budget-cap check only - not billing, same
     # spirit as the fal_*_cost_cents_estimate values above. Calibrated
@@ -179,6 +206,25 @@ class Settings(BaseSettings):
     sfx_provider: str = "local"
     sfx_library_root: Path = Path("./storage/sfx_library")
     sfx_gain_db: float = -8.0
+    # C3c (analysis.md, decision 5b/5c): a clip with a MEASURED peak is
+    # normalized onto this target; `sfx_gain_db` above remains the
+    # fallback for unmeasured clips (old timelines, failed probes,
+    # DRY_RUN). The per-kind dB offsets below ride on top of either
+    # path; None = no offset for that kind.
+    #
+    # This is an ABSOLUTE OUTPUT PEAK TARGET in dBFS, not a gain - a
+    # different quantity from `sfx_gain_db` above, which is a flat GAIN
+    # applied on top of a clip's existing level. The two must never be
+    # conflated (see analysis.md RV11): C3c specifies the normalization
+    # target as "~-12 dBFS", and -12.0 is what belongs here. A previous
+    # revision (P6) mistakenly reused sfx_gain_db's -8.0 for this field,
+    # which made every real SFX clip in the library LOUDER (peaks were
+    # already below -8 dBFS), the opposite of the desired effect - see
+    # RV11 for the measured before/after table.
+    sfx_normalize_target_db: float = -12.0
+    sfx_whoosh_gain_db: float | None = None
+    sfx_stinger_gain_db: float | None = None
+    sfx_transition_gain_db: float | None = None
     sfx_max_clip_s: float = 1.5
 
     # --- Rendering ---

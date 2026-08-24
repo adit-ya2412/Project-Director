@@ -211,6 +211,9 @@ def main() -> None:
         sfx_content_hashes=[],
         sfx_gain_db=-8.0,
         sfx_max_clip_s=1.5,
+        sfx_whoosh_enabled=True,
+        sfx_normalize_target_db=-8.0,
+        sfx_kind_gain_overrides_db={},
         ffmpeg_version="7.1.5",
     )
     fingerprint_elapsed = time.monotonic() - start

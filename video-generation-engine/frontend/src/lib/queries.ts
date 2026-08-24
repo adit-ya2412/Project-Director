@@ -195,6 +195,20 @@ export function useRetryMusic(projectId: string) {
   });
 }
 
+export function useUploadMusic(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      file,
+      gainOffsetDb,
+    }: {
+      file: File;
+      gainOffsetDb?: number;
+    }) => api.uploadMusic(projectId, file, gainOffsetDb),
+    onSettled: () => invalidateAfterTrigger(qc, projectId),
+  });
+}
+
 export function useRetryNarration(projectId: string) {
   const qc = useQueryClient();
   return useMutation({

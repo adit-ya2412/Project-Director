@@ -53,6 +53,7 @@ def _fingerprint(**overrides) -> str:
         "render_settings": _SETTINGS,
         "music_bed_gain_db": -14.0,
         "music_duck_gain_db": -20.0,
+        "music_gain_offset_db": 0.0,
         "burn_captions": False,
         "caption_font_hash": None,
         "cue_list_hash": None,
@@ -64,6 +65,9 @@ def _fingerprint(**overrides) -> str:
         "sfx_content_hashes": [],
         "sfx_gain_db": -8.0,
         "sfx_max_clip_s": 1.5,
+        "sfx_whoosh_enabled": True,
+        "sfx_normalize_target_db": -8.0,
+        "sfx_kind_gain_overrides_db": {},
         "ffmpeg_version": "ffmpeg version 9.0",
     }
     kwargs.update(overrides)
@@ -189,6 +193,13 @@ def test_different_duck_gain_changes_the_fingerprint():
     assert _fingerprint(music_duck_gain_db=-26.0) != _fingerprint()
 
 
+def test_music_gain_offset_changes_the_fingerprint():
+    """Decision 7 (analysis.md, 2026-08-24): the uploaded track's dB offset
+    changes mixed loudness, so moving it must miss every cached render -
+    the exact R2 shape, applied to the per-track slider instead of config."""
+    assert _fingerprint(music_gain_offset_db=0.0) != _fingerprint(music_gain_offset_db=-6.0)
+
+
 def test_burn_captions_toggle_changes_the_fingerprint():
     """A caption-off and caption-on render of the identical Timeline must
     never collide on one cache entry (docs/14_Captions_Plan.md §6/§8.5)."""
@@ -267,6 +278,28 @@ def test_different_sfx_gain_changes_the_fingerprint():
 def test_different_sfx_max_clip_changes_the_fingerprint():
     """R12: `atrim` length is a mix input."""
     assert _fingerprint(sfx_max_clip_s=1.5) != _fingerprint(sfx_max_clip_s=3.0)
+
+
+def test_sfx_whoosh_gate_changes_the_fingerprint():
+    """Decisions 5 + 5a (analysis.md, 2026-08-24): flipping the per-style
+    WHOOSH gate changes which overlay events get mixed at all, so it must
+    miss every cached render - same R2 shape as sfx_gain_db above."""
+    assert _fingerprint(sfx_whoosh_enabled=True) != _fingerprint(sfx_whoosh_enabled=False)
+
+
+def test_different_sfx_normalize_target_changes_the_fingerprint():
+    """C3c (analysis.md, decision 5b): the normalization target changes
+    every measured clip's volume factor - a cache-HIT here would serve the
+    OLD loudness after retuning the target."""
+    assert _fingerprint(sfx_normalize_target_db=-8.0) != _fingerprint(sfx_normalize_target_db=-12.0)
+
+
+def test_sfx_kind_gain_override_changes_the_fingerprint():
+    """C3c: a per-kind dB offset is a real mix input even when the dict
+    shape (None -> value) is all that changed."""
+    assert _fingerprint(sfx_kind_gain_overrides_db={}) != _fingerprint(
+        sfx_kind_gain_overrides_db={"stinger": -3.0}
+    )
 
 
 def test_bookkeeping_fields_never_affect_the_fingerprint():

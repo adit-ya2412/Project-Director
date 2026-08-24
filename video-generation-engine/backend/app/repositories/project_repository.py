@@ -35,6 +35,7 @@ class ProjectRepository(Protocol):
         name: str,
         render_style: str | None = None,
         frame_aspect: str | None = None,
+        language_code: str | None = None,
     ) -> Project: ...
     async def get(self, project_id: str) -> Project | None: ...
     async def update(self, project: Project) -> Project: ...
@@ -52,8 +53,14 @@ class InMemoryProjectRepository:
         name: str,
         render_style: str | None = None,
         frame_aspect: str | None = None,
+        language_code: str | None = None,
     ) -> Project:
-        project = Project(name=name, render_style=render_style, frame_aspect=frame_aspect)
+        project = Project(
+            name=name,
+            render_style=render_style,
+            frame_aspect=frame_aspect,
+            language_code=language_code,
+        )
         async with self._lock:
             self._projects[project.id] = project
         return project
@@ -95,12 +102,14 @@ class PostgresProjectRepository:
         name: str,
         render_style: str | None = None,
         frame_aspect: str | None = None,
+        language_code: str | None = None,
     ) -> Project:
         model = ProjectModel(
             name=name,
             status=ProjectStatus.CREATED.value,
             render_style=render_style,
             frame_aspect=frame_aspect,
+            language_code=language_code,
         )
         self._session.add(model)
         await self._session.commit()
@@ -140,6 +149,11 @@ class PostgresProjectRepository:
         # means the caller didn't touch it this call, not "clear it".
         if project.render_style is not None:
             model.render_style = project.render_style
+        # Same "set once, staged before a timeline exists" category as
+        # render_style, not frame_aspect's "None is a real value" case -
+        # None here just means the caller didn't touch it this call.
+        if project.language_code is not None:
+            model.language_code = project.language_code
         # None is a real value here (stillness default 16:9, or a
         # non-stillness style that cannot carry an override). Always
         # write, unlike render_style above.
@@ -226,6 +240,7 @@ class PostgresProjectRepository:
             script=script.content if script else None,
             render_style=model.render_style,
             frame_aspect=aspect,
+            language_code=model.language_code,
             render_width=frame.width,
             render_height=frame.height,
             timeline=timeline,

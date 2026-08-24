@@ -48,17 +48,31 @@ class StylePacingBand:
     affects the Shot Planner's pre-narration estimate, never real,
     reconciled shot lengths).
 
-    `narration_speed` is the ElevenLabs speaking-rate multiplier for
-    this style (parent plan §2.1 / R8). Default 1.0 is the API default
-    and keeps the pre-R8 four-value narration cache key. Only
-    `retention_fast` overrides it (~1.2×) — speed is a voice lever that
-    matches delivery to cutting, not a pacing lever that changes the
+    `narration_speed` is the narration speaking-rate multiplier for this
+    style (parent plan §2.1 / R8) - applied via ffmpeg `atempo`
+    (`app/renderer/narration_tempo.py`, 2026-08-24), not an ElevenLabs
+    request parameter (eleven_v3's own `voice_settings.speed` is a
+    documented no-op). Default 1.0 keeps the pre-R8 four-value
+    narration cache key. Only `retention_fast` overrides it (1.4×, bumped
+    from 1.2× the same day v3 exposed how much v3's own natural pacing
+    varies call to call - see `providers/elevenlabs.py`'s `_SPEED_MAX`
+    comment for the live numbers) — speed is a voice lever that matches
+    delivery to cutting, not a pacing lever that changes the
     voice. Hashed into `compute_narration_content_hash`.
 
     `music_bed_gain_db` / `music_duck_gain_db` are None to mean "use
     `settings.*`" (parent plan §5.2 / leftover item 5). Archival keeps
     the measured mix. Fast-cut and stillness override. `0.0` is a
     legitimate value — resolve with `is not None`, never `or`.
+
+    `whoosh_enabled` is the per-style WHOOSH SFX gate (analysis.md
+    decisions 5 + 5a, 2026-08-24): only `retention_fast` turns the layer
+    off — its punch-in density made one clip play ~100 times per reel
+    (analysis.md A4/D3); archival and stillness keep their occasional
+    whooshes. A plain bool defaulting True (the historical behaviour),
+    not Optional-with-settings-fallback: there is no settings-level
+    master switch behind it. Read through `resolve_sfx_whoosh_enabled`,
+    never directly from the band at use sites.
 
     `max_shot_duration_s_override` is the Shot Planner's real validation
     bound - a SEPARATE number from `max_fragment_duration_s` below, fixed
@@ -84,6 +98,10 @@ class StylePacingBand:
     narration_speed: float = 1.0
     music_bed_gain_db: float | None = None
     music_duck_gain_db: float | None = None
+    # Decisions 5 + 5a (analysis.md, 2026-08-24): per-style WHOOSH gate.
+    # See the class docstring paragraph above for why this is a plain
+    # bool rather than the Optional shape the numeric fields use.
+    whoosh_enabled: bool = True
     # None -> settings.render_width/height. `is not None`, never `or`
     # (same rule as music gains). Format rides render_style, frozen at
     # planning start — never grade_style (§19).
@@ -126,11 +144,16 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
         max_shots_override=58,
         min_shot_duration_s_override=0.8,
         max_shot_duration_s_override=3.5,
-        narration_speed=1.2,
+        narration_speed=1.4,
         # §5.2: driving, barely ducked. Offsets from the measured
         # archival mix (-14 / -20), not a new listening pass.
         music_bed_gain_db=-10.0,
         music_duck_gain_db=-14.0,
+        # Decisions 5 + 5a (analysis.md, 2026-08-24): the WHOOSH layer is
+        # OFF for this style - two punch-ins per ~1.75s shot meant one
+        # clip played ~100 times per reel (A4/D3). Stinger and transition
+        # layers are unaffected (D3).
+        whoosh_enabled=False,
         render_width=720,
         render_height=1280,
     ),
@@ -160,6 +183,22 @@ def resolve_narration_speed(style: str | None) -> float:
     if band is None:
         return 1.0
     return band.narration_speed
+
+
+def resolve_sfx_whoosh_enabled(style: str | None) -> bool:
+    """Style-owned WHOOSH SFX gate (analysis.md decisions 5 + 5a).
+
+    Unknown style names resolve to True (there is no band to consult).
+    An UNSET style resolves through `settings.default_render_style`'s
+    band - it inherits whatever the default style says rather than being
+    pinned open here, so it is True today only because that default is
+    `documentary_archival` (config.py). Same fallback shape
+    `resolve_narration_speed` uses for an unrecognised name.
+    """
+    band = STYLE_PACING_BANDS.get(style or settings.default_render_style)
+    if band is None:
+        return True
+    return band.whoosh_enabled
 
 
 @dataclass(frozen=True)

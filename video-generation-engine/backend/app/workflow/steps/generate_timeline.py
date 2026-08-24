@@ -136,6 +136,7 @@ class GenerateTimelineStep:
                     project.script,
                     render_style=project.render_style,
                     frame_aspect=project.frame_aspect,
+                    language_code=project.language_code,
                 )
 
             if settings.dry_run:

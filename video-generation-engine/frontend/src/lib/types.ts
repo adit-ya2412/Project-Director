@@ -257,6 +257,14 @@ export interface WorkflowTriggerResult {
   joined_existing_run: boolean;
 }
 
+// -- POST /projects/{id}/music/upload ----------------------------------------
+
+export interface MusicUploadResult extends WorkflowTriggerResult {
+  /** Decision 6a/6b: length never rejects; these are the human-readable
+   * "will loop N times" / "using the first X of Y" notices. */
+  warnings: string[];
+}
+
 // -- POST /projects/{id}/shots/{shot_id}/generate ----------------------------
 
 export interface GenerateShotImageResult {

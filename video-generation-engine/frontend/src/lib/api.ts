@@ -1,5 +1,6 @@
 import type {
   GenerateShotImageResult,
+  MusicUploadResult,
   Project,
   ProgressResponse,
   RegenerateFailedResult,
@@ -287,6 +288,26 @@ export function retryMusic(
   return request(`/projects/${projectId}/music/retry`, {
     method: "POST",
     body: JSON.stringify(searchTerms ? { search_terms: searchTerms } : {}),
+  });
+}
+
+/** C1 (analysis.md, decisions 6a/6b/7): replace the selected BGM with the
+ * human's own file. Length never rejects - the response carries warnings
+ * the caller should surface. `gainOffsetDb` rides on top of the style's
+ * bed gain and is fingerprinted, so changing it forces a re-render. */
+export function uploadMusic(
+  projectId: string,
+  file: File,
+  gainOffsetDb?: number,
+): Promise<MusicUploadResult> {
+  const form = new FormData();
+  form.append("file", file);
+  if (gainOffsetDb != null && gainOffsetDb !== 0) {
+    form.append("gain_offset_db", String(gainOffsetDb));
+  }
+  return request(`/projects/${projectId}/music/upload`, {
+    method: "POST",
+    body: form,
   });
 }
 

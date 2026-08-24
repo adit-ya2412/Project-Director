@@ -43,12 +43,28 @@ _REQUEST_TIMEOUT_S = 60.0
 
 
 # Live-checked 2026-08-20 against POST .../with-timestamps on
-# eleven_multilingual_v2: voice_settings.speed is accepted, 1.2 is in
-# range, and alignment timestamps scale with it (parent plan §2.1 / R8).
-# The published quality band is 0.7–1.2; the API default is 1.0.
+# eleven_multilingual_v2: voice_settings.speed was accepted there, 1.2
+# was in range, and alignment timestamps scaled with it (parent plan
+# §2.1 / R8). Re-checked live 2026-08-24 against eleven_v3 (the current
+# default model): speed values from 0.5 to 3.0 against identical text
+# produced durations with NO monotonic relationship to the requested
+# value - not weaker, non-functional. `synthesize` below no longer
+# sends it to the API at all; `app/renderer/narration_tempo.py` applies
+# it deterministically via ffmpeg instead, on any model.
+#
+# The upper bound moved from 1.2 to 1.4 the same day, for a DIFFERENT
+# reason than the original "ElevenLabs' published quality band" one:
+# v3's own natural (unadjusted) pacing for identical text swung ~35%
+# call to call in a live check (9.28s-12.56s for the same 147 chars) -
+# a real retention_fast render came out sounding too slow because a
+# slow natural draw, correctly multiplied by 1.2, still lands slower
+# than a lucky unadjusted draw from before this fix existed. 1.4 biases
+# toward staying fast even on a slow draw. Both bounds are comfortably
+# inside `atempo`'s own valid 0.5-2.0 per-instance range regardless, so
+# a single atempo stage always suffices.
 _DEFAULT_SPEED = 1.0
 _SPEED_MIN = 0.7
-_SPEED_MAX = 1.2
+_SPEED_MAX = 1.4
 
 
 def canonical_narration_speed(speed: float) -> float:
@@ -63,6 +79,7 @@ def compute_narration_content_hash(
     model: str,
     output_format: str,
     speed: float = _DEFAULT_SPEED,
+    language_code: str | None = None,
 ) -> str:
     """The cache key for a synthesis request - also the `{content_hash}`
     half of the D3 storage path `{project}/narration/{content_hash}.mp3`.
@@ -79,11 +96,18 @@ def compute_narration_content_hash(
     wrong-speed mp3 rather than re-synthesise. Default 1.0 is omitted
     from the digest so existing four-value rows (every project narrated
     before R8) remain cache hits at the API default.
+
+    `language_code` (2026-08-24) follows the same convention: None is
+    omitted from the digest so every pre-existing row (synthesised
+    before this field existed) stays a cache hit, and only a project
+    that actually sets a language hint pays for a fresh call.
     """
     digest_input = f"{text}|{voice_id}|{model}|{output_format}"
     canonical = canonical_narration_speed(speed)
     if canonical != _DEFAULT_SPEED:
         digest_input += f"|{canonical:.3f}"
+    if language_code:
+        digest_input += f"|{language_code}"
     return hashlib.sha256(digest_input.encode()).hexdigest()
 
 
@@ -103,12 +127,16 @@ class ElevenLabsNarrationProvider:
         url = f"{_API_BASE_URL}/v1/text-to-speech/{request.voice_id}/with-timestamps"
         params = {"output_format": request.output_format}
         payload: dict = {"text": request.text, "model_id": request.model}
-        # Omit voice_settings at the API default so documentary_archival
-        # requests stay byte-identical to the pre-R8 body. Live-checked
-        # 2026-08-20: speed lives under voice_settings, not top-level.
-        speed = canonical_narration_speed(request.speed)
-        if speed != _DEFAULT_SPEED:
-            payload["voice_settings"] = {"speed": speed}
+        # `request.speed` is deliberately NOT sent as `voice_settings.
+        # speed` (2026-08-24) - see this module's own comment above on
+        # why: non-functional on the current default model, and sending
+        # it AND applying `narration_tempo.apply_narration_tempo`
+        # afterward would double the effect on any model where it does
+        # work. `request.speed` still flows into the content hash
+        # (below callers) and `FakeNarrationProvider`'s own DRY_RUN
+        # timing - only the real HTTP request stops asking for it.
+        if request.language_code:
+            payload["language_code"] = request.language_code
 
         try:
             async with httpx.AsyncClient(

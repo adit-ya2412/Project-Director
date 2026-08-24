@@ -1,3 +1,5 @@
+import os
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
@@ -6,6 +8,8 @@ import app.models  # noqa: F401 - registers every model on Base.metadata
 from app.core.config import settings
 from app.db.base import Base
 from app.db.database import engine
+
+_TRUNCATE_ENV_VAR = "PYTEST_TRUNCATE_DB"
 
 
 @pytest.fixture(autouse=True)
@@ -21,7 +25,26 @@ async def clean_database():
     """Truncate every application table before each test so tests never
     see another test's rows. Runs against the real Postgres started via
     `docker compose up -d postgres` (M2) - there is no separate mocked
-    database for integration/e2e tests (docs/12_Testing_Strategy.md)."""
+    database for integration/e2e tests (docs/12_Testing_Strategy.md).
+
+    2026-08-24 (review of P2, analysis.md RV3): this fixture used to be
+    an UNCONDITIONAL autouse truncate - one absent-minded
+    `pytest tests/unit/...` destroyed every real project in the shared
+    database, pure unit tests included. Truncation now requires explicit
+    opt-in via PYTEST_TRUNCATE_DB=1:
+
+    - unset / any other value: the fixture yields WITHOUT touching the
+      database. Pure-function tests pass untouched; tests that genuinely
+      need a clean table fail on their own assertions instead of
+      destroying shared state - the safe direction to err in.
+    - `1`: today's behaviour, unchanged. `make test` sets it, so the
+      documented "one full-suite run, alone, in the foreground" workflow
+      is exactly what it was; ad-hoc invocations against a disposable
+      database must set it themselves.
+    """
+    if os.environ.get(_TRUNCATE_ENV_VAR) != "1":
+        yield
+        return
     tables = [t.name for t in Base.metadata.sorted_tables]
     if not tables:
         # Without the `import app.models` above, no model module is imported

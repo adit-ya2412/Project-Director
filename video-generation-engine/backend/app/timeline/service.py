@@ -154,6 +154,7 @@ class TimelineService:
         *,
         render_style: str | None = None,
         frame_aspect: str | None = None,
+        language_code: str | None = None,
     ) -> Timeline:
         """Bootstrap version 1: an empty Timeline, before any planner has
         run. Real content arrives via `append_version` (the Director's
@@ -169,7 +170,16 @@ class TimelineService:
         prompt-fragment lookup both already treat `None` as "use
         `settings.default_render_style`" wherever they read it, so
         resolving it prematurely would just be a second place that
-        default could drift from the first."""
+        default could drift from the first.
+
+        `language_code` (2026-08-24) is the same one-time hand-off from
+        `ProjectModel.language_code`, except it is NOT frozen the way
+        render_style/frame_aspect are: `POST /narration/retry-language`
+        can still change `metadata.language_code` on a later version, the
+        same "correctable after the fact" shape `voice_id` already has -
+        this parameter only avoids paying for a wrong-hint first
+        narration pass on a project that already knows its language at
+        creation time."""
         pid = uuid.UUID(project_id)
         if await self._repo.get_latest(pid) is not None:
             raise PermanentError(f"project {project_id} already has a timeline")
@@ -186,6 +196,7 @@ class TimelineService:
                 language=settings.default_language,
                 render_style=render_style,
                 frame_aspect=frame_aspect,
+                language_code=language_code,
                 aspect_ratio=resolve_render_format(
                     render_style, frame_aspect=frame_aspect
                 ).aspect_ratio,

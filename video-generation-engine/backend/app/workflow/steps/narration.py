@@ -104,8 +104,13 @@ from app.core.config import settings
 from app.core.errors import PermanentError, TransientError
 from app.planners.fragments import split_narration_fragments
 from app.providers.base import NarrationProvider, NarrationRequest
-from app.providers.elevenlabs import ElevenLabsNarrationProvider, compute_narration_content_hash
+from app.providers.elevenlabs import (
+    ElevenLabsNarrationProvider,
+    canonical_narration_speed,
+    compute_narration_content_hash,
+)
 from app.providers.fakes.narration import FakeNarrationProvider
+from app.renderer.narration_tempo import apply_narration_tempo
 from app.repositories.generated_clip_repository import GeneratedClipRepository
 from app.repositories.narration_repository import NarrationRepository
 from app.schemas.timeline import ProducedBy, Scene, Timeline, TimelineStatus
@@ -203,6 +208,8 @@ class NarrationStep:
             # content hash deterministic, which is what the cache needs.
             voice_id = _DRY_RUN_VOICE_ID
 
+        language_code = timeline.metadata.language_code or settings.elevenlabs_language_code
+
         # Everything from here on can fail for reasons that map onto the
         # three step outcomes (mirrors GenerateTimelineStep.run): a
         # transient provider error is safe to retry (the cache means no
@@ -218,7 +225,9 @@ class NarrationStep:
         already_approved = timeline.status == TimelineStatus.APPROVED
 
         try:
-            alignments = await self._synthesize_scene_alignments(ctx, timeline, voice_id=voice_id)
+            alignments = await self._synthesize_scene_alignments(
+                ctx, timeline, voice_id=voice_id, language_code=language_code
+            )
             new_timeline = await self._reconcile_and_append(ctx, timeline, alignments)
         except TransientError as exc:
             return StepResult(outcome="retry", error=str(exc))
@@ -238,7 +247,7 @@ class NarrationStep:
         return StepResult(outcome="ok")
 
     async def _synthesize_scene_alignments(
-        self, ctx: RunContext, timeline: Timeline, *, voice_id: str
+        self, ctx: RunContext, timeline: Timeline, *, voice_id: str, language_code: str | None
     ) -> dict[str, SceneAlignment]:
         """One TTS request per unique content hash (D1: per-scene text,
         settled), reusing the global content-hash cache. A hash already
@@ -269,6 +278,7 @@ class NarrationStep:
                 model=settings.elevenlabs_model,
                 output_format=settings.elevenlabs_output_format,
                 speed=speed,
+                language_code=language_code,
             )
             hash_to_scene_ids.setdefault(content_hash, []).append(scene.id)
 
@@ -338,11 +348,26 @@ class NarrationStep:
                         output_format=settings.elevenlabs_output_format,
                         scene_id=job.scene_id,
                         speed=speed,
+                        language_code=language_code,
                     )
                 )
+                content, alignment = result.content, result.alignment
+                if not settings.dry_run:
+                    # FakeNarrationProvider (DRY_RUN) already fabricates
+                    # its alignment at the right rate itself and its
+                    # `content` isn't real audio ffmpeg could process -
+                    # this step is real-provider only (narration_tempo.py's
+                    # own docstring covers why speed lives here now, not
+                    # in the ElevenLabs request).
+                    content, alignment = await apply_narration_tempo(
+                        content,
+                        alignment,
+                        canonical_narration_speed(speed),
+                        ffmpeg_binary=settings.ffmpeg_binary,
+                    )
                 path = project_dir / f"{job.content_hash}.mp3"
-                path.write_bytes(result.content)
-                _write_alignment_sidecar(path, result.alignment)
+                path.write_bytes(content)
+                _write_alignment_sidecar(path, alignment)
                 async with db_lock:
                     await narration_repo.insert(
                         project_id=project_uuid,
@@ -354,11 +379,11 @@ class NarrationStep:
                         text=job.text,
                         content_hash=job.content_hash,
                         local_path=str(path),
-                        alignment=result.alignment,
+                        alignment=alignment,
                         character_count=result.character_count,
                         cost_cents=job.estimated_cents,
                     )
-                return result.alignment
+                return alignment
 
             results = await reserve_then_gather(
                 jobs,

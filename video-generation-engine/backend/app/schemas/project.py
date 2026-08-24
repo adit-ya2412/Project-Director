@@ -41,6 +41,10 @@ class Project(BaseModel):
     # `None` means "use settings.default_render_style".
     render_style: str | None = None
     frame_aspect: str | None = None
+    # ISO 639-1 hint for ElevenLabs' `language_code` param, staged the
+    # same way as render_style/frame_aspect - see `ProjectModel
+    # .language_code`'s own docstring for the full contract.
+    language_code: str | None = None
     render_width: int | None = None
     render_height: int | None = None
     timeline: Timeline | None = None

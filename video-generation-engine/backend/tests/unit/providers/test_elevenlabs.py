@@ -76,9 +76,40 @@ async def test_synthesize_sends_voice_id_in_url_and_model_in_body(monkeypatch):
     assert seen_bodies[0]["model_id"] == "eleven_multilingual_v2"
     # Default speed 1.0 is omitted so the pre-R8 body stays byte-identical.
     assert "voice_settings" not in seen_bodies[0]
+    # Default language_code (None) is omitted the same way.
+    assert "language_code" not in seen_bodies[0]
 
 
-async def test_synthesize_sends_speed_under_voice_settings(monkeypatch):
+async def test_synthesize_sends_language_code_when_set(monkeypatch):
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "fake-key")
+    seen_bodies = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_bodies.append(json.loads(request.content))
+        return httpx.Response(200, json=_elevenlabs_response())
+
+    provider = ElevenLabsNarrationProvider(transport=httpx.MockTransport(handler))
+    await provider.synthesize(
+        NarrationRequest(
+            text=_REQUEST.text,
+            voice_id=_REQUEST.voice_id,
+            model=_REQUEST.model,
+            output_format=_REQUEST.output_format,
+            scene_id=_REQUEST.scene_id,
+            language_code="hi",
+        )
+    )
+
+    assert seen_bodies[0]["language_code"] == "hi"
+
+
+async def test_synthesize_never_sends_speed_to_the_api(monkeypatch):
+    """2026-08-24: voice_settings.speed is a documented no-op on
+    eleven_v3 (live-checked - see narration_tempo.py's own docstring),
+    so pacing moved to ffmpeg post-processing instead. `request.speed`
+    must never reach the HTTP body regardless of its value - sending it
+    AND applying narration_tempo would double the effect on any model
+    where it does still work."""
     monkeypatch.setattr(settings, "elevenlabs_api_key", "fake-key")
     seen_bodies = []
 
@@ -98,7 +129,7 @@ async def test_synthesize_sends_speed_under_voice_settings(monkeypatch):
         )
     )
 
-    assert seen_bodies[0]["voice_settings"] == {"speed": 1.2}
+    assert "voice_settings" not in seen_bodies[0]
 
 
 async def test_synthesize_persists_raw_alignment_never_normalized(monkeypatch):
@@ -221,6 +252,14 @@ def test_content_hash_is_stable_and_sensitive_to_every_input():
     )
     assert base_hash != compute_narration_content_hash(
         text="hello", voice_id="v1", model="m1", output_format="o1", speed=1.2
+    )
+    # Default None keeps the pre-existing key (every row narrated before
+    # language_code existed); an actual hint changes it.
+    assert base_hash == compute_narration_content_hash(
+        text="hello", voice_id="v1", model="m1", output_format="o1", language_code=None
+    )
+    assert base_hash != compute_narration_content_hash(
+        text="hello", voice_id="v1", model="m1", output_format="o1", language_code="hi"
     )
 
 

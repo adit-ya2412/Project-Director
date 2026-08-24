@@ -105,3 +105,4 @@ backups/
 # Playwright / review-UI screenshots and other local scratch — testing
 # artifacts, never committed.
 tmp/
+

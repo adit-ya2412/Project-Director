@@ -201,6 +201,11 @@ class NarrationRequest:
     (`Timeline.metadata.voice_id`) or language can vary the first three
     independently of any global default; `speed` is style-owned
     (parent plan §2.1 — 1.2 on `retention_fast`, 1.0 elsewhere).
+
+    `language_code` (ISO 639-1) is optional and defaults to None (field
+    omitted entirely) - it hints the model's language for code-switched
+    scripts (2026-08-24, hinglish_voice_probe.py). None keeps existing
+    cache rows valid, same convention as `speed`'s 1.0 default.
     """
 
     text: str
@@ -209,6 +214,7 @@ class NarrationRequest:
     output_format: str
     scene_id: str
     speed: float = 1.0
+    language_code: str | None = None
 
 
 @dataclass(frozen=True)

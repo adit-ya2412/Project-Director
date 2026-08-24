@@ -28,7 +28,7 @@ run:
 	$(PY) -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --app-dir $(BACKEND)
 
 test:
-	$(PY) -m pytest --rootdir=$(BACKEND) -c $(BACKEND)/pytest.ini
+	PYTEST_TRUNCATE_DB=1 $(PY) -m pytest --rootdir=$(BACKEND) -c $(BACKEND)/pytest.ini
 
 lint:
 	$(PY) -m ruff check .

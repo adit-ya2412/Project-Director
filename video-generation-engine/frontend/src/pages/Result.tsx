@@ -13,6 +13,7 @@ import {
   useRetryMusic,
   useRetryNarration,
   useRenderOnly,
+  useUploadMusic,
 } from "@/lib/queries";
 import { videoUrl } from "@/lib/api";
 import { formatCostCents } from "@/lib/format";
@@ -69,11 +70,17 @@ export function Result() {
   });
   const { data: timeline } = useTimeline(projectId);
   const retryMusic = useRetryMusic(projectId ?? "");
+  const uploadMusic = useUploadMusic(projectId ?? "");
   const retryNarration = useRetryNarration(projectId ?? "");
   const renderOnly = useRenderOnly(projectId ?? "");
 
   const [voiceId, setVoiceId] = useState("");
   const [musicTerms, setMusicTerms] = useState("");
+  // C1 upload (analysis.md decisions 6a/6b/7): file + dB offset slider.
+  // Warnings are surfaced as a toast BEFORE the progress-page hop, since
+  // that navigation is what the correction family always does.
+  const [musicFile, setMusicFile] = useState<File | null>(null);
+  const [musicGainDb, setMusicGainDb] = useState("0");
 
   useEffect(() => {
     const corrected = searchParams.get("corrected");
@@ -152,6 +159,33 @@ export function Result() {
           variant: "destructive",
         }),
     });
+    navigate(`/projects/${projectId}/progress?pending=music`);
+  }
+
+  function handleUploadMusic() {
+    if (!musicFile) return;
+    uploadMusic.mutate(
+      { file: musicFile, gainOffsetDb: Number(musicGainDb) || 0 },
+      {
+        onSuccess: (res) => {
+          const warnings = res.warnings ?? [];
+          toast({
+            title: "Your music is being applied…",
+            description:
+              warnings.length > 0
+                ? warnings.join(" ")
+                : "Free — the video re-renders with your track.",
+          });
+        },
+        onError: (err) =>
+          toast({
+            title: "Could not upload music",
+            description:
+              err instanceof ApiError ? String(err.detail) : "Try again.",
+            variant: "destructive",
+          }),
+      },
+    );
     navigate(`/projects/${projectId}/progress?pending=music`);
   }
 
@@ -316,6 +350,38 @@ export function Result() {
             <Button size="sm" onClick={handleRetryMusic}>
               Search again
             </Button>
+            <div className="space-y-2 border-t pt-3">
+              <Label htmlFor="music-file">
+                Or upload your own track (mp3/wav/m4a/ogg/flac)
+              </Label>
+              <Input
+                id="music-file"
+                type="file"
+                accept="audio/*,.mp3,.wav,.m4a,.ogg,.flac"
+                onChange={(e) => setMusicFile(e.target.files?.[0] ?? null)}
+              />
+              <Label htmlFor="music-gain">Volume offset (dB, −40 to +24)</Label>
+              <Input
+                id="music-gain"
+                type="number"
+                step={1}
+                min={-40}
+                max={24}
+                value={musicGainDb}
+                onChange={(e) => setMusicGainDb(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Raise it if your track is too quiet under the narration,
+                lower it if it drowns it out.
+              </p>
+              <Button
+                size="sm"
+                onClick={handleUploadMusic}
+                disabled={!musicFile}
+              >
+                Upload &amp; use this track
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </div>

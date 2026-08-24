@@ -149,3 +149,92 @@ async def validate_and_identify_video(
         return "mp4", width, height
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+_AUDIO_EXTENSION_BY_FORMAT = {
+    "mp3": "mp3",
+    "wav": "wav",
+    "flac": "flac",
+    "ogg": "ogg",
+    "oga": "ogg",
+    "m4a": "m4a",
+}
+
+
+async def validate_and_identify_audio(
+    content: bytes, *, ffprobe_binary: str = "ffprobe"
+) -> tuple[str, float]:
+    """Audio counterpart to `validate_and_identify_video` above (analysis.md
+    C1, decisions 6a/6b) - Pillow cannot open an audio container either,
+    so this shells out to ffprobe with the same "positively confirm a real
+    audio stream with a positive duration" discipline. Length is NEVER a
+    rejection reason here (decision 6a/6b: accept any duration and let the
+    caller warn) - only undecodable bytes or an unsupported format are.
+
+    Returns `(file_extension, duration_seconds)`; raises `PermanentError`
+    for anything else. The extension comes from ffprobe's own
+    `format_name` (unlike video's hard-coded mp4, audio genuinely arrives
+    in several containers), mapped through `_AUDIO_EXTENSION_BY_FORMAT` -
+    it decides only what the file is NAMED on disk, never whether ffmpeg
+    can read it back (it already proved it can). A video container carrying
+    an audio stream (.mp4/.mov) maps to `m4a` - its audio is decodable all
+    the same, which is the only thing the renderer ever does with it."""
+    if len(content) > settings.max_download_bytes:
+        raise PermanentError(
+            f"uploaded file is {len(content)} bytes, exceeding the "
+            f"{settings.max_download_bytes} byte cap"
+        )
+
+    with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = Path(tmp.name)
+
+    try:
+        args = [
+            ffprobe_binary,
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_type,duration:format=duration,format_name",
+            "-of",
+            "json",
+            str(tmp_path),
+        ]
+        process = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            raise PermanentError(
+                f"uploaded content is not decodable audio: {stderr.decode(errors='replace')}"
+            )
+        try:
+            data = json.loads(stdout.decode())
+        except json.JSONDecodeError as exc:
+            raise PermanentError(f"uploaded content is not decodable audio: {exc}") from exc
+
+        streams = data.get("streams") or []
+        if not streams or streams[0].get("codec_type") != "audio":
+            raise PermanentError("uploaded content has no audio stream")
+
+        raw_duration = (data.get("format") or {}).get("duration") or streams[0].get("duration")
+        try:
+            duration = float(raw_duration) if raw_duration is not None else 0.0
+        except (TypeError, ValueError):
+            duration = 0.0
+        if duration <= 0:
+            raise PermanentError("uploaded audio has no positive duration")
+
+        raw_format_name = (data.get("format") or {}).get("format_name") or ""
+        for token in raw_format_name.split(","):
+            extension = _AUDIO_EXTENSION_BY_FORMAT.get(token.strip().lower())
+            if extension is not None:
+                return extension, duration
+
+        raise PermanentError(
+            f"unsupported audio format {raw_format_name!r} - supported: " "mp3, wav, m4a, ogg, flac"
+        )
+    finally:
+        tmp_path.unlink(missing_ok=True)

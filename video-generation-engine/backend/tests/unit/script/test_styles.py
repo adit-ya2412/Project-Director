@@ -17,6 +17,7 @@ from app.script.styles import (
     resolve_music_gains,
     resolve_narration_speed,
     resolve_render_format,
+    resolve_sfx_whoosh_enabled,
 )
 
 
@@ -136,13 +137,33 @@ def test_max_shot_duration_s_override_is_independent_of_the_dead_stop_ceiling():
     assert max_shot_duration_s == band.max_shot_duration_s_override
 
 
-def test_retention_fast_narration_speed_is_1_2_and_others_stay_at_default():
+def test_retention_fast_narration_speed_is_1_4_and_others_stay_at_default():
     """R8: speed is a style parameter. Default 1.0 keeps the pre-R8
-    four-value cache key; only retention_fast overrides it."""
+    four-value cache key; only retention_fast overrides it (1.4x as of
+    2026-08-24 - see StylePacingBand's own narration_speed docstring)."""
     assert resolve_narration_speed(None) == 1.0
     assert resolve_narration_speed("documentary_archival") == 1.0
     assert resolve_narration_speed("stillness") == 1.0
-    assert resolve_narration_speed("retention_fast") == 1.2
+    assert resolve_narration_speed("retention_fast") == 1.4
+
+
+def test_retention_fast_gates_whoosh_off_and_others_stay_on():
+    """Decisions 5 + 5a (analysis.md, 2026-08-24) / RV5 (review of P1+P2,
+    2026-08-24): the WHOOSH SFX layer is a per-style gate, resolved once
+    by the caller (`render.py`, RV2) rather than re-resolved at each use
+    site. Only `retention_fast` turns it off - same fallback shape as
+    `resolve_narration_speed` above."""
+    assert resolve_sfx_whoosh_enabled("retention_fast") is False
+    assert resolve_sfx_whoosh_enabled("documentary_archival") is True
+    assert resolve_sfx_whoosh_enabled("stillness") is True
+    # True here because settings.default_render_style (documentary_archival)
+    # keeps whoosh_enabled at its True default - unset is NOT pinned open
+    # independently of the style registry, it inherits the default style's
+    # own band (see resolve_sfx_whoosh_enabled's own docstring).
+    assert resolve_sfx_whoosh_enabled(None) is True
+    # No band to consult for an unrecognised name - True, the same
+    # no-band fallback resolve_narration_speed uses.
+    assert resolve_sfx_whoosh_enabled("no_such_style") is True
 
 
 def test_documentary_archival_is_1280x720_and_retention_fast_stays_portrait():
@@ -206,7 +227,7 @@ def test_draft_format_follows_the_style_aspect():
         settings.draft_height,
     )
     assert resolve_narration_speed("not_a_real_style") == 1.0
-    assert STYLE_PACING_BANDS["retention_fast"].narration_speed == 1.2
+    assert STYLE_PACING_BANDS["retention_fast"].narration_speed == 1.4
 
 
 def test_music_gains_are_style_owned_and_archival_keeps_the_measured_mix():
