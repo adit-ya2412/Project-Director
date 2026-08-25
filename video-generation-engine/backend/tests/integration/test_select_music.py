@@ -182,7 +182,15 @@ async def test_is_satisfied_true_after_a_completed_selection(project_id, monkeyp
         assert await step.is_satisfied(ctx) is True
 
 
-async def test_licence_gate_rejects_a_non_matching_candidate(project_id, monkeypatch):
+async def test_no_licence_gate_a_non_matching_candidate_is_still_selected(project_id, monkeypatch):
+    """2026-08-25: music selection no longer filters by licence at all -
+    a deliberate product decision, and also the fix for a real bug this
+    gate had (the Director's `licence_requirements` used Openverse's
+    short vocabulary - "cc0"/"by" - which the curated local library's
+    real licence strings, e.g. "cc-by-4.0", never matched, so the old
+    gate silently rejected every local-library track regardless of this
+    decision). A candidate whose licence doesn't appear in
+    `licence_requirements` at all must still be selected."""
     monkeypatch.setattr(settings, "dry_run", False)
     await _seed_timeline_with_music_plan(project_id, licence_requirements=["cc0"])
 
@@ -193,7 +201,7 @@ async def test_licence_gate_rejects_a_non_matching_candidate(project_id, monkeyp
                 source_id="t1",
                 source_url="http://example.test/t1",
                 title="documentary underscore, wartime",
-                licence="pixabay_extended",  # not "cc0" - must be rejected
+                licence="pixabay_extended",  # not "cc0" - selected anyway
             )
         ],
         content_by_id={"t1": content},
@@ -207,8 +215,9 @@ async def test_licence_gate_rejects_a_non_matching_candidate(project_id, monkeyp
         timeline = await ctx.timeline_service.get_active(project_id)
 
     assert timeline.music_plan.selection_attempted is True
-    assert timeline.music_plan.selected_track is None
-    assert provider.fetch_calls == []  # never even downloaded a licence-rejected candidate
+    assert timeline.music_plan.selected_track is not None
+    assert timeline.music_plan.selected_track.licence == "pixabay_extended"
+    assert provider.fetch_calls == ["t1"]
 
 
 async def test_a_matching_candidate_is_selected_and_recorded_with_full_provenance(

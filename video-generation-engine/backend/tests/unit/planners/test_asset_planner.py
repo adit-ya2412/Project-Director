@@ -193,13 +193,13 @@ async def test_asset_plan_rejects_sentence_length_search_queries(project_id, mon
             )
 
 
-async def test_asset_plan_fails_loudly_once_the_video_shot_cap_is_exceeded(project_id):
-    """A4 (motion_new_styles_and_long_form_videos.md, 2026-08-18): the
-    cap is a running, cross-scene count checked and failed the moment
-    it's exceeded - mirroring `ShotPlanner.plan()`'s own `max_shots_per_
-    project` check exactly (same file, same "loud failure, never silent
-    merging" reasoning, since the model is never asked to reduce its own
-    video count)."""
+async def test_asset_plan_downgrades_excess_video_shots_to_image(project_id):
+    """The cap is a running, cross-scene count only knowable after every
+    scene is back (each scene plans blind to the others). Rather than
+    fail the whole run, the excess is downgraded to image, in scene/shot
+    order — keeping the first `max_video_shots_per_project` video shots
+    and demoting the rest, since the model was never asked to reduce its
+    own count."""
     scene = _scene_with_shots()
     both_video = _valid_output()
     both_video.asset_plans[0].preferred_type = PreferredMediaType.VIDEO
@@ -219,8 +219,21 @@ async def test_asset_plan_fails_loudly_once_the_video_shot_cap_is_exceeded(proje
         provider = FakePlanningProvider(responses=[both_video])
         planner = AssetPlanner(provider, LlmCallRepository(session))
 
-        with pytest.raises(PermanentError, match="max_video_shots_per_project"):
-            await planner.plan(project_id=project_id, scenes=[scene], max_video_shots_per_project=1)
+        [planned] = await planner.plan(
+            project_id=project_id, scenes=[scene], max_video_shots_per_project=1
+        )
+
+        plans_by_id = {shot.id: shot.asset_plan for shot in planned.shots}
+        assert plans_by_id["sh_01"].preferred_type == PreferredMediaType.VIDEO
+        assert plans_by_id["sh_01"].strategy == AssetStrategy.GENERATE_VIDEO
+        assert plans_by_id["sh_01"].fallback_chain == [
+            AssetStrategy.GENERATE_VIDEO,
+            AssetStrategy.GENERATE_IMAGE,
+        ]
+
+        assert plans_by_id["sh_02"].preferred_type == PreferredMediaType.IMAGE
+        assert plans_by_id["sh_02"].strategy == AssetStrategy.GENERATE_IMAGE
+        assert plans_by_id["sh_02"].fallback_chain == [AssetStrategy.GENERATE_IMAGE]
 
 
 async def test_asset_plan_rejects_missing_licence_requirements(project_id, monkeypatch):

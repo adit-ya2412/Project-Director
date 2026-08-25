@@ -289,6 +289,13 @@ class SetRenderStyleRequest(BaseModel):
     frame_aspect: str | None = None
 
 
+class SetLanguageRequest(BaseModel):
+    # Same "real value, not a placeholder" note as SetGradeRequest's own
+    # grade_style: None is the explicit "no language_code hint" choice
+    # (most projects), not an unset field.
+    language_code: str | None = None
+
+
 class SetGradeRequest(BaseModel):
     # `None` clears the override, reverting to whatever `render_style`'s
     # own grade is - a real, useful reset case (R5, §13.5), not just a
@@ -570,6 +577,47 @@ async def set_render_style(
     # a value is the 16:9 default. Always write, never keep a stale reel
     # flag from a previous stillness choice.
     project.frame_aspect = body.frame_aspect if body.render_style == "stillness" else None
+    return await repo.update(project)
+
+
+@router.post("/{project_id}/language", response_model=Project)
+async def set_language(
+    project_id: str,
+    body: SetLanguageRequest,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+) -> Project:
+    """`language_code`'s own pre-planning counterpart to `set_render_style`
+    just above - same reason it exists: `CreateProjectRequest.language_code`
+    freezes onto `Timeline.metadata.language_code` the moment
+    `GenerateTimelineStep` creates the initial Timeline (2026-08-25), so a
+    project whose creation call raced ahead of the human finishing their
+    language choice (the UI creates the project as soon as the script
+    preflight check needs one, which can be well before the human is done
+    picking) needs a way to correct it before that freeze happens. After
+    the freeze, `POST /narration/retry-language` is the correction path
+    instead - this endpoint would otherwise silently no-op past that
+    point, so it refuses instead, same as `set_render_style`.
+
+    Note this is a genuinely different default from `settings
+    .elevenlabs_language_code` (`None` - no hint, since most projects
+    need none): the CREATE form defaults its own selector to `"hi"` in
+    the absence of an explicit human choice, since this codebase's real
+    usage skews Hindi/Hinglish - but that is a UI default, not a second
+    global one, and nothing stops a human picking anything else, or
+    clearing it, right here."""
+    project = await _get_project_or_404(project_id, repo)
+    active = await timeline_service.get_active(project_id)
+    if active is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "language cannot be changed here after planning has started - "
+                f"project {project_id} already has an active timeline; use "
+                "POST /narration/retry-language instead"
+            ),
+        )
+    project.language_code = body.language_code
     return await repo.update(project)
 
 

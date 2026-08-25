@@ -32,9 +32,9 @@ closed decision (no side table for this either).
 
 ## Failure is never fatal here (A22's precedent, extended)
 
-A provider raising entirely, every candidate failing its licence gate,
-or every fetched candidate failing audio validation all converge on the
-same outcome: `selected_track=None`, `selection_attempted=True`. This
+A provider raising entirely, ranking returning nothing, or every fetched
+candidate failing audio validation all converge on the same outcome:
+`selected_track=None`, `selection_attempted=True`. This
 step never returns `outcome="failed"` for any of that - a project with
 no suitable track must still render, silent-but-narrated, never
 unfinished for a reason as minor as "no royalty-free track matched the
@@ -45,8 +45,9 @@ applied to the one remaining pre-approval acquisition question.
 ## DRY_RUN
 
 `FakeMusicProvider` always finds a canned candidate, so DRY_RUN exercises
-this step's real selection logic (search, licence gate, ranking,
-recording the choice) end to end - but its "audio" is a literal fake
+this step's real selection logic (search, ranking, recording the
+choice - no licence gate, per this step's own 2026-08-25 decision to
+stop filtering music by licence) end to end - but its "audio" is a literal fake
 byte string, not decodable media, same idiom as `FakeNarrationProvider`.
 So audio validation (ffprobe) and writing anything to
 `storage/.../music/` are both skipped under DRY_RUN; `RenderStep` skips
@@ -210,14 +211,15 @@ class SelectMusicStep:
         except Exception:  # noqa: BLE001 - A22's precedent: degrade, never block
             return None
 
-        # Licence is a hard gate here too, same principle as visual
-        # assets (implementation guide, Phase M6 advice) - a candidate
-        # whose licence isn't acceptable is discarded outright.
-        eligible = [
-            c
-            for c in candidates
-            if not plan.licence_requirements or c.licence in plan.licence_requirements
-        ]
+        # Licence gate removed for music (2026-08-25, explicit product
+        # decision - unlike the visual asset ladder, which still gates on
+        # licence). It was also silently broken: the Director's prompt
+        # emits `licence_requirements` in Openverse's short vocabulary
+        # ("cc0"/"by"), but the curated local library - the default
+        # provider - reports full Creative Commons strings ("cc-by-4.0",
+        # "cc0-1.0", ...), so the exact-match gate rejected every track
+        # in the library, every time, regardless of this decision.
+        eligible = candidates
         ranked = rank_music_candidates(
             eligible,
             query_terms=plan.search_terms,

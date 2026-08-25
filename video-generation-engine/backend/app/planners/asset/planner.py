@@ -12,7 +12,7 @@ planner stage.
 import asyncio
 import uuid
 
-from app.core.errors import PermanentError
+from app.core.logging import get_logger
 from app.planners.asset.schemas import AssetPlannerOutput, AssetPlanShotOutput
 from app.planners.repair import run_structured_with_repair
 from app.prompts.loader import load_prompt
@@ -27,6 +27,8 @@ from app.schemas.timeline import (
     Scene,
 )
 from app.utils.bounded_gather import bounded_gather, planner_concurrency
+
+logger = get_logger(__name__)
 
 
 def _build_user_content(scene: Scene) -> str:
@@ -138,6 +140,27 @@ def _make_validator(scene: Scene):
     return _validate
 
 
+def _downgrade_to_image(plan: AssetPlan) -> AssetPlan:
+    """Demote an over-cap video plan to image, keeping `strategy` and
+    `fallback_chain` consistent with `preferred_type` - both feed
+    `estimate_project_cost_cents` (app/assets/cost.py) independently of
+    `preferred_type`, so leaving `strategy=GENERATE_VIDEO` on a plan
+    whose `preferred_type` now says image would overstate the estimate."""
+    strategy = (
+        AssetStrategy.GENERATE_IMAGE
+        if plan.strategy == AssetStrategy.GENERATE_VIDEO
+        else plan.strategy
+    )
+    fallback_chain = [s for s in plan.fallback_chain if s != AssetStrategy.GENERATE_VIDEO]
+    return plan.model_copy(
+        update={
+            "preferred_type": PreferredMediaType.IMAGE,
+            "strategy": strategy,
+            "fallback_chain": fallback_chain,
+        }
+    )
+
+
 def _to_domain(p: AssetPlanShotOutput) -> AssetPlan:
     return AssetPlan(
         entity=p.entity,
@@ -195,7 +218,14 @@ class AssetPlanner:
             if isinstance(item, Exception):
                 raise item
             planned_scenes.append(item)
-        # Cap AFTER gather — same race as the shot cap (Track C §2.4).
+        # Cap AFTER gather — same race as the shot cap (Track C §2.4). Each
+        # scene is planned blind to every other scene's choices, so the
+        # project-wide video count can only be known once every scene is
+        # back. Rather than fail the whole run over it (the original A4
+        # behaviour - the model was never asked to reduce its own count,
+        # so failing just stopped the run before more got planned), the
+        # excess is downgraded to image here, in scene/shot order, keeping
+        # only the first `max_video_shots_per_project` video shots.
         video_shot_count = sum(
             1
             for scene in planned_scenes
@@ -204,8 +234,27 @@ class AssetPlanner:
             and shot.asset_plan.preferred_type == PreferredMediaType.VIDEO
         )
         if video_shot_count > max_video_shots_per_project:
-            raise PermanentError(
-                f"asset planner exceeded max_video_shots_per_project "
-                f"({max_video_shots_per_project}) - {video_shot_count} video shots planned"
+            logger.warning(
+                "asset_planner.video_cap_exceeded_downgrading",
+                extra={
+                    "project_id": project_id,
+                    "cap": max_video_shots_per_project,
+                    "planned": video_shot_count,
+                },
             )
+            seen = 0
+            downgraded_scenes: list[Scene] = []
+            for scene in planned_scenes:
+                new_shots = []
+                for shot in scene.shots:
+                    plan = shot.asset_plan
+                    if plan is not None and plan.preferred_type == PreferredMediaType.VIDEO:
+                        seen += 1
+                        if seen > max_video_shots_per_project:
+                            shot = shot.model_copy(
+                                update={"asset_plan": _downgrade_to_image(plan)}
+                            )
+                    new_shots.append(shot)
+                downgraded_scenes.append(scene.model_copy(update={"shots": new_shots}))
+            planned_scenes = downgraded_scenes
         return planned_scenes

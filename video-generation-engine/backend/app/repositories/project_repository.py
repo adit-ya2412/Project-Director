@@ -149,11 +149,14 @@ class PostgresProjectRepository:
         # means the caller didn't touch it this call, not "clear it".
         if project.render_style is not None:
             model.render_style = project.render_style
-        # Same "set once, staged before a timeline exists" category as
-        # render_style, not frame_aspect's "None is a real value" case -
-        # None here just means the caller didn't touch it this call.
-        if project.language_code is not None:
-            model.language_code = project.language_code
+        # None is a real value here too, same reason as frame_aspect right
+        # below (2026-08-25, `set_language`'s own endpoint needs to be able
+        # to explicitly CLEAR a language hint, not just set one) - every
+        # caller of `update()` fetched this Project via `get()` first
+        # (`_to_schema` always populates the CURRENT DB value), so `None`
+        # here always means "clear it", never "this caller didn't touch
+        # it" the way a fresh, never-fetched Project's default would.
+        model.language_code = project.language_code
         # None is a real value here (stillness default 16:9, or a
         # non-stillness style that cannot carry an override). Always
         # write, unlike render_style above.
