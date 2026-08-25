@@ -75,7 +75,11 @@ export function getProject(projectId: string): Promise<Project> {
 
 export function createProject(
   name: string,
-  opts?: { render_style?: string | null; frame_aspect?: string | null },
+  opts?: {
+    render_style?: string | null;
+    frame_aspect?: string | null;
+    language_code?: string | null;
+  },
 ): Promise<Project> {
   return request("/projects", {
     method: "POST",
@@ -83,6 +87,7 @@ export function createProject(
       name,
       ...(opts?.render_style ? { render_style: opts.render_style } : {}),
       ...(opts?.frame_aspect ? { frame_aspect: opts.frame_aspect } : {}),
+      ...(opts?.language_code ? { language_code: opts.language_code } : {}),
     }),
   });
 }
@@ -108,6 +113,16 @@ export function setRenderStyle(
       render_style: renderStyle,
       frame_aspect: frameAspect ?? null,
     }),
+  });
+}
+
+export function setLanguage(
+  projectId: string,
+  languageCode: string | null,
+): Promise<Project> {
+  return request(`/projects/${projectId}/language`, {
+    method: "POST",
+    body: JSON.stringify({ language_code: languageCode }),
   });
 }
 

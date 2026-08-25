@@ -25,15 +25,18 @@ export function useScriptPreflight(opts: {
   script: string;
   style: string;
   frameAspect: string | null;
+  languageCode: string | null;
 }) {
   const qc = useQueryClient();
   const latest = useRef(opts);
   latest.current = opts;
 
   const projectIdRef = useRef<string | null>(null);
-  const lastSynced = useRef<{ style: string; frameAspect: string | null } | null>(
-    null,
-  );
+  const lastSynced = useRef<{
+    style: string;
+    frameAspect: string | null;
+    languageCode: string | null;
+  } | null>(null);
   const gen = useRef(0);
   const debounceRef = useRef<number | null>(null);
 
@@ -51,7 +54,7 @@ export function useScriptPreflight(opts: {
     checkedKey !== scriptCheckKey(opts.script, opts.style);
 
   const ensureProject = useCallback(async (): Promise<string> => {
-    const { name, style, frameAspect } = latest.current;
+    const { name, style, frameAspect, languageCode } = latest.current;
     if (!name.trim()) {
       throw new Error("Give the project a name to check this script.");
     }
@@ -60,10 +63,11 @@ export function useScriptPreflight(opts: {
       const project = await api.createProject(name.trim(), {
         render_style: style,
         frame_aspect: frameAspect ?? undefined,
+        language_code: languageCode ?? undefined,
       });
       id = project.id;
       projectIdRef.current = id;
-      lastSynced.current = { style, frameAspect };
+      lastSynced.current = { style, frameAspect, languageCode };
       setProjectId(id);
       void qc.invalidateQueries({ queryKey: qk.projects });
       return id;
@@ -75,8 +79,11 @@ export function useScriptPreflight(opts: {
       synced.frameAspect !== frameAspect
     ) {
       await api.setRenderStyle(id, style, frameAspect);
-      lastSynced.current = { style, frameAspect };
     }
+    if (!synced || synced.languageCode !== languageCode) {
+      await api.setLanguage(id, languageCode);
+    }
+    lastSynced.current = { style, frameAspect, languageCode };
     return id;
   }, [qc]);
 

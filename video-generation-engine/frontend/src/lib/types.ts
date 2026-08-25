@@ -25,6 +25,7 @@ export interface Project {
   script: string | null;
   render_style?: string | null;
   frame_aspect?: string | null;
+  language_code?: string | null;
   render_width?: number | null;
   render_height?: number | null;
   timeline: Timeline | null;
@@ -91,6 +92,7 @@ export interface TimelineMetadata {
   fps: number;
   total_duration_s: number;
   voice_id: string | null;
+  language_code?: string | null;
   narration_locked: boolean;
   approved_scenes?: string[];
 }

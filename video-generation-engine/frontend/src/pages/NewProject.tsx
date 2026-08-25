@@ -51,6 +51,19 @@ const STYLES = [
 type RenderStyle = (typeof STYLES)[number]['id']
 type FrameAspect = '16:9' | '9:16'
 
+const LANGUAGES = [
+  { code: 'hi', label: 'Hindi / Hinglish' },
+  { code: null, label: 'English (no hint)' },
+  { code: 'es', label: 'Spanish' },
+  { code: 'ar', label: 'Arabic' },
+] as const
+
+// Most scripts made here are Hindi/Hinglish — Hindi is the default so a
+// human who doesn't touch this gets the right ElevenLabs language_code
+// hint from the first narration pass, not a wrong-language guess that
+// only gets fixed after paying for it once.
+const DEFAULT_LANGUAGE_CODE: string | null = 'hi'
+
 interface AssetRow {
   key: string
   file: File
@@ -76,6 +89,7 @@ export function NewProject() {
   const [script, setScript] = useState('')
   const [style, setStyle] = useState<RenderStyle>('documentary_archival')
   const [frameAspect, setFrameAspect] = useState<FrameAspect>('16:9')
+  const [languageCode, setLanguageCode] = useState<string | null>(DEFAULT_LANGUAGE_CODE)
   const [assets, setAssets] = useState<AssetRow[]>([])
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
@@ -88,6 +102,7 @@ export function NewProject() {
     script,
     style,
     frameAspect: style === 'stillness' ? frameAspect : null,
+    languageCode,
   })
   const infeasible = Boolean(preflight.result && !preflight.result.passed && !preflight.stale)
 
@@ -303,6 +318,42 @@ export function NewProject() {
                 </div>
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Narration language</CardTitle>
+            <CardDescription>
+              Hints ElevenLabs' pronunciation for a code-switched script (e.g. Hindi words in
+              Devanagari mixed with English loanwords) — fixes narration stalling at
+              language-switch boundaries. Defaults to Hindi; pick "English" if the script is
+              English-only. Freely changeable here until you submit below — like Style, it's
+              frozen once generation starts.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-2 sm:grid-cols-4">
+              {LANGUAGES.map((l) => {
+                const selected = languageCode === l.code
+                return (
+                  <button
+                    key={l.label}
+                    type="button"
+                    onClick={() => setLanguageCode(l.code)}
+                    className={cn(
+                      'rounded-md border px-3 py-2.5 text-left transition-colors',
+                      selected
+                        ? 'border-primary bg-primary/10'
+                        : 'border-border hover:border-primary/40 hover:bg-accent/40',
+                    )}
+                    aria-pressed={selected}
+                  >
+                    <div className="text-sm font-medium">{l.label}</div>
+                  </button>
+                )
+              })}
+            </div>
           </CardContent>
         </Card>
 
