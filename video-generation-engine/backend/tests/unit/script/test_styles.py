@@ -210,9 +210,9 @@ def test_unknown_style_uses_the_default_style_format():
 
 
 def test_draft_format_follows_the_style_aspect():
-    assert resolve_draft_format("retention_fast").width < resolve_draft_format(
-        "retention_fast"
-    ).height
+    assert (
+        resolve_draft_format("retention_fast").width < resolve_draft_format("retention_fast").height
+    )
     draft = resolve_draft_format("documentary_archival")
     assert draft.width > draft.height
     assert (draft.width, draft.height) == (settings.draft_height, settings.draft_width)
@@ -242,9 +242,7 @@ def test_music_gains_are_style_owned_and_archival_keeps_the_measured_mix():
     assert fast.bed_gain_db == -10.0
     assert fast.duck_gain_db == -14.0
     assert fast.bed_gain_db > archival.bed_gain_db
-    assert (fast.bed_gain_db - fast.duck_gain_db) < (
-        archival.bed_gain_db - archival.duck_gain_db
-    )
+    assert (fast.bed_gain_db - fast.duck_gain_db) < (archival.bed_gain_db - archival.duck_gain_db)
 
     still = resolve_music_gains("stillness")
     assert still.bed_gain_db == -22.0
@@ -290,3 +288,53 @@ def test_a_zero_override_is_honoured_not_treated_as_unset():
         assert shots == 0
     finally:
         del STYLE_PACING_BANDS["hypothetical_zero"]
+
+
+# ---------------------------------------------------------------------------
+# Feature B: archival_montage (style_extensions.md §4)
+# ---------------------------------------------------------------------------
+
+
+def test_archival_montage_resolves_its_decided_band():
+    """§4.3's decided starting points: harder cutting than archival,
+    ~46-shot budget, 1.2-4.5s bounds. These pin the registry values so a
+    calibration pass (which SHOULD move them) shows up as a deliberate
+    diff here, not silent drift."""
+    bundle = resolve_constraint_bundle("archival_montage")
+    assert bundle.min_shot_duration_s == 1.2
+    assert bundle.max_shot_duration_s == 4.5
+    assert bundle.max_shots_per_project == 46
+
+
+def test_archival_montage_narration_speed_music_and_whoosh():
+    """Speed below retention_fast's 1.4x; music more upfront than
+    archival's measured mix but short of retention_fast; whoosh stays ON
+    (this is not the dense-cut style whoosh was disabled for, §1.3)."""
+    assert resolve_narration_speed("archival_montage") == 1.15
+
+    gains = resolve_music_gains("archival_montage")
+    assert gains.bed_gain_db == -11.0
+    assert gains.duck_gain_db == -15.0
+    # Strictly between the measured archival mix and retention_fast's.
+    assert settings.music_bed_gain_db < gains.bed_gain_db < -10.0
+
+    assert resolve_sfx_whoosh_enabled("archival_montage") is True
+
+
+def test_archival_montage_is_9_16_and_rejects_the_stillness_only_aspect_flag():
+    """§4.6: natively vertical like retention_fast; `frame_aspect`
+    remains a stillness-only opt-in."""
+    fmt = resolve_render_format("archival_montage")
+    assert (fmt.width, fmt.height) == (720, 1280)
+    assert not fmt.is_landscape
+    assert "only settable" in (frame_aspect_error("archival_montage", "9:16") or "")
+
+
+def test_archival_montage_dead_stop_ceiling_agrees_with_but_is_independent_of_the_override():
+    """Same R7 shape as retention_fast: max_fragment_duration_s (the
+    pre-flight diagnostic, target * _DEAD_STOP_CEILING_MULTIPLIER) equals
+    max_shot_duration_s_override today - two fields that agree, not one
+    field serving both jobs."""
+    band = STYLE_PACING_BANDS["archival_montage"]
+    assert band.max_fragment_duration_s == 4.5
+    assert band.max_shot_duration_s_override == 4.5

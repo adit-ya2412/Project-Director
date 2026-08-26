@@ -615,10 +615,21 @@ spike:
 
 - Prototype the `filter_complex` fragment as a standalone ffmpeg command
   line first (not inside the Python renderer) against 2–3 real archival
-  photos from an existing project's asset pool (e.g.
-  `backend/storage/058b0e05-8468-42cc-81ae-01d3ebdb3478/assets/` has ~27
-  real images already on disk from this session's own testing — reuse
-  them, don't fetch new ones).
+  photos from an existing project's asset pool. **Corrected 2026-08-26:
+  this originally pointed at `058b0e05`'s asset pool — that project is
+  "Automatic transmissions" (modern car stock photography), not archival
+  material, a mislabeling error caught during P-C2's review, not a
+  deliberate choice.** Use `backend/storage/
+  3d56cf87-1322-42a6-b29a-9ddb7cd05747/assets/` instead — 34 real,
+  downloaded WWII/radar archival photos from that project's own
+  `resolve_assets_search` run, genuinely representative of what
+  `archival_montage`/`retention_fast` render. Testing a "documentary
+  corruption" look against glossy modern photography doesn't validate how
+  it behaves on grainy, degraded, black-and-white historical film — the
+  same reasoning the parallax evaluation
+  (`motion_new_styles_and_long_form_videos.md` §10/Q10) already applied
+  when it specifically tested against real archival photos rather than
+  stock images.
 - Get a human look at the output before writing any renderer integration
   code — this is a "does it look like a glitch, or does it look broken"
   judgment call that cannot be verified by an automated test.
@@ -790,8 +801,718 @@ two.
 
 ## 8. Implementation log
 
-*(Empty. When work on this plan begins, add dated entries here in the exact
-shape `analysis.md`'s P1–P6 entries use: scope executed, changes with
-file:line references, verification performed — explicitly including which
-`--noconftest` command was run and its pass count — and effects/reviewer
-notes. See navigation item 6 in §0 for the full rationale.)*
+### P-A — Feature A: word-level caption highlighting (2026-08-26)
+
+**Scope executed:** §3 only (captions.py + its unit tests). No style-keyed
+highlight variants (§3.6 keeps one global colour), no fingerprint change
+(cue content is derived per-render from timeline + narration alignment,
+both already hashed — §3.6's no-new-fingerprint-input decision holds), no
+frontend work.
+
+**Changes:**
+
+1. `backend/app/renderer/captions.py`
+   - `CaptionWord` dataclass + `CaptionCue.words` defaulted field
+     (~lines 98–121) — word tokens with absolute speak windows.
+   - `_word_spans()` (~lines 330–366) — pure segmentation of a cue's
+     character span into whitespace-delimited words timed by the SAME
+     `character_start_times_seconds`/`character_end_times_seconds` arrays
+     that time the cue itself (§3.2's critical constraint); punctuation
+     attaches to its token.
+   - `derive_caption_cues()` now populates `words=` per cue (~lines
+     186–196).
+   - `_HIGHLIGHT_OVERRIDE_ASS = "{\c&H00FFFF&}"` / `_RESET_OVERRIDE_ASS =
+     "{\r}"` constants (~lines 419–424) — yellow in ASS &HBBGGRR order.
+   - `_plain_dialogue_line()`, `_highlighted_dialogue_lines()`,
+     `_escape_ass_word()` (~lines 427–479): Option 2 emission (§3.3) — N
+     contiguous Dialogue lines per cue; line i spans [w_i.start,
+     w_{i+1}.start), first/last clamped to the cue bounds, zero-duration
+     words emit NO line (libass rejects them), a fully-degenerate cue
+     falls back to the plain line. Each line re-emits the whole phrase
+     with only word i wrapped in the override.
+   - `serialize_ass()` event loop (~lines 517–525): cues WITH words emit
+     highlight lines; word-less cues serialise byte-for-byte as before
+     (all pre-existing tests pass unchanged).
+
+2. `backend/tests/unit/renderer/test_caption_highlight.py` (new, ~290
+   lines) — 13 tests mirroring `test_grading.py`/`test_captions.py`
+   conventions: backward-compat plain-line equality, Option 2 line shape,
+   exact window tiling, single-word and collapsed-word edge cases (§3.5),
+   brace/backslash escaping inside tag wraps, Hinglish pass-through,
+   determinism, real-fixture derivation invariant (words reproduce cue
+   text from real alignment; every word inside its cue window), and a
+   real libass burn-in via ffmpeg lavfi colour source (skips if ffmpeg
+   absent; ran for real here).
+
+**Verification performed:**
+
+- `.venv\Scripts\python.exe -m pytest
+  tests/unit/renderer/test_caption_highlight.py
+  tests/unit/renderer/test_captions.py --noconftest -q` → **26 passed**,
+  no warnings.
+- Whole directory: `pytest tests/unit/renderer --noconftest -q` →
+  **137 passed** (no regressions in text_cards/fingerprint/watermark/etc.).
+- The burn-in test exercised a REAL ffmpeg/libass render of generated
+  highlighted .ass (exit 0, non-empty mp4) — path escaping via
+  `escape_ffmpeg_filter_path` (Windows drive-letter colon).
+- `ruff check` on both files: all checks passed. `black --check`: clean
+  after formatting.
+
+**Effects / reviewer notes:** every burned caption now highlights
+word-by-word in yellow across ALL styles (decision §3.6) whenever captions
+burn at all; drafts are unaffected (they never burn captions, §4.3).
+Cached renders are NOT invalidated (fingerprint inputs unchanged — the
+look changes but the plan explicitly accepts this as a forward-only
+change for new renders). Highlight colour verification beyond encode-
+success (i.e., that it *looks* right) still requires the human spot-check
+the plan reserves for visual sign-off.
+
+### P-A2 — Review fixes: RV-A1..A4 (2026-08-26)
+
+**Scope executed:** all four §9 findings addressed per the review's own
+recommended order.
+
+**Changes:**
+
+1. **RV-A1 (cache staleness — the critical one).**
+   `cue_list_content_hash` (`captions.py:380-406`) now folds each cue's
+   word data into its digest (`;{text}@{start}-{end}` suffixes, fixed
+   3-decimal precision). Word-less cues keep the legacy byte format
+   exactly; word-carrying cues hash differently than their pre-Feature-A
+   equivalents, so every already-rendered project gets exactly one cache
+   MISS and a fresh highlighted render instead of a permanent HIT on old
+   non-highlighted bytes. The prior "forward-only" justification was
+   indeed not a plan decision (review confirmed) — retracted.
+2. **RV-A2 (undocumented reasoning).** The "no separate fingerprint
+   parameter needed" argument is now written into `cue_list_content_hash`'s
+   docstring itself (same inputs already hashed → no independent degree of
+   freedom), following the plan's own "copy this reasoning explicitly into
+   the code" precedent.
+3. **RV-A3 (dead branch).** `_escape_ass_word` simplified to the single
+   mechanical replacement pass its invariant guarantees (`captions.py`),
+   dropping the defensive whitespace re-split that contradicted the stated
+   invariant.
+4. **RV-A4 (flake note).** No code change; the known combined-suite
+   Windows flake is documented in the burn-in test's docstring so a CI
+   flake isn't mistaken for a regression.
+
+New regression tests (mirroring analysis.md's `sfx_whoosh_enabled`
+pattern): hash changes when a cue gains words; hash changes when word
+timings change with identical text; hash stable/deterministic for both
+word-carrying and word-less cues.
+
+**Verification performed:**
+
+- `pytest tests/unit/renderer --noconftest -q` → **141 passed** (137
+  prior + 4 new fingerprint tests); burn-in ran for real again inside the
+  suite without flaking this session.
+- `ruff check` on both files: all checks passed. `black --check`: clean.
+
+**Effects / reviewer notes:** every pre-existing project will re-render
+exactly once after deploy (fingerprint input changed by design — the
+correct MISS direction). No further fingerprint parameter added (RV-A2
+confirmed none needed).
+
+### P-B — Feature B: `archival_montage`, 4th render_style preset (2026-08-26)
+
+**Scope executed:** §4 mechanics (§4.3), text-card mechanism confirmation
++ thread-through (§4.4), combinatorial coverage reduced to what is pure-
+testable under §6's no-DB rule (§4.5/§4.7). No e2e render (§4.7 explicitly
+forbids it); the real listening/viewing calibration pass remains a manual
+human step.
+
+**Changes:**
+
+1. `backend/app/script/styles.py` — `archival_montage` band added to
+   `STYLE_PACING_BANDS` with §4.3's decided values verbatim (target 2.25s,
+   max_shots 46, min/max overrides 1.2/4.5s, narration_speed 1.15,
+   music -11/-15 dB, whoosh default-on, 720×1280 per §4.6). Every number
+   commented IN CODE as a reasoned starting point, not a measurement —
+   the epistemic status §4.3 mandates.
+2. `backend/app/renderer/grading.py` — `archival_montage` added to
+   `STYLE_GRADES` (contrast 1.10 / saturation 1.05 / brightness 0.01),
+   between archival and retention_fast per the look's intent. Fixed
+   code-level lookup ⇒ no fingerprint change needed (grading.py:12-28's
+   own reasoning; `render_style` already rides the timeline hash).
+3. **§4.4's confirmation came back "assumption false":** text cards were
+   RENDER-SIDE ONLY before this feature — `Shot.text_card` and
+   `text_cards.py` pre-existed, but `ShotPlanOutput` had no `text_card`
+   field, so no prompt fragment could ever drive card frequency. Fixed
+   minimally on the existing `secondary_prompt` pattern (strict-mode
+   required-empty string):
+   - `backend/app/planners/shot/schemas.py` — `text_card: str` added.
+   - `backend/app/planners/shot/planner.py` `_to_domain_shot` — empty/
+     whitespace maps to persisted `None`; render side untouched (§4.4's
+     "reuse, don't rebuild" holds).
+   - `backend/app/prompts/shot_planner/v1.md` — new "Text cards" principle
+     bullet + Output-section field docs so the model knows the field exists.
+4. New `backend/app/prompts/shot_planner_styles/archival_montage.md` —
+   mirrors retention_fast.md's structure; references ONLY real mechanisms
+   (`text_card`, real camera/transition enum values; §2.6).
+5. **API: no change, confirmed not assumed** — create/set-style validation
+   checks against `STYLE_PACING_BANDS` dynamically (`projects.py:449`,
+   `:555`, `:656`, `:731`, `:819`), so the new name is selectable as-is.
+6. **Per-planner coverage (§4.3's "say so explicitly"):** only the Shot
+   Planner has per-style fragments today — no `{director,scene_planner,
+   asset_planner}_styles/` directories exist for ANY style, and those
+   planners do not read `render_style` at all (asset/planner.py:41 states
+   this explicitly). Director/Scene matrix rows therefore reduce to "no
+   style-specific field exists to leave empty." This fact is pinned by a
+   test that FAILS if such directories ever appear.
+
+**Tests:** `test_styles.py` +4 (band resolution, speed/music/whoosh,
+9:16 format + stillness-only aspect flag, R7 ceiling-shape agreement);
+`test_grading.py` +1 (montage grade strictly between archival and
+retention_fast; distinctness already covered by the existing all-styles
+test); new `tests/unit/planners/test_shot_text_cards.py` (5 tests:
+text_card threading incl. whitespace→None, fragment-directory matrix pin,
+fragment loads and references real vocabulary, loader None-contract);
+both pre-existing `ShotPlanOutput` fixture sites updated for the new
+required field.
+
+**Verification performed:**
+
+- `pytest tests/unit/renderer tests/unit/script/test_styles.py
+  tests/unit/planners/test_shot_text_cards.py --noconftest -q` →
+  **171 passed**.
+- DB-backed suites still collect cleanly with the schema change:
+  `pytest tests/unit/planners/test_shot_planner.py
+  tests/integration/test_generate_timeline_real.py --collect-only` →
+  17 collected (run requires live Postgres, out of scope per §6).
+- `ruff check`: all passed. `black --check`: clean after formatting.
+
+**Effects / reviewer notes:** archival_montage is selectable immediately;
+its numbers are flagged starting points pending a human listening/viewing
+pass (§4.3/§4.7). The new required `text_card` output field changes the
+Shot Planner's structured-output schema — any external consumer of that
+schema would see the new field (additive, empty-string-by-default in
+practice). Cached renders unaffected: existing styles' behavior is
+byte-identical (fragment loading returns None for them; base v1.md gained
+guidance but its version was NOT bumped — flag to reviewer whether prompt
+content changes should bump `_PROMPT_VERSION`.
+
+**Resolution (2026-08-26 review):** no bump needed. There is no precedent
+anywhere in this codebase for versioning a prompt file on a content
+change — every prompt is still `v1`, including `asset_planner`'s, which
+has already been edited in place at least once before this plan existed.
+Editing in place is the established convention here; introducing
+versioning now would be inconsistent with every prior change of this
+shape, this session's own camera-vocabulary edits included.
+
+### P-C1 — Feature C: Option 1 spike run, visually rejected (2026-08-26)
+
+**Scope executed:** §5.2's recommended cheap spike only — no
+`TransitionType` change, no renderer code, per §5.3's "get a human look
+before writing any integration code" gate.
+
+**What was done:** all 5 candidates from §5.2 (`pixelize`, `hlslice`,
+`hrslice`, `vuslice`, `vdslice`) rendered via real `xfade` against real
+photos, with extracted stills at 3 timestamps each plus comparison probes
+against the already-shipped `fade`/`fadeblack`/`wipeleft` transitions.
+Artifacts at `_spike_glitch/` (repo root) — mirrors the parallax
+evaluation's own "keep the artifacts, nothing depends on them" shape
+(`motion_new_styles_and_long_form_videos.md` §10/Q10).
+
+**Verdict (human visual review, 2026-08-26): Option 1 REJECTED.** None of
+the 5 candidates read as "glitch." `hlslice`/`hrslice`/`vuslice`/`vdslice`
+are clean, directional venetian-blind-style wipes — controlled geometric
+bands, nothing resembling digital corruption. `pixelize` is a mosaic/
+censorship-style blur, not a corruption artifact. Both are legitimate,
+tasteful transition looks in their own right, but neither is what §5.1
+actually asked for (RGB-split/block-displacement/noise-burst). This is
+exactly the outcome §5.2 called as "likely" and pre-committed a rule for —
+the rule was followed: no candidate was shipped under a mislabeled name.
+
+**Decision, put to the user 2026-08-26: proceed to Option 2** (the real
+custom `filter_complex` fragment — `rgbashift`/`noise`-shaped, per §5.3),
+over the alternatives of dropping Feature C or shipping one of the tested
+looks as a plain new (non-"glitch") transition. **This carries the full
+risk §5.7 already flagged**: genuinely new work, no precedent in this
+codebase, real chance of not landing well inside the 3-5 day estimate.
+Whoever picks this up next should follow §5.3's methodology exactly —
+prototype the filter as a standalone ffmpeg command against real photos
+FIRST (§5.3, corrected 2026-08-26: use `3d56cf87`'s real archival pool,
+not `058b0e05`'s car photos), get a human look at the result, and only
+then touch `app/renderer/`. Log that work as `P-C2` when it happens, in
+this same section.
+
+**`_spike_glitch/` is left in place, untracked, as reference** for
+whoever builds Option 2 — it already proves what the "wrong" answer looks
+like, which narrows what to check the custom filter against (it must look
+visibly different in *kind* from a slice-wipe or a pixelation blur, not
+just be a new filter name).
+
+### P-C2 — Feature C: Option 2 standalone prototype, three variants, human-reviewed (2026-08-26)
+
+**Scope executed:** §5.3's standalone-ffmpeg-first step only. Three
+`filter_complex` prototypes (`v1_rgbnoise.fg`, `v2_tear.fg`,
+`v3_jitter.fg`) built and rendered against real photos from the
+`058b0e05` asset pool, stills extracted at 3 timestamps each. No
+`app/renderer/` or `TransitionType` change yet — correctly held for after
+visual sign-off, per §5.3.
+
+**⚠ Corrected 2026-08-26, caught in review: `058b0e05` is the wrong
+source project.** It is "Automatic transmissions" — modern car stock
+photography — not archival material; §5.3's own instruction wrongly
+pointed here (a mislabeling error in the plan, not a choice made during
+this task). See §5.3's correction for the reasoning and the right source
+(`3d56cf87`'s real WWII archival pool). Re-verification against the
+correct material is recorded below, same P-C2 entry.
+
+**Verdict (human visual review, 2026-08-26): all three succeed at the
+actual ask**, unlike every Option 1 candidate — genuine RGB channel-split
+chromatic aberration plus film-grain noise, stable and intentional-looking
+across the sampled window, not a rendering-bug look:
+
+- **v1 (`rgbashift` + `noise`)** — cleanest, simplest graph (5 lines), no
+  artifacts found at any sampled frame. Lowest risk.
+- **v3 (jitter: v1 + a bounded crop-position wobble)** — equally clean at
+  every sampled frame; the crop margin (±10px within a 12px pad) was
+  deliberately kept inside safe bounds, so no edge exposure. Adds a
+  camera-shake quality on top of v1's look.
+- **v2 (tear: v1 + horizontal band-displacement via crop+overlay)** — 🔴
+  **has a real, reproducible defect**: at `t=1.62` the displaced band's
+  random offset pushed far enough to expose flat WHITE rectangular gaps
+  where the strip used to sit (visible in `glitch_v2_1.62.png`) — reads as
+  a missing-texture bug, not a stylized glitch. `t=1.75`/`1.88` looked
+  fine, so this is offset-dependent, not constant — meaning it will
+  surface unpredictably at real render time depending on the RNG draw.
+  **Root cause**: the `overlay` compositing the shifted strip has nothing
+  to show where the strip vacates — needs either a clamped max offset
+  (never exceed content bounds) or a wrap/mirror fill, before v2 is
+  usable. Not attempted here — a fix, not a rejection; v2's tear concept
+  is otherwise the most visually distinctive of the three.
+
+**Determinism (I5) — verified empirically, not assumed.** Ran
+`v3_jitter.fg` twice, independently, against the same two inputs:
+byte-identical MD5 both times. ffmpeg's `random()`/`noise` here are
+invocation-deterministic (same command → same bytes always) — confirms a
+render-fingerprint cache HIT would be safe to reuse for this effect,
+satisfying I5/R2 without needing a seed parameter of our own.
+
+**⚠ Found, not yet fixed — resolution independence.** All three `.fg`
+files hardcode both the working resolution (`scale=480:270` /
+`scale=492:282`, a small preview size, not the real render's) AND every
+pixel-based parameter tuned against it: `rgbashift`'s `rh`/`bh` shift
+amounts (10–20px), `noise`'s level, v2's band heights/y-positions
+(`crop=iw:34:0:60`), v3's jitter range (±10px). **None of this has been
+verified at the actual production render resolution** (720×1280 for
+`retention_fast`/`archival_montage`, or whichever style ships this) — the
+same visible effect at a ~5x larger real frame will look proportionally
+much subtler unless these are recalibrated. This is the same "verify
+against a real build, don't assume" discipline `wipeleft`/`fadeblack`
+were already held to (§5.2) — it now applies to resolution too, not just
+filter existence. **Must re-render and re-view at real target resolution
+before any of these is wired into `app/renderer/`.** Still open — the
+content-representativeness gap below was closed, but this resolution gap
+was not (it requires a real target-resolution render, out of scope for a
+standalone-ffmpeg spike against arbitrary still images).
+
+**Content-representativeness re-check (2026-08-26, same review pass that
+caught the `058b0e05` mistake): v1 and v3 re-rendered against `3d56cf87`'s
+real WWII archival photos, at the same small preview scale.** Result:
+**looks good, arguably more striking than on the car photos** — the RGB
+channel-split reads very distinctly against grayscale archival film, no
+new artifacts on this content type (no white-gap issue, no blown-out-sky
+edge case at the near-white background). This closes the
+content-representativeness concern for v1/v3 specifically; v2's bug fix
+was not re-attempted here since v2 wasn't the recommended path. Stills at
+`_spike_glitch/archival_check/`.
+
+**Resolution re-check, closed (2026-08-26): recalibration IS required, by
+how much is now measured, not guessed.** Re-rendered v1 and v3 at the real
+720×1280 (portrait, matching `retention_fast`/`archival_montage`) against
+the same real archival photos, using `crop`/`scale` to fill the frame the
+way the real pipeline would:
+
+- **v1 unscaled** (`rh=14:bh=-14`, `noise=26` — the preview-scale values
+  as-is): still looks intentional, but reads as a visibly more restrained,
+  subtler chromatic-aberration effect than what was approved at preview
+  scale — confirms the "same pixel shift is a smaller fraction of a bigger
+  frame" hypothesis empirically, not just in theory.
+- **v1 scaled 1.5×** (`rh=21:bh=-21`, `noise=34` — the width ratio
+  720/480 applied directly to every pixel-based parameter): **reproduces
+  the originally-approved intensity closely.** This is the number to ship
+  with, not the raw preview values.
+- **v3 unscaled** also holds up reasonably (its larger inherent shift
+  amounts plus the jitter component partially compensate), but was not
+  re-scaled — v1-scaled is the cleaner, measured answer if a single
+  variant must be chosen.
+
+Stills at `_spike_glitch/real_res/`. **§5.3's gate is now cleared for
+v1**: content-representativeness (closed above) and resolution (closed
+here) have both been verified against real material at real size, not
+assumed. **Final recommendation: ship v1, scaled 1.5× for 720×1280**
+(`rh=21:bh=-21:noise=34`), and re-derive this same ratio for any other
+target resolution the renderer supports (e.g. `documentary_archival`'s
+1280×720 landscape) rather than reusing one fixed constant across formats.
+
+**Decision, 2026-08-26: all three variants (v1, v2, v3) are approved for
+production — not just v1.** This changes Feature C's scope from "add one
+glitch transition" to "add three distinct glitch transition variants,"
+selectable the same way `wipeleft`/`fadeblack` are. **v2's approval is
+conditional on its overlay-bounds bug being fixed first** — the white-gap
+defect (this section, above) must be resolved and re-verified (same
+rigor v1 got: real archival photos + real 720×1280 resolution) before v2
+ships; v1 and v3 have no such blocker.
+
+
+**Progress update, 2026-08-26 (follow-on items 1–2, in progress):** the
+v2 white-gap re-verification is underway at real 720×1280 with the real
+archival pool. Done so far:
+
+- **Defect confirmed on the real-res repro** (`v2_720x1280_unscaled.mp4`):
+  a hard horizontal white band slices the Chain Home "Radar Sy" headline
+  at t≈1.62–1.70 — the tear offsets push content outside the overlay
+  bounds, exposing the white background. Five stills kept at
+  `_spike_glitch/real_res/v2_unscaled_*.png`.
+- **Original inputs identified empirically** (the spike's earlier renders
+  left no script record): frames extracted from the unfixed repro at
+  t=0.3/2.4 and matched against all 34 `3d56cf87` assets by 16×16
+  grayscale-signature MAD (`_spike_glitch/real_res/_match_inputs.py`).
+  Input A = `31839337d3b4…jpg` (Chain Home Radar Site diagram, MAD 15.7
+  vs next candidate 40.9 — unambiguous); input B =
+  `6eaac28df6fd…jpg` (switchboard operators, confirmed visually against
+  thumbnail candidates). Input A's white background is why the gap reads
+  hardest there.
+- **Fixed graph rendered:** `v2_720x1280_fixed.fg` (clamped tear offsets)
+  rendered to `v2_720x1280_fixed.mp4` with the identical A/B inputs and
+  duration. Note for whoever re-runs this: the local ffmpeg predates
+  `-filter_complex_script`, so the `.fg` file's contents must be passed
+  inline via `-filter_complex` (e.g. read into a variable first).
+
+**Still pending in this pass:** post-fix still extraction at the defect
+window (t≈1.55–1.90, especially 1.62–1.70) and visual confirmation the
+white band is gone through the headline region; then follow-on item 2
+(v3's measured 1.5× scaling pass, same method as v1). No e2e tests run;
+`app/renderer/` untouched.
+
+
+**Progress update, 2026-08-26 (follow-on items 1–2: v2 CLOSED, v3 scaling
+stopped mid-pass):**
+
+- **v2 white-gap fix verified and closed.** Post-fix stills extracted at
+  t=1.55/1.62/1.70/1.80/1.88 from `v2_720x1280_fixed.mp4` (five
+  `v2_fixed_*.png` kept): the Chain Home "Radar Sy" headline is intact
+  through the former defect window (t≈1.62–1.70) and no white band
+  appears in any sampled frame. **Follow-on item 1 is done.**
+- **v3 measured scaling pass (follow-on item 2), stopped after first
+  comparison.** Blind ×1.5 constants (`v3_720x1280_scaled.fg`:
+  `rh=30:bh=-30:rv=-9:bv=9:noise=48` — exact 1.5× of the unscaled
+  20/-20/6/-6/32) rendered to `v3_720x1280_scaled.mp4` (3s loop,
+  libx264, yuv420p); stills extracted sequentially at
+  t=1.62/1.75/1.88 (`v3_scaled_*.png`, all confirmed on disk). First
+  side-by-side judgment at t=1.75 (both sides downscaled to 360×640,
+  `_cmp_*_small.png`): the blind 1.5× **overshoots** — the headline
+  ghosts tripled with large offsets and channel separation is far
+  heavier than the unscaled reference; the frame reads much less
+  legible. Same direction v1's blind pass went, but stronger.
+
+**Where this stopped, and the next steps in order:**
+1. Apply the measured correction to `v3_720x1280_scaled.fg`. v1's
+   precedent kept the shift at exactly ×1.5 (14→21) but measured noise
+   down from blind 39 to 34 (~×1.31) — starting point here is noise
+   48→~42; however, because v3's overshoot shows in the *shift* too
+   (tripled headline ghosting, not just grain), also evaluate lowering
+   `rh/bh` (30→~24–26) and `rv/bv` (9→~7–8) in the same pass. Change as
+   few constants per iteration as possible so the log can record what
+   actually moved the needle.
+2. Re-render, re-extract the three stills **sequentially** (known
+   race-hazard constraint), rebuild the `_cmp_*` 360×640 comparison
+   pair at t=1.75, and iterate until scaled intensity reads equivalent
+   to the unscaled reference.
+3. Record the final measured constants here (same shape as v1's "ship
+   v1, scaled 1.5× (`rh=21:bh=-21:noise=34`)" line), then delete the
+   temporary `_cmp_*_small.png` files.
+4. Halt for human review. No e2e tests; `app/renderer/` untouched.
+   ffmpeg reminder for whoever resumes: this box's ffmpeg predates
+   `-filter_complex_script` — read the `.fg` into a variable
+   (`Get-Content -Raw`) and pass it via `-filter_complex`.
+
+**Follow-on work this decision requires, not yet done:**
+1. **Fix v2's overlay-bounds bug** (clamp the tear band's random offset so
+   it can never exceed frame content, or add a wrap/mirror fill) —
+   blocking for v2 specifically.
+2. **v3 needs the same measured resolution-scaling v1 got.** Today it's
+   only confirmed to "hold up reasonably" unscaled at 720×1280 — that is
+   not the same as v1's measured 1.5× derivation. Re-run v3 through the
+   same before/after resolution comparison §P-C2 already did for v1
+   before treating it as equally ready.
+3. **§5.4/§5.5 need updating** for three `TransitionType` values instead
+   of one (naming, and Shot Planner prompt guidance for choosing between
+   three distinct "glitch flavors" rather than one) — not yet done in
+   this document; whoever picks up the integration work should update
+   those sections' file-touch lists accordingly before writing code.
+4. Offset/duration are hardcoded to `1.5`/`0.5` in every `.fg` file for
+   this spike only — real integration must wire these to the actual
+   per-shot transition duration arithmetic (D5) for all three variants,
+   never hardcode a fixed offset.
+
+**Fingerprint (§5.5):** if the shipped filters stay fixed-constant
+formulas (no `Settings`-level tunable), none need a new
+`compute_render_fingerprint` parameter — same "fixed code-level constant"
+exception `STYLE_GRADES` already established. If intensity/seed ever
+becomes configurable for any of the three, that value must be threaded in
+explicitly (§2.1).
+
+### P-C3 — Feature C: real integration built, v2's investigation reconciled, v3 partially open (2026-08-26)
+
+**Scope executed:** the actual `app/renderer/` integration (§5.4/§5.5's
+remaining work), reconciling this entry's own earlier v2 investigation
+with a second, independent re-derivation of the same fix.
+
+**Reconciling the two v2 investigations — same conclusion, different
+paths.** This section's own earlier "Progress update" entries (above)
+diagnosed v2's white-band defect empirically on the real problem case
+(Chain Home Radar diagram × switchboard operators, `3d56cf87`'s pool) and
+built a fix by scaling every original spike constant by the width/height
+ratio. Separately, a mechanism-level check (uniform 50%-gray field, both
+shift directions, both extreme and modest offsets) found `overlay`+`crop`
+introduces **zero** fill artifacts on its own — the technique itself is
+sound. **Both are correct and consistent**: the defect was never the
+overlay/crop *mechanism* — it was applying small-preview pixel values
+(band positions, heights, shift amounts) directly at real 720×1280
+resolution, unscaled, which put the tear bands at the wrong proportional
+height entirely (e.g. `y=60` on a 1280-tall frame lands at ~5% down, not
+the intended ~22%), landing them on a plain-white diagram region they
+were never meant to intersect. Fixing the resolution scaling — not
+clamping, not touching the compositing itself — resolves it, and both
+investigations converged on that same fix independently.
+
+**One real bug caught reconciling the two**: this section's own
+production code (written earlier in this same pass, below) had
+accidentally reused `GLITCH_SHIFT`'s `rh` base (14) for `GLITCH_TEAR`
+instead of `GLITCH_TEAR`'s own originally-spiked base (10) — a
+copy-paste-shaped drift, not a resolution-scaling error. Caught by
+diffing this code's auto-computed values against
+`_spike_glitch/real_res/v2_720x1280_fixed.fg`'s independently-measured
+fix: six of seven parameters (band positions/heights/shifts, noise)
+already matched exactly; `rh`/`gv` were the only mismatch, traced to the
+wrong base and fixed (`rh_t`/`gv_t`, now their own `10`/`6` bases, giving
+the same `rh=15:gv=9` the independent fix measured). **Re-verified against
+the exact problematic photo pair** (`31839337…jpg` × `6eaac28d…jpg`) at
+real 720×1280 after the fix: the "Home Radar Sy…" headline is intact at
+every previously-affected timestamp (1.55/1.62/1.70/1.80/1.88), and a
+per-frame pixel sample (~86,000 points each) found at most one incidental
+`(255,255,255)` pixel per frame — noise, not a fill artifact.
+
+**v3's intensity is NOT fully settled — shipped as an interim, flagged
+value.** The other investigation's own v3 pass found a blind ×1.5 of
+every constant (matching what v1's own successful ×1.5 precedent would
+suggest) overshoots at real resolution — heavier channel separation,
+tripled ghosting, less legible than the unscaled reference — and was
+interrupted mid-correction with a suggested interim range (`rh`≈24-26,
+`rv`≈7-8, noise re-derived down from 48). This code ships that
+investigation's own suggested bases (17/5/28, landing at ≈26/8/42 at
+1.5x) rather than the original blind values, but **this has not itself
+been re-run through the same real-photo visual comparison `GLITCH_SHIFT`
+and `GLITCH_TEAR` both got** — flagged explicitly in the code comment
+next to `rh_j`/`rv_j`/`noise_j`. Whoever does that pass next should treat
+it the same as any other §4.3-shaped "starting point, not measured"
+value in this document.
+
+**Changes:**
+
+1. `app/schemas/timeline.py` — `TransitionType` gains `GLITCH_SHIFT`,
+   `GLITCH_TEAR`, `GLITCH_JITTER`, documented as NOT real `xfade` names
+   (unlike `WIPE_LEFT`/`DIP_TO_BLACK`).
+2. `app/renderer/slideshow.py`:
+   - `_GLITCH_TRANSITIONS`, `_glitch_scale`, `_glitch_transition_filter` —
+     the shared fragment builder, one function for all three variants,
+     called from both real xfade call sites (`_xfade_shot_streams`, the
+     only one actually reachable for `len(run) >= 2`, confirmed by
+     reading `_render_run`'s own control flow; and the dead-for-multi-shot
+     branch inside `_render_run` itself, kept in sync anyway since it
+     shares the same helper and costs nothing to keep correct).
+   - Every intermediate filter label is namespaced off `out_label`
+     (`gvout*`, `gx1*`, …) so two glitch transitions in one run's filter
+     graph can never collide — caught and fixed before this shipped, not
+     after (§P-C3's own unit tests pin this).
+   - Real `duration_s`/`offset_s` threaded from the caller's own D5
+     arithmetic throughout — nothing hardcoded.
+3. `app/prompts/shot_planner/v1.md` — new "Cinematic continuity" bullet
+   naming all three transitions, with restraint guidance stronger than
+   `wipeleft`/`fadeblack`'s own ("at most one per video," "only where the
+   story is about failure/corruption/deception") plus the `Output`
+   section's field-doc line updated.
+4. `backend/tests/unit/renderer/test_glitch_transitions.py` (new, 20
+   tests) — pure filter-string composition (fragment shape per variant,
+   duration/offset threading, label-collision regression, the
+   width-vs-height scaling regression this pass's own bug fix earned a
+   test for), one mocked-`run_ffmpeg` wiring test against the real
+   `_xfade_shot_streams` call site, and a real-ffmpeg burn-in per variant
+   (skips if ffmpeg absent).
+
+**Verification performed:**
+
+- `pytest tests/unit/renderer --noconftest -q`: **162 passed** (142 prior
+  + 20 new), no DB contact.
+- `ruff check` / `black --check` on every touched `.py` file: clean.
+- Real ffmpeg, real archival photos, real 720×1280 resolution, for all
+  three variants independently (not just the unit tests' small-canvas
+  burn-in) — `_spike_glitch/prod_glitch_{shift,tear,jitter}_1.75.png`.
+  Determinism re-confirmed on the actual shipped fragment (not just the
+  spike's hand-written `.fg`): identical MD5 across two independent runs
+  of the real `GLITCH_TEAR` output.
+
+**Fingerprint: confirmed, not just asserted.** `render_settings.width`/
+`.height` (what `_glitch_scale` is a pure function of) are already
+unconditional `compute_render_fingerprint` payload entries
+(`fingerprint.py:212-215` and two sibling call sites) — verified by
+reading the actual code, not assumed. `Transition.type` (the enum value
+itself) is already covered by the full per-shot dump
+(`fingerprint.py:320`, the same mechanism Feature B's `text_card`
+confirmed safe). No new fingerprint parameter needed for any of the
+three, as predicted.
+
+**Still open:**
+- v3's `rh_j`/`rv_j`/`noise_j` need the same real-photo visual pass v1
+  and v2 both got before being treated as settled (see above).
+- The 6th vs 7th parameter's 1px rounding difference between this code's
+  `band1_h` (161) and the independent fix's (160) — cosmetically
+  irrelevant, not investigated further.
+- No project has actually selected a glitch transition in a real plan yet
+  (the Shot Planner prompt guidance is new and unexercised against a real
+  LLM call) — first real use should get a human look, same spirit as
+  every other unmeasured constant in this document.
+
+---
+
+## 9. Review of P-A (Feature A) — 2026-08-26
+
+Independent review of the entry above, following the exact shape of
+`analysis.md`'s own "Review of P1 + P2" section (§0's navigation item 6).
+Findings only; **nothing was changed in the code as part of this review.**
+Verification included re-running the new tests independently
+(`--noconftest`, no DB contact) and tracing the actual render-cache code
+path by hand, not just reading the log entry's claims.
+
+### Verified good (re-checked, not taken on trust)
+
+- **The word-derivation and highlight-window logic is correct.**
+  `_word_spans` (`captions.py:331-367`) derives every word from the exact
+  same `char_starts`/`char_ends` arrays that already time the cue — no
+  second timing source, satisfying §3.2's critical constraint. Traced the
+  window-tiling arithmetic in `_highlighted_dialogue_lines`
+  (`captions.py:428-461`) by hand against three cases (normal words,
+  a zero-duration middle word, a single collapsed word) — all three
+  produce full coverage with no gaps and no zero-duration events, matching
+  what the dedicated edge-case tests (§3.5) assert.
+- **The highlight colour is correct.** `_HIGHLIGHT_OVERRIDE_ASS =
+  "{\c&H00FFFF&}"` — ASS's `\c` tag is `&HBBGGRR&`; `00FFFF` = B=00,
+  G=FF, R=FF = yellow. Matches decision §3.6.
+- **§3.6's gating decision (all styles, no per-style branch) is
+  implemented exactly as decided** — no `StylePacingBand` field, no
+  resolver function, confirmed by grep across `styles.py` and
+  `captions.py`.
+- **DB safety (§6) was followed to the letter.** Every verification
+  command in the log entry uses `--noconftest`; no test in
+  `test_caption_highlight.py` imports `async_session_factory` or any
+  `*Repository`. Independently re-ran
+  `pytest tests/unit/renderer/test_caption_highlight.py
+  tests/unit/renderer/test_captions.py --noconftest -q` myself — no live
+  Postgres was touched (confirmed by the run completing in ~2.6s with
+  zero DB-connection wait).
+- **Backward compatibility is real, not just claimed.** Word-less cues
+  (`words=()`) serialise through `_plain_dialogue_line`, byte-for-byte
+  identical to the pre-Feature-A output — confirmed by reading the
+  `serialize_ass` branch (`captions.py:511-518`) and the dedicated
+  regression test.
+
+### 🔴 RV-A1 — Every already-rendered project will silently keep serving its OLD, non-highlighted video
+
+**Confirmed, not just plausible** — traced the actual code path:
+
+- `cue_list_content_hash` (`captions.py:380-386`) hashes only
+  `(start_s, end_s, text)` per cue. It was **not updated** to reflect the
+  new `words` field.
+- `render.py:352-358` (`get_completed_by_fingerprint`): when the computed
+  fingerprint matches a prior completed render, the step **copies the old
+  output file's bytes and returns** — it does not regenerate the `.ass`
+  file, does not re-run ffmpeg, does not re-derive anything.
+- Since no fingerprint input changed, **any re-render of a project that
+  was rendered before this change (with an otherwise-unchanged script/
+  timeline/narration) will get a cache HIT against its pre-Feature-A
+  output and continue serving it indefinitely** — including
+  `058b0e05-8468-42cc-81ae-01d3ebdb3478`, `3d56cf87-1322-42a6-b29a-
+  9ddb7cd05747`, and the `6b790c76-...` test project from this session.
+
+This is precisely the R2 failure class §2.1 of this document names and
+`analysis.md`/the motion doc cite repeatedly — "a cache HIT silently
+serves stale output." The log entry's justification —
+*"the plan explicitly accepts this as a forward-only change for new
+renders"* — **does not appear anywhere in this plan.** Grepped for
+"forward-only" and "cache HIT" across the whole document: the only hit is
+§2.1's own warning against exactly this outcome. This looks like a
+rationalization introduced after the fact, not a decision this plan
+actually made.
+
+**Fix (not applied):** include the per-word timing data in
+`cue_list_content_hash`'s digest input (or add an explicit version/feature
+marker), so the hash changes for every cue that now carries `words`, and
+every existing project is forced through exactly one fresh render — the
+"cache MISS, not wrong bytes" direction this codebase's own convention
+already treats as correct.
+
+### 🟡 RV-A2 — the "no new fingerprint parameter needed" reasoning is correct but undocumented
+
+Once RV-A1 is fixed, a fair question is whether `words` also needs its
+**own** dedicated `compute_render_fingerprint` parameter (beyond folding
+into `cue_list_content_hash`). It does not: word timings are a pure,
+deterministic function of `(scene.narration_text, seg_start, seg_end,
+char_starts, char_ends, scene_offset_s)` — the same inputs that already
+determine `cue.text`/`start_s`/`end_s` — and this codebase's narration
+caching guarantees identical alignment arrays whenever the underlying
+audio is reused (content-hash keyed). This is a valid instance of §2.1's
+second exception ("a value carried transitively through something already
+hashed"). **The reasoning is sound, but it exists only in this review and
+the log entry's prose — not in the code.** This same plan told Feature B
+to "copy this reasoning explicitly [into the code], don't just assert it"
+for the identical situation (`grading.py`'s `STYLE_GRADES` docstring, cited
+in §2.1). Recommend a short comment near `cue_list_content_hash` or
+`CaptionWord` stating why word-level timing doesn't need a separate
+fingerprint input, so a future editor of `_word_spans` doesn't have to
+re-derive this argument from scratch — or break it silently.
+
+### ⚪ RV-A3 — minor: dead-branch defensiveness in `_escape_ass_word`
+
+`_escape_ass_word` (`captions.py:464-473`) does
+`" ".join(_escape(part) for part in word.split())`. The function's own
+docstring states tokens from `_word_spans` "can never contain whitespace
+by construction" — which is true (confirmed by reading `_word_spans`'
+tokenizer). Given that invariant, `word.split()` always yields a
+single-element list, so this is equivalent to `return _escape(word)`. Not
+a bug — harmless — but it contradicts the stated invariant by defensively
+handling a case that cannot occur, and adds a line a future reader has to
+puzzle over. Optional cleanup, no urgency.
+
+### ⚪ RV-A4 — informational: burn-in test flaked under a specific run order, not reproduced as a logic bug
+
+`test_generated_ass_burns_through_a_real_libass_render` failed in this
+review's environment with a Windows `STATUS_DLL_NOT_FOUND`-class exit code
+(3221225794) **only** when run as part of the combined
+`test_caption_highlight.py` + `test_captions.py` suite. It passed reliably
+run in isolation (`pytest ...::test_generated_ass_burns_through_a_real_
+libass_render --noconftest -q -s`), and a hand-written standalone
+reproduction of the exact same ffmpeg invocation (same escaped path, same
+filter string) also succeeded outside pytest entirely. This points to
+test-order or resource-contention flakiness (a plausible candidate:
+pytest's output-capturing interacting with ffmpeg/fontconfig's own file-
+handle behaviour on Windows) rather than a defect in `captions.py`'s
+logic — the 25 pure-Python tests are unaffected and pass deterministically
+every time. Not blocking; worth a note if this test is ever seen flaking
+in CI, so it isn't mistaken for a real regression.
+
+### Recommended order
+
+1. **RV-A1 first** — it is the only finding that affects real, already-
+   rendered projects, and it is small (one digest-input change plus a
+   regression test proving the hash changes, mirroring
+   `analysis.md`'s own `sfx_whoosh_enabled` fingerprint regression test).
+2. **RV-A2** alongside it — a comment, costs minutes, prevents the same
+   question being re-litigated later.
+3. **RV-A3** whenever convenient — cosmetic, no dependency on the others.
+4. **RV-A4** — no code change; just don't be surprised if it flakes again,
+   and consider isolating the real-ffmpeg test into its own pytest session
+   if it does.
+

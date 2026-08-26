@@ -64,7 +64,7 @@ from app.core.logging import get_logger
 from app.renderer.ken_burns import WORKING_CANVAS_SCALE, ZoompanExpression, build_zoompan_expression
 from app.renderer.motion import MediaKind, MediaProbe, build_duration_fit_fragment, probe_media
 from app.renderer.split_screen import build_split_filter, should_composite_split
-from app.schemas.timeline import Shot, Timeline
+from app.schemas.timeline import Shot, Timeline, TransitionType
 from app.timeline.duration import group_into_runs
 from app.utils.bounded_gather import bounded_gather, ffmpeg_run_concurrency
 
@@ -482,6 +482,158 @@ async def _encode_or_reuse_shot_stream(
     return dest
 
 
+# Feature C (style_extensions.md §5, P-C2): the three glitch transitions
+# are NOT real `xfade` transition names (unlike WIPE_LEFT/DIP_TO_BLACK) -
+# they need a custom multi-stage filter fragment, not a single-line
+# `xfade=transition=X`. `_glitch_transition_filter` below is that
+# fragment; every other `TransitionType` still takes the plain xfade path.
+_GLITCH_TRANSITIONS = frozenset(
+    {TransitionType.GLITCH_SHIFT, TransitionType.GLITCH_TEAR, TransitionType.GLITCH_JITTER}
+)
+
+# Every pixel-based parameter below was measured against a 480x270
+# reference canvas (style_extensions.md P-C2's spike) and verified at
+# real 720x1280 output (1.5x the reference width) - both the "does it
+# still look like a glitch" check (against real archival photos) and the
+# "does it need recalibrating at real size" check (it did: unscaled
+# values read as visibly too subtle at 720x1280). Horizontal-extent
+# parameters (channel-shift, tear/jitter x-offsets) scale with output
+# WIDTH; vertical-extent parameters (v3's vertical channel-shift, v2's
+# band heights/y-positions) scale with output HEIGHT - each against the
+# same 480x270 reference. Noise intensity has no real spatial meaning but
+# was found empirically to need the same width-ratio scaling to keep
+# pace with a stronger channel-shift, so it rides the width ratio too.
+# These are starting points from one measured resolution (720x1280), the
+# same epistemic status style_extensions.md §4.3 gives archival_montage's
+# pacing numbers - recalibrate after a real viewing pass at any OTHER
+# resolution this ends up shipping at (e.g. documentary_archival's
+# 1280x720 landscape), don't assume the ratio holds untested.
+_GLITCH_REFERENCE_WIDTH = 480
+_GLITCH_REFERENCE_HEIGHT = 270
+
+
+def _glitch_scale(settings: RenderSettings) -> tuple[float, float]:
+    """(width_ratio, height_ratio) against the reference canvas §P-C2 was
+    measured against - see the module-level comment above this."""
+    return (
+        settings.width / _GLITCH_REFERENCE_WIDTH,
+        settings.height / _GLITCH_REFERENCE_HEIGHT,
+    )
+
+
+def _glitch_transition_filter(
+    prev_label: str,
+    cur_label: str,
+    transition: TransitionType,
+    *,
+    duration_s: float,
+    offset_s: float,
+    out_label: str,
+    settings: RenderSettings,
+) -> str:
+    """One of the three glitch transitions (§ above) - a plain `xfade=fade`
+    crossfade with `rgbashift` (RGB channel-split) and `noise` (film
+    grain) layered on top, active only during the crossfade window
+    itself (`enable='between(t,offset,offset+duration)'`), so shots
+    either side of the cut are untouched. `GLITCH_TEAR`/`GLITCH_JITTER`
+    add one more stage each on top of `GLITCH_SHIFT`'s base. Real
+    `duration_s`/`offset_s` from the caller's own D5 arithmetic - never
+    the spike's hardcoded 1.5/0.5."""
+    # Every intermediate label is namespaced off `out_label` (unique per
+    # transition in the caller's run - "x{i}"/"vout") so two glitch
+    # transitions in the same filter graph can never collide on a label,
+    # the way fixed names like `[gx]` would.
+    p = f"g{out_label}"
+    wr, hr = _glitch_scale(settings)
+    end_s = offset_s + duration_s
+    window = f"between(t,{offset_s:.3f},{end_s:.3f})"
+    fade = (
+        f"[{prev_label}][{cur_label}]xfade=transition=fade:"
+        f"duration={duration_s:.3f}:offset={offset_s:.3f}[{p}x]"
+    )
+    if transition is TransitionType.GLITCH_SHIFT:
+        rh = max(round(14 * wr), 1)
+        noise_base = max(round(26 * wr), 1)
+        return ";".join(
+            [
+                fade,
+                f"[{p}x]rgbashift=rh={rh}:bh=-{rh}:enable='{window}'[{p}r]",
+                f"[{p}r]noise=alls={noise_base}:allf=t+u:enable='{window}'[{out_label}]",
+            ]
+        )
+
+    if transition is TransitionType.GLITCH_JITTER:
+        # `rv`/`bv` are a shift MAGNITUDE, not a frame position - scale
+        # with the same width ratio as every other shift amount here, NOT
+        # `hr` (reserved for true vertical POSITIONS - GLITCH_TEAR's band
+        # y/height below): for a 720x1280 portrait frame against the
+        # landscape-ish 480x270 reference, `hr` (~4.7x) is far more
+        # extreme than `wr` (1.5x) purely because the reference canvas's
+        # aspect differs from the target's, not because vertical shift
+        # should genuinely be ~3x more aggressive than horizontal.
+        #
+        # ⚠ These base values are a still-open interim correction, not a
+        # finished measurement (unlike GLITCH_SHIFT's 14/26, which a
+        # second independent check cross-verified exactly). A blind ×1.5
+        # of the original unscaled base (20/6/32 -> 30/9/48) was tried at
+        # real 720x1280 against real archival photos and judged to
+        # OVERSHOOT - heavier channel separation and tripled ghosting
+        # than the unscaled reference, less legible. That check was
+        # interrupted before finishing the correction; these three bases
+        # (17/5/28, giving ~26/8/42 at the 1.5x ratio) are the
+        # interrupted pass's own suggested interim range, not a value a
+        # human has looked at and approved. Re-run the same real-photo
+        # visual comparison GLITCH_SHIFT got before treating this as
+        # settled.
+        rh_j = max(round(17 * wr), 1)
+        rv_j = max(round(5 * wr), 1)
+        jitter_px = max(round(15 * wr), 1)
+        noise_j = max(round(28 * wr), 1)
+        return ";".join(
+            [
+                fade,
+                f"[{p}x]crop={settings.width}:{settings.height}:"
+                f"x='if({window},(random(3)*2-1)*{jitter_px},0)':y='0'[{p}c]",
+                f"[{p}c]rgbashift=rh={rh_j}:bh=-{rh_j}:rv=-{rv_j}:bv={rv_j}:"
+                f"enable='{window}'[{p}r]",
+                f"[{p}r]noise=alls={noise_j}:allf=t+u:enable='{window}'[{out_label}]",
+            ]
+        )
+
+    # GLITCH_TEAR - its own originally-spiked base values (rh=10, gv=6,
+    # noise=18), distinct from GLITCH_SHIFT's (14/26) - kept separate
+    # rather than sharing GLITCH_SHIFT's `rh`, matching what §P-C3's
+    # cross-check against a second, independently-measured fix
+    # (`_spike_glitch/real_res/v2_720x1280_fixed.fg`) actually verified:
+    # rh=15, gv=9 at this 1.5x width ratio (10*1.5, 6*1.5) - every other
+    # value below (band positions/heights/shifts, noise) already matched
+    # that independent verification exactly before this fix.
+    rh_t = max(round(10 * wr), 1)
+    gv_t = max(round(6 * wr), 1)
+    band1_h = max(round(34 * hr), 1)
+    band1_y = round(60 * hr)
+    band1_shift = max(round(90 * wr), 1)
+    band2_h = max(round(22 * hr), 1)
+    band2_y = round(170 * hr)
+    band2_shift = max(round(130 * wr), 1)
+    noise_t = max(round(18 * wr), 1)
+    return ";".join(
+        [
+            fade,
+            f"[{p}x]rgbashift=rh={rh_t}:bh=-{rh_t}:gv={gv_t}:enable='{window}'[{p}r]",
+            f"[{p}r]split[{p}ba][{p}bb]",
+            f"[{p}bb]crop=iw:{band1_h}:0:{band1_y}[{p}t1]",
+            f"[{p}ba][{p}t1]overlay=x='if({window},(random(1)*2-1)*{band1_shift},0)':"
+            f"y={band1_y}:enable='{window}'[{p}o1]",
+            f"[{p}o1]split[{p}oa][{p}ob]",
+            f"[{p}ob]crop=iw:{band2_h}:0:{band2_y}[{p}t2]",
+            f"[{p}oa][{p}t2]overlay=x='if({window},(random(2)*2-1)*{band2_shift},0)':"
+            f"y={band2_y}:enable='{window}'[{p}o2]",
+            f"[{p}o2]noise=alls={noise_t}:allf=t+u:enable='{window}'[{out_label}]",
+        ]
+    )
+
+
 async def _xfade_shot_streams(
     run: list[Shot],
     stream_paths: list[Path],
@@ -508,13 +660,26 @@ async def _xfade_shot_streams(
     prev_label = labels[0]
     for i in range(1, len(run)):
         overlap = run[i - 1].transition_out.duration_s
-        transition_name = run[i - 1].transition_out.type.value
+        transition_type = run[i - 1].transition_out.type
         offset = max(cumulative - overlap, 0.0)
         out_label = f"x{i}" if i < len(run) - 1 else "vout"
-        filters.append(
-            f"[{prev_label}][{labels[i]}]xfade=transition={transition_name}:"
-            f"duration={overlap:.3f}:offset={offset:.3f}[{out_label}]"
-        )
+        if transition_type in _GLITCH_TRANSITIONS:
+            filters.append(
+                _glitch_transition_filter(
+                    prev_label,
+                    labels[i],
+                    transition_type,
+                    duration_s=overlap,
+                    offset_s=offset,
+                    out_label=out_label,
+                    settings=settings,
+                )
+            )
+        else:
+            filters.append(
+                f"[{prev_label}][{labels[i]}]xfade=transition={transition_type.value}:"
+                f"duration={overlap:.3f}:offset={offset:.3f}[{out_label}]"
+            )
         cumulative = cumulative + run[i].duration_s - overlap
         prev_label = out_label
 
@@ -711,17 +876,40 @@ async def _render_run(
     if len(run) == 1:
         vout = labels[0]
     else:
+        # (Found while wiring Feature C, style_extensions.md §5/P-C3):
+        # this `else` branch is unreachable in practice - the caller,
+        # `_render_run`, returns early via `_render_run_two_pass` (->
+        # `_xfade_shot_streams`, the SAME `_glitch_transition_filter`
+        # call as here) for every `len(run) >= 2`, so control only ever
+        # reaches this point with `len(run) == 1`. Kept in sync with
+        # `_xfade_shot_streams` anyway (both call the same shared
+        # `_glitch_transition_filter`/`_GLITCH_TRANSITIONS`, so there is
+        # no logic to drift) rather than deleted, in case a future
+        # refactor ever does reach it directly.
         cumulative = run[0].duration_s
         prev_label = labels[0]
         for i in range(1, len(run)):
             overlap = run[i - 1].transition_out.duration_s
-            transition_name = run[i - 1].transition_out.type.value
+            transition_type = run[i - 1].transition_out.type
             offset = max(cumulative - overlap, 0.0)
             out_label = f"x{i}"
-            filters.append(
-                f"[{prev_label}][{labels[i]}]xfade=transition={transition_name}:"
-                f"duration={overlap:.3f}:offset={offset:.3f}[{out_label}]"
-            )
+            if transition_type in _GLITCH_TRANSITIONS:
+                filters.append(
+                    _glitch_transition_filter(
+                        prev_label,
+                        labels[i],
+                        transition_type,
+                        duration_s=overlap,
+                        offset_s=offset,
+                        out_label=out_label,
+                        settings=settings,
+                    )
+                )
+            else:
+                filters.append(
+                    f"[{prev_label}][{labels[i]}]xfade=transition={transition_type.value}:"
+                    f"duration={overlap:.3f}:offset={offset:.3f}[{out_label}]"
+                )
             cumulative = cumulative + run[i].duration_s - overlap
             prev_label = out_label
         vout = prev_label

@@ -58,6 +58,13 @@ STYLE_GRADES: dict[str, StyleGrade] = {
     "documentary_archival": StyleGrade(contrast=1.05, saturation=0.85, brightness=0.0),
     "retention_fast": StyleGrade(contrast=1.15, saturation=1.25, brightness=0.02),
     "stillness": StyleGrade(contrast=0.95, saturation=0.75, brightness=-0.02),
+    # Feature B (style_extensions.md §4.3): archival-montage look -
+    # punchier than documentary_archival's muted grade (harder cutting
+    # wants images that pop between fast cuts) but well short of
+    # retention_fast's saturated social-pop; the footage stays archival
+    # in character. Starting point, not measured - revisit after a real
+    # viewing pass, exactly like the pacing numbers in styles.py.
+    "archival_montage": StyleGrade(contrast=1.10, saturation=1.05, brightness=0.01),
 }
 
 

@@ -51,6 +51,14 @@ class ShotPlanOutput(BaseModel):
     # Bottom panel of a split_frame shot. Empty string on every other
     # movement (OpenAI strict mode: required, never omitted).
     secondary_prompt: str
+    # Full-frame text card for THIS shot (Feature B, style_extensions.md
+    # §4.4): a short structural title/heading the renderer burns over the
+    # shot's own on-screen window (`Shot.text_card`,
+    # app/renderer/text_cards.py - render side pre-exists this field).
+    # Empty string on almost every shot (OpenAI strict mode: required,
+    # never omitted) - which shots carry one is a per-style creative
+    # decision, driven by style fragments like archival_montage.md.
+    text_card: str
 
 
 class ShotPlannerOutput(BaseModel):

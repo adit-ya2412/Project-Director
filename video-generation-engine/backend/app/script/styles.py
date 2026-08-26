@@ -157,6 +157,38 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
         render_width=720,
         render_height=1280,
     ),
+    "archival_montage": StylePacingBand(
+        # Feature B (style_extensions.md §4.3, decided 2026-08-25):
+        # harder cutting than documentary_archival, full-frame text cards
+        # leaned on more (via the Shot Planner fragment +
+        # ShotPlanOutput.text_card), music more upfront than archival.
+        #
+        # EVERY number below is a reasoned starting point interpolated
+        # from the two neighbouring styles' shipped values - NOT a
+        # measured constant, the same epistemic status as
+        # `_DEAD_STOP_CEILING_MULTIPLIER` above. Recalibrate all six
+        # after a real listening/viewing pass (§4.3).
+        name="archival_montage",
+        # 90s / 2.25s ≈ 40 shots; budgeted to ~46 for headroom, the
+        # same ~1.14x ratio retention_fast used (58/51).
+        target_shot_duration_s=2.25,
+        max_shots_override=46,
+        min_shot_duration_s_override=1.2,
+        max_shot_duration_s_override=4.5,  # target * 2.0, matching the
+        # dead-stop ceiling shape (R7: independent field that merely
+        # agrees with max_fragment_duration_s = 2.25 * 2.0 today).
+        narration_speed=1.15,  # below retention_fast's 1.4x - cut pace
+        # close to but not as extreme as retention_fast; within the
+        # ~1.15-1.25x practical ceiling the parent plan cites.
+        music_bed_gain_db=-11.0,  # between archival's -14 and
+        music_duck_gain_db=-15.0,  # retention_fast's -10/-14: more
+        # upfront than archival, leaning toward retention_fast's mix
+        # since the pace decision leans that way too (§4.3).
+        # whoosh_enabled omitted -> True: archival_montage is not the
+        # dense-cut style whoosh was disabled for (§1.3).
+        render_width=720,  # 9:16, decided 2026-08-25 (§4.6) - this
+        render_height=1280,  # plan originated from a "styles for reels" ask.
+    ),
     "stillness": StylePacingBand(
         name="stillness",
         target_shot_duration_s=None,
@@ -256,9 +288,7 @@ def frame_aspect_error(style: str | None, frame_aspect: str | None) -> str | Non
     return None
 
 
-def resolve_render_format(
-    style: str | None, *, frame_aspect: str | None = None
-) -> RenderFormat:
+def resolve_render_format(style: str | None, *, frame_aspect: str | None = None) -> RenderFormat:
     """Style-owned canvas. Unknown names use the default style's format
     (not raw settings). `stillness` is 16:9 unless `frame_aspect` is
     `9:16` (vertical Ken Burns reel).
@@ -276,9 +306,7 @@ def resolve_render_format(
     return RenderFormat(width=width, height=height)
 
 
-def resolve_draft_format(
-    style: str | None, *, frame_aspect: str | None = None
-) -> RenderFormat:
+def resolve_draft_format(style: str | None, *, frame_aspect: str | None = None) -> RenderFormat:
     """Same aspect as the style, at the draft short-side (480)."""
     fmt = resolve_render_format(style, frame_aspect=frame_aspect)
     short, long = settings.draft_width, settings.draft_height

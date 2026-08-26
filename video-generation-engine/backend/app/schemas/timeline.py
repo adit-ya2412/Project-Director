@@ -106,6 +106,22 @@ class TransitionType(StrEnum):
     # DISSOLVE/FADE above, so no renderer code changed to add these.
     WIPE_LEFT = "wipeleft"
     DIP_TO_BLACK = "fadeblack"
+    # Added 2026-08-26 (style_extensions.md §5, Feature C) - unlike
+    # WIPE_LEFT/DIP_TO_BLACK above, these are NOT real `xfade` transition
+    # names passed straight through: `xfade` has no true digital-
+    # corruption effect (verified by testing its full slice/pixelize
+    # candidate set against real archival photos, §5's P-C1 - none of
+    # them read as "glitch"). These three are custom filter fragments
+    # (`rgbashift` channel-split + `noise` grain, layered around a plain
+    # `xfade=fade`) built and visually verified against real archival
+    # photos at real render resolution (§5's P-C2) - `slideshow.py`
+    # branches on these three specifically to emit that fragment instead
+    # of the single-line `xfade=transition=X` construction every other
+    # value here gets. All three are RGB-shift + noise; they differ only
+    # in what's layered on top:
+    GLITCH_SHIFT = "glitch_shift"  # channel-split + noise alone (P-C2 "v1")
+    GLITCH_TEAR = "glitch_tear"  # + horizontal band displacement ("v2")
+    GLITCH_JITTER = "glitch_jitter"  # + a bounded positional wobble ("v3")
 
 
 class PreferredMediaType(StrEnum):

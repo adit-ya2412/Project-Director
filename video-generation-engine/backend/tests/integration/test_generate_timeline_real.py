@@ -145,6 +145,7 @@ def _shot_output(scene_id: str, duration_s: float) -> ShotPlannerOutput:
                 transition_out=ShotTransitionOutput(type=TransitionType.CUT, duration_s=0.0),
                 prompt="archival photograph",
                 secondary_prompt="",
+                text_card="",
             ),
         ]
     )

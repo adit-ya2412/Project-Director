@@ -66,6 +66,25 @@ def test_stillness_is_more_muted_than_documentary_archival():
     assert still.saturation < archival.saturation
 
 
+def test_archival_montage_is_punchier_than_archival_but_not_retention_hot():
+    """Feature B (style_extensions.md §4.3): the montage look sits
+    between documentary_archival's muted grade and retention_fast's
+    saturated pop - harder cutting wants images that pop between cuts,
+    but the footage stays archival in character. Distinctness from all
+    other styles is already enforced by
+    test_every_registered_style_produces_a_distinct_fragment above."""
+    fragment = grade_filter_fragment("archival_montage", "0:v", "graded")
+    assert fragment is not None
+    assert fragment.startswith("[0:v]")
+    assert fragment.endswith("[graded]")
+    assert "eq=" in fragment
+    montage = STYLE_GRADES["archival_montage"]
+    archival = STYLE_GRADES["documentary_archival"]
+    retention = STYLE_GRADES["retention_fast"]
+    assert archival.contrast < montage.contrast < retention.contrast
+    assert archival.saturation < montage.saturation < retention.saturation
+
+
 def test_render_style_field_is_not_excluded_from_the_fingerprint():
     """The whole reason `grading.py` needs no new fingerprint parameter
     (see its own module docstring): `metadata` (which holds

@@ -96,10 +96,28 @@ def caption_font_content_hash(font_family: str) -> str:
 
 
 @dataclass(frozen=True)
+class CaptionWord:
+    """One whitespace-delimited token of a cue's text, with its own
+    absolute speak window taken from the same per-character alignment the
+    cue itself was built from (Feature A, style_extensions.md §3.2/§3.3 -
+    never a second timing source). Punctuation stays attached to its
+    token, so `world,` highlights including the comma."""
+
+    text: str
+    start_s: float
+    end_s: float
+
+
+@dataclass(frozen=True)
 class CaptionCue:
     start_s: float
     end_s: float
     text: str
+    # Feature A (style_extensions.md §3): populated by
+    # `derive_caption_cues` from the same alignment arrays as everything
+    # else; empty on hand-built cues, which serialise exactly as they did
+    # before this feature existed.
+    words: tuple[CaptionWord, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -168,6 +186,14 @@ def derive_caption_cues(
                         start_s=scene_offset_s + char_starts[seg_start],
                         end_s=scene_offset_s + char_ends[seg_end - 1],
                         text=text,
+                        words=_word_spans(
+                            scene.narration_text,
+                            seg_start,
+                            seg_end,
+                            char_starts=char_starts,
+                            char_ends=char_ends,
+                            scene_offset_s=scene_offset_s,
+                        ),
                     )
                 )
         scene_offset_s += scene_duration_s
@@ -302,6 +328,45 @@ def _split_if_too_long(
     return left_parts + right_parts
 
 
+def _word_spans(
+    text: str,
+    seg_start: int,
+    seg_end: int,
+    *,
+    char_starts: list[float],
+    char_ends: list[float],
+    scene_offset_s: float,
+) -> tuple[CaptionWord, ...]:
+    """Feature A: one cue's character span -> its whitespace-delimited
+    words, each timed by the SAME per-character alignment arrays that
+    timed the cue itself (`char_starts[first_char]` ..
+    `char_ends[last_char]`, plus the scene's audio-track offset). No new
+    timing source is consulted anywhere (§3.2's critical constraint).
+    Punctuation attaches to its token; a token whose alignment window
+    collapses to zero length is kept - the serialiser decides what to do
+    with it, keeping this function purely mechanical."""
+
+    def _token(first: int, last_inclusive: int) -> CaptionWord:
+        return CaptionWord(
+            text=text[first : last_inclusive + 1],
+            start_s=scene_offset_s + char_starts[first],
+            end_s=scene_offset_s + char_ends[last_inclusive],
+        )
+
+    words: list[CaptionWord] = []
+    token_start: int | None = None
+    for index in range(seg_start, seg_end):
+        if text[index].isspace():
+            if token_start is not None:
+                words.append(_token(token_start, index - 1))
+                token_start = None
+        elif token_start is None:
+            token_start = index
+    if token_start is not None:
+        words.append(_token(token_start, seg_end - 1))
+    return tuple(words)
+
+
 def _assert_monotonic_non_overlapping(cues: list[CaptionCue]) -> None:
     """A violated invariant here means the offset arithmetic above is
     wrong - fail loudly rather than ship silent drift (doc §4.2 step 5)."""
@@ -314,10 +379,28 @@ def _assert_monotonic_non_overlapping(cues: list[CaptionCue]) -> None:
 
 def cue_list_content_hash(cues: list[CaptionCue]) -> str:
     """The fingerprint's cue-list input (doc §6): covers script edits,
-    re-narration with a different voice, and any segmentation-rule change
-    in one value. Fixed precision, stable ordering - never
-    locale-dependent float formatting."""
-    digest_input = "|".join(f"{c.start_s:.3f},{c.end_s:.3f},{c.text}" for c in cues).encode()
+    re-narration with a different voice, any segmentation-rule change,
+    and (style_extensions.md §9 RV-A1) whether cues carry word-level
+    highlight timing - so shipping Feature A forces every existing
+    project through exactly one fresh render (cache MISS) instead of a
+    cache HIT silently serving its old non-highlighted bytes forever.
+    Fixed precision, stable ordering - never locale-dependent float
+    formatting.
+
+    Word timings deliberately get NO separate `compute_render_fingerprint`
+    parameter (§9 RV-A2): they are a pure, deterministic function of
+    `(narration_text, span bounds, alignment arrays, scene offset)` - the
+    very inputs that already determine `start_s`/`end_s`/`text`, captured
+    here and by the narration content-hash. Folding them into this digest
+    is therefore sufficient; there is no independent degree of freedom an
+    editor of `_word_spans` could change without this hash moving."""
+    digest_input = "|".join(
+        f"{c.start_s:.3f},{c.end_s:.3f},{c.text}"
+        # Word-less cues keep the legacy byte format exactly; word-carrying
+        # cues hash differently than their pre-Feature-A equivalents.
+        + "".join(f";{w.text}@{w.start_s:.3f}-{w.end_s:.3f}" for w in c.words)
+        for c in cues
+    ).encode()
     return hashlib.sha256(digest_input).hexdigest()
 
 
@@ -342,6 +425,67 @@ def _escape_ass_text(text: str) -> str:
     narration line containing either would corrupt the event line."""
     text = text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
     return text.replace("\n", " ").replace("\r", " ")
+
+
+# Feature A (style_extensions.md §3.3): word-level highlight colour, in
+# ASS's &HBBGGRR& order - yellow is B=00 G=FF R=FF. Applied to ALL styles
+# per decision §3.6; if a style ever needs a different highlight this is
+# the one constant to make style-keyed.
+_HIGHLIGHT_OVERRIDE_ASS = "{\\c&H00FFFF&}"
+_RESET_OVERRIDE_ASS = "{\\r}"
+
+
+def _plain_dialogue_line(cue: CaptionCue) -> str:
+    """The pre-Feature-A event line: whole cue, no overrides."""
+    return (
+        f"Dialogue: 0,{format_ass_time(cue.start_s)},{format_ass_time(cue.end_s)},"
+        f"Caption,,0,0,0,,{_escape_ass_text(cue.text)}"
+    )
+
+
+def _highlighted_dialogue_lines(cue: CaptionCue) -> list[str]:
+    """Feature A (§3.3, Option 2 - N contiguous lines instead of karaoke
+    tags):
+    word i's event spans [w_i.start, w_{i+1}.start) (the last word runs to
+    the cue's end) and re-emits the WHOLE phrase with only word i wrapped
+    in the highlight override. The windows tile the cue exactly - full
+    coverage, zero overlap, and no karaoke arithmetic for libass to
+    mis-scale. A highlighted word stays lit through any inter-word pause
+    until the next word begins, which is the intended Hormozi-style
+    behaviour. A word whose alignment window collapses to zero duration
+    gets NO line of its own (libass rejects zero-duration events); its
+    instant is already covered by the neighbouring window. Cues without
+    words serialise byte-for-byte as they did before Feature A."""
+
+    def _line(highlight_index: int, start_s: float, end_s: float) -> str:
+        tokens = [_escape_ass_word(w.text) for w in cue.words]
+        tokens[highlight_index] = (
+            f"{_HIGHLIGHT_OVERRIDE_ASS}{tokens[highlight_index]}{_RESET_OVERRIDE_ASS}"
+        )
+        return (
+            f"Dialogue: 0,{format_ass_time(start_s)},{format_ass_time(end_s)},"
+            f"Caption,,0,0,0,,{' '.join(tokens)}"
+        )
+
+    lines: list[str] = []
+    for index, word in enumerate(cue.words):
+        start = cue.start_s if index == 0 else word.start_s
+        end = cue.end_s if index == len(cue.words) - 1 else cue.words[index + 1].start_s
+        if end <= start + 1e-9:
+            continue
+        lines.append(_line(index, start, end))
+    # Degenerate alignment (every window zero-length) must not drop the
+    # caption entirely - fall back to the plain whole-cue line.
+    return lines if lines else [_plain_dialogue_line(cue)]
+
+
+def _escape_ass_word(word: str) -> str:
+    """Same brace/backslash escaping as `_escape_ass_text`, minus newline
+    flattening - tokens from `_word_spans` can never contain whitespace by
+    construction, so this is a single mechanical replacement pass (RV-A3:
+    no defensive re-split). Kept separate from `_escape_ass_text` so a
+    future change to one rule cannot silently alter the other."""
+    return word.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
 
 
 def serialize_ass(cues: list[CaptionCue], style: CaptionStyle) -> str:
@@ -380,10 +524,13 @@ def serialize_ass(cues: list[CaptionCue], style: CaptionStyle) -> str:
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     for cue in cues:
-        start = format_ass_time(cue.start_s)
-        end = format_ass_time(cue.end_s)
-        text = _escape_ass_text(cue.text)
-        lines.append(f"Dialogue: 0,{start},{end},Caption,,0,0,0,,{text}")
+        # Feature A (§3.3): cues carrying word-level alignment emit N
+        # contiguous highlighted lines; hand-built word-less cues keep
+        # today's single plain line exactly.
+        if cue.words:
+            lines.extend(_highlighted_dialogue_lines(cue))
+        else:
+            lines.append(_plain_dialogue_line(cue))
 
     return "\n".join(lines) + "\n"
 

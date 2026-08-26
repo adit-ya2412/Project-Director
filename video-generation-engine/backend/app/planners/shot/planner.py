@@ -284,6 +284,9 @@ def _to_domain_shot(
         ),
         prompt=s.prompt,
         secondary_prompt=s.secondary_prompt,
+        # Feature B (§4.4): empty string -> None, the persisted model's
+        # "no card" shape (`derive_text_card_cues` treats both alike).
+        text_card=s.text_card.strip() or None,
         asset_plan=None,
     )
 
