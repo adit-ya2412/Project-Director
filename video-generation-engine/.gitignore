@@ -106,3 +106,9 @@ backups/
 # artifacts, never committed.
 tmp/
 
+# Ad-hoc visual-verification spikes (e.g. style_extensions.md's glitch-
+# transition prototyping) — real photos/videos used to eyeball a filter
+# graph before writing production code. Findings get written into the
+# relevant plan doc's log; the raw media never belongs in the repo.
+_spike_*/
+
