@@ -50,7 +50,35 @@ _STYLE_DESCRIPTIONS = {
         "content whose power is in restraint - memorial, reflection, "
         "understatement."
     ),
+    # Feature B (style_extensions.md §4) / prompt_fixes.md §3.1: the 4th
+    # style shipped in STYLE_PACING_BANDS and this dict was not updated,
+    # so `.get(style, style)` fed the model its own name as a description
+    # and it fabricated a verdict. Keep in lockstep with
+    # STYLE_PACING_BANDS - test_suitability.py asserts the two sets match.
+    "archival_montage": (
+        "harder-cut archival montage in 9:16, with frequent full-frame "
+        "text cards as chapter markers. Suits historical or process-driven "
+        "material that has a real archival visual record but wants punchier "
+        "rhythm than long-form documentary; a poor fit for solemn memorial, "
+        "or for purely promotional content with no archival character."
+    ),
 }
+
+
+def _description_for(style: str) -> str:
+    """Loud on an unknown style - never fall back to the name itself.
+    By the time this is called, `style` is a STYLE_PACING_BANDS key
+    (the preflight endpoint 400s otherwise), so a miss here is a
+    registry/descriptions drift, not a typo. Raising is what makes
+    style #5 fail in review instead of shipping a fabricated verdict
+    (prompt_fixes.md §3.1)."""
+    try:
+        return _STYLE_DESCRIPTIONS[style]
+    except KeyError:
+        raise KeyError(
+            f"no suitability description for style {style!r} - "
+            f"known: {sorted(_STYLE_DESCRIPTIONS)}"
+        ) from None
 
 
 async def check_suitability(
@@ -77,7 +105,7 @@ async def check_suitability(
         return None
 
     system_prompt = load_prompt(_AGENT_NAME, _PROMPT_VERSION)
-    style_description = _STYLE_DESCRIPTIONS.get(style, style)
+    style_description = _description_for(style)
     user_content = (
         f"Style under consideration: {style}\n"
         f"Style description: {style_description}\n\n"

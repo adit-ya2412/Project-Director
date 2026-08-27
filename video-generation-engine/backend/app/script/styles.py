@@ -177,15 +177,51 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
         max_shot_duration_s_override=4.5,  # target * 2.0, matching the
         # dead-stop ceiling shape (R7: independent field that merely
         # agrees with max_fragment_duration_s = 2.25 * 2.0 today).
-        narration_speed=1.15,  # below retention_fast's 1.4x - cut pace
-        # close to but not as extreme as retention_fast; within the
-        # ~1.15-1.25x practical ceiling the parent plan cites.
+        # 1.25, raised from 1.15 on 2026-08-27 — still below
+        # retention_fast's 1.4x, and the TOP of the ~1.15-1.25x practical
+        # ceiling the parent plan cites (past that ElevenLabs prosody
+        # degrades).
+        #
+        # Measured cause (project 606f393e, "OSHO the legend", 36
+        # fragments): the narration duration cap is
+        # `(n_fragments/31) * max_video_duration_s`, which for 36
+        # fragments is 104.5s — algebraically a RATE limit of 2.903
+        # s/fragment, not a length limit. At 1.15x, three of four
+        # candidate voices overshot it (by 0.04s, 6.7s and 13.5s); at
+        # 1.25x, three of the four clear it. Raising the speed keeps the
+        # reel ~102s instead of letting the cap rise and the video
+        # sprawl past 120s.
+        #
+        # ⚠ Hinglish (this project's language_code=hi) is called out in
+        # the parent plan as likely to degrade EARLIER and differently
+        # than English at a given speed. 1.25 is the documented ceiling,
+        # not a safe default — listen before trusting it, and drop back
+        # to 1.15 (accepting a slower voice) if prosody suffers.
+        #
+        # Speed is in `compute_narration_content_hash`, so changing it
+        # invalidates every cached narration for this style.
+        narration_speed=1.25,
         music_bed_gain_db=-11.0,  # between archival's -14 and
         music_duck_gain_db=-15.0,  # retention_fast's -10/-14: more
         # upfront than archival, leaning toward retention_fast's mix
         # since the pace decision leans that way too (§4.3).
-        # whoosh_enabled omitted -> True: archival_montage is not the
-        # dense-cut style whoosh was disabled for (§1.3).
+        # whoosh OFF, 2026-08-27 — measured, replacing the assumption
+        # this line used to carry ("archival_montage is not the dense-cut
+        # style whoosh was disabled for", written when the style shipped
+        # and never checked against a real run).
+        #
+        # Real run d3a4d00d (75s, 39 shots): 9 punch_in shots x 2 punches
+        # = 18 whoosh events, inside a total SFX layer of ~41 events —
+        # one every 1.8s. That IS the density problem analysis.md
+        # decision 5/5a disabled whoosh for on retention_fast; this style
+        # simply did not exist when that decision was taken, so it
+        # inherited the default rather than the reasoning.
+        #
+        # Note this is a RENDER-time gate (resolved from the style in
+        # render.py, hashed into the fingerprint), not a planning
+        # decision — flipping it re-renders existing projects correctly
+        # rather than needing a re-plan.
+        whoosh_enabled=False,
         render_width=720,  # 9:16, decided 2026-08-25 (§4.6) - this
         render_height=1280,  # plan originated from a "styles for reels" ask.
     ),

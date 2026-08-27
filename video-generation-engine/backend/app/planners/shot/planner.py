@@ -30,6 +30,7 @@ resumability, not sub-call-level.
 import asyncio
 import uuid
 
+from app.core.config import settings
 from app.core.errors import PermanentError
 from app.core.logging import get_logger
 from app.planners.fragments import NarrationFragment, split_narration_fragments
@@ -46,6 +47,7 @@ from app.schemas.timeline import (
     Scene,
     Shot,
     Transition,
+    TransitionType,
 )
 from app.utils.bounded_gather import bounded_gather, planner_concurrency
 
@@ -57,6 +59,118 @@ logger = get_logger(__name__)
 # fencepost mistake about whether a range is inclusive), or has
 # misunderstood the fragment list entirely. 1 sits exactly on that line.
 _LARGE_FRAGMENT_SNAP_THRESHOLD = 1
+
+# prompt_fixes.md §3.2: the three custom glitch transitions. Not real
+# xfade names - slideshow.py branches on these. The Shot Planner runs
+# per-scene, so "at most one per video" cannot be enforced in the prompt;
+# `_cap_glitch_transitions` is the post-gather corrective pass.
+_GLITCH_TYPES = frozenset(
+    {
+        TransitionType.GLITCH_SHIFT,
+        TransitionType.GLITCH_TEAR,
+        TransitionType.GLITCH_JITTER,
+    }
+)
+
+
+def _cap_glitch_transitions(planned_scenes: list[Scene]) -> list[Scene]:
+    """Keep the first glitch in scene/shot order; downgrade later ones
+    to CUT / 0s.
+
+    Silently correct, don't fail loudly (style_extensions.md §2.7,
+    argued): the model was never *able* to see the other scenes, so a
+    hard failure would punish it for missing information it was
+    structurally denied - the same reasoning that moved
+    `max_video_shots_per_project` from PermanentError to a downgrade
+    (asset/planner.py). A glitch becoming a plain cut is a strictly
+    safe degradation (`cut` is the base default).
+
+    Deliberately NOT extended to wipeleft/fadeblack (prompt_fixes.md
+    §3.2): an over-used wipe reads as showy, an over-used glitch reads
+    as broken, and silently rewriting ordinary transitions is a much
+    larger behavioural change than capping a deliberately-rare effect.
+    """
+    kept = False
+    downgraded = 0
+    out: list[Scene] = []
+    for scene in planned_scenes:
+        new_shots: list[Shot] = []
+        for shot in scene.shots:
+            if shot.transition_out.type in _GLITCH_TYPES:
+                if kept:
+                    shot = shot.model_copy(
+                        update={
+                            "transition_out": Transition(type=TransitionType.CUT, duration_s=0.0)
+                        }
+                    )
+                    downgraded += 1
+                else:
+                    kept = True
+            new_shots.append(shot)
+        out.append(scene.model_copy(update={"shots": new_shots}))
+    if downgraded:
+        # stdlib logger - extra={}, never bare kwargs (TypeError).
+        logger.warning(
+            "shot_planner.glitch_cap_exceeded_downgrading",
+            extra={"kept_first": True, "downgraded": downgraded},
+        )
+    return out
+
+
+def _cap_text_cards(planned_scenes: list[Scene], *, min_gap: int) -> list[Scene]:
+    """Enforce a project-wide minimum shot gap between text cards.
+
+    Walks every shot in scene/shot order and clears `text_card` on any
+    card that lands fewer than `min_gap` shots after the last kept one.
+
+    Why this exists (prompt_fixes.md §2.1's rule, third instance): the
+    prompt asks for "roughly one card every four to six shots", but the
+    Shot Planner is called ONCE PER SCENE and scenes average ~4 shots -
+    so each call reasonably emits one, and the whole-video rate lands at
+    the per-scene rate. Measured on d3a4d00d: 17 cards / 39 shots, ~2x
+    intended, and 17 stinger SFX hits with it. No wording fixes this;
+    the caller cannot see the other scenes.
+
+    Spacing, not a hard count: it keeps cards spread the way the prompt
+    intends rather than keeping the first N and stranding a run of them
+    at the front. Silently correct + log, per style_extensions.md §2.7 -
+    the model was structurally denied the information needed to get this
+    right, so failing the run would punish it for our own architecture.
+
+    Needs no new fingerprint input: `text_card` lives on the Shot, and
+    the whole timeline document is already hashed (same reasoning as
+    Feature B's original text_card wiring).
+    """
+    if min_gap <= 0:
+        return planned_scenes
+    out: list[Scene] = []
+    shots_since_kept: int | None = None  # None = no card kept yet
+    cleared = 0
+    kept = 0
+    for scene in planned_scenes:
+        new_shots: list[Shot] = []
+        for shot in scene.shots:
+            has_card = bool((shot.text_card or "").strip())
+            if has_card:
+                if shots_since_kept is None or shots_since_kept >= min_gap:
+                    kept += 1
+                    shots_since_kept = 0
+                else:
+                    shot = shot.model_copy(update={"text_card": None})
+                    cleared += 1
+                    if shots_since_kept is not None:
+                        shots_since_kept += 1
+            elif shots_since_kept is not None:
+                shots_since_kept += 1
+            new_shots.append(shot)
+        out.append(scene.model_copy(update={"shots": new_shots}))
+    if cleared:
+        # stdlib logger - extra={}, never bare kwargs (TypeError).
+        logger.warning(
+            "shot_planner.text_cards_too_dense_trimmed",
+            extra={"kept": kept, "cleared": cleared, "min_gap": min_gap},
+        )
+    return out
 
 
 def _snap_fragment_boundaries(
@@ -370,4 +484,7 @@ class ShotPlanner:
                 f"shot planner exceeded max_shots_per_project ({max_shots_per_project}) "
                 f"- {total_shots} shots planned"
             )
-        return planned_scenes
+        # Both post-gather corrective passes for whole-project rates no
+        # single per-scene call can see (prompt_fixes.md §2.1).
+        capped = _cap_glitch_transitions(planned_scenes)
+        return _cap_text_cards(capped, min_gap=settings.text_card_min_shot_gap)

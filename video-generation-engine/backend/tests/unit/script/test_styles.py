@@ -308,9 +308,25 @@ def test_archival_montage_resolves_its_decided_band():
 
 def test_archival_montage_narration_speed_music_and_whoosh():
     """Speed below retention_fast's 1.4x; music more upfront than
-    archival's measured mix but short of retention_fast; whoosh stays ON
-    (this is not the dense-cut style whoosh was disabled for, §1.3)."""
-    assert resolve_narration_speed("archival_montage") == 1.15
+    archival's measured mix but short of retention_fast.
+
+    Whoosh is OFF as of 2026-08-27 — this assertion previously pinned
+    `is True` on the assumption that "this is not the dense-cut style
+    whoosh was disabled for". A real run disproved it: d3a4d00d (75s,
+    39 shots) had 9 punch_in shots -> 18 whoosh events inside a ~41-event
+    SFX layer, one every 1.8s. That is the same density problem
+    analysis.md decision 5/5a disabled whoosh for on retention_fast;
+    archival_montage did not exist then, so it inherited the default
+    rather than the reasoning."""
+    # 1.25 as of 2026-08-27 (raised from 1.15): the narration duration
+    # cap is a rate limit of `max_video_duration_s / 31` per fragment,
+    # and at 1.15x most candidate voices overshot it on a real 36-
+    # fragment script. Still under retention_fast's 1.4x and at the top
+    # of the documented ~1.15-1.25x quality ceiling.
+    assert resolve_narration_speed("archival_montage") == 1.25
+    assert resolve_narration_speed("archival_montage") < resolve_narration_speed(
+        "retention_fast"
+    )
 
     gains = resolve_music_gains("archival_montage")
     assert gains.bed_gain_db == -11.0
@@ -318,7 +334,12 @@ def test_archival_montage_narration_speed_music_and_whoosh():
     # Strictly between the measured archival mix and retention_fast's.
     assert settings.music_bed_gain_db < gains.bed_gain_db < -10.0
 
-    assert resolve_sfx_whoosh_enabled("archival_montage") is True
+    assert resolve_sfx_whoosh_enabled("archival_montage") is False
+    # The two 9:16 fast-cut styles now agree; the slower 16:9 styles,
+    # where punch_in is rare, keep it.
+    assert resolve_sfx_whoosh_enabled("retention_fast") is False
+    assert resolve_sfx_whoosh_enabled("documentary_archival") is True
+    assert resolve_sfx_whoosh_enabled("stillness") is True
 
 
 def test_archival_montage_is_9_16_and_rejects_the_stillness_only_aspect_flag():

@@ -215,13 +215,28 @@ class Settings(BaseSettings):
     # This is an ABSOLUTE OUTPUT PEAK TARGET in dBFS, not a gain - a
     # different quantity from `sfx_gain_db` above, which is a flat GAIN
     # applied on top of a clip's existing level. The two must never be
-    # conflated (see analysis.md RV11): C3c specifies the normalization
-    # target as "~-12 dBFS", and -12.0 is what belongs here. A previous
-    # revision (P6) mistakenly reused sfx_gain_db's -8.0 for this field,
-    # which made every real SFX clip in the library LOUDER (peaks were
-    # already below -8 dBFS), the opposite of the desired effect - see
-    # RV11 for the measured before/after table.
-    sfx_normalize_target_db: float = -12.0
+    # conflated (see analysis.md RV11): a previous revision (P6)
+    # mistakenly reused sfx_gain_db's -8.0 for this field, which made
+    # every real SFX clip LOUDER (peaks were already below -8 dBFS), the
+    # opposite of the desired effect.
+    #
+    # -20.0, lowered from C3c's original "~-12 dBFS" spec 2026-08-27.
+    # ⚠ This is NOT a repeat of the P6 mistake above (that one conflated
+    # the two quantities and raised the level); this lowers it, on new
+    # measured evidence C3c never had:
+    #
+    #   narration alone (d3a4d00d, real render): mean -22.3 dB, peak -2.8
+    #   SFX normalized onto the old -12.0 peak target
+    #     -> every stinger/whoosh transient landed ~10 dB ABOVE the
+    #        average narration level it is supposed to bed under.
+    #
+    # Speech has a high crest factor, so a peak-referenced target chosen
+    # in isolation says nothing about how the effect sits against the
+    # voice. -20.0 puts SFX peaks near the narration's own average
+    # instead of over it. Still a starting point, not a measured
+    # constant - go to ~-24 if it remains too present, and prefer the
+    # per-kind offsets below for a single problem clip.
+    sfx_normalize_target_db: float = -20.0
     sfx_whoosh_gain_db: float | None = None
     sfx_stinger_gain_db: float | None = None
     sfx_transition_gain_db: float | None = None
@@ -277,6 +292,21 @@ class Settings(BaseSettings):
     min_shot_duration_s: float = 1.5
     max_shot_duration_s: float = 8.0
     max_scenes: int = 12
+    # Minimum number of shots between two text cards, enforced
+    # PROJECT-WIDE after the per-scene gather (`_cap_text_cards`,
+    # planners/shot/planner.py). 2026-08-27, measured.
+    #
+    # The prompt asks for "roughly one card every four to six shots",
+    # but the Shot Planner sees ONE SCENE per call - and scenes average
+    # ~4 shots. Every scene independently concluded "about one for me",
+    # so the whole-video rate came out at the per-scene rate: real run
+    # d3a4d00d produced 17 cards across 39 shots (~1 per 2.3), roughly
+    # 2x the intended rate, and with it 17 stinger SFX hits.
+    #
+    # Same class as the glitch cap and `max_video_shots_per_project`:
+    # a rate no single per-scene call can see. 4 = the low end of the
+    # prompt's own range, so this only ever trims genuine excess.
+    text_card_min_shot_gap: int = 4
     default_language: str = "en"
     # Track C C1: scripts with more than this many fragments take Path B
     # (act pass, then per-act scene planning). Deliberate guess, safe

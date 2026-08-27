@@ -42,24 +42,55 @@ def test_kind_offset_rides_on_top_of_both_paths():
 
 def test_normalize_target_is_a_peak_target_not_the_flat_gain_fallback():
     """RV11 / analysis.md C3c: `sfx_normalize_target_db` (an absolute
-    output PEAK target, -12.0) and `sfx_gain_db` (a flat GAIN fallback,
-    -8.0) are two different quantities that must never collapse to the
-    same number again - see the config.py comment this pins.
+    output PEAK target) and `sfx_gain_db` (a flat GAIN fallback, -8.0)
+    are two different quantities that must never collapse to the same
+    number again - see the config.py comment this pins.
+
+    The target was lowered -12.0 -> -20.0 on 2026-08-27 against measured
+    narration levels; this test pins the INVARIANT (they stay distinct,
+    and the target stays below the gain fallback), not the tuning value,
+    so a future level pass does not have to edit it.
     """
-    assert settings.sfx_normalize_target_db == pytest.approx(-12.0)
     assert settings.sfx_gain_db == pytest.approx(-8.0)
     assert settings.sfx_normalize_target_db != settings.sfx_gain_db
+    # The P6 failure was the target landing ABOVE (louder than) the
+    # fallback. Any sane target sits below it.
+    assert settings.sfx_normalize_target_db < settings.sfx_gain_db
 
 
-def test_known_peak_against_the_real_target_yields_the_expected_gain():
+def test_sfx_peaks_land_under_the_measured_narration_average():
+    """2026-08-27: the reason the target moved. Real narration on
+    d3a4d00d measured mean -22.3 dBFS / peak -2.8 dBFS. Speech has a
+    high crest factor, so an SFX peak target chosen in isolation says
+    nothing about how the effect sits against the voice - the old -12.0
+    put every transient ~10 dB OVER the average narration level.
+
+    Pinned as a relationship, not a number: whatever the target is, a
+    normalized clip must not peak far above where narration actually
+    sits."""
+    narration_mean_dbfs = -22.3
+    for source_peak in (-5.0, -7.3, -9.3):  # the real library's 3 clips
+        gain = effective_gain_db(
+            source_peak,
+            target_db=settings.sfx_normalize_target_db,
+            fallback_db=settings.sfx_gain_db,
+        )
+        played_peak = source_peak + gain
+        assert played_peak == pytest.approx(settings.sfx_normalize_target_db)
+        assert played_peak < narration_mean_dbfs + 3.0
+
+
+def test_known_peak_normalizes_onto_the_target_and_gets_quieter():
     """A clip peaking at -5.0 dBFS (analysis.md RV11's stinger example)
-    normalized onto the real -12.0 dBFS target needs -7.0 dB of gain -
-    i.e. it gets QUIETER, not louder as the old -8.0 target produced."""
-    assert effective_gain_db(
+    must be attenuated onto the target, never amplified - the specific
+    regression P6 introduced."""
+    gain = effective_gain_db(
         -5.0,
         target_db=settings.sfx_normalize_target_db,
         fallback_db=settings.sfx_gain_db,
-    ) == pytest.approx(-7.0)
+    )
+    assert gain < 0.0
+    assert -5.0 + gain == pytest.approx(settings.sfx_normalize_target_db)
 
 
 # -- end-aligned trim start --------------------------------------------------
