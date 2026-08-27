@@ -8,6 +8,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { ResolutionWarningBadge } from '@/components/ResolutionWarning'
+import { OptionCard } from '@/components/OptionCard'
 import { ScriptPreflightPanel } from '@/components/ScriptPreflight'
 import { wordCount } from '@/lib/format'
 import {
@@ -23,32 +24,13 @@ import { ApiError } from '@/lib/api'
 import { useQueryClient } from '@tanstack/react-query'
 import { qk } from '@/lib/queries'
 import { useScriptPreflight } from '@/lib/useScriptPreflight'
+import { RENDER_STYLES, type RenderStyleId } from '@/lib/styles'
 
 const MIN_WORDS = 10
 const MAX_WORDS = 15
 
-const STYLES = [
-  {
-    id: 'documentary_archival',
-    label: 'Archival documentary',
-    hint: '16:9 · Ken Burns, YouTube long-form',
-    targetShotDurationS: null,
-  },
-  {
-    id: 'retention_fast',
-    label: 'Fast-cut reel',
-    hint: '9:16 · punchy cuts, short feed',
-    targetShotDurationS: 1.75,
-  },
-  {
-    id: 'stillness',
-    label: 'Stillness',
-    hint: 'Quiet, contemplative — pick a frame below',
-    targetShotDurationS: null,
-  },
-] as const
-
-type RenderStyle = (typeof STYLES)[number]['id']
+const STYLES = RENDER_STYLES
+type RenderStyle = RenderStyleId
 type FrameAspect = '16:9' | '9:16'
 
 const LANGUAGES = [
@@ -257,64 +239,33 @@ export function NewProject() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid gap-2 sm:grid-cols-3">
-              {STYLES.map((s) => {
-                const selected = style === s.id
-                return (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => setStyle(s.id)}
-                    className={cn(
-                      'rounded-md border px-3 py-2.5 text-left transition-colors',
-                      selected
-                        ? 'border-primary bg-primary/10'
-                        : 'border-border hover:border-primary/40 hover:bg-accent/40',
-                    )}
-                    aria-pressed={selected}
-                  >
-                    <div className="text-sm font-medium">{s.label}</div>
-                    <div className="mt-0.5 text-xs text-muted-foreground">{s.hint}</div>
-                  </button>
-                )
-              })}
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              {STYLES.map((s) => (
+                <OptionCard
+                  key={s.id}
+                  selected={style === s.id}
+                  onSelect={() => setStyle(s.id)}
+                  label={s.label}
+                  hint={s.hint}
+                />
+              ))}
             </div>
             {style === 'stillness' && (
               <div className="space-y-2">
                 <Label>Frame</Label>
                 <div className="grid gap-2 sm:grid-cols-2">
-                  <button
-                    type="button"
-                    onClick={() => setFrameAspect('16:9')}
-                    className={cn(
-                      'rounded-md border px-3 py-2.5 text-left transition-colors',
-                      frameAspect === '16:9'
-                        ? 'border-primary bg-primary/10'
-                        : 'border-border hover:border-primary/40 hover:bg-accent/40',
-                    )}
-                    aria-pressed={frameAspect === '16:9'}
-                  >
-                    <div className="text-sm font-medium">16:9 landscape</div>
-                    <div className="mt-0.5 text-xs text-muted-foreground">
-                      Long-form, YouTube. Default for stillness.
-                    </div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setFrameAspect('9:16')}
-                    className={cn(
-                      'rounded-md border px-3 py-2.5 text-left transition-colors',
-                      frameAspect === '9:16'
-                        ? 'border-primary bg-primary/10'
-                        : 'border-border hover:border-primary/40 hover:bg-accent/40',
-                    )}
-                    aria-pressed={frameAspect === '9:16'}
-                  >
-                    <div className="text-sm font-medium">9:16 portrait</div>
-                    <div className="mt-0.5 text-xs text-muted-foreground">
-                      Short reel with Ken Burns camera — not a fast-cut style.
-                    </div>
-                  </button>
+                  <OptionCard
+                    selected={frameAspect === '16:9'}
+                    onSelect={() => setFrameAspect('16:9')}
+                    label="16:9 landscape"
+                    hint="Long-form, YouTube. Default for stillness."
+                  />
+                  <OptionCard
+                    selected={frameAspect === '9:16'}
+                    onSelect={() => setFrameAspect('9:16')}
+                    label="9:16 portrait"
+                    hint="Short reel with Ken Burns camera — not a fast-cut style."
+                  />
                 </div>
               </div>
             )}
@@ -334,25 +285,14 @@ export function NewProject() {
           </CardHeader>
           <CardContent>
             <div className="grid gap-2 sm:grid-cols-4">
-              {LANGUAGES.map((l) => {
-                const selected = languageCode === l.code
-                return (
-                  <button
-                    key={l.label}
-                    type="button"
-                    onClick={() => setLanguageCode(l.code)}
-                    className={cn(
-                      'rounded-md border px-3 py-2.5 text-left transition-colors',
-                      selected
-                        ? 'border-primary bg-primary/10'
-                        : 'border-border hover:border-primary/40 hover:bg-accent/40',
-                    )}
-                    aria-pressed={selected}
-                  >
-                    <div className="text-sm font-medium">{l.label}</div>
-                  </button>
-                )
-              })}
+              {LANGUAGES.map((l) => (
+                <OptionCard
+                  key={l.label}
+                  selected={languageCode === l.code}
+                  onSelect={() => setLanguageCode(l.code)}
+                  label={l.label}
+                />
+              ))}
             </div>
           </CardContent>
         </Card>

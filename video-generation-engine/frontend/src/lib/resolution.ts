@@ -10,8 +10,10 @@
  *     settings endpoint; update both sides if that config ever changes.
  *   - Ken Burns zoom: mirrors backend/app/renderer/ken_burns.py exactly
  *     (`_MAX_ZOOM_DELTA = 0.5` for slow_zoom/slow_push/pull_back,
- *     `_MAX_PAN_ZOOM_DELTA = 0.3` for pan, both `1 + intensity * delta`;
- *     static/split_frame never move, so their zoom is exactly 1.0).
+ *     `_MAX_PAN_ZOOM_DELTA = 0.3` for pan,
+ *     `_MAX_PUNCH_ZOOM_DELTA = 0.9` for punch_in,
+ *     both `1 + intensity * delta`; static/split_frame never move, so
+ *     their zoom is exactly 1.0).
  */
 
 import type { Camera } from './types'
@@ -22,12 +24,23 @@ export const RENDER_HEIGHT = 1280
 /** Mirrors `resolve_render_format` (backend/app/script/styles.py).
  * Hardcoded because there is no settings endpoint; archival/stillness
  * default 16:9, stillness + `9:16` is a vertical Ken Burns reel,
- * retention_fast stays 9:16. */
+ * retention_fast and archival_montage stay 9:16.
+ *
+ * `archival_montage` was MISSING from this switch until 2026-08-26
+ * (ui_style_feature_coverage.md §3.1.1) — it silently fell through to
+ * the 16:9 default, which is wrong (backend `STYLE_PACING_BANDS
+ * ["archival_montage"]` is 720x1280, verified live against
+ * backend/app/script/styles.py before adding this line, not copied from
+ * a plan doc). A real, if narrow, client-only bug: the actual render was
+ * always correct (server-side), only this file's own Ken Burns/
+ * resolution-warning math was wrong for that one style. */
 export function canvasForStyle(
   style: string,
   frameAspect?: string | null,
 ): { width: number; height: number } {
-  if (style === "retention_fast") return { width: 720, height: 1280 }
+  if (style === "retention_fast" || style === "archival_montage") {
+    return { width: 720, height: 1280 }
+  }
   if (style === "stillness" && frameAspect === "9:16") return { width: 720, height: 1280 }
   return { width: 1280, height: 720 }
 }
@@ -43,6 +56,11 @@ export function frameAspectClass(width?: number | null, height?: number | null):
 
 const MAX_ZOOM_DELTA = 0.5
 const MAX_PAN_ZOOM_DELTA = 0.3
+// backend/app/renderer/ken_burns.py `_MAX_PUNCH_ZOOM_DELTA` — punch_in
+// is a hard stepped zoom, a larger ceiling than the slow-drift constant
+// on purpose. Missing here until 2026-08-26 (same pass as types.ts's
+// punch_in enum fix, ui_style_feature_coverage.md §2.3).
+const MAX_PUNCH_ZOOM_DELTA = 0.9
 
 export function effectiveKenBurnsZoom(camera: Camera | undefined): number {
   if (!camera) return 1
@@ -53,6 +71,8 @@ export function effectiveKenBurnsZoom(camera: Camera | undefined): number {
       return Math.max(1, 1 + camera.intensity * MAX_ZOOM_DELTA)
     case 'pan':
       return Math.max(1, 1 + camera.intensity * MAX_PAN_ZOOM_DELTA)
+    case 'punch_in':
+      return Math.max(1, 1 + camera.intensity * MAX_PUNCH_ZOOM_DELTA)
     case 'static':
     case 'split_frame':
     default:

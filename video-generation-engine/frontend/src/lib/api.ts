@@ -1,5 +1,6 @@
 import type {
   GenerateShotImageResult,
+  GenerateShotVideoResult,
   MusicUploadResult,
   Project,
   ProgressResponse,
@@ -7,6 +8,7 @@ import type {
   SceneApprovalResult,
   ScriptPreflightResponse,
   ScriptRewriteResponse,
+  SfxKind,
   ShotProgress,
   Timeline,
   UploadedAssetResult,
@@ -123,6 +125,19 @@ export function setLanguage(
   return request(`/projects/${projectId}/language`, {
     method: "POST",
     body: JSON.stringify({ language_code: languageCode }),
+  });
+}
+
+/** POST /grade — records an override (or `null` to clear it). Does NOT
+ * re-render; the caller still has to hit `/render/only`. Same shape as
+ * `setRenderStyle`, returns the new Timeline (not a workflow trigger). */
+export function setGrade(
+  projectId: string,
+  gradeStyle: string | null,
+): Promise<Timeline> {
+  return request(`/projects/${projectId}/grade`, {
+    method: "POST",
+    body: JSON.stringify({ grade_style: gradeStyle }),
   });
 }
 
@@ -336,6 +351,29 @@ export function retryNarration(
   });
 }
 
+/** C3f: replace one SFX kind's clip, or disable it (`enabled=false`,
+ * no file). Exactly one of those two operations per call — the backend
+ * 400s if both or neither are sent. */
+export function overrideSfx(
+  projectId: string,
+  kind: SfxKind,
+  opts: { file?: File; enabled?: boolean } = {},
+): Promise<WorkflowTriggerResult> {
+  const form = new FormData();
+  if (opts.file) form.append("file", opts.file);
+  if (opts.enabled === false) form.append("enabled", "false");
+  return request(`/projects/${projectId}/sfx/${kind}/override`, {
+    method: "POST",
+    body: form,
+  });
+}
+
+/** Undo for per-kind SFX override/disable — resets clips and re-runs
+ * selection. Same 202-trigger shape as `retryMusic`. */
+export function retrySfx(projectId: string): Promise<WorkflowTriggerResult> {
+  return request(`/projects/${projectId}/sfx/retry`, { method: "POST" });
+}
+
 /**
  * The one-gate redesign's Task 4: generate (or regenerate) one shot's
  * image on demand, at the single asset-review gate, before approval.
@@ -356,6 +394,25 @@ export function generateShotImage(
     method: "POST",
     body: JSON.stringify(prompt !== undefined ? { prompt } : {}),
   });
+}
+
+/** A6: submit (or join) a per-shot video generation job. 202 + pending;
+ * poll `pollShotVideo` for the real outcome. Image-to-video — a still
+ * must already exist. Not available under DRY_RUN. */
+export function generateShotVideo(
+  projectId: string,
+  shotId: string,
+): Promise<GenerateShotVideoResult> {
+  return request(`/projects/${projectId}/shots/${shotId}/generate/video`, {
+    method: "POST",
+  });
+}
+
+export function pollShotVideo(
+  projectId: string,
+  shotId: string,
+): Promise<GenerateShotVideoResult> {
+  return request(`/projects/${projectId}/shots/${shotId}/generate/video`);
 }
 
 // -- Media (bytes) --------------------------------------------------------

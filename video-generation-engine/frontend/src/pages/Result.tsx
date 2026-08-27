@@ -5,7 +5,7 @@ import {
   useSearchParams,
   Link,
 } from "react-router-dom";
-import { Download, RefreshCw, Music2, Mic } from "lucide-react";
+import { Download, RefreshCw, Music2, Mic, Volume2, Palette } from "lucide-react";
 import {
   useProject,
   useProgress,
@@ -14,12 +14,22 @@ import {
   useRetryNarration,
   useRenderOnly,
   useUploadMusic,
+  useSetGrade,
+  useOverrideSfx,
+  useRetrySfx,
 } from "@/lib/queries";
 import { videoUrl } from "@/lib/api";
 import { formatCostCents } from "@/lib/format";
 import { shotAssetSource } from "@/lib/asset-source";
 import { ASSET_SOURCE_LABEL } from "@/lib/asset-source";
-import type { AssetSource } from "@/lib/types";
+import type { AssetSource, SfxKind } from "@/lib/types";
+import {
+  RENDER_STYLES,
+  SFX_KIND_LABEL,
+  styleLabel,
+} from "@/lib/styles";
+import { OptionCard } from "@/components/OptionCard";
+import { Badge } from "@/components/ui/badge";
 import {
   Card,
   CardContent,
@@ -56,6 +66,7 @@ const SOURCE_ORDER: AssetSource[] = [
 const CORRECTION_LABEL: Record<string, string> = {
   voice: "Narration updated with the new voice.",
   music: "New music selected.",
+  sfx: "SFX updated.",
   render: "Re-rendered.",
 };
 
@@ -73,6 +84,9 @@ export function Result() {
   const uploadMusic = useUploadMusic(projectId ?? "");
   const retryNarration = useRetryNarration(projectId ?? "");
   const renderOnly = useRenderOnly(projectId ?? "");
+  const setGrade = useSetGrade(projectId ?? "");
+  const overrideSfx = useOverrideSfx(projectId ?? "");
+  const retrySfx = useRetrySfx(projectId ?? "");
 
   const [voiceId, setVoiceId] = useState("");
   const [musicTerms, setMusicTerms] = useState("");
@@ -81,6 +95,14 @@ export function Result() {
   // that navigation is what the correction family always does.
   const [musicFile, setMusicFile] = useState<File | null>(null);
   const [musicGainDb, setMusicGainDb] = useState("0");
+  // `undefined` = follow the server value; a real `null` is the explicit
+  // "match style" reset. See SetGradeRequest.
+  const [pendingGrade, setPendingGrade] = useState<string | null | undefined>(
+    undefined,
+  );
+  const [sfxFileByKind, setSfxFileByKind] = useState<
+    Partial<Record<SfxKind, File>>
+  >({});
 
   useEffect(() => {
     const corrected = searchParams.get("corrected");
@@ -124,6 +146,23 @@ export function Result() {
   }
 
   const track = timeline?.music_plan?.selected_track ?? null;
+  const sfxPlan = timeline?.sfx_plan ?? null;
+  const sfxClips = sfxPlan?.clips ?? [];
+  const renderStyle =
+    project?.render_style ?? timeline?.metadata.render_style ?? null;
+  const currentGrade = timeline?.metadata.grade_style ?? null;
+  const effectivePendingGrade =
+    pendingGrade === undefined ? currentGrade : pendingGrade;
+  const hasGlitch = Boolean(
+    timeline?.scenes.some((scene) =>
+      scene.shots.some((shot) => {
+        const t = shot.transition_out?.type;
+        return (
+          t === "glitch_shift" || t === "glitch_tear" || t === "glitch_jitter"
+        );
+      }),
+    ),
+  );
 
   function handleRetryVoice() {
     if (!voiceId.trim()) return;
@@ -207,6 +246,78 @@ export function Result() {
     navigate(`/projects/${projectId}/progress?pending=render`);
   }
 
+  function handleApplyGrade() {
+    setGrade.mutate(effectivePendingGrade ?? null, {
+      onSuccess: () => {
+        setPendingGrade(undefined);
+        toast({
+          title: "Grade saved",
+          description: "Re-render below to bake it into the video. Free.",
+          variant: "success",
+        });
+      },
+      onError: (err) =>
+        toast({
+          title: "Could not set grade",
+          description:
+            err instanceof ApiError ? String(err.detail) : "Try again.",
+          variant: "destructive",
+        }),
+    });
+  }
+
+  function handleRetrySfx() {
+    retrySfx.mutate(undefined, {
+      onSuccess: () => toast({ title: "Re-selecting SFX…" }),
+      onError: (err) =>
+        toast({
+          title: "Could not retry SFX",
+          description:
+            err instanceof ApiError ? String(err.detail) : "Try again.",
+          variant: "destructive",
+        }),
+    });
+    navigate(`/projects/${projectId}/progress?pending=sfx`);
+  }
+
+  function handleOverrideSfx(kind: SfxKind) {
+    const file = sfxFileByKind[kind];
+    if (!file) return;
+    overrideSfx.mutate(
+      { kind, file },
+      {
+        onSuccess: () =>
+          toast({ title: `${SFX_KIND_LABEL[kind]} replaced.` }),
+        onError: (err) =>
+          toast({
+            title: "Could not replace SFX",
+            description:
+              err instanceof ApiError ? String(err.detail) : "Try again.",
+            variant: "destructive",
+          }),
+      },
+    );
+    navigate(`/projects/${projectId}/progress?pending=sfx`);
+  }
+
+  function handleDisableSfx(kind: SfxKind) {
+    overrideSfx.mutate(
+      { kind, enabled: false },
+      {
+        onSuccess: () =>
+          toast({ title: `${SFX_KIND_LABEL[kind]} disabled.` }),
+        onError: (err) =>
+          toast({
+            title: "Could not disable SFX",
+            description:
+              err instanceof ApiError ? String(err.detail) : "Try again.",
+            variant: "destructive",
+          }),
+      },
+    );
+    navigate(`/projects/${projectId}/progress?pending=sfx`);
+  }
+
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <div>
@@ -234,7 +345,7 @@ export function Result() {
             className={`mx-auto max-h-[70vh] w-full rounded-md bg-black ${(project?.render_width ?? 720) > (project?.render_height ?? 1280) ? "max-w-3xl" : "max-w-sm"}`}
             src={videoUrl(projectId)}
           />
-          <div className="mt-3 flex justify-center gap-2">
+          <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
             <Button asChild>
               <a
                 href={videoUrl(projectId)}
@@ -245,6 +356,20 @@ export function Result() {
               </a>
             </Button>
           </div>
+          <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+            <Badge variant="secondary">{styleLabel(renderStyle)}</Badge>
+            {currentGrade && currentGrade !== renderStyle && (
+              <Badge variant="outline">
+                Grade: {styleLabel(currentGrade)}
+              </Badge>
+            )}
+            {hasGlitch && (
+              <Badge variant="warning">Includes a glitch transition</Badge>
+            )}
+          </div>
+          <p className="mt-2 text-center text-xs text-muted-foreground">
+            Word-highlight captions (yellow on the spoken word).
+          </p>
         </CardContent>
       </Card>
 
@@ -385,6 +510,128 @@ export function Result() {
           </CardContent>
         </Card>
       </div>
+
+      {sfxPlan && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Volume2 className="h-4 w-4" /> Sound effects
+            </CardTitle>
+            <CardDescription>
+              Layers actually present on this project — not every style has
+              every kind (fast-cut has whoosh off by design). Disable or
+              replace a kind, or retry selection to undo.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {sfxClips.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                {sfxPlan.selection_attempted
+                  ? "No SFX layers right now (disabled, or nothing was selected)."
+                  : "SFX has not been selected yet."}
+              </p>
+            ) : (
+              sfxClips.map((clip) => (
+                <div
+                  key={clip.kind}
+                  className="space-y-2 rounded-md border border-border p-3"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-medium">
+                        {SFX_KIND_LABEL[clip.kind] ?? clip.kind}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {clip.attribution || clip.licence || clip.provider}
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleDisableSfx(clip.kind)}
+                      disabled={overrideSfx.isPending}
+                    >
+                      Disable
+                    </Button>
+                  </div>
+                  <Label htmlFor={`sfx-file-${clip.kind}`}>
+                    Replace with your own (mp3/wav/m4a/ogg)
+                  </Label>
+                  <Input
+                    id={`sfx-file-${clip.kind}`}
+                    type="file"
+                    accept="audio/*,.mp3,.wav,.m4a,.ogg,.flac"
+                    onChange={(e) =>
+                      setSfxFileByKind((prev) => ({
+                        ...prev,
+                        [clip.kind]: e.target.files?.[0] ?? undefined,
+                      }))
+                    }
+                  />
+                  <Button
+                    size="sm"
+                    onClick={() => handleOverrideSfx(clip.kind)}
+                    disabled={!sfxFileByKind[clip.kind] || overrideSfx.isPending}
+                  >
+                    Upload &amp; use this clip
+                  </Button>
+                </div>
+              ))
+            )}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleRetrySfx}
+              disabled={retrySfx.isPending}
+            >
+              Retry SFX selection
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Palette className="h-4 w-4" /> Colour grade
+          </CardTitle>
+          <CardDescription>
+            Independent of style — changing this does not re-plan. Saved
+            immediately; re-render below to bake it in. Restricted to the
+            four style-named grades (backend SetGradeRequest validates
+            against STYLE_PACING_BANDS).
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+            <OptionCard
+              selected={effectivePendingGrade === null}
+              onSelect={() => setPendingGrade(null)}
+              label="Match this project's style"
+              hint={styleLabel(renderStyle)}
+            />
+            {RENDER_STYLES.map((s) => (
+              <OptionCard
+                key={s.id}
+                selected={effectivePendingGrade === s.id}
+                onSelect={() => setPendingGrade(s.id)}
+                label={s.label}
+                hint={s.gradeHint}
+              />
+            ))}
+          </div>
+          <Button
+            size="sm"
+            onClick={handleApplyGrade}
+            disabled={
+              setGrade.isPending ||
+              (effectivePendingGrade ?? null) === (currentGrade ?? null)
+            }
+          >
+            {setGrade.isPending ? "Saving…" : "Apply grade"}
+          </Button>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

@@ -18,14 +18,22 @@ import {
   useApproveScene,
   useOverrideShot,
   useGenerateShotImage,
+  useGenerateShotVideo,
   useRenderDraft,
   useRegenerateFailedInScene,
   useSceneShots,
 } from "@/lib/queries";
-import { shotAssetUrl, shotClipUrl, draftVideoUrl, ApiError } from "@/lib/api";
+import {
+  shotAssetUrl,
+  shotClipUrl,
+  draftVideoUrl,
+  pollShotVideo,
+  ApiError,
+} from "@/lib/api";
 import { formatCostCents, formatDuration } from "@/lib/format";
 import { translateError } from "@/lib/errors";
 import { shotAssetSource } from "@/lib/asset-source";
+import { CAMERA_LABEL, TRANSITION_LABEL } from "@/lib/styles";
 import { AssetSourceBadge } from "@/components/AssetSourceBadge";
 import { ResolutionWarningBadge } from "@/components/ResolutionWarning";
 import { computeResolutionWarning, frameAspectClass } from "@/lib/resolution";
@@ -47,6 +55,7 @@ import {
   SCENE_GROUP_SHOT_THRESHOLD,
   type Camera,
   type SceneProgress,
+  type Shot,
   type ShotProgress,
 } from "@/lib/types";
 
@@ -344,17 +353,21 @@ function DraftPlayer({
 function SceneExpandedShots({
   projectId,
   sceneId,
-  cameraByShot,
+  planByShot,
+  videoPending,
   onExpand,
   onOverride,
   onGenerate,
+  onGenerateVideo,
 }: {
   projectId: string;
   sceneId: string;
-  cameraByShot: Map<string, Camera>;
+  planByShot: Map<string, Shot>;
+  videoPending: ReadonlySet<string>;
   onExpand: (shot: ShotProgress) => void;
   onOverride: (shot: ShotProgress) => void;
   onGenerate: (shot: ShotProgress) => void;
+  onGenerateVideo: (shot: ShotProgress) => void;
 }) {
   const { data, isLoading } = useSceneShots(projectId, sceneId);
   if (isLoading || !data) {
@@ -367,10 +380,12 @@ function SceneExpandedShots({
           <ShotCard
             projectId={projectId}
             shot={shot}
-            camera={cameraByShot.get(shot.shot_id)}
+            plan={planByShot.get(shot.shot_id)}
+            videoPending={videoPending.has(shot.shot_id)}
             onExpand={() => onExpand(shot)}
             onOverride={() => onOverride(shot)}
             onGenerate={() => onGenerate(shot)}
+            onGenerateVideo={() => onGenerateVideo(shot)}
           />
         </li>
       ))}
@@ -381,21 +396,35 @@ function SceneExpandedShots({
 function ShotCard({
   projectId,
   shot,
-  camera,
+  plan,
+  videoPending,
   onExpand,
   onOverride,
   onGenerate,
+  onGenerateVideo,
 }: {
   projectId: string;
   shot: ShotProgress;
-  camera: Camera | undefined;
+  plan: Shot | undefined;
+  videoPending: boolean;
   onExpand: () => void;
   onOverride: () => void;
   onGenerate: () => void;
+  onGenerateVideo: () => void;
 }) {
   const source = shotAssetSource(shot);
   const flag = translateError(shot.last_error);
   const filled = isFilled(shot);
+  const camera = plan?.camera;
+  const transition = plan?.transition_out;
+  const textCard = plan?.text_card?.trim() || null;
+  const planBits = [
+    camera ? (CAMERA_LABEL[camera.movement] ?? camera.movement) : null,
+    transition
+      ? `out: ${TRANSITION_LABEL[transition.type] ?? transition.type}`
+      : null,
+    textCard ? `text card: “${textCard}”` : null,
+  ].filter(Boolean);
   return (
     <Card className="flex gap-4 p-3">
       <ShotImage
@@ -429,6 +458,9 @@ function ShotCard({
         <p className="text-xs text-muted-foreground">
           <span className="font-medium">{shot.intent}</span> — {shot.prompt}
         </p>
+        {planBits.length > 0 && (
+          <p className="text-xs text-muted-foreground">{planBits.join(" · ")}</p>
+        )}
 
         {flag && (
           <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs text-warning-foreground/90">
@@ -445,6 +477,19 @@ function ShotCard({
           <Button variant="outline" size="sm" onClick={onGenerate}>
             <RefreshCw className="h-3.5 w-3.5" />
             {filled ? "Edit prompt & regenerate" : "Generate now"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onGenerateVideo}
+            disabled={!filled || videoPending}
+          >
+            <Film className="h-3.5 w-3.5" />
+            {videoPending
+              ? "Generating video…"
+              : shot.clip
+                ? "Regenerate video"
+                : "Generate video"}
           </Button>
         </div>
       </div>
@@ -476,12 +521,17 @@ export function AssetReviewGate() {
   const approveScene = useApproveScene(projectId ?? "");
   const overrideShot = useOverrideShot(projectId ?? "");
   const generateShot = useGenerateShotImage(projectId ?? "");
+  const generateVideo = useGenerateShotVideo(projectId ?? "");
   const regenerateFailed = useRegenerateFailedInScene(projectId ?? "");
   const [overrideTarget, setOverrideTarget] = useState<ShotProgress | null>(
     null,
   );
   const [generateTarget, setGenerateTarget] = useState<ShotProgress | null>(
     null,
+  );
+  const [videoTarget, setVideoTarget] = useState<ShotProgress | null>(null);
+  const [videoPending, setVideoPending] = useState<Set<string>>(
+    () => new Set(),
   );
   const [lightboxTarget, setLightboxTarget] = useState<ShotProgress | null>(
     null,
@@ -493,15 +543,62 @@ export function AssetReviewGate() {
   const [seekToS, setSeekToS] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
-  const cameraByShot = useMemo(() => {
-    const map = new Map<string, Camera>();
+  const planByShot = useMemo(() => {
+    const map = new Map<string, Shot>();
     if (timeline) {
       for (const scene of timeline.scenes) {
-        for (const shot of scene.shots) map.set(shot.id, shot.camera);
+        for (const shot of scene.shots) map.set(shot.id, shot);
       }
     }
     return map;
   }, [timeline]);
+
+  useEffect(() => {
+    if (videoPending.size === 0 || !projectId) return;
+    let cancelled = false;
+    const tick = async () => {
+      const still = new Set<string>();
+      for (const shotId of videoPending) {
+        try {
+          const result = await pollShotVideo(projectId, shotId);
+          if (cancelled) return;
+          if (result.status === "pending") {
+            still.add(shotId);
+          } else if (result.status === "failed") {
+            toast({
+              title: "Video generation failed",
+              description: result.error ?? "Try again.",
+              variant: "destructive",
+            });
+          } else {
+            toast({
+              title: "Motion clip ready",
+              description: "Click the thumbnail to play it.",
+              variant: "success",
+            });
+          }
+        } catch (err) {
+          if (cancelled) return;
+          if (err instanceof ApiError && err.status === 404) {
+            continue;
+          }
+          still.add(shotId);
+        }
+      }
+      if (!cancelled) {
+        const same =
+          still.size === videoPending.size &&
+          [...still].every((id) => videoPending.has(id));
+        if (!same) setVideoPending(still);
+      }
+    };
+    const id = window.setInterval(() => void tick(), 2500);
+    void tick();
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [videoPending, projectId, toast]);
 
   // Complementary to `Progress.tsx`'s own redirect: clicking Approve fires
   // the mutation and navigates to `/progress` immediately (fire-and-forget,
@@ -701,6 +798,42 @@ export function AssetReviewGate() {
           }),
       },
     );
+  }
+
+  function handleGenerateVideoConfirm() {
+    if (!videoTarget) return;
+    const shotId = videoTarget.shot_id;
+    setVideoTarget(null);
+    generateVideo.mutate(shotId, {
+      onSuccess: (result) => {
+        if (result.status === "pending") {
+          setVideoPending((prev) => new Set(prev).add(shotId));
+          toast({
+            title: "Video generation started",
+            description: "This takes a few minutes. The row will update.",
+          });
+        } else if (result.status === "completed") {
+          toast({
+            title: "Motion clip ready",
+            description: "This shot already had a completed clip.",
+            variant: "success",
+          });
+        } else {
+          toast({
+            title: "Video generation failed",
+            description: result.error ?? "Try again.",
+            variant: "destructive",
+          });
+        }
+      },
+      onError: (err) =>
+        toast({
+          title: "Could not generate video",
+          description:
+            err instanceof ApiError ? String(err.detail) : "Try again.",
+          variant: "destructive",
+        }),
+    });
   }
 
   function handleGenerateConfirm(shot: ShotProgress, prompt: string) {
@@ -904,10 +1037,12 @@ export function AssetReviewGate() {
                     <SceneExpandedShots
                       projectId={projectId}
                       sceneId={scene.id}
-                      cameraByShot={cameraByShot}
+                      planByShot={planByShot}
+                      videoPending={videoPending}
                       onExpand={setLightboxTarget}
                       onOverride={setOverrideTarget}
                       onGenerate={setGenerateTarget}
+                      onGenerateVideo={setVideoTarget}
                     />
                   )}
                 </Card>
@@ -922,10 +1057,12 @@ export function AssetReviewGate() {
               <ShotCard
                 projectId={projectId}
                 shot={shot}
-                camera={cameraByShot.get(shot.shot_id)}
+                plan={planByShot.get(shot.shot_id)}
+                videoPending={videoPending.has(shot.shot_id)}
                 onExpand={() => setLightboxTarget(shot)}
                 onOverride={() => setOverrideTarget(shot)}
                 onGenerate={() => setGenerateTarget(shot)}
+                onGenerateVideo={() => setVideoTarget(shot)}
               />
             </li>
           ))}
@@ -1098,7 +1235,7 @@ export function AssetReviewGate() {
               ? "This replaces the current image. It's free and instant."
               : "This locks the shot to your image — generation never runs for it, so it costs nothing."
           }
-          camera={cameraByShot.get(overrideTarget.shot_id)}
+          camera={planByShot.get(overrideTarget.shot_id)?.camera}
           isPending={overrideShot.isPending}
           onSubmit={(file, description) =>
             handleOverrideSubmit(overrideTarget.shot_id, file, description)
@@ -1115,6 +1252,36 @@ export function AssetReviewGate() {
           onConfirm={(prompt) => handleGenerateConfirm(generateTarget, prompt)}
         />
       )}
+
+      <Dialog
+        open={!!videoTarget}
+        onOpenChange={(o) => !o && setVideoTarget(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {videoTarget?.clip ? "Regenerate this shot's video?" : "Generate a motion clip?"}
+            </DialogTitle>
+            <DialogDescription>
+              Image-to-video from the current still. Takes a few minutes and
+              costs money. Not available in dry-run. A still must already
+              exist for this shot.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setVideoTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleGenerateVideoConfirm}
+              disabled={generateVideo.isPending || !videoTarget}
+            >
+              <Film className="h-4 w-4" />
+              {generateVideo.isPending ? "Starting…" : "Generate video"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <ImageLightbox
         projectId={projectId}

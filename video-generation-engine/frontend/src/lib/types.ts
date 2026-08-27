@@ -74,6 +74,35 @@ export interface MusicPlan {
   act_beds?: ActMusicBed[]
 }
 
+// -- SFX (analysis.md C3f; ui_style_feature_coverage.md §3.4) --------------
+
+export type SfxKind = "whoosh" | "stinger" | "transition";
+
+export interface SfxClipSelection {
+  kind: SfxKind;
+  provider: string;
+  track_id: string;
+  source_url: string;
+  licence: string;
+  attribution: string;
+  content_hash: string;
+  // C3c/C3d; optional on every pre-C3c timeline.
+  peak_dbfs?: number | null;
+  duration_s?: number | null;
+}
+
+export interface SfxPlan {
+  queries: Record<string, string[]>;
+  licence_requirements: string[];
+  // Which kinds are actually present varies by style — e.g.
+  // `retention_fast` has `whoosh_enabled=False` (analysis.md decision
+  // 5/5a), so a real `retention_fast` timeline's `clips` never includes
+  // a `whoosh` entry even though `queries` may still name one. Render
+  // SFX UI from this array, never from an assumed fixed 3-kind set.
+  clips: SfxClipSelection[];
+  selection_attempted: boolean;
+}
+
 export interface CreativeContext {
   tone: string;
   visual_style: string;
@@ -94,6 +123,14 @@ export interface TimelineMetadata {
   voice_id: string | null;
   language_code?: string | null;
   narration_locked: boolean;
+  // Frozen at create_initial from project.render_style
+  // (backend/app/schemas/timeline.py TimelineMetadata.render_style).
+  render_style?: string | null;
+  // Independent of render_style. `null` means "use render_style's own
+  // grade". Settable any time via POST /grade (ui_style_feature_coverage.md
+  // §3.3). Cross-checked 2026-08-26 against
+  // backend/app/schemas/timeline.py:348.
+  grade_style?: string | null;
   approved_scenes?: string[];
 }
 
@@ -109,6 +146,7 @@ export interface Timeline {
   metadata: TimelineMetadata;
   creative_context: CreativeContext;
   music_plan: MusicPlan | null;
+  sfx_plan: SfxPlan | null;
   scenes: Scene[];
 }
 
@@ -125,13 +163,50 @@ export interface Scene {
   act_id?: string | null;
 }
 
+// `punch_in` was missing here until 2026-08-26 (ui_style_feature_coverage.md
+// §2.3) — a real drift found by cross-checking against the backend enum
+// (backend/app/schemas/timeline.py), not assumed. `retention_fast`'s own
+// prompt fragment uses it as its default camera move.
 export type CameraMovement =
-  "static" | "slow_zoom" | "slow_push" | "pull_back" | "pan" | "split_frame";
+  | "static"
+  | "slow_zoom"
+  | "slow_push"
+  | "pull_back"
+  | "pan"
+  | "split_frame"
+  | "punch_in";
 
 export interface Camera {
   movement: CameraMovement;
   direction: "in" | "out" | "left" | "right" | "none";
   intensity: number;
+}
+
+// style_extensions.md §5 (Feature C): the three glitch_* values are NOT
+// real `xfade` transition names — they're a custom RGB-split + noise
+// filter fragment, chosen by the Shot Planner at most once per video for
+// a "something is failing/being exposed" beat. Nothing to configure
+// client-side; see ui_style_feature_coverage.md §1.4 for why this stays
+// read-only (§3.2/§3.6), not a picker.
+export type TransitionType =
+  | "cut"
+  | "dissolve"
+  | "fade"
+  | "wipeleft"
+  | "fadeblack"
+  | "glitch_shift"
+  | "glitch_tear"
+  | "glitch_jitter";
+
+export const GLITCH_TRANSITIONS: readonly TransitionType[] = [
+  "glitch_shift",
+  "glitch_tear",
+  "glitch_jitter",
+];
+
+export interface Transition {
+  type: TransitionType;
+  duration_s: number;
 }
 
 export interface Shot {
@@ -143,7 +218,13 @@ export interface Shot {
   duration_s: number;
   framing: string;
   camera: Camera;
+  transition_out: Transition;
   prompt: string;
+  // style_extensions.md §4.4 (Feature B): a short structural title/
+  // heading burned full-frame over this shot. Empty/`null` on almost
+  // every shot — only `archival_montage`'s own prompt fragment asks for
+  // these with any frequency (roughly one every 4-6 shots).
+  text_card: string | null;
   asset_locked: boolean;
 }
 
@@ -274,6 +355,16 @@ export interface GenerateShotImageResult {
   clip_id: string;
   cost_cents: number;
   cache_hit: boolean;
+}
+
+// POST/GET /shots/{id}/generate/video (ui_style_feature_coverage.md §3.7).
+// `status` is API-facing: "pending" | "completed" | "failed".
+export interface GenerateShotVideoResult {
+  shot_id: string;
+  clip_id: string;
+  job_id: string | null;
+  status: "pending" | "completed" | "failed" | string;
+  error?: string | null;
 }
 
 export interface SceneApprovalResult {

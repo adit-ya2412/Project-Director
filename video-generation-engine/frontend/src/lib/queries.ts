@@ -1,6 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as api from "./api";
-import { SCENE_GROUP_SHOT_THRESHOLD, type ProgressResponse } from "./types";
+import {
+  SCENE_GROUP_SHOT_THRESHOLD,
+  type ProgressResponse,
+  type SfxKind,
+} from "./types";
 
 // Per F3: "polling every 2-3s is ample; individual planner stages take
 // tens of seconds." Used for both the progress screen and the two review
@@ -213,6 +217,52 @@ export function useRetryNarration(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (voiceId: string) => api.retryNarration(projectId, voiceId),
+    onSettled: () => invalidateAfterTrigger(qc, projectId),
+  });
+}
+
+/** Not a workflow trigger — POST /grade only records the override.
+ * Caller still has to hit re-render to see it. */
+export function useSetGrade(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (gradeStyle: string | null) =>
+      api.setGrade(projectId, gradeStyle),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.timeline(projectId) });
+      qc.invalidateQueries({ queryKey: qk.project(projectId) });
+    },
+  });
+}
+
+export function useOverrideSfx(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      kind,
+      file,
+      enabled,
+    }: {
+      kind: SfxKind;
+      file?: File;
+      enabled?: boolean;
+    }) => api.overrideSfx(projectId, kind, { file, enabled }),
+    onSettled: () => invalidateAfterTrigger(qc, projectId),
+  });
+}
+
+export function useRetrySfx(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.retrySfx(projectId),
+    onSettled: () => invalidateAfterTrigger(qc, projectId),
+  });
+}
+
+export function useGenerateShotVideo(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (shotId: string) => api.generateShotVideo(projectId, shotId),
     onSettled: () => invalidateAfterTrigger(qc, projectId),
   });
 }
