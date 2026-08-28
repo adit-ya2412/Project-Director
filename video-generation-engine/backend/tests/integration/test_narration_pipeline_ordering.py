@@ -72,6 +72,7 @@ def test_default_pipeline_runs_narration_before_approval_and_generation_after():
         # what the video will sound like before approving it.
         "select_music",
         "select_sfx",
+        "romanize_captions",
         "narration",
         "await_approval",
         "resolve_assets_generate",

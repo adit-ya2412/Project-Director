@@ -51,10 +51,13 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.core.logging import get_logger
 from app.models.narration import NarrationModel
 from app.planners.fragments import split_narration_fragments
 from app.renderer.video_filters import escape_ffmpeg_filter_path
-from app.schemas.timeline import Timeline
+from app.schemas.timeline import Scene, Timeline
+
+logger = get_logger(__name__)
 
 MAX_CHARS_PER_CUE = 70
 MIN_CUE_DURATION_S = 0.8
@@ -148,7 +151,23 @@ def derive_caption_cues(
     `timeline.scenes[i]` (see module docstring - voice selection is the
     caller's responsibility). Cues never straddle a shot cut (§8.1): each
     shot's own `narration_span` is segmented independently, never merged
-    across a shot boundary, only within one."""
+    across a shot boundary, only within one.
+
+    Caption *timing* is always derived from `narration_text` and the
+    alignment arrays (those offsets are the TTS coordinate system).
+    Caption *display strings* come from `scene.caption_text` when the
+    romanizer has stored a same-word-count Latin rendering
+    (caption_romanization.md §3.4), optionally merged N narration words
+    into one display token via `scene.caption_word_groups` (§10.3-10.4:
+    Hindi number words collapsed into one digit token, e.g. `1931`). The
+    bridge between the two strings is word index, not character offset —
+    the two strings are not comparable by character position. If
+    `caption_text` is None, its word structure does not match
+    `narration_text`, or a merged group would straddle a cue boundary
+    (§10.5), this falls back to today's behaviour (display
+    `narration_text` verbatim) — for a straddling group, for the WHOLE
+    scene, not just the affected cue (§10.5's rejected alternatives
+    explain why a narrower fallback is worse)."""
     if len(narration_rows) != len(timeline.scenes):
         raise ValueError(
             f"expected one narration row per scene ({len(timeline.scenes)}), "
@@ -162,23 +181,69 @@ def derive_caption_cues(
         char_ends = row.alignment["character_end_times_seconds"]
         scene_duration_s = char_ends[-1] if char_ends else 0.0
 
+        aligned = _aligned_display_tokens(scene)
+        scene_token_ranges = _token_char_spans(scene.narration_text, 0, len(scene.narration_text))
+
+        # Segmentation is computed once per shot, up front, so the
+        # straddle check (§10.5) and the actual cue text below see
+        # EXACTLY the same segment boundaries — never re-derived.
+        shot_segments: list[list[tuple[int, int]]] = []
         for shot in scene.shots:
             if shot.narration_span is None:
                 continue
             span_start, span_end = shot.narration_span
             if span_end <= span_start:
                 continue
-            for seg_start, seg_end in _segment_span(
-                scene.narration_text,
-                span_start,
-                span_end,
-                max_chars=max_chars,
-                min_duration_s=min_duration_s,
-                max_duration_s=max_duration_s,
-                char_starts=char_starts,
-                char_ends=char_ends,
-            ):
-                text = scene.narration_text[seg_start:seg_end].strip()
+            shot_segments.append(
+                _segment_span(
+                    scene.narration_text,
+                    span_start,
+                    span_end,
+                    max_chars=max_chars,
+                    min_duration_s=min_duration_s,
+                    max_duration_s=max_duration_s,
+                    char_starts=char_starts,
+                    char_ends=char_ends,
+                )
+            )
+
+        if aligned is not None and scene.caption_word_groups is not None:
+            all_segments = [seg for segs in shot_segments for seg in segs]
+            if _group_straddles_cue(scene.caption_word_groups, scene_token_ranges, all_segments):
+                logger.warning(
+                    "caption_romanizer.group_straddles_cue",
+                    extra={"project_id": timeline.project_id, "scene_id": scene.id},
+                )
+                aligned = None
+
+        for segments in shot_segments:
+            for seg_start, seg_end in segments:
+                narr_words = _word_spans(
+                    scene.narration_text,
+                    seg_start,
+                    seg_end,
+                    char_starts=char_starts,
+                    char_ends=char_ends,
+                    scene_offset_s=scene_offset_s,
+                )
+                mapped = (
+                    _map_display_words(
+                        scene.narration_text,
+                        seg_start,
+                        seg_end,
+                        scene_token_ranges=scene_token_ranges,
+                        display_tokens=aligned[0],
+                        token_group_id=aligned[1],
+                        narr_words=narr_words,
+                    )
+                    if aligned is not None
+                    else None
+                )
+                if mapped is None:
+                    text = scene.narration_text[seg_start:seg_end].strip()
+                    words = narr_words
+                else:
+                    text, words = mapped
                 if not text:
                     continue
                 cues.append(
@@ -186,14 +251,7 @@ def derive_caption_cues(
                         start_s=scene_offset_s + char_starts[seg_start],
                         end_s=scene_offset_s + char_ends[seg_end - 1],
                         text=text,
-                        words=_word_spans(
-                            scene.narration_text,
-                            seg_start,
-                            seg_end,
-                            char_starts=char_starts,
-                            char_ends=char_ends,
-                            scene_offset_s=scene_offset_s,
-                        ),
+                        words=words,
                     )
                 )
         scene_offset_s += scene_duration_s
@@ -328,6 +386,193 @@ def _split_if_too_long(
     return left_parts + right_parts
 
 
+def _token_char_spans(text: str, seg_start: int, seg_end: int) -> list[tuple[int, int]]:
+    """Whitespace-delimited token ranges inside `[seg_start, seg_end)`,
+    as `(first, last_inclusive)` character offsets into `text`. Same
+    splitter Feature A uses (`text[index].isspace()`); punctuation
+    attaches to its token. Extracted so the romanization word-index
+    bridge (caption_romanization.md §3.4) and `_word_spans` cannot
+    drift apart."""
+    spans: list[tuple[int, int]] = []
+    token_start: int | None = None
+    for index in range(seg_start, seg_end):
+        if text[index].isspace():
+            if token_start is not None:
+                spans.append((token_start, index - 1))
+                token_start = None
+        elif token_start is None:
+            token_start = index
+    if token_start is not None:
+        spans.append((token_start, seg_end - 1))
+    return spans
+
+
+def _aligned_display_tokens(
+    scene: Scene,
+) -> tuple[tuple[str, ...], tuple[int, ...]] | None:
+    """`caption_text` split into display tokens, paired with a
+    `token_group_id` array mapping each scene-level NARRATION word index
+    to the display-token index it belongs to. Returns None when the
+    stored shape is missing or unusable, meaning "fall back to
+    `narration_text`" for the caller.
+
+    Two shapes, both re-validated here rather than trusted from storage
+    (caption_romanization.md §10.3):
+
+    - `scene.caption_word_groups is None` — today's plain 1:1 path.
+      Word count must match `narration_text` exactly (the §2.2
+      invariant); `token_group_id` is the identity mapping, so
+      `_map_display_words` below merges nothing and produces
+      byte-identical output to before groups existed.
+    - `scene.caption_word_groups` present — §10.3's grouped shape:
+      `len(caption_word_groups)` must equal the `caption_text` word
+      count (one group per display token) and `sum(caption_word_groups)`
+      must equal the `narration_text` word count (every narration word
+      accounted for, in order). `token_group_id` is the flat expansion
+      of the groups.
+
+    Any mismatch in either shape means the stored text cannot be
+    bridged by word index without desyncing Feature A highlight timing,
+    so we fall back rather than guess. Character offsets between
+    `caption_text` and `narration_text` are NOT comparable and are
+    never mixed.
+
+    BOTH sides are tokenised with `_token_char_spans`, deliberately —
+    not `str.split()`. `_map_display_words` indexes into ranges that
+    come from `_token_char_spans`, so a guard using any other splitter
+    could authorise the bridge on a count the bridge itself does not
+    agree with, and `_word_index_containing` would then return an
+    in-range but WRONG index: §2.2's failure mode slipping past §2.2's
+    own guard. No input is known where the two splitters disagree
+    (NEL, NBSP, U+2028, ideographic space, file separator and
+    repeated/leading/trailing whitespace were all probed) — this is
+    hardening against future drift, not a fix for a live bug.
+    """
+    if scene.caption_text is None:
+        return None
+    display_spans = _token_char_spans(scene.caption_text, 0, len(scene.caption_text))
+    narration_spans = _token_char_spans(scene.narration_text, 0, len(scene.narration_text))
+    display_tokens = tuple(
+        scene.caption_text[first : last_inclusive + 1] for first, last_inclusive in display_spans
+    )
+
+    groups = scene.caption_word_groups
+    if groups is None:
+        if len(display_spans) != len(narration_spans):
+            return None
+        return display_tokens, tuple(range(len(narration_spans)))
+
+    if len(groups) != len(display_spans):
+        return None
+    if any(g < 1 for g in groups):
+        return None
+    if sum(groups) != len(narration_spans):
+        return None
+    token_group_id: list[int] = []
+    for group_index, covers in enumerate(groups):
+        token_group_id.extend([group_index] * covers)
+    return display_tokens, tuple(token_group_id)
+
+
+def _group_straddles_cue(
+    groups: list[int],
+    scene_token_ranges: list[tuple[int, int]],
+    segments: list[tuple[int, int]],
+) -> bool:
+    """§10.5: True when a merged group's (`covers > 1`) narration tokens
+    are not all contained inside a SINGLE cue segment — the one
+    genuinely new edge case grouping introduces. An unmerged group
+    (`covers == 1`) can never straddle: `_split_if_too_long` only ever
+    cuts at a whitespace run, so a single narration token is never torn
+    across two cues.
+
+    `segments` is every `(seg_start, seg_end)` cue span for the whole
+    scene (across every shot, in the order cues are emitted) — a group
+    must fall entirely within ONE of them, not merely overlap several.
+    Callers must only invoke this after `_aligned_display_tokens` has
+    already confirmed `sum(groups) == len(scene_token_ranges)`, so
+    indexing `scene_token_ranges` by cumulative `covers` is safe here.
+    """
+    token_index = 0
+    for covers in groups:
+        if covers > 1:
+            first_start = scene_token_ranges[token_index][0]
+            last_end = scene_token_ranges[token_index + covers - 1][1]
+            if not any(
+                seg_start <= first_start and last_end < seg_end for seg_start, seg_end in segments
+            ):
+                return True
+        token_index += covers
+    return False
+
+
+def _word_index_containing(ranges: list[tuple[int, int]], char_index: int) -> int | None:
+    for i, (start, end) in enumerate(ranges):
+        if start <= char_index <= end:
+            return i
+    return None
+
+
+def _map_display_words(
+    narration_text: str,
+    seg_start: int,
+    seg_end: int,
+    *,
+    scene_token_ranges: list[tuple[int, int]],
+    display_tokens: tuple[str, ...],
+    token_group_id: tuple[int, ...],
+    narr_words: tuple[CaptionWord, ...],
+) -> tuple[str, tuple[CaptionWord, ...]] | None:
+    """Bridge a character span in `narration_text` to the corresponding
+    `caption_text` words **by word index**, merging consecutive
+    narration tokens that share a `token_group_id` into ONE
+    `CaptionWord` (§10.4).
+
+    Segment boundaries are character offsets into `narration_text`
+    (the alignment arrays index that string). Display words live in a
+    different string. The only safe join is the scene-level word index
+    of each narration token — which is well-defined only because the
+    romanizer enforces equal word count and order (caption_romanization.md
+    §2.2/§10.3). A merged `CaptionWord`'s `start_s` is its first source
+    word's `start_s`; `end_s` is its last source word's `end_s` — no new
+    timing source, only a coarser grouping of the existing ones. Returns
+    None to mean "fall back to narration_text".
+    """
+    char_spans = _token_char_spans(narration_text, seg_start, seg_end)
+    # Unreachable: `narr_words` comes from `_word_spans`, which builds
+    # it from `_token_char_spans` with these exact arguments. Kept as a
+    # defensive guard so the indexing below can never go out of range.
+    if len(char_spans) != len(narr_words):
+        return None
+    group_ids: list[int] = []
+    for first, _last in char_spans:
+        idx = _word_index_containing(scene_token_ranges, first)
+        if idx is None or idx >= len(token_group_id):
+            return None
+        gid = token_group_id[idx]
+        if gid >= len(display_tokens):
+            return None
+        group_ids.append(gid)
+
+    labels: list[str] = []
+    words: list[CaptionWord] = []
+    i = 0
+    n = len(group_ids)
+    while i < n:
+        j = i
+        while j + 1 < n and group_ids[j + 1] == group_ids[i]:
+            j += 1
+        label = display_tokens[group_ids[i]]
+        labels.append(label)
+        words.append(
+            CaptionWord(text=label, start_s=narr_words[i].start_s, end_s=narr_words[j].end_s)
+        )
+        i = j + 1
+
+    text = " ".join(labels)
+    return text, tuple(words)
+
+
 def _word_spans(
     text: str,
     seg_start: int,
@@ -345,26 +590,14 @@ def _word_spans(
     Punctuation attaches to its token; a token whose alignment window
     collapses to zero length is kept - the serialiser decides what to do
     with it, keeping this function purely mechanical."""
-
-    def _token(first: int, last_inclusive: int) -> CaptionWord:
-        return CaptionWord(
+    return tuple(
+        CaptionWord(
             text=text[first : last_inclusive + 1],
             start_s=scene_offset_s + char_starts[first],
             end_s=scene_offset_s + char_ends[last_inclusive],
         )
-
-    words: list[CaptionWord] = []
-    token_start: int | None = None
-    for index in range(seg_start, seg_end):
-        if text[index].isspace():
-            if token_start is not None:
-                words.append(_token(token_start, index - 1))
-                token_start = None
-        elif token_start is None:
-            token_start = index
-    if token_start is not None:
-        words.append(_token(token_start, seg_end - 1))
-    return tuple(words)
+        for first, last_inclusive in _token_char_spans(text, seg_start, seg_end)
+    )
 
 
 def _assert_monotonic_non_overlapping(cues: list[CaptionCue]) -> None:
@@ -393,7 +626,14 @@ def cue_list_content_hash(cues: list[CaptionCue]) -> str:
     very inputs that already determine `start_s`/`end_s`/`text`, captured
     here and by the narration content-hash. Folding them into this digest
     is therefore sufficient; there is no independent degree of freedom an
-    editor of `_word_spans` could change without this hash moving."""
+    editor of `_word_spans` could change without this hash moving.
+
+    Romanized display text (caption_romanization.md §3.4) is the same
+    argument: cue `text` and each `CaptionWord.text` are hashed here, so
+    a scene whose `caption_text` is filled hashes differently from the
+    mixed-script original and forces exactly one correct re-render. No
+    new fingerprint parameter is needed — the same transitive claim as
+    Feature A's `words` (style_extensions.md §9 RV-A2)."""
     digest_input = "|".join(
         f"{c.start_s:.3f},{c.end_s:.3f},{c.text}"
         # Word-less cues keep the legacy byte format exactly; word-carrying

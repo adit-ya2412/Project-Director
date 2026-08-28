@@ -36,6 +36,15 @@ def test_render_only_steps_is_not_the_default_pipelines_own_instance():
     assert RENDER_ONLY_STEPS[0] is not default_render_step
 
 
+def test_romanize_captions_sits_between_select_sfx_and_narration():
+    """caption_romanization.md §3.2 (b): own step, before Narration so
+    the version it appends is overwritten by `produced_by=NARRATION`
+    before anything renders."""
+    names = [step.name for step in DEFAULT_PIPELINE]
+    assert names.index("select_sfx") + 1 == names.index("romanize_captions")
+    assert names.index("romanize_captions") + 1 == names.index("narration")
+
+
 def test_every_paid_or_planning_step_is_excluded_from_the_precondition_check():
     """Every step in the real pipeline other than "render" itself and
     "complete" (which only marks a project COMPLETED after a render
@@ -55,6 +64,7 @@ def test_every_paid_or_planning_step_is_excluded_from_the_precondition_check():
         "resolve_assets_search",
         "select_music",
         "select_sfx",
+        "romanize_captions",
         "await_approval",
         "narration",
         "resolve_assets_generate",

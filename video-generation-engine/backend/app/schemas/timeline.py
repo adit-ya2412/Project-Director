@@ -46,6 +46,14 @@ class ProducedBy(StrEnum):
     # Leftover item 2 / §5.5: SFX palette acquisition, same D6 shape as
     # music — a step, not a planner or a person.
     SFX_SELECTION = "sfx_selection"
+    # caption_romanization.md §3.2: the display-text pass that fills
+    # `Scene.caption_text`. A step, not a planner-chain link — it runs
+    # after SelectSfx and BEFORE Narration so the active version is
+    # overwritten by `produced_by=NARRATION` before anything renders.
+    # Backfill of an already-narrated project re-stamps NARRATION
+    # instead of this value (render.py refuses to mux audio unless the
+    # active version is NARRATION).
+    CAPTION_ROMANIZATION = "caption_romanization"
 
 
 class ShotIntent(StrEnum):
@@ -264,6 +272,28 @@ class Scene(BaseModel):
     # when N > 70. None for every project below that threshold and every
     # timeline that predates this field. Music (C7) groups by this.
     act_id: str | None = None
+    # Romanized, single-script rendering of `narration_text` for CAPTIONS
+    # ONLY (caption_romanization.md). None = not romanized; captions fall
+    # back to `narration_text` verbatim, i.e. today's behaviour.
+    # NEVER sent to TTS and NEVER indexed by `Shot.narration_span` — those
+    # both belong to `narration_text`, whose offsets must stay stable.
+    # Do not put this on Shot: cue segmentation slices scene-level text
+    # by character span; a per-shot field would need its own offset
+    # mapping and re-introduce the coordinate problem the plan avoids.
+    caption_text: str | None = None
+    # caption_romanization.md §10.3: how many CONSECUTIVE `narration_text`
+    # words each whitespace-delimited token of `caption_text` replaces, in
+    # order. `None` (every timeline predating this field, and any scene
+    # the romanizer left in the plain 1:1 shape) means "one display word
+    # per narration word" — today's path, byte-identical output. A group
+    # `> 1` exists only to collapse a spelled-out Hindi number
+    # (`उन्नीस सौ इकतीस`, 3 words) into one digit token (`1931`) so
+    # captions match the text cards' numerals. `sum(caption_word_groups)`
+    # must equal the narration word count and `len(caption_word_groups)`
+    # must equal the `caption_text` word count — both re-checked in
+    # `app/renderer/captions.py` at read time, never trusted from
+    # storage alone.
+    caption_word_groups: list[int] | None = None
 
 
 class TimelineMetadata(BaseModel):
@@ -360,6 +390,22 @@ class TimelineMetadata(BaseModel):
     # `status == APPROVED` only; that stamp happens when
     # `POST /timeline/approve` succeeds, which also fills this list.
     approved_scenes: list[str] = Field(default_factory=list)
+    # caption_romanization.md §3.5: True once `RomanizeCaptionsStep` (or
+    # the backfill path) has attempted the display-text pass, whether
+    # every scene got a `caption_text` or some were left None after
+    # repair failed. None on every timeline that predates this field
+    # (additive fill).
+    #
+    # What this actually guards is PARTIAL success (RV-R2, plan §8.3).
+    # A scene whose validator could not be satisfied stays `caption_text
+    # = None` with its Devanagari intact, so `_nothing_to_romanize` is
+    # False forever. Without this flag every later RESUME would re-run
+    # the LLM over the whole timeline and append another no-op version.
+    # It is NOT protecting against an in-run retry loop: the engine
+    # checks `is_satisfied` once, before the step (`engine.py:184-186`),
+    # and never re-checks after the step returns "ok" - an earlier
+    # version of this comment claimed otherwise.
+    caption_romanization_attempted: bool | None = None
 
 
 class MusicTrackSelection(BaseModel):

@@ -26,6 +26,7 @@ from app.workflow.steps.generate_timeline import GenerateTimelineStep
 from app.workflow.steps.narration import NarrationStep
 from app.workflow.steps.render import RenderStep
 from app.workflow.steps.resolve_assets import GENERATION_RUNGS, SEARCH_RUNGS, ResolveAssetsStep
+from app.workflow.steps.romanize_captions import RomanizeCaptionsStep
 from app.workflow.steps.select_music import SelectMusicStep
 from app.workflow.steps.select_sfx import SelectSfxStep
 
@@ -115,19 +116,28 @@ logger = get_logger(__name__)
 # `produced_by`, and `render.py::_resolve_narration_rows` resolves audio
 # ONLY for `produced_by == NARRATION` - by design, since that value is
 # the record that shot durations were reconciled against real spoken
-# timings (D1). So moving `SelectMusicStep` or `SelectSfxStep` after
-# narration - for any plausible-looking reason, e.g. "select music once
-# the real durations are known" - makes `SFX_SELECTION`/
-# `MUSIC_SELECTION` the active version's `produced_by` and silently
-# drops narration from every render. No exception, no failed step, no
-# log line: the video simply comes out silent, discoverable only by
-# watching it. Anything needing the reconciled durations belongs AFTER
-# the approval gate, or must re-stamp `produced_by=NARRATION`.
+# timings (D1). So moving `SelectMusicStep`, `SelectSfxStep`, or
+# `RomanizeCaptionsStep` after narration - for any plausible-looking
+# reason, e.g. "select music once the real durations are known" - makes
+# `SFX_SELECTION`/`MUSIC_SELECTION`/`CAPTION_ROMANIZATION` the active
+# version's `produced_by` and silently drops narration from every
+# render. No exception, no failed step, no log line: the video simply
+# comes out silent, discoverable only by watching it. Anything needing
+# the reconciled durations belongs AFTER the approval gate, or must
+# re-stamp `produced_by=NARRATION`.
+#
+# `RomanizeCaptionsStep` (caption_romanization.md §3.2) sits here, after
+# SFX and BEFORE narration, because it needs final `narration_text` and
+# the version it appends must be overwritten by NarrationStep before
+# anything renders. Already-narrated projects skip it (`narration_locked`)
+# so a DEFAULT_PIPELINE resume cannot restamp DRAFT / drop audio; those
+# go through `backfill_caption_romanization` instead.
 DEFAULT_PIPELINE: list[WorkflowStep] = [
     GenerateTimelineStep(),
     ResolveAssetsStep(name="resolve_assets_search", permitted_strategies=SEARCH_RUNGS),
     SelectMusicStep(),
     SelectSfxStep(),
+    RomanizeCaptionsStep(),
     NarrationStep(),
     AwaitApprovalStep(),
     ResolveAssetsStep(name="resolve_assets_generate", permitted_strategies=GENERATION_RUNGS),
