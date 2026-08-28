@@ -28,7 +28,6 @@ sys.path.insert(0, str(_BACKEND))
 
 from app.renderer.fingerprint import compute_render_fingerprint  # noqa: E402
 from app.renderer.slideshow import RenderSettings  # noqa: E402
-from app.timeline.additive import find_additive_violations  # noqa: E402
 from app.schemas.timeline import (  # noqa: E402
     AssetPlan,
     AssetStrategy,
@@ -46,6 +45,7 @@ from app.schemas.timeline import (  # noqa: E402
     Transition,
     TransitionType,
 )
+from app.timeline.additive import find_additive_violations  # noqa: E402
 
 FIXTURE_PATH = _BACKEND / "tests" / "fixtures" / "m8_test_project.json"
 N_SHOTS = 185
