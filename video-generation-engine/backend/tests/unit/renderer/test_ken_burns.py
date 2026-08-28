@@ -95,6 +95,58 @@ def test_zoom_expressions_are_centered():
     assert expr.y_expr == "ih/2-(ih/zoom/2)"
 
 
+def test_default_focal_keeps_centre_expressions_byte_identical():
+    """OQ-2: None and (0.5, 0.5) must not change today's centre strings."""
+    camera = _camera(CameraMovement.SLOW_PUSH, intensity=0.3)
+    centre = build_zoompan_expression(camera, frames=90)
+    none_focal = build_zoompan_expression(camera, frames=90, focal=None)
+    mid_focal = build_zoompan_expression(camera, frames=90, focal=(0.5, 0.5))
+    assert centre is not None and none_focal is not None and mid_focal is not None
+    assert centre.x_expr == none_focal.x_expr == mid_focal.x_expr == "iw/2-(iw/zoom/2)"
+    assert centre.y_expr == none_focal.y_expr == mid_focal.y_expr == "ih/2-(ih/zoom/2)"
+
+
+def test_slow_push_with_focal_aims_and_clamps():
+    """OQ-2: punch/slow_push with (0.2, 0.8) embeds those coords + clamp."""
+    expr = build_zoompan_expression(
+        _camera(CameraMovement.SLOW_PUSH, intensity=0.3),
+        frames=90,
+        focal=(0.2, 0.8),
+    )
+    assert expr is not None
+    assert "0.200000" in expr.x_expr
+    assert "0.800000" in expr.y_expr
+    assert "min(max(" in expr.x_expr
+    assert "min(max(" in expr.y_expr
+    assert "iw-iw/zoom" in expr.x_expr
+    assert "ih-ih/zoom" in expr.y_expr
+
+
+def test_punch_in_with_focal_aims_and_clamps():
+    expr = build_punch_in_expression(
+        _camera(CameraMovement.PUNCH_IN, intensity=0.5),
+        frames=90,
+        focal=(0.2, 0.8),
+    )
+    assert expr is not None
+    assert "0.200000" in expr.x_expr
+    assert "0.800000" in expr.y_expr
+    assert "min(max(" in expr.x_expr
+
+
+def test_pan_x_is_not_retargeted_by_focal():
+    """OQ-2: PAN keeps directional x; focal must not rewrite it."""
+    without = build_zoompan_expression(_camera(CameraMovement.PAN, CameraDirection.RIGHT), frames=90)
+    with_focal = build_zoompan_expression(
+        _camera(CameraMovement.PAN, CameraDirection.RIGHT),
+        frames=90,
+        focal=(0.2, 0.8),
+    )
+    assert without is not None and with_focal is not None
+    assert without.x_expr == with_focal.x_expr
+    assert "0.200000" not in with_focal.x_expr
+
+
 def test_pan_left_moves_right_to_left():
     expr = build_zoompan_expression(_camera(CameraMovement.PAN, CameraDirection.LEFT), frames=90)
     assert expr is not None

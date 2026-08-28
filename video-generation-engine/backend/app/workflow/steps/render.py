@@ -61,6 +61,7 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.assets.focal import format_focal_fingerprint, resolve_shot_focals
 from app.assets.sfx_levels import effective_gain_db, end_aligned_trim_start
 from app.core.config import settings
 from app.core.errors import EngineError, PermanentError, TransientError
@@ -80,7 +81,14 @@ from app.renderer.captions import (
 )
 from app.renderer.fingerprint import compute_render_fingerprint, get_ffmpeg_version
 from app.renderer.grading import grade_filter_fragment
-from app.renderer.music import assemble_act_bed, mux_music, offset_bed_and_duck_gain_db
+from app.renderer.loudness import apply_loudness_target
+from app.renderer.music import (
+    assemble_act_bed,
+    duck_envelope_content_hash,
+    mux_music,
+    offset_bed_and_duck_gain_db,
+    speaking_intervals_from_alignment,
+)
 from app.renderer.placeholder import render_placeholder
 from app.renderer.sfx import SfxOverlay, derive_sfx_events, mux_sfx
 from app.renderer.slideshow import RenderSettings, probe_duration_seconds, render_timeline
@@ -236,6 +244,18 @@ async def render_video(
         if sec_path is not None:
             shot_secondary_images[shot.id] = sec_path
 
+    # OQ-2: resolve subject focals once from asset sidecars (RV2). Missing
+    # sidecar → None → centre Ken Burns + logged fallback. Never re-read
+    # at the zoompan call site.
+    shot_focals = resolve_shot_focals(
+        shot_ids=[shot.id for shot in timeline.all_shots()],
+        content_hashes=media_content_hashes,
+        assets_dir=project_dir / "assets",
+    )
+    shot_focal_fingerprints = {
+        shot_id: format_focal_fingerprint(focal) for shot_id, focal in shot_focals.items()
+    }
+
     narration_rows = await _resolve_narration_rows(ctx.session, timeline)
     narration_paths = (
         [Path(row.local_path) for row in narration_rows] if narration_rows is not None else None
@@ -259,6 +279,21 @@ async def render_video(
     caption_font_hash = (
         caption_font_content_hash(settings.caption_font) if render_settings.burn_captions else None
     )
+
+    # OQ-1b (2026-08-28): alignment-derived duck windows are pure (no
+    # ffmpeg) — derive before the cache check so duck_envelope_hash can
+    # be fingerprinted, same reason captions derive cues here. When
+    # alignment is absent the hash is None; file-duration fallback is
+    # fully determined by narration_content_hashes already in the
+    # fingerprint.
+    alignment_by_scene = (
+        [row.alignment for row in narration_rows] if narration_rows is not None else None
+    )
+    if music_content_hash is not None and alignment_by_scene is not None:
+        duck_intervals = speaking_intervals_from_alignment(alignment_by_scene)
+        duck_envelope_hash = duck_envelope_content_hash(duck_intervals) if duck_intervals else None
+    else:
+        duck_envelope_hash = None
 
     # Watermark (docs/plans/watermark_implementation_plan.md §4): same
     # unconditional-presence rule as captions - both hashes are computed
@@ -310,6 +345,18 @@ async def render_video(
         if timeline.music_plan is not None and timeline.music_plan.selected_track is not None
         else 0.0
     )
+    # OQ-1d (2026-08-28): mux_music amix normalize=0. Constant resolved
+    # once beside music_gains so fingerprint and filter cannot drift.
+    music_amix_normalize = 0
+    # OQ-1a (2026-08-28): final-mix loudness target. Resolve ONCE beside
+    # music_gains so the fingerprint and apply_loudness_target share the
+    # same values (RV2).
+    loudness_normalize = settings.loudness_normalize
+    loudness_target_lufs = settings.loudness_target_lufs
+    loudness_true_peak_db = settings.loudness_true_peak_db
+    # OQ-1c (2026-08-28): per-scene narration level match. Resolve ONCE
+    # so the fingerprint and mux_narration share the same value (RV2).
+    narration_level_match = settings.narration_level_match
     fingerprint = compute_render_fingerprint(
         timeline=timeline,
         asset_content_hashes=media_content_hashes,
@@ -322,9 +369,15 @@ async def render_video(
         music_bed_gain_db=music_gains.bed_gain_db,
         music_duck_gain_db=music_gains.duck_gain_db,
         music_gain_offset_db=music_gain_offset_db,
+        music_amix_normalize=music_amix_normalize,
+        loudness_normalize=loudness_normalize,
+        loudness_target_lufs=loudness_target_lufs,
+        loudness_true_peak_db=loudness_true_peak_db,
+        narration_level_match=narration_level_match,
         burn_captions=render_settings.burn_captions,
         caption_font_hash=caption_font_hash,
         cue_list_hash=cue_hash,
+        duck_envelope_hash=duck_envelope_hash,
         watermark_enabled=render_settings.watermark_enabled,
         watermark_asset_hash=watermark_asset_hash,
         watermark_params_hash=watermark_params_hash_value,
@@ -346,6 +399,7 @@ async def render_video(
             "transition": settings.sfx_transition_gain_db,
         },
         ffmpeg_version=ffmpeg_version,
+        shot_focal=shot_focal_fingerprints,
     )
 
     render_repo = RenderRepository(ctx.session)
@@ -373,6 +427,7 @@ async def render_video(
             silent_path,
             work_dir=work_dir,
             shot_secondary_images=shot_secondary_images,
+            shot_focals=shot_focals,
         )
 
         # The "video filter pass" (docs/plans/watermark_implementation_plan.md
@@ -477,21 +532,41 @@ async def render_video(
         if narration_paths is None:
             captioned_path.replace(narrated_path)
         else:
-            await mux_narration(captioned_path, narration_paths, narrated_path, render_settings)
+            await mux_narration(
+                captioned_path,
+                narration_paths,
+                narrated_path,
+                render_settings,
+                level_match=narration_level_match,
+            )
 
         # Both intermediates live in `work_dir`, never beside the finished
         # file in `renders/` (§15.6): every other stage of this pipeline
         # already stages through the work directory, and `renders/` is
         # the directory a human (and `GET /projects/{id}/video`) treats as
         # "the outputs" - a half-mixed `_pre_sfx_final.mp4` sitting there
-        # is indistinguishable by name from a real render.
+        # is indistinguishable by name from a real render. OQ-1a's
+        # pre_loudness intermediate follows the same rule.
         sfx_overlays = _sfx_overlays(
             timeline,
             ctx.project_id,
             fps=render_settings.fps,
             whoosh_enabled=sfx_whoosh_enabled,
         )
-        mixed_path = work_dir / f"pre_sfx_{output_path.stem}.mp4" if sfx_overlays else output_path
+        # When loudness runs, music/SFX land in work_dir so a failed
+        # loudnorm never leaves a half-normalized file in renders/.
+        if sfx_overlays and loudness_normalize:
+            mixed_path = work_dir / f"pre_sfx_{output_path.stem}.mp4"
+            post_mix_path = work_dir / f"pre_loudness_{output_path.stem}.mp4"
+        elif sfx_overlays:
+            mixed_path = work_dir / f"pre_sfx_{output_path.stem}.mp4"
+            post_mix_path = output_path
+        elif loudness_normalize:
+            mixed_path = work_dir / f"pre_loudness_{output_path.stem}.mp4"
+            post_mix_path = mixed_path
+        else:
+            mixed_path = output_path
+            post_mix_path = output_path
         if music_segments is None:
             narrated_path.replace(mixed_path)
         else:
@@ -524,14 +599,27 @@ async def render_video(
                 # `offset_bed_and_duck_gain_db`'s own docstring.
                 bed_gain_db=offset_bed_gain_db,
                 duck_gain_db=offset_duck_gain_db,
+                amix_normalize=music_amix_normalize,
+                # OQ-1b (RV2): same alignment list fingerprinted above.
+                alignment_by_scene=alignment_by_scene,
             )
         if sfx_overlays:
             await mux_sfx(
                 mixed_path,
                 sfx_overlays,
-                output_path,
+                post_mix_path,
                 render_settings,
                 max_clip_s=settings.sfx_max_clip_s,
+            )
+        # OQ-1a: final loudness pass on the finished mux (after music +
+        # SFX). Owns writing `output_path` when enabled.
+        if loudness_normalize:
+            await apply_loudness_target(
+                post_mix_path,
+                output_path,
+                render_settings,
+                target_lufs=loudness_target_lufs,
+                true_peak_db=loudness_true_peak_db,
             )
 
     duration_s = await probe_duration_seconds(output_path, render_settings.ffprobe_binary)

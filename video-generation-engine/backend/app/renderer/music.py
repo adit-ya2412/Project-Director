@@ -25,19 +25,20 @@ from unordered iteration).
 
 ## What "every interval narration is speaking" means here
 
-Per-SCENE granularity, not per-character. Each scene's own narration
-audio is one continuous "speaking" interval, from its offset in the
-final muxed narration track (computed the same way `mux_narration`
-joins scenes - real, ffprobe-measured durations, back to back with no
-gap) to that offset plus its own duration. Sub-scene pauses (a breath, a
-pause after punctuation - see `app/timeline/narration_fit.py`'s own
-docstring) are NOT sub-divided into separate on/off windows:
-`narration_fit.py` already attributes any such gap to whichever shot is
-still on screen during it, i.e. treats it as part of that shot's
-continuous "speaking" window rather than silence to stop ducking for -
-the identical simplification applies here, for the identical reason,
-and avoids needing character-level timing data this module has no
-access to in the first place (it only ever sees per-scene audio files).
+OQ-1b (2026-08-28): when per-character alignment is available (the same
+`character_start_times_seconds` / `character_end_times_seconds` arrays
+captions already consume), duck windows follow real speech runs on the
+audio-concat clock — scene i starts at the sum of previous scenes' last
+`character_end`. Gaps ≤ `DUCK_MERGE_THRESHOLD_S` (`MIN_CUE_DURATION_S`
+from captions, 0.8 s) stay ducked so a breath is not a release; leading
+silence before the first character and trailing silence after a scene's
+last character are NOT ducked. Ramps in/out of each duck are a small
+number of stepped `between()` windows (not ffmpeg volume expressions —
+see above), still a precomputed static envelope (I5; no live sidechain).
+
+When alignment is missing/None, fall back to per-SCENE granularity from
+ffprobe-measured narration file durations (`compute_narration_intervals`),
+exactly as before OQ-1b.
 
 ## Looping and length
 
@@ -59,11 +60,53 @@ narration+music signal cannot distinguish "the music got quieter" from
 single-pass version of this module ran into while it was being built.
 """
 
-from pathlib import Path
+from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Any
+
+from app.core.logging import get_logger
+from app.renderer.captions import MIN_CUE_DURATION_S
 from app.renderer.slideshow import RenderSettings, probe_duration_seconds, run_ffmpeg
 
+logger = get_logger(__name__)
+
 _FADE_SECONDS = 1.0
+
+# Same pause threshold as captions so ducking and captions agree what a
+# pause is (OQ-1b). Constant, not a Settings knob — ear sign-off pending.
+DUCK_MERGE_THRESHOLD_S = MIN_CUE_DURATION_S  # 0.8 s
+
+# Starting ear default for duck in/out ramps — not signed off (OQ-1b).
+DUCK_RAMP_S = 0.080
+DUCK_RAMP_STEPS = 4
+
+
+def offset_bed_and_duck_gain_db(
+    bed_gain_db: float, duck_gain_db: float, gain_offset_db: float
+) -> tuple[float, float]:
+    """Applies the human's per-track dB offset (`gain_offset_db` - the
+    BGM upload slider, analysis.md decision 7) to BOTH the bed and the
+    duck gain, so the whole envelope shifts together and the style's duck
+    DEPTH (`bed_gain_db - duck_gain_db`) is preserved.
+
+    Analysis.md RV6: `_volume_chain` below computes
+    `relative_duck = duck_linear / bed_linear` and applies that RATIO on
+    top of an unconditional `volume=bed_linear` - which makes the level
+    during a narration window resolve to the ABSOLUTE `duck_gain_db`,
+    independent of the bed. Offsetting the bed alone therefore does not
+    move the ducked floor at all; it only changes how far above that
+    fixed floor the bed sits. Once the offset drops the bed below the
+    duck gain (`gain_offset_db < duck_gain_db - bed_gain_db`, i.e. more
+    negative than the style's own duck depth), `relative_duck` exceeds
+    1.0 and ducking INVERTS - music gets LOUDER, not quieter, under
+    narration. Applying the offset to both gains keeps `relative_duck`
+    identical to the un-offset style mix for every offset value, so
+    ducking can never invert."""
+    return bed_gain_db + gain_offset_db, duck_gain_db + gain_offset_db
 
 
 async def assemble_act_bed(
@@ -137,28 +180,200 @@ def _db_to_linear(gain_db: float) -> float:
     return 10 ** (gain_db / 20)
 
 
-def offset_bed_and_duck_gain_db(
-    bed_gain_db: float, duck_gain_db: float, gain_offset_db: float
-) -> tuple[float, float]:
-    """Applies the human's per-track dB offset (`gain_offset_db` - the
-    BGM upload slider, analysis.md decision 7) to BOTH the bed and the
-    duck gain, so the whole envelope shifts together and the style's duck
-    DEPTH (`bed_gain_db - duck_gain_db`) is preserved.
+def speaking_intervals_from_alignment(
+    alignment_by_scene: Sequence[Mapping[str, Any] | None],
+    *,
+    merge_threshold_s: float = DUCK_MERGE_THRESHOLD_S,
+) -> list[tuple[float, float]]:
+    """Duck windows from per-character alignment on the audio-concat clock.
 
-    Analysis.md RV6: `_volume_chain` below computes
-    `relative_duck = duck_linear / bed_linear` and applies that RATIO on
-    top of an unconditional `volume=bed_linear` - which makes the level
-    during a narration window resolve to the ABSOLUTE `duck_gain_db`,
-    independent of the bed. Offsetting the bed alone therefore does not
-    move the ducked floor at all; it only changes how far above that
-    fixed floor the bed sits. Once the offset drops the bed below the
-    duck gain (`gain_offset_db < duck_gain_db - bed_gain_db`, i.e. more
-    negative than the style's own duck depth), `relative_duck` exceeds
-    1.0 and ducking INVERTS - music gets LOUDER, not quieter, under
-    narration. Applying the offset to both gains keeps `relative_duck`
-    identical to the un-offset style mix for every offset value, so
-    ducking can never invert."""
-    return bed_gain_db + gain_offset_db, duck_gain_db + gain_offset_db
+    Scene i starts at the sum of previous scenes' last `character_end`
+    (same clock as OQ-0a silence map / `derive_caption_cues`). Inside a
+    scene, consecutive characters form one speaking run; a gap
+    (`next_start - this_end`) ≤ `merge_threshold_s` stays ducked. Leading
+    silence before the first character and trailing silence after the
+    last character of a scene are NOT ducked. Empty/malformed alignment
+    for a scene skips that scene's windows (logged) without raising.
+    """
+    parsed: list[tuple[list[float], list[float]] | None] = []
+    for scene_index, alignment in enumerate(alignment_by_scene):
+        parsed.append(_parse_scene_alignment(alignment, scene_index=scene_index))
+    if any(scene is None for scene in parsed):
+        # RV-Q2: one unusable scene used to leave scene_offset stuck, so
+        # every later window sat on the wrong concat clock. Captions
+        # refuse a row/scene mismatch outright; we do the same and let
+        # mux_music fall back to file-duration intervals.
+        logger.warning(
+            "music.duck_alignment_abandoned",
+            extra={
+                "reason": "unusable_scene",
+                "scenes": len(parsed),
+                "unusable": sum(1 for scene in parsed if scene is None),
+            },
+        )
+        return []
+
+    intervals: list[tuple[float, float]] = []
+    scene_offset = 0.0
+    for local_starts, local_ends in parsed:
+        run_start = local_starts[0]
+        run_end = local_ends[0]
+        for i in range(1, len(local_starts)):
+            gap = local_starts[i] - local_ends[i - 1]
+            if gap <= merge_threshold_s:
+                run_end = local_ends[i]
+            else:
+                intervals.append((scene_offset + run_start, scene_offset + run_end))
+                run_start = local_starts[i]
+                run_end = local_ends[i]
+        intervals.append((scene_offset + run_start, scene_offset + run_end))
+        scene_offset += local_ends[-1]
+
+    return _merge_touching_intervals(intervals)
+
+
+def _parse_scene_alignment(
+    alignment: Mapping[str, Any] | None,
+    *,
+    scene_index: int,
+) -> tuple[list[float], list[float]] | None:
+    if alignment is None:
+        logger.warning(
+            "music.duck_alignment_skipped",
+            extra={"scene_index": scene_index, "reason": "alignment is None"},
+        )
+        return None
+    starts_raw = list(alignment.get("character_start_times_seconds") or [])
+    ends_raw = list(alignment.get("character_end_times_seconds") or [])
+    if not starts_raw or not ends_raw or len(starts_raw) != len(ends_raw):
+        logger.warning(
+            "music.duck_alignment_skipped",
+            extra={
+                "scene_index": scene_index,
+                "reason": "empty_or_length_mismatch",
+                "n_starts": len(starts_raw),
+                "n_ends": len(ends_raw),
+            },
+        )
+        return None
+    try:
+        return [float(x) for x in starts_raw], [float(x) for x in ends_raw]
+    except (TypeError, ValueError):
+        logger.warning(
+            "music.duck_alignment_skipped",
+            extra={"scene_index": scene_index, "reason": "non_numeric_times"},
+        )
+        return None
+
+
+def _merge_touching_intervals(
+    intervals: list[tuple[float, float]],
+    *,
+    min_gap_s: float | None = None,
+) -> list[tuple[float, float]]:
+    """Collapse runs closer than 2*ramp so in/out ramps cannot overlap.
+
+    RV-Q3: a 20–80 ms gap at a scene join is ordinary TTS leading
+    silence; ramps of 80 ms on each side would multiply below the duck
+    floor. Merging anything closer than two ramps removes the collision.
+    """
+    if not intervals:
+        return []
+    gap = 2 * DUCK_RAMP_S if min_gap_s is None else min_gap_s
+    ordered = sorted(intervals)
+    merged: list[tuple[float, float]] = [ordered[0]]
+    for start, end in ordered[1:]:
+        prev_start, prev_end = merged[-1]
+        if start <= prev_end + gap:
+            merged[-1] = (prev_start, max(prev_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def duck_envelope_content_hash(
+    intervals: list[tuple[float, float]],
+    *,
+    merge_threshold_s: float = DUCK_MERGE_THRESHOLD_S,
+    ramp_s: float = DUCK_RAMP_S,
+) -> str:
+    """Fingerprint input for the alignment-derived duck envelope (OQ-1b).
+
+    Hashes the canonical `(start, end)` duck windows plus merge/ramp
+    constants. When alignment is absent the render step passes `None`
+    instead (file-duration fallback is fully determined by
+    `narration_content_hashes`).
+    """
+    payload = {
+        "intervals": [[round(start, 3), round(end, 3)] for start, end in intervals],
+        "merge_threshold_s": merge_threshold_s,
+        "ramp_s": ramp_s,
+        "ramp_steps": DUCK_RAMP_STEPS,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def duck_ramp_windows(
+    intervals: list[tuple[float, float]],
+    *,
+    relative_duck: float,
+    ramp_s: float = DUCK_RAMP_S,
+    steps: int = DUCK_RAMP_STEPS,
+) -> list[tuple[float, float, float]]:
+    """Expand each duck into ramp-in steps + full duck + ramp-out steps.
+
+    Returns `(start, end, relative_gain)` triples in chronological order
+    per input interval. Relative gain is the multiplier applied on top of
+    the unconditional bed `volume=` (same architecture as a flat duck).
+    80 ms / 4 steps is the OQ-1b starting ear default — not signed off.
+
+    ⚠ RV-Q3 (reopened 2026-08-29): these windows become `volume=` filters
+    chained in series, so any two that overlap MULTIPLY. Correctness
+    therefore depends on the input intervals being at least `2*ramp_s`
+    apart, and that invariant is enforced HERE rather than left to the
+    caller — the first fix put the guard only in
+    `speaking_intervals_from_alignment`, and `compute_narration_intervals`
+    (the fallback RV-Q2's own refusal routes into) returns per-scene
+    intervals explicitly "back to back with no gap". Measured on that
+    path before this guard: at a scene join both full ducks and both ramp
+    sets were live at once, multiplying to **16.1 dB below the intended
+    duck floor** for ~80 ms — an audible hole at every boundary, on a bed
+    already sitting at −28 dB. Merging here is idempotent for the
+    alignment path (already merged at the same threshold), so it changes
+    no already-correct output and no fingerprint.
+    """
+    if ramp_s <= 0 or steps < 1:
+        return [(start, end, relative_duck) for start, end in intervals]
+
+    intervals = _merge_touching_intervals(intervals, min_gap_s=2 * ramp_s)
+
+    windows: list[tuple[float, float, float]] = []
+    dt = ramp_s / steps
+    for start, end in intervals:
+        if end <= start:
+            continue
+        for k in range(1, steps + 1):
+            t0 = start - ramp_s + (k - 1) * dt
+            t1 = start - ramp_s + k * dt
+            gain = 1.0 + (relative_duck - 1.0) * (k / steps)
+            if t1 <= 0 or t1 <= t0:
+                continue
+            windows.append((max(t0, 0.0), t1, gain))
+        windows.append((start, end, relative_duck))
+        for k in range(1, steps + 1):
+            t0 = end + (k - 1) * dt
+            t1 = end + k * dt
+            # k/steps of the way from full duck back toward bed (1.0).
+            gain = relative_duck + (1.0 - relative_duck) * (k / steps)
+            if t1 <= t0:
+                continue
+            # Last step lands at gain≈1.0 (noop multiply); skip it.
+            if abs(gain - 1.0) < 1e-12:
+                continue
+            windows.append((t0, t1, gain))
+    windows.sort(key=lambda item: (item[0], item[1]))
+    return windows
 
 
 async def compute_narration_intervals(
@@ -187,10 +402,10 @@ def _volume_chain(
     relative_duck = duck_linear / bed_linear
 
     filters = [f"volume={bed_linear:.6f}"]
-    for start, end in intervals:
+    for start, end, rel in duck_ramp_windows(intervals, relative_duck=relative_duck):
         # A single `between(t,a,b)` per filter - the escaped comma is
         # the only one, never nested inside a broader if()/expression.
-        filters.append(f"volume={relative_duck:.6f}:enable='between(t\\,{start:.3f}\\,{end:.3f})'")
+        filters.append(f"volume={rel:.6f}:enable='between(t\\,{start:.3f}\\,{end:.3f})'")
     return ",".join(filters)
 
 
@@ -251,6 +466,8 @@ async def mux_music(
     *,
     bed_gain_db: float,
     duck_gain_db: float,
+    amix_normalize: int = 0,
+    alignment_by_scene: Sequence[Mapping[str, Any] | None] | None = None,
 ) -> Path:
     """Mixes `music_path` (looped/trimmed to `video_path`'s real length,
     ducked under `narration_paths` if any) onto `video_path`, writing
@@ -260,12 +477,44 @@ async def mux_music(
     the ducked bed via `amix` - when it doesn't (no narration, or
     DRY_RUN's caller never gets here at all - see
     `RenderStep._resolve_music_track`), the ducked bed becomes the
-    output's only audio stream."""
+    output's only audio stream.
+
+    `amix_normalize` is the ffmpeg `amix` normalize flag (OQ-1d). 0 keeps
+    narration at the same level with or without a bed; 1 is ffmpeg's
+    default (scale 1/n). The render step fingerprints the same value
+    (RV2).
+
+    `alignment_by_scene` (OQ-1b): when provided, duck windows come from
+    `speaking_intervals_from_alignment`; otherwise file-duration
+    per-scene intervals (`compute_narration_intervals`).
+    """
     video_duration = await probe_duration_seconds(video_path, settings.ffprobe_binary)
-    intervals = (
-        await compute_narration_intervals(narration_paths, settings.ffprobe_binary)
-        if narration_paths
-        else []
+    if alignment_by_scene is not None:
+        intervals = speaking_intervals_from_alignment(alignment_by_scene)
+        source = "alignment"
+        if not intervals and narration_paths:
+            # Alignment present but produced no windows (all scenes
+            # malformed) — do not leave the bed unducked under speech.
+            intervals = await compute_narration_intervals(
+                narration_paths, settings.ffprobe_binary
+            )
+            source = "file_duration_fallback"
+    elif narration_paths:
+        intervals = await compute_narration_intervals(narration_paths, settings.ffprobe_binary)
+        source = "file_duration"
+    else:
+        intervals = []
+        source = "none"
+
+    logger.info(
+        "music.duck_envelope",
+        extra={
+            "source": source,
+            "interval_count": len(intervals),
+            "merge_threshold_s": DUCK_MERGE_THRESHOLD_S,
+            "ramp_s": DUCK_RAMP_S,
+            "ramp_steps": DUCK_RAMP_STEPS,
+        },
     )
 
     ducked_bed_path = output_path.parent / f"_ducked_bed_{output_path.stem}.m4a"
@@ -301,7 +550,10 @@ async def mux_music(
         # cannot truncate a real track early.
         args += [
             "-filter_complex",
-            "[0:a][1:a]amix=inputs=2:duration=longest:dropout_transition=0[aout]",
+            # Default ffmpeg normalize=1 scales each active input by 1/n
+            # (~−6 dB with two inputs). Same flag as mux_sfx (RV11).
+            f"[0:a][1:a]amix=inputs=2:duration=longest:dropout_transition=0:"
+            f"normalize={int(amix_normalize)}[aout]",
             "-map",
             "0:v",
             "-map",

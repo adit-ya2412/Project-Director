@@ -49,13 +49,17 @@ class MediaProbe:
     # fit arithmetic below so classification never costs a second ffprobe
     # call just to learn the same number again.
     duration_s: float | None = None
+    # Pixel size of a STILL. Needed so Ken Burns can aim the pre-zoompan
+    # crop in the same coordinate space the focal was measured in (RV-Q1).
+    # None for motion and for stills probed before this field existed.
+    width: int | None = None
+    height: int | None = None
 
 
 async def probe_media(path: Path, *, ffprobe_binary: str = "ffprobe") -> MediaProbe:
     try:
-        with Image.open(path):
-            pass
-        return MediaProbe(kind=MediaKind.STILL)
+        with Image.open(path) as im:
+            return MediaProbe(kind=MediaKind.STILL, width=im.width, height=im.height)
     except (OSError, ValueError):
         pass
 

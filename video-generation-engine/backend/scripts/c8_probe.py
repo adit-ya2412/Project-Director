@@ -200,9 +200,16 @@ def main() -> None:
         render_settings=render_settings,
         music_bed_gain_db=-18.0,
         music_duck_gain_db=-24.0,
+        music_gain_offset_db=0.0,
+        music_amix_normalize=0,
+        loudness_normalize=True,
+        loudness_target_lufs=-16.0,
+        loudness_true_peak_db=-1.0,
+        narration_level_match=True,
         burn_captions=False,
         caption_font_hash=None,
         cue_list_hash=None,
+        duck_envelope_hash=None,
         watermark_enabled=False,
         watermark_asset_hash=None,
         watermark_params_hash=None,
@@ -215,6 +222,7 @@ def main() -> None:
         sfx_normalize_target_db=-8.0,
         sfx_kind_gain_overrides_db={},
         ffmpeg_version="7.1.5",
+        shot_focal={f"s{i:03d}": "" for i in range(N_SHOTS)},
     )
     fingerprint_elapsed = time.monotonic() - start
     print(f"compute_render_fingerprint (185 shots): {fingerprint_elapsed * 1000:.2f}ms "

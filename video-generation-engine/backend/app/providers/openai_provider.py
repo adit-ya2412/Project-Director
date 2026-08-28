@@ -9,6 +9,7 @@ hoping - implementation guide, Phase M5 advice.
 """
 
 import base64
+import io
 from typing import Any, TypeVar
 
 from openai import (
@@ -27,6 +28,7 @@ from openai.types.chat import (
     ChatCompletionSystemMessageParam,
     ChatCompletionUserMessageParam,
 )
+from PIL import Image
 from pydantic import BaseModel
 
 from app.core.config import settings
@@ -38,6 +40,8 @@ from app.providers.base import (
     DepictionCheckRequest,
     DepictionVerdict,
     StructuredCompletion,
+    SubjectFocal,
+    SubjectFocalRequest,
 )
 
 logger = get_logger(__name__)
@@ -55,13 +59,51 @@ _TRANSIENT_ERRORS = (RateLimitError, APITimeoutError, APIConnectionError, Intern
 _MODELS_REJECTING_TEMPERATURE: set[str] = set()
 
 
+
+def _downscale_for_focal(image: bytes, content_type: str, max_px: int) -> tuple[bytes, str]:
+    """Shrink an image to `max_px` on its longest edge for the focal call.
+
+    97% of a focal call's input tokens were the image itself (~4,282 of
+    4,402), and the answer is a NORMALISED coordinate - resolution buys
+    nothing once the subject is still identifiable. Measured on real
+    assets across five sizes, answer drift against the full-size answer
+    is flat from 1024 down to 512 and only degrades at 384; 512 costs 10%
+    of the tokens (output_quality_pass.md §14.7).
+
+    Never raises: an unreadable or already-small image is returned
+    untouched, because a focal hint is not worth failing a resolve over.
+    """
+    if max_px <= 0:
+        return image, content_type
+    try:
+        with Image.open(io.BytesIO(image)) as im:
+            if max(im.size) <= max_px:
+                return image, content_type
+            im = im.convert("RGB")
+            scale = max_px / max(im.size)
+            im = im.resize(
+                (max(1, round(im.width * scale)), max(1, round(im.height * scale))),
+                Image.LANCZOS,
+            )
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=88)
+            return buf.getvalue(), "image/jpeg"
+    except (OSError, ValueError) as exc:
+        logger.warning("focal.downscale_failed", extra={"error": str(exc)[:200]})
+        return image, content_type
+
 class OpenAIPlanningProvider:
     name = "openai"
 
-    def __init__(self, client: AsyncOpenAI | None = None) -> None:
+    def __init__(self, client: AsyncOpenAI | None = None, *, model: str | None = None) -> None:
         self._client = client or AsyncOpenAI(
             api_key=settings.openai_api_key, organization=settings.openai_org_id
         )
+        # Default is the planning model every other agent uses. The
+        # caption romanizer passes `settings.openai_planning_model_cheap`
+        # — mechanical transliteration, no reason to spend the terra
+        # model (caption_romanization.md §2.4).
+        self._model = model or settings.openai_planning_model
 
     async def _parse(
         self,
@@ -72,7 +114,7 @@ class OpenAIPlanningProvider:
         temperature: float | None,
     ) -> Any:
         kwargs: dict[str, Any] = {
-            "model": settings.openai_planning_model,
+            "model": self._model,
             "seed": seed,
             "messages": messages,
             "response_format": response_model,
@@ -93,7 +135,7 @@ class OpenAIPlanningProvider:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
         ]
-        model = settings.openai_planning_model
+        model = self._model
         # Skip the doomed attempt entirely once this model has already told
         # us it won't take a custom temperature.
         temperature = (
@@ -145,7 +187,7 @@ class OpenAIPlanningProvider:
         return StructuredCompletion(
             parsed=parsed,
             model=completion.model,
-            request={"model": settings.openai_planning_model, "messages": messages},
+            request={"model": model, "messages": messages},
             response=choice.message.model_dump(mode="json"),
             input_tokens=usage.prompt_tokens if usage else None,
             output_tokens=usage.completion_tokens if usage else None,
@@ -357,6 +399,89 @@ class OpenAIPlanningProvider:
                 "shot_prompt": request.shot_prompt,
                 "search_subject": request.search_subject,
             },
+            response=choice.message.model_dump(mode="json"),
+            input_tokens=usage.prompt_tokens if usage else None,
+            output_tokens=usage.completion_tokens if usage else None,
+        )
+
+    async def locate_subject(self, request: SubjectFocalRequest) -> StructuredCompletion:
+        """Where is the main subject (OQ-2, re-cut 2026-08-29)?
+
+        Its own call, on its own model (`settings.openai_focal_model`),
+        for two measured reasons — see `SubjectFocal` and
+        `output_quality_pass.md` §14 for the evidence:
+
+        - `settings.openai_vision_model` (gpt-4o-mini) cannot do this.
+          On real assets it aimed at the kart instead of the driver, at
+          the wrong car of two, and at empty track beside the pack.
+        - The plausibility gate this used to ride along with was
+          calibrated twice (A30/A30a) against that cheap model. Sharing
+          one call meant either paying the strong model for the gate or
+          silently re-opening a calibration. Splitting costs one extra
+          call per BOUND shot (not per candidate) and leaves the gate
+          exactly as measured.
+
+        The prompt forces NAME -> WORDS -> NUMBERS. That ordering is not
+        style: asking for coordinates alone returns 0.5,0.5 (11 of 12
+        real sidecars did). `SubjectFocal` has no defaults, so a model
+        that declines to answer raises rather than fabricating a centre.
+        """
+        shrunk, shrunk_type = _downscale_for_focal(
+            request.image, request.image_content_type, settings.focal_image_max_px
+        )
+        image_b64 = base64.b64encode(shrunk).decode("ascii")
+        data_url = f"data:{shrunk_type};base64,{image_b64}"
+        system_message: ChatCompletionSystemMessageParam = {
+            "role": "system",
+            "content": (
+                "A documentary editor needs to know what to point the camera at in "
+                "this photograph, so a slow push or punch-in lands on the subject "
+                "rather than on the geometric middle of the frame.\n\n"
+                "First NAME the single most important subject - a person's face, a "
+                "vehicle, a labelled structure. Then say in WORDS where it sits in "
+                "the frame. Only then give focal_x and focal_y, normalised 0..1 with "
+                "the origin at the top-left, consistent with the words you just "
+                "wrote.\n\n"
+                "Most photographs are NOT centred. 0.5,0.5 should be rare, and only "
+                "when the subject genuinely is dead centre."
+            ),
+        }
+        image_part: ChatCompletionContentPartImageParam = {
+            "type": "image_url",
+            "image_url": {"url": data_url},
+        }
+        text_part: ChatCompletionContentPartTextParam = {
+            "type": "text",
+            "text": "Name the main subject of this image and give its location.",
+        }
+        user_message: ChatCompletionUserMessageParam = {
+            "role": "user",
+            "content": [text_part, image_part],
+        }
+        messages: list[ChatCompletionMessageParam] = [system_message, user_message]
+        try:
+            completion = await self._client.chat.completions.parse(
+                model=settings.openai_focal_model,
+                messages=messages,
+                response_format=SubjectFocal,
+            )
+        except _TRANSIENT_ERRORS as exc:
+            raise TransientError(f"openai subject-focal transient error: {exc}") from exc
+        except OpenAIError as exc:
+            raise PermanentError(f"openai subject-focal error: {exc}") from exc
+
+        choice = completion.choices[0]
+        if choice.message.refusal:
+            raise PermanentError(f"openai refused the subject-focal call: {choice.message.refusal}")
+        parsed = choice.message.parsed
+        if parsed is None:
+            raise PermanentError("openai did not return a parseable subject focal")
+
+        usage = completion.usage
+        return StructuredCompletion(
+            parsed=parsed,
+            model=completion.model,
+            request={"model": settings.openai_focal_model},
             response=choice.message.model_dump(mode="json"),
             input_tokens=usage.prompt_tokens if usage else None,
             output_tokens=usage.completion_tokens if usage else None,

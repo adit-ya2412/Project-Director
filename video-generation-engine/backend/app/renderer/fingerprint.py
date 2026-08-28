@@ -103,6 +103,7 @@ import hashlib
 import json
 
 from app.core.errors import PermanentError
+from app.renderer.loudness import DEFAULT_LRA
 from app.renderer.slideshow import RenderSettings
 from app.renderer.split_screen import SPLIT_PANEL_FIT
 from app.schemas.timeline import Shot, Timeline
@@ -162,9 +163,15 @@ def compute_render_fingerprint(
     music_bed_gain_db: float,
     music_duck_gain_db: float,
     music_gain_offset_db: float,
+    music_amix_normalize: int,
+    loudness_normalize: bool,
+    loudness_target_lufs: float,
+    loudness_true_peak_db: float,
+    narration_level_match: bool,
     burn_captions: bool,
     caption_font_hash: str | None,
     cue_list_hash: str | None,
+    duck_envelope_hash: str | None,
     watermark_enabled: bool,
     watermark_asset_hash: str | None,
     watermark_params_hash: str | None,
@@ -178,6 +185,7 @@ def compute_render_fingerprint(
     sfx_kind_gain_overrides_db: dict[str, float | None],
     ffmpeg_version: str,
     secondary_content_hashes: dict[str, str] | None = None,
+    shot_focal: dict[str, str] | None = None,
 ) -> str:
     timeline_document = timeline.model_dump(mode="json")
     content_only = {
@@ -206,6 +214,18 @@ def compute_render_fingerprint(
             }
             for shot in timeline.all_shots()
         ],
+        # OQ-2 (2026-08-28): subject focal is model-derived from the
+        # image, so shot_media's content hash does NOT cover it (R2).
+        # R16 assignment: keyed by shot_id in timeline order. Empty
+        # string when unresolved so a later resolve cannot cache-HIT
+        # the gap. Present unconditionally.
+        "shot_focal": [
+            {
+                "shot_id": shot.id,
+                "focal": (shot_focal or {}).get(shot.id, ""),
+            }
+            for shot in timeline.all_shots()
+        ],
         "narration_content_hashes": sorted(narration_content_hashes),
         "music_content_hash": music_content_hash,
         "render_settings": {
@@ -229,11 +249,40 @@ def compute_render_fingerprint(
         # miss the cache - same unconditional-presence rule as the gains
         # above (R2). 0.0 on every provider-selected track.
         "music_gain_offset_db": music_gain_offset_db,
+        # OQ-1d (2026-08-28): mux_music's amix normalize flag. Default
+        # ffmpeg normalize=1 attenuated narration ~−6 dB under any bed;
+        # fixed to normalize=0. Hashed unconditionally (R2) so cached
+        # pre-fix mixes cannot HIT.
+        "music_amix_normalize": music_amix_normalize,
+        # OQ-1a (2026-08-28): final-mix loudness target. Config knobs,
+        # not measured values — pass-1 measurements are recomputed from
+        # the same bytes (deterministic, ride in free). Unconditional
+        # presence (R2), same rule as music_bed_gain_db.
+        "loudness_normalize": loudness_normalize,
+        "loudness_target_lufs": loudness_target_lufs,
+        "loudness_true_peak_db": loudness_true_peak_db,
+        # Constant LRA fed to loudnorm (not a Settings knob). Hashed so a
+        # change cannot cache-HIT (same shape as split_panel_fit).
+        "loudness_lra": DEFAULT_LRA,
+        # OQ-1c (2026-08-28): per-scene narration mean-LUFS gain match
+        # before concat. Flag only — measured gains derive from narration
+        # bytes already in narration_content_hashes (do not hash LUFS).
+        # Unconditional presence (R2).
+        "narration_level_match": narration_level_match,
         # Captions (2026-08-17), same unconditional-presence rule as the
         # gains above - see this module's own docstring.
         "burn_captions": burn_captions,
         "caption_font_hash": caption_font_hash,
         "cue_list_hash": cue_list_hash,
+        # OQ-1b (2026-08-28): alignment-derived duck windows are not
+        # determined by scene structure alone (timeline dump) or by
+        # narration audio bytes. When alignment is present the render
+        # step hashes the canonical interval list (+ merge/ramp
+        # constants); when absent this is None and the file-duration
+        # fallback is fully determined by narration_content_hashes.
+        # Unconditional presence (R2), None when no music / no
+        # alignment / no intervals.
+        "duck_envelope_hash": duck_envelope_hash,
         # Watermark (2026-08-17), same unconditional-presence rule.
         "watermark_enabled": watermark_enabled,
         "watermark_asset_hash": watermark_asset_hash,
@@ -302,6 +351,7 @@ def compute_run_fingerprint(
     render_settings: RenderSettings,
     ffmpeg_version: str,
     secondary_content_hashes: dict[str, str] | None = None,
+    shot_focal: dict[str, str] | None = None,
 ) -> str:
     """Fingerprint of one `group_into_runs` run (Track C C3 remainder).
 
@@ -326,6 +376,8 @@ def compute_run_fingerprint(
                 # has no second still so a later resolve cannot cache-HIT
                 # the single-image encode (R2 / §7).
                 "secondary_hash": (secondary_content_hashes or {}).get(shot.id, ""),
+                # OQ-2: focal is not in the shot dump (not on Camera).
+                "focal": (shot_focal or {}).get(shot.id, ""),
             }
             for shot in shots
         ],
@@ -348,12 +400,14 @@ def compute_shot_stream_fingerprint(
     render_settings: RenderSettings,
     ffmpeg_version: str,
     secondary_asset_hash: str = "",
+    focal: str = "",
 ) -> str:
     """Fingerprint of one shot's normalised/zoompanned stream (C3 (d)).
 
     Transition-out is excluded: it only affects the xfade pass, so a
     dissolve-duration edit must reuse this file. Camera and duration
-    stay in — they change the pixels.
+    stay in — they change the pixels. `focal` (OQ-2) is hashed too:
+    the asset content hash does not cover a model-derived aim point.
     """
     payload = {
         "kind": "shot_stream_v1",
@@ -362,6 +416,7 @@ def compute_shot_stream_fingerprint(
         "camera": shot.camera.model_dump(mode="json"),
         "asset_hash": asset_hash,
         "secondary_asset_hash": secondary_asset_hash,
+        "focal": focal,
         "render_settings": {
             "width": render_settings.width,
             "height": render_settings.height,

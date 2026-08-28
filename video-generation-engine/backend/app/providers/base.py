@@ -14,7 +14,7 @@ and LLMProvider are added in M5-M8 as their phases land.
 from dataclasses import dataclass
 from typing import Protocol, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 ResponseModelT = TypeVar("ResponseModelT", bound=BaseModel)
 
@@ -315,7 +315,29 @@ class DepictionVerdict(BaseModel):
 
     `reason` is always populated - useful for understanding either
     outcome, and this check has no "steady state" where an empty reason
-    is expected."""
+    is expected.
+
+    ⚠ `focal_x` / `focal_y` USED TO LIVE HERE (OQ-2) and were REMOVED
+    2026-08-29 after a live bake-off (output_quality_pass.md §14). Two
+    separate reasons, either of which is sufficient:
+
+    1. They carried defaults of 0.5, so a model that answered the
+       plausibility question and ignored the location one produced a
+       silent, confident "dead centre" that `persist_vision_focal` then
+       wrote to disk labelled `focal_source="vision"`. 11 of 12 real
+       backfilled sidecars were exactly (0.50, 0.50). A default that is
+       indistinguishable from an answer is not a default, it is a lie.
+    2. Measured on real assets, `settings.openai_vision_model`
+       (gpt-4o-mini) CANNOT localise a subject - it put the aim on the
+       kart instead of the driver, on the wrong car of two, and on empty
+       track beside the pack. No prompt shape rescued it; a 3x3 grid
+       enum made it worse. Subject location is a genuinely harder task
+       than the yes/no plausibility gate and needs a stronger model.
+
+    Location now has its own request/verdict pair (`SubjectFocalRequest`
+    / `SubjectFocal`) and its own model setting, so the A30a-calibrated
+    plausibility gate keeps running on the cheap model it was calibrated
+    against."""
 
     confidently_wrong: bool
     reason: str
@@ -339,6 +361,42 @@ class DepictionCheckRequest:
     search_subject: str
 
 
+class SubjectFocal(BaseModel):
+    """Where the main visible subject sits (OQ-2, re-cut 2026-08-29).
+
+    ⚠ **No field has a default, deliberately.** The predecessor put
+    `focal_x: float = 0.5` on `DepictionVerdict`, so an unanswered
+    question became a confident centre. Here an unanswered question is a
+    validation error the caller can see and log, and the caller falls
+    back to centre EXPLICITLY with `focal_source="fallback"`.
+
+    `subject` and `subject_location_words` are not decoration - they are
+    the reason this works. Measured in the same bake-off: asking for
+    coordinates alone gets 0.5,0.5; forcing the model to NAME the subject
+    and describe its position in words BEFORE emitting numbers produces
+    real, varied answers. Keep the field order - it is the ordering of a
+    structured response that does the work."""
+
+    subject: str = Field(description="The single most important subject, named in 2-6 words.")
+    subject_location_words: str = Field(
+        description="Where that subject sits, in words, e.g. 'upper left', 'centre right'."
+    )
+    focal_x: float = Field(ge=0.0, le=1.0, description="0=left, 1=right.")
+    focal_y: float = Field(ge=0.0, le=1.0, description="0=top, 1=bottom.")
+
+
+@dataclass(frozen=True)
+class SubjectFocalRequest:
+    """Input to a subject-location call. Deliberately carries no search
+    terms or shot prompt: unlike the depiction gate, this asks a question
+    about the PIXELS ONLY ("what is the main thing and where is it"), so
+    feeding it the intended subject would invite it to report where the
+    subject was SUPPOSED to be rather than where anything actually is."""
+
+    image: bytes
+    image_content_type: str
+
+
 class VisionConstraintProvider(Protocol):
     """Checks one image against either a fixed list of hard creative
     constraints (`check_constraints`, M6.5 A12, generated media only) or
@@ -360,6 +418,7 @@ class VisionConstraintProvider(Protocol):
 
     async def check_constraints(self, request: ConstraintCheckRequest) -> StructuredCompletion: ...
     async def check_depiction(self, request: DepictionCheckRequest) -> StructuredCompletion: ...
+    async def locate_subject(self, request: SubjectFocalRequest) -> StructuredCompletion: ...
 
 
 @dataclass(frozen=True)

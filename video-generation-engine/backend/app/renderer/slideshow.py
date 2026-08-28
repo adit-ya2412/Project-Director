@@ -61,7 +61,12 @@ from weakref import WeakKeyDictionary
 
 from app.core.errors import PermanentError
 from app.core.logging import get_logger
-from app.renderer.ken_burns import WORKING_CANVAS_SCALE, ZoompanExpression, build_zoompan_expression
+from app.renderer.ken_burns import (
+    WORKING_CANVAS_SCALE,
+    ZoompanExpression,
+    build_zoompan_expression,
+    ken_burns_crop_and_zoompan_focal,
+)
 from app.renderer.motion import MediaKind, MediaProbe, build_duration_fit_fragment, probe_media
 from app.renderer.split_screen import build_split_filter, should_composite_split
 from app.schemas.timeline import Shot, Timeline, TransitionType
@@ -317,7 +322,14 @@ def _motion_filter(
 
 
 def _ken_burns_filter(
-    index: int, settings: RenderSettings, label: str, expr: ZoompanExpression, frames: int
+    index: int,
+    settings: RenderSettings,
+    label: str,
+    expr: ZoompanExpression,
+    frames: int,
+    *,
+    crop_x: int | None = None,
+    crop_y: int | None = None,
 ) -> str:
     """The Ken-Burns equivalent of `_normalize_filter` - scales up to an
     oversized working canvas first (so `zoompan` resamples real extra
@@ -327,16 +339,41 @@ def _ken_burns_filter(
     needed afterwards - `zoompan`'s own `fps=` parameter already sets it,
     and its `d` parameter is what makes this stream exactly `frames`
     frames long (== `shot.duration_s` seconds at `settings.fps`, the
-    caller's arithmetic, not this function's)."""
+    caller's arithmetic, not this function's).
+
+    `crop_x`/`crop_y` (RV-Q1): when set, the pre-zoompan crop is aimed at
+    the subject instead of the geometric centre. Omitted → today's
+    centred `crop=w:h` (byte-identical for a centre/None focal).
+    """
     w, h = settings.width, settings.height
     canvas_w = round(w * WORKING_CANVAS_SCALE)
     canvas_h = round(h * WORKING_CANVAS_SCALE)
+    if crop_x is None or crop_y is None:
+        crop = f"crop={canvas_w}:{canvas_h}"
+    else:
+        crop = f"crop={canvas_w}:{canvas_h}:{crop_x}:{crop_y}"
     return (
         f"[{index}:v]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,"
-        f"crop={canvas_w}:{canvas_h},setsar=1,"
+        f"{crop},setsar=1,"
         f"zoompan=z='{expr.zoom_expr}':x='{expr.x_expr}':y='{expr.y_expr}':"
         f"d={frames}:s={w}x{h}:fps={settings.fps},"
         f"format={settings.pixel_format}[{label}]"
+    )
+
+
+def _ken_burns_aim(
+    probe: MediaProbe,
+    settings: RenderSettings,
+    focal: tuple[float, float] | None,
+) -> tuple[int | None, int | None, tuple[float, float] | None]:
+    """Map an original-image focal through the scale+crop into zoompan
+    space. Missing pixel size → centred crop, original focal unused."""
+    if probe.width is None or probe.height is None:
+        return None, None, None
+    canvas_w = round(settings.width * WORKING_CANVAS_SCALE)
+    canvas_h = round(settings.height * WORKING_CANVAS_SCALE)
+    return ken_burns_crop_and_zoompan_focal(
+        probe.width, probe.height, canvas_w, canvas_h, focal
     )
 
 
@@ -346,19 +383,24 @@ def _per_shot_filter(
     probe: MediaProbe,
     settings: RenderSettings,
     label: str,
+    *,
+    focal: tuple[float, float] | None = None,
 ) -> str:
     frames = max(round(shot.duration_s * settings.fps), 1)
     if probe.kind is MediaKind.MOTION:
         return _motion_filter(input_index, settings, label, probe, shot.duration_s)
+    crop_x, crop_y, zoompan_focal = _ken_burns_aim(probe, settings, focal)
     expr = (
-        build_zoompan_expression(shot.camera, frames=frames)
+        build_zoompan_expression(shot.camera, frames=frames, focal=zoompan_focal)
         if probe.kind is MediaKind.STILL
         else None
     )
     if expr is None:
         hold_s = (frames - 1) / settings.fps
         return _normalize_filter(input_index, settings, label, hold_s=hold_s)
-    return _ken_burns_filter(input_index, settings, label, expr, frames)
+    return _ken_burns_filter(
+        input_index, settings, label, expr, frames, crop_x=crop_x, crop_y=crop_y
+    )
 
 
 def _h264_bitexact_args(settings: RenderSettings, output_arg: str) -> list[str]:
@@ -405,6 +447,8 @@ async def _encode_or_reuse_shot_stream(
     secondary_src: Path | None = None,
     secondary_probe: MediaProbe | None = None,
     secondary_asset_hash: str = "",
+    focal: tuple[float, float] | None = None,
+    focal_fingerprint: str = "",
 ) -> Path:
     """Pass 1 of C3 (d): one shot's normalised stream, cached by
     `compute_shot_stream_fingerprint`. tpad, never `-loop 1 -t`.
@@ -425,6 +469,7 @@ async def _encode_or_reuse_shot_stream(
         render_settings=settings,
         ffmpeg_version=ffmpeg_version,
         secondary_asset_hash=secondary_asset_hash if split else "",
+        focal=focal_fingerprint,
     )
     cache_dir = work_dir / "shot_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -461,7 +506,7 @@ async def _encode_or_reuse_shot_stream(
     else:
         short = short_input_name(index, src, probe.kind, run_stem=run_stem)
         stage_short_input(src, work_dir / short)
-        graph = _per_shot_filter(0, shot, probe, settings, "vout")
+        graph = _per_shot_filter(0, shot, probe, settings, "vout", focal=focal)
         if probe.kind is MediaKind.STILL:
             args += ["-framerate", str(settings.fps), "-i", short]
         else:
@@ -710,11 +755,15 @@ async def _render_run_two_pass(
     shot_secondary_images: dict[str, Path] | None = None,
     secondary_probes: dict[str, MediaProbe] | None = None,
     secondary_content_hashes: dict[str, str] | None = None,
+    shot_focals: dict[str, tuple[float, float] | None] | None = None,
+    shot_focal_fingerprints: dict[str, str] | None = None,
 ) -> None:
     run_stem = output_path.stem
     secondaries = shot_secondary_images or {}
     sec_probes = secondary_probes or {}
     sec_hashes = secondary_content_hashes or {}
+    focals = shot_focals or {}
+    focal_fps = shot_focal_fingerprints or {}
 
     async def _one(item: tuple[int, Shot]) -> Path:
         index, shot = item
@@ -733,6 +782,8 @@ async def _render_run_two_pass(
             secondary_src=secondaries.get(shot.id),
             secondary_probe=sec_probes.get(shot.id),
             secondary_asset_hash=sec_hashes.get(shot.id, ""),
+            focal=focals.get(shot.id),
+            focal_fingerprint=focal_fps.get(shot.id, ""),
         )
 
     gathered = await bounded_gather(
@@ -761,6 +812,8 @@ async def _render_run(
     shot_secondary_images: dict[str, Path] | None = None,
     secondary_probes: dict[str, MediaProbe] | None = None,
     secondary_content_hashes: dict[str, str] | None = None,
+    shot_focals: dict[str, tuple[float, float] | None] | None = None,
+    shot_focal_fingerprints: dict[str, str] | None = None,
 ) -> None:
     """Render one run (shots joined only by crossfades, no hard cuts) to
     a single MP4.
@@ -782,6 +835,8 @@ async def _render_run(
     secondaries = shot_secondary_images or {}
     sec_probes = secondary_probes or {}
     sec_hashes = secondary_content_hashes or {}
+    focals = shot_focals or {}
+    focal_fps = shot_focal_fingerprints or {}
     split_in_run = any(
         should_composite_split(
             shot.camera.movement,
@@ -812,6 +867,8 @@ async def _render_run(
                 secondary_src=secondaries.get(shot.id),
                 secondary_probe=sec_probes.get(shot.id),
                 secondary_asset_hash=sec_hashes.get(shot.id, ""),
+                focal=focals.get(shot.id),
+                focal_fingerprint=focal_fps.get(shot.id, ""),
             )
             return
         await _render_run_two_pass(
@@ -826,6 +883,8 @@ async def _render_run(
             shot_secondary_images=secondaries,
             secondary_probes=sec_probes,
             secondary_content_hashes=sec_hashes,
+            shot_focals=focals,
+            shot_focal_fingerprints=focal_fps,
         )
         return
     # M8 step 5: a Ken-Burns shot's frame count is computed HERE (the one
@@ -834,13 +893,17 @@ async def _render_run(
     # STATIC tpad's hold. A1 (2026-08-18): a MOTION shot never gets a
     # zoompan expression at all, regardless of what `shot.camera` says.
     frame_counts = [max(round(shot.duration_s * settings.fps), 1) for shot in run]
+    ken_burns_aims = [
+        _ken_burns_aim(media_probes[shot.id], settings, focals.get(shot.id))
+        for shot in run
+    ]
     ken_burns_exprs = [
         (
-            build_zoompan_expression(shot.camera, frames=f)
+            build_zoompan_expression(shot.camera, frames=f, focal=aim[2])
             if media_probes[shot.id].kind is MediaKind.STILL
             else None
         )
-        for shot, f in zip(run, frame_counts, strict=True)
+        for shot, f, aim in zip(run, frame_counts, ken_burns_aims, strict=True)
     ]
 
     args = [settings.ffmpeg_binary, "-y"]
@@ -870,7 +933,12 @@ async def _render_run(
             hold_s = (frame_counts[i] - 1) / settings.fps
             filters.append(_normalize_filter(i, settings, label, hold_s=hold_s))
         else:
-            filters.append(_ken_burns_filter(i, settings, label, expr, frame_counts[i]))
+            crop_x, crop_y, _residual = ken_burns_aims[i]
+            filters.append(
+                _ken_burns_filter(
+                    i, settings, label, expr, frame_counts[i], crop_x=crop_x, crop_y=crop_y
+                )
+            )
         labels.append(label)
 
     if len(run) == 1:
@@ -981,6 +1049,8 @@ async def _render_or_reuse_run(
     shot_secondary_images: dict[str, Path] | None = None,
     secondary_probes: dict[str, MediaProbe] | None = None,
     secondary_content_hashes: dict[str, str] | None = None,
+    shot_focals: dict[str, tuple[float, float] | None] | None = None,
+    shot_focal_fingerprints: dict[str, str] | None = None,
 ) -> Path:
     """Encode one run, or copy a previous encode of the same run.
 
@@ -996,6 +1066,7 @@ async def _render_or_reuse_run(
         render_settings=settings,
         ffmpeg_version=ffmpeg_version,
         secondary_content_hashes=secondary_content_hashes,
+        shot_focal=shot_focal_fingerprints,
     )
     cache_dir = work_dir / "run_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1020,6 +1091,8 @@ async def _render_or_reuse_run(
         shot_secondary_images=shot_secondary_images,
         secondary_probes=secondary_probes,
         secondary_content_hashes=secondary_content_hashes,
+        shot_focals=shot_focals,
+        shot_focal_fingerprints=shot_focal_fingerprints,
     )
     _atomic_copy(run_path, cache_path)
     return run_path
@@ -1033,6 +1106,7 @@ async def render_timeline(
     *,
     work_dir: Path,
     shot_secondary_images: dict[str, Path] | None = None,
+    shot_focals: dict[str, tuple[float, float] | None] | None = None,
 ) -> Path:
     """Render an approved Timeline plus resolved shot images into a single
     MP4. Hard cuts between runs are joined losslessly via the concat
@@ -1094,6 +1168,15 @@ async def render_timeline(
     secondary_content_hashes = {
         shot_id: _file_content_hash(path) for shot_id, path in resolved_secondary.items()
     }
+    # OQ-2: focals are resolved once in RenderStep and threaded in (RV2).
+    # Fingerprint strings use "" when unresolved so a later sidecar cannot
+    # cache-HIT a centre-aimed encode.
+    from app.assets.focal import format_focal_fingerprint
+
+    focals = shot_focals or {}
+    focal_fingerprints = {
+        shot.id: format_focal_fingerprint(focals.get(shot.id)) for shot in shots
+    }
 
     async def _one_run(item: tuple[int, list[Shot]]) -> Path:
         index, run = item
@@ -1109,6 +1192,8 @@ async def render_timeline(
             shot_secondary_images=resolved_secondary,
             secondary_probes=secondary_probes,
             secondary_content_hashes=secondary_content_hashes,
+            shot_focals=focals,
+            shot_focal_fingerprints=focal_fingerprints,
         )
 
     gathered = await bounded_gather(

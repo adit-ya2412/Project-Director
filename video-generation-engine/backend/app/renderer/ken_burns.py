@@ -75,20 +75,136 @@ class ZoompanExpression:
     y_expr: str
 
 
-def build_zoompan_expression(camera: Camera, *, frames: int) -> ZoompanExpression | None:
+# Geometric centre — today's behaviour, and the OQ-2 fallback when no
+# subject focal is known. Byte-identical strings so existing tests and
+# cached expressions stay stable when focal is None or (0.5, 0.5).
+_CENTRE_X_EXPR = "iw/2-(iw/zoom/2)"
+_CENTRE_Y_EXPR = "ih/2-(ih/zoom/2)"
+
+
+@dataclass(frozen=True)
+class AimedCrop:
+    """Pre-zoompan crop of the `force_original_aspect_ratio=increase`
+    canvas, aimed at an original-image focal (RV-Q1).
+
+    `crop_x`/`crop_y` are the top-left of the canvas-sized window in the
+    scaled frame. `residual_fx`/`residual_fy` are the subject's location
+    *inside that crop* (0..1) — the value zoompan must consume, not the
+    original-image focal.
+    """
+
+    scaled_w: int
+    scaled_h: int
+    crop_x: int
+    crop_y: int
+    residual_fx: float
+    residual_fy: float
+
+
+def scale_increase_size(
+    orig_w: int, orig_h: int, canvas_w: int, canvas_h: int
+) -> tuple[int, int]:
+    """Match ffmpeg `scale=cw:ch:force_original_aspect_ratio=increase`.
+
+    Measured on ffmpeg 9.0: 600×800 → scale=2048:1152:increase yields
+    2048×2731 (`round(2048 * 800 / 600)`).
+    """
+    tmp_w = canvas_h * orig_w / orig_h
+    tmp_h = canvas_w * orig_h / orig_w
+    if tmp_w >= canvas_w:
+        return int(round(tmp_w)), canvas_h
+    return canvas_w, int(round(tmp_h))
+
+
+def compute_aimed_crop(
+    orig_w: int,
+    orig_h: int,
+    canvas_w: int,
+    canvas_h: int,
+    fx: float,
+    fy: float,
+) -> AimedCrop:
+    """Aim a canvas-sized crop at (fx, fy) in original-image space.
+
+    Clamps the crop inside the scaled frame, then reports where the
+    subject landed *inside the crop* so zoompan can finish the aim
+    instead of being fed original-space coordinates (RV-Q1).
+    """
+    scaled_w, scaled_h = scale_increase_size(orig_w, orig_h, canvas_w, canvas_h)
+    desired_x = fx * scaled_w - canvas_w / 2.0
+    desired_y = fy * scaled_h - canvas_h / 2.0
+    crop_x = int(round(max(0.0, min(float(scaled_w - canvas_w), desired_x))))
+    crop_y = int(round(max(0.0, min(float(scaled_h - canvas_h), desired_y))))
+    residual_fx = max(0.0, min(1.0, (fx * scaled_w - crop_x) / canvas_w))
+    residual_fy = max(0.0, min(1.0, (fy * scaled_h - crop_y) / canvas_h))
+    return AimedCrop(
+        scaled_w=scaled_w,
+        scaled_h=scaled_h,
+        crop_x=crop_x,
+        crop_y=crop_y,
+        residual_fx=residual_fx,
+        residual_fy=residual_fy,
+    )
+
+
+def ken_burns_crop_and_zoompan_focal(
+    orig_w: int,
+    orig_h: int,
+    canvas_w: int,
+    canvas_h: int,
+    focal: tuple[float, float] | None,
+) -> tuple[int | None, int | None, tuple[float, float] | None]:
+    """Return `(crop_x, crop_y, residual_focal)` for `_ken_burns_filter`.
+
+    None/centre focal → `(None, None, None)` so the filter string stays
+    today's centred `crop=w:h` and centre zoompan expressions.
+    """
+    if focal is None or focal == (0.5, 0.5):
+        return None, None, None
+    aimed = compute_aimed_crop(orig_w, orig_h, canvas_w, canvas_h, focal[0], focal[1])
+    residual: tuple[float, float] | None = (aimed.residual_fx, aimed.residual_fy)
+    if abs(aimed.residual_fx - 0.5) < 1e-4 and abs(aimed.residual_fy - 0.5) < 1e-4:
+        residual = None
+    return aimed.crop_x, aimed.crop_y, residual
+
+
+def _focal_xy_exprs(focal: tuple[float, float] | None) -> tuple[str, str]:
+    """Crop window aimed at `focal` (normalised 0..1), clamped inside the
+    frame. None / (0.5, 0.5) keep the historical centre strings exactly.
+    Used by SLOW_ZOOM / SLOW_PUSH / PULL_BACK / PUNCH_IN only — PAN keeps
+    its own directional x (OQ-2)."""
+    if focal is None or focal == (0.5, 0.5):
+        return _CENTRE_X_EXPR, _CENTRE_Y_EXPR
+    fx, fy = focal
+    # clamp(fx*iw - iw/zoom/2, 0, iw - iw/zoom) via portable min/max.
+    x_expr = f"min(max({fx:.6f}*iw-iw/zoom/2,0),iw-iw/zoom)"
+    y_expr = f"min(max({fy:.6f}*ih-ih/zoom/2,0),ih-ih/zoom)"
+    return x_expr, y_expr
+
+
+def build_zoompan_expression(
+    camera: Camera,
+    *,
+    frames: int,
+    focal: tuple[float, float] | None = None,
+) -> ZoompanExpression | None:
     """`None` means "no zoompan" (STATIC, SPLIT_FRAME, or an intensity of
     0). STATIC is a plain tpad still; SPLIT_FRAME is a two-input
     composite in `split_screen.py` when a second still exists, else the
     same tpad path. `frames` is the shot's total OUTPUT frame count
     (`round(duration_s * fps)`, already computed by the caller - D5's
-    "compute it in exactly one place" discipline)."""
+    "compute it in exactly one place" discipline).
+
+    `focal` (OQ-2) is an optional normalised subject point in image
+    space. When set, zoom/push/punch aim the crop at it (clamped). PAN
+    does not retarget its x; STATIC/SPLIT_FRAME stay out."""
     if camera.movement in (CameraMovement.STATIC, CameraMovement.SPLIT_FRAME):
         return None
     frames = max(frames, 1)
     last_frame = max(frames - 1, 1)
 
     if camera.movement == CameraMovement.PUNCH_IN:
-        return build_punch_in_expression(camera, frames=frames)
+        return build_punch_in_expression(camera, frames=frames, focal=focal)
 
     if camera.movement in (
         CameraMovement.SLOW_ZOOM,
@@ -107,10 +223,11 @@ def build_zoompan_expression(camera: Camera, *, frames: int) -> ZoompanExpressio
             if zooming_out
             else f"min(zoom+{step:.8f},{max_zoom:.6f})"
         )
+        x_expr, y_expr = _focal_xy_exprs(focal)
         return ZoompanExpression(
             zoom_expr=zoom_expr,
-            x_expr="iw/2-(iw/zoom/2)",
-            y_expr="ih/2-(ih/zoom/2)",
+            x_expr=x_expr,
+            y_expr=y_expr,
         )
 
     if camera.movement == CameraMovement.PAN:
@@ -121,7 +238,8 @@ def build_zoompan_expression(camera: Camera, *, frames: int) -> ZoompanExpressio
         # from the right side of the image toward the left); anything
         # else (RIGHT, or an undirected/IN/OUT pan, which is not a
         # meaningful combination but must never crash) defaults to a
-        # left-to-right pan.
+        # left-to-right pan. Focal deliberately does NOT retarget PAN x
+        # (OQ-2): the directional pan is the motion.
         left_to_right = camera.direction != CameraDirection.LEFT
         progress = f"(on/{last_frame})" if left_to_right else f"(1-on/{last_frame})"
         x_expr = f"(iw-iw/{pan_zoom:.6f})*{progress}"
@@ -164,7 +282,11 @@ def punch_in_frame_offsets(
 
 
 def build_punch_in_expression(
-    camera: Camera, *, frames: int, num_punches: int = 2
+    camera: Camera,
+    *,
+    frames: int,
+    num_punches: int = 2,
+    focal: tuple[float, float] | None = None,
 ) -> ZoompanExpression | None:
     """A HARD, STEPPED zoom-in - held constant, then snapping to a higher
     level at evenly-spaced frame offsets - as opposed to
@@ -221,8 +343,9 @@ def build_punch_in_expression(
         zoom_expr = f"if(lt(on,{punch_frames[i]}),{levels[i - 1]:.6f},{zoom_expr})"
     zoom_expr = f"if(lt(on,{punch_frames[0]}),1.0,{zoom_expr})"
 
+    x_expr, y_expr = _focal_xy_exprs(focal)
     return ZoompanExpression(
         zoom_expr=zoom_expr,
-        x_expr="iw/2-(iw/zoom/2)",
-        y_expr="ih/2-(ih/zoom/2)",
+        x_expr=x_expr,
+        y_expr=y_expr,
     )

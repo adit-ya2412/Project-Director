@@ -119,6 +119,8 @@ from app.assets.constraint_check import (
 )
 from app.assets.cost import budget_cap_cents_for, check_budget, total_project_spend_cents
 from app.assets.depiction_check import check_candidate_plausibility
+from app.assets.focal import persist_vision_focal
+from app.assets.focal_check import locate_subject_focal
 from app.assets.ranking import rank_candidates, reuse_gaps_s, reuse_window_s
 from app.assets.relevance import candidate_relevance, passes_relevance_gate
 from app.assets.thumbnails import cached_video_frame, is_video_file, shot_frame_cache_path
@@ -1324,6 +1326,7 @@ class ResolveAssetsStep:
                 except PermanentError:
                     continue
 
+                vision_focal: tuple[float, float] | None = None
                 if not checked_top_candidate and not is_video_candidate:
                     checked_top_candidate = True
                     if not candidate.entity_curated:
@@ -1338,9 +1341,33 @@ class ResolveAssetsStep:
                         )
                         if verdict.confidently_wrong:
                             break
+                        # OQ-2 (re-cut 2026-08-29): a SECOND call, on a
+                        # stronger model. It used to ride along on the
+                        # verdict above, whose cheap model returned a
+                        # defaulted (0.5, 0.5) for 11 of 12 real assets -
+                        # indistinguishable from a real centre answer, and
+                        # written to disk as one. `None` here means "no
+                        # usable answer"; the sidecar below records that
+                        # honestly instead of inventing a centre.
+                        vision_focal = await locate_subject_focal(
+                            provider=vision_provider,
+                            llm_call_repo=llm_call_repo,
+                            project_id=project_uuid,
+                            image=content,
+                            image_content_type=mime_type_for_extension(ext),
+                            shot_id=shot.id,
+                        )
 
                 path = project_dir / "assets" / f"{rank_result.content_hash}.{ext}"
                 path.write_bytes(content)
+                if vision_focal is not None:
+                    persist_vision_focal(
+                        project_dir / "assets",
+                        rank_result.content_hash,
+                        focal_x=vision_focal[0],
+                        focal_y=vision_focal[1],
+                        shot_id=shot.id,
+                    )
                 found_by = (
                     rung.entity_provider_name
                     if candidate.entity_curated and rung.entity_provider_name is not None

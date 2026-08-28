@@ -61,6 +61,25 @@ class Settings(BaseSettings):
     # check, not creative judgement, so a cheap real vision-capable model
     # is the right default rather than reusing the planning model's.
     openai_vision_model: str = "gpt-4o-mini"
+    # OQ-2 / output_quality_pass.md §14 (2026-08-29): subject LOCATION is
+    # a separate, harder question than the A30a plausibility gate and gets
+    # its own model. Measured on real assets: gpt-4o-mini put the aim on
+    # the kart instead of the driver, on the wrong car of two, and on
+    # empty track beside the pack; gpt-5.5 got all three right. The gate
+    # itself stays on `openai_vision_model` because A30a's false-accept /
+    # false-reject balance was calibrated twice against that model - a
+    # silent model swap underneath it would re-open that calibration.
+    openai_focal_model: str = "gpt-5.5"
+    # Longest edge the focal call sends. 97% of that call's input tokens
+    # were the image, and the answer is a normalised coordinate, so full
+    # resolution bought nothing: measured across five sizes on real
+    # assets, answer drift vs the full-size answer is FLAT from 1024 down
+    # to 512 (0.077 / 0.074 / 0.084) and only degrades at 384 (0.133).
+    # 512 costs 10% of the tokens full size did. See output_quality_pass.md
+    # §14.7. ⚠ Deliberately NOT applied to `check_depiction`: that gate's
+    # accept/reject balance was calibrated (A30a) against full-size images
+    # on gpt-4o-mini, and changing what it sees re-opens that calibration.
+    focal_image_max_px: int = 512
     # Hard cap on generations per shot (M6.5, A13): attempt 0 (original
     # prompt) + up to 2 bounded retries (revised prompt/same seed, then
     # revised prompt/varied seed) before a constraint-violating shot is
@@ -259,6 +278,21 @@ class Settings(BaseSettings):
     # host fontconfig - a fallback stack is disqualified under I5, since
     # libass's fallback resolution is platform-dependent.
     caption_font: str = "Noto Sans Devanagari"
+
+    # OQ-1a (output_quality_pass.md §4.1, 2026-08-28): final-mix loudness
+    # target via two-pass linear loudnorm. −16 LUFS / −1.0 dBTP is a
+    # short-form starting default awaiting a human listen — not an
+    # ear-signed target, and not a per-format split. Kill switch
+    # `loudness_normalize` leaves the mux unnormalized when False.
+    loudness_normalize: bool = True
+    loudness_target_lufs: float = -16.0
+    loudness_true_peak_db: float = -1.0
+
+    # OQ-1c (output_quality_pass.md §4.3): per-scene narration gain match
+    # to the mean of measurable scenes' integrated LUFS, applied before
+    # concat. Flattens scene-boundary level jumps; not a second absolute
+    # LUFS target (OQ-1a owns the mix). Kill switch leaves concat as-is.
+    narration_level_match: bool = True
 
     # Text cards (motion_new_styles_and_long_form_videos.md §2.6, Tier 2,
     # 2026-08-17) - a per-shot structural title/heading overlay, gated on

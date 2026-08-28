@@ -29,14 +29,18 @@ _RENDER_SETTINGS = RenderSettings(
 
 
 async def _mean_volume_db(path: Path, *, start: float, duration: float) -> float:
+    # `-ss` before `-i`: on ffmpeg 9, `-ss` after `-i` with volumedetect
+    # does not reliably seek before analysis, which falsely flat-lines
+    # mid-timeline duck windows (OQ-1b gap test). Input-side seek matches
+    # atrim-based probes on WAV/AAC here.
     args = [
         settings.ffmpeg_binary,
-        "-i",
-        str(path),
         "-ss",
         str(start),
         "-t",
         str(duration),
+        "-i",
+        str(path),
         "-af",
         "volumedetect",
         "-f",
@@ -84,6 +88,38 @@ async def test_ducked_bed_is_quieter_during_the_speaking_interval(tmp_path):
     assert bed_volume - duck_volume > 8.0, (
         f"expected the bed to measure louder than the duck window by roughly the "
         f"configured 14dB gap; got bed={bed_volume}dB duck={duck_volume}dB"
+    )
+
+
+async def test_ducked_bed_is_louder_in_gap_between_two_speech_ducks(tmp_path):
+    """OQ-1b: a 1.2 s hole between two ducks must release the bed — gap
+    mean volume louder than inside either duck window (clear of the
+    80 ms ramps and the 1 s boundary fades)."""
+    music_path = tmp_path / "music.mp3"
+    await _make_sine_mp3(music_path, 10.0)
+
+    # Ducks [1.5, 2.5] and [3.7, 4.7] — gap 1.2 s. Fades occupy [0,1]
+    # and ~[7,8] on an 8 s bed.
+    bed_path = tmp_path / "bed_gap.m4a"
+    await build_ducked_bed(
+        music_path,
+        video_duration=8.0,
+        intervals=[(1.5, 2.5), (3.7, 4.7)],
+        output_path=bed_path,
+        settings=_RENDER_SETTINGS,
+        bed_gain_db=-6.0,
+        duck_gain_db=-20.0,
+    )
+
+    duck_a = await _mean_volume_db(bed_path, start=1.8, duration=0.4)
+    gap = await _mean_volume_db(bed_path, start=2.85, duration=0.4)
+    duck_b = await _mean_volume_db(bed_path, start=4.0, duration=0.4)
+
+    assert gap - duck_a > 8.0, (
+        f"expected gap louder than duck_a by ~14 dB; gap={gap}dB duck_a={duck_a}dB"
+    )
+    assert gap - duck_b > 8.0, (
+        f"expected gap louder than duck_b by ~14 dB; gap={gap}dB duck_b={duck_b}dB"
     )
 
 
@@ -174,3 +210,67 @@ async def test_mux_music_loops_a_short_track_to_cover_the_full_video(tmp_path):
     )
 
     assert _stream_duration(output_path, "audio") > 5.5
+
+
+async def _make_near_silent_mp3(path: Path, duration_s: float) -> None:
+    """Sine at −60 dB so bed energy cannot hide amix attenuation."""
+    args = [
+        settings.ffmpeg_binary,
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        f"sine=frequency=220:duration={duration_s}:sample_rate=44100",
+        "-af",
+        "volume=-60dB",
+        "-ar",
+        "44100",
+        "-b:a",
+        "128k",
+        "-c:a",
+        "libmp3lame",
+        str(path),
+    ]
+    process = await asyncio.create_subprocess_exec(
+        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    _, stderr = await process.communicate()
+    if process.returncode != 0:
+        raise RuntimeError(stderr.decode(errors="replace"))
+
+
+async def test_mux_music_does_not_attenuate_narration_under_silent_bed(tmp_path):
+    """OQ-1d: amix default normalize=1 scaled each input by 1/n (~−6 dB).
+    With normalize=0, narration+near-silent bed must match narration-only
+    loudness within 1.5 dB, and audio still covers the video (longest)."""
+    silent_path = tmp_path / "silent.mp4"
+    await _make_silent_video(silent_path, 4.0)
+
+    narration_path = tmp_path / "narration.mp3"
+    await _make_sine_mp3(narration_path, 4.0)
+
+    narrated_path = tmp_path / "narrated.mp4"
+    await mux_narration(silent_path, [narration_path], narrated_path, _RENDER_SETTINGS)
+
+    bed_path = tmp_path / "near_silent_bed.mp3"
+    await _make_near_silent_mp3(bed_path, 4.0)
+
+    mixed_path = tmp_path / "mixed.mp4"
+    await mux_music(
+        narrated_path,
+        bed_path,
+        [narration_path],
+        mixed_path,
+        _RENDER_SETTINGS,
+        bed_gain_db=-6.0,
+        duck_gain_db=-20.0,
+    )
+
+    narr_only = await _mean_volume_db(narrated_path, start=0.5, duration=2.0)
+    mixed = await _mean_volume_db(mixed_path, start=0.5, duration=2.0)
+    assert abs(mixed - narr_only) < 1.5, (
+        f"expected |Δ mean_volume| < 1.5 dB after normalize=0; "
+        f"got narr_only={narr_only}dB mixed={mixed}dB delta={mixed - narr_only}dB"
+    )
+    assert _stream_duration(mixed_path, "video") > 3.5
+    assert _stream_duration(mixed_path, "audio") > 3.5

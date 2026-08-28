@@ -54,9 +54,15 @@ def _fingerprint(**overrides) -> str:
         "music_bed_gain_db": -14.0,
         "music_duck_gain_db": -20.0,
         "music_gain_offset_db": 0.0,
+        "music_amix_normalize": 0,
+        "loudness_normalize": True,
+        "loudness_target_lufs": -16.0,
+        "loudness_true_peak_db": -1.0,
+        "narration_level_match": True,
         "burn_captions": False,
         "caption_font_hash": None,
         "cue_list_hash": None,
+        "duck_envelope_hash": None,
         "watermark_enabled": False,
         "watermark_asset_hash": None,
         "watermark_params_hash": None,
@@ -69,6 +75,7 @@ def _fingerprint(**overrides) -> str:
         "sfx_normalize_target_db": -8.0,
         "sfx_kind_gain_overrides_db": {},
         "ffmpeg_version": "ffmpeg version 9.0",
+        "shot_focal": {"sh_01": ""},
     }
     kwargs.update(overrides)
     return compute_render_fingerprint(**kwargs)
@@ -200,6 +207,70 @@ def test_music_gain_offset_changes_the_fingerprint():
     assert _fingerprint(music_gain_offset_db=0.0) != _fingerprint(music_gain_offset_db=-6.0)
 
 
+def test_music_amix_normalize_changes_the_fingerprint():
+    """OQ-1d: flipping amix normalize 0 vs 1 changes mixed samples, so it
+    must miss every cached pre-fix mix (R2)."""
+    assert _fingerprint(music_amix_normalize=0) != _fingerprint(music_amix_normalize=1)
+
+
+def test_music_amix_normalize_is_in_the_fingerprint_payload():
+    """Fails if the payload key is removed while the kwarg still exists —
+    inspect the source so a silent drop cannot regress."""
+    import inspect
+
+    from app.renderer.fingerprint import compute_render_fingerprint
+
+    source = inspect.getsource(compute_render_fingerprint)
+    assert '"music_amix_normalize"' in source
+
+
+def test_loudness_normalize_changes_the_fingerprint():
+    """OQ-1a: toggling the loudness pass changes output samples (R2)."""
+    assert _fingerprint(loudness_normalize=True) != _fingerprint(loudness_normalize=False)
+
+
+def test_loudness_target_lufs_changes_the_fingerprint():
+    assert _fingerprint(loudness_target_lufs=-16.0) != _fingerprint(loudness_target_lufs=-14.0)
+
+
+def test_loudness_true_peak_db_changes_the_fingerprint():
+    assert _fingerprint(loudness_true_peak_db=-1.0) != _fingerprint(loudness_true_peak_db=-2.0)
+
+
+def test_loudness_lra_is_in_the_fingerprint_payload():
+    import inspect
+
+    from app.renderer.fingerprint import compute_render_fingerprint
+
+    source = inspect.getsource(compute_render_fingerprint)
+    assert '"loudness_lra"' in source
+
+
+def test_loudness_target_lufs_is_in_the_fingerprint_payload():
+    """Fails if the payload key is removed while the kwarg still exists."""
+    import inspect
+
+    from app.renderer.fingerprint import compute_render_fingerprint
+
+    source = inspect.getsource(compute_render_fingerprint)
+    assert '"loudness_target_lufs"' in source
+
+
+def test_narration_level_match_changes_the_fingerprint():
+    """OQ-1c: toggling per-scene narration gain match changes samples (R2)."""
+    assert _fingerprint(narration_level_match=True) != _fingerprint(narration_level_match=False)
+
+
+def test_narration_level_match_is_in_the_fingerprint_payload():
+    """Fails if the payload key is removed while the kwarg still exists."""
+    import inspect
+
+    from app.renderer.fingerprint import compute_render_fingerprint
+
+    source = inspect.getsource(compute_render_fingerprint)
+    assert '"narration_level_match"' in source
+
+
 def test_burn_captions_toggle_changes_the_fingerprint():
     """A caption-off and caption-on render of the identical Timeline must
     never collide on one cache entry (docs/14_Captions_Plan.md §6/§8.5)."""
@@ -222,6 +293,23 @@ def test_different_cue_list_changes_the_fingerprint():
     assert _fingerprint(burn_captions=True, cue_list_hash="cues-a") != _fingerprint(
         burn_captions=True, cue_list_hash="cues-b"
     )
+
+
+def test_different_duck_envelope_changes_the_fingerprint():
+    """OQ-1b: alignment-derived duck windows are not covered by scene
+    structure; changing the envelope hash must miss the cache (R2)."""
+    assert _fingerprint(duck_envelope_hash="duck-a") != _fingerprint(duck_envelope_hash="duck-b")
+    assert _fingerprint(duck_envelope_hash=None) != _fingerprint(duck_envelope_hash="duck-a")
+
+
+def test_duck_envelope_hash_is_in_the_fingerprint_payload():
+    """Fails if the payload key is removed while the kwarg still exists."""
+    import inspect
+
+    from app.renderer.fingerprint import compute_render_fingerprint
+
+    source = inspect.getsource(compute_render_fingerprint)
+    assert '"duck_envelope_hash"' in source
 
 
 def test_watermark_toggle_changes_the_fingerprint():
@@ -300,6 +388,47 @@ def test_sfx_kind_gain_override_changes_the_fingerprint():
     assert _fingerprint(sfx_kind_gain_overrides_db={}) != _fingerprint(
         sfx_kind_gain_overrides_db={"stinger": -3.0}
     )
+
+
+def test_swapping_two_shots_focals_changes_the_fingerprint():
+    """OQ-2 / R16: focal is an assignment keyed by shot_id — swapping
+    two shots' focals must miss even with identical asset hashes."""
+    shot_a = Shot(id="sh_a", order=0, intent=ShotIntent.EXPLAIN, duration_s=1.0)
+    shot_b = Shot(id="sh_b", order=1, intent=ShotIntent.EXPLAIN, duration_s=1.0)
+    scene = Scene(id="sc_01", order=0, title="Scene", duration_s=2.0, shots=[shot_a, shot_b])
+    two = Timeline(
+        timeline_id="t1",
+        project_id="p1",
+        version=1,
+        produced_by=ProducedBy.HUMAN,
+        status=TimelineStatus.DRAFT,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        scenes=[scene],
+    )
+    hashes = {"sh_a": "hash-a", "sh_b": "hash-b"}
+    assigned = {"sh_a": "0.200000,0.800000", "sh_b": "0.700000,0.300000"}
+    swapped = {"sh_a": "0.700000,0.300000", "sh_b": "0.200000,0.800000"}
+    assert _fingerprint(timeline=two, asset_content_hashes=hashes, shot_focal=assigned) != (
+        _fingerprint(timeline=two, asset_content_hashes=hashes, shot_focal=swapped)
+    )
+
+
+def test_empty_focal_differs_from_resolved_centre():
+    """Unresolved (`\"\"`) must not collide with an explicit centre
+    resolve, so a later sidecar write cannot cache-HIT the gap."""
+    assert _fingerprint(shot_focal={"sh_01": ""}) != _fingerprint(
+        shot_focal={"sh_01": "0.500000,0.500000"}
+    )
+
+
+def test_shot_focal_is_in_the_fingerprint_payload():
+    """Fails if the payload key is removed while the kwarg still exists."""
+    import inspect
+
+    from app.renderer.fingerprint import compute_render_fingerprint
+
+    source = inspect.getsource(compute_render_fingerprint)
+    assert '"shot_focal"' in source
 
 
 def test_bookkeeping_fields_never_affect_the_fingerprint():

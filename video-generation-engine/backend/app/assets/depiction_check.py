@@ -82,7 +82,8 @@ from app.repositories.llm_call_repository import LlmCallRepository
 _NOT_CONFIDENTLY_WRONG = DepictionVerdict(confidently_wrong=False, reason="")
 
 _AGENT_NAME = "depiction_check"
-_PROMPT_VERSION = "v2"
+# v3: same A30a plausibility question, plus OQ-2 subject focal_x/focal_y.
+_PROMPT_VERSION = "v3"
 
 
 async def check_candidate_plausibility(
