@@ -1,6 +1,6 @@
 # Output Quality Pass — Audio Finishing, Subject-Aware Camera, Edit Rhythm, and the Review Harness
 
-**Status:** OQ-0a + OQ-0b + OQ-1d built; OQ-1a + OQ-1b + OQ-1c built awaiting listen; OQ-2 built awaiting watch. §12 review findings RV-Q1–Q8 **fixed 2026-08-29** (see P-OQ-RV). OQ-3 / remaining OQ-4 design-only.
+**Status:** OQ-0a + OQ-0b + OQ-1d built; OQ-1a + OQ-1b + OQ-1c built awaiting listen; OQ-2 built awaiting watch. §12 review findings RV-Q1–Q8 **fixed 2026-08-29** (see P-OQ-RV). RV-Q10 **built 2026-08-29** (P-OQ-RV-Q10) and **reviewed — see §16: RV-Q11 is blocking, the sliced audio is 8-20 ms longer per scene than its own alignment says. Do NOT re-narrate for the listen until it is fixed.** OQ-3 / remaining OQ-4 design-only.
 ⚠ **§14 re-cuts OQ-2: the focal question was being asked of a model that cannot answer it (gpt-4o-mini), and a schema default hid that. Now its own call on gpt-5.5.**
 ⚠ **§13 is the first measurement against a REAL project — it overturns three conclusions and adds RV-Q10, the only audible defect a human has actually reported. Read it before §12.**
 ⚠ **§2.3 and §4.1 were corrected 2026-08-29 against measured ffmpeg behaviour — the original text was wrong. See §12.6.**
@@ -1472,6 +1472,77 @@ correctly misses cache.
 "near-absent", and that diagnosis predates both the detector fix and this
 depth finding.
 
+### P-OQ-RV-Q10 — batch contiguous scenes into one TTS request (2026-08-29)
+
+**Scope executed:** §15.2 / §13.5 RV-Q10 only. No voice-settings pin, no
+join crossfade, no cache invalidation of already-synthesised rows, no
+OQ-3, no `cost_cents` work.
+
+**Changes:**
+- `backend/app/timeline/narration_batch.py` — `plan_tts_batches` packs
+  contiguous unique-hash misses up to the model character cap; a cached
+  hash in the middle flushes (never overwrite a request-keyed row);
+  duplicate texts in the same timeline are unique-by-hash and do not
+  break the run. `split_batched_alignment` requires the raw alignment to
+  equal the joined request text, drops the `\n` joiner from each scene's
+  arrays (so `Shot.narration_span` still indexes `narration_text`), and
+  stretches the previous scene's last-character end to the next scene's
+  first-character start so the newline pause is in both the sliced mp3
+  and `narration_fit`'s last-shot duration.
+- `backend/app/renderer/narration_slice.py` — `atrim` on decoded
+  samples, re-encode `libmp3lame` 44100/128k. Same concat-filter lesson
+  as `audio.py`: never byte-concat framed MP3.
+- `backend/app/workflow/steps/narration.py` — jobs are batches, not
+  single hashes. Tempo is applied to the whole batch, then split. Every
+  slice is cut before any row is inserted, so a mid-batch ffmpeg failure
+  cannot cache a half-join. Per-scene `{content_hash}.mp3` + sidecar +
+  DB row stay the render/fit contract.
+- `backend/app/providers/elevenlabs.py` — `tts_request_character_limit`
+  (eleven_v3 = 5000, the published cap); request timeout 60s → 300s
+  because a v3 batch can be ~5 min of audio.
+- `backend/app/providers/base.py` — `NarrationRequest.text` may be
+  several scenes joined by a newline; `scene_id` is the first scene
+  (tracing), not a cache key.
+- Tests: `tests/unit/workflow/test_narration_batch.py` (pure pack/split
+  + real-ffmpeg slice + FakeNarrationProvider round-trip);
+  `tests/unit/providers/test_elevenlabs.py` (published caps).
+  `tests/integration/test_narration_step.py` concurrency / sibling-
+  failure cases monkeypatch the cap to 1 so they still measure gather
+  behaviour, not the new default of one call per timeline.
+
+**Measured:**
+
+| case | before | after |
+|---|---|---|
+| 2 unique misses, cap 5000 | 2 TTS calls | 1 call, text `Hello\nWorld` |
+| cached hash between two misses | 2 calls (unchanged) | 2 calls — cache is not overwritten |
+| duplicate text A, A, C | 2 calls (A unique-by-hash, then C) | 1 call `Hello\nWorld`; second A reuses the first slice |
+| cap 10 on `Hello` / `World` / `!!` | 3 calls | 2 calls (`Hello`, then `World\n!!`) |
+| joined `Hi\nYo` at 10 chars/s | n/a | scene 1 audio `[0.00, 0.30)`, last-char end 0.30 (pause absorbed); scene 2 rebased to start at 0 |
+| ffmpeg `atrim` 0.500–1.500 of a 2.017 s sine | n/a | decoded slice ≈ 1.00 s (±80 ms MP3 padding) |
+| eleven_v3 published cap | per-scene, 44–305 chars | batches pack until **5000**; a 10-min Track C script (~8640 chars) is two requests, not 65 |
+
+**Verification:**
+```
+cd backend
+python -m pytest tests/unit/workflow/test_narration_batch.py tests/unit/workflow/test_narration_sidecar.py tests/unit/providers/test_elevenlabs.py tests/unit/timeline/test_narration_fit.py --noconftest -q
+```
+→ **51 passed.** Ruff clean (`--line-length 100`).
+
+**Effects / notes for the reviewer:** the content hash is still the
+per-scene *request*, not the audio bytes, so this does not fingerprint-
+MISS existing renders and does **not** re-narrate cached projects. The
+voice-switch on `1cdf55ac` stays until an N1 retry (or a new project).
+A cache hit in the middle of a timeline is a remaining join that can
+still switch — that is the cost of not overwriting another project's
+row. Track C's "per-scene is what makes long-form fit under the
+character cap" still holds: we pack *until* the cap, we do not send a
+whole 10-minute script as one v3 request.
+
+**What is NOT done:** re-narrate + listen on `1cdf55ac` (the only proof
+the timbre join is gone); pinning voice settings as a partial fix;
+crossfade at joins; invalidating existing narration rows.
+
 ---
 
 ## 11. Testing & DB safety — mandatory, binding on this plan
@@ -2350,6 +2421,16 @@ this is real work, not a flag.
 LEVEL jump, measured at 0.9 LUFS (inaudible). The audible defect is
 timbre, which gain-matching cannot touch.
 
+**Shipped shape (P-OQ-RV-Q10, 2026-08-29).** Contiguous uncached
+unique-hash scenes share one `/with-timestamps` call, joined by `\n`,
+packed until `tts_request_character_limit` (5000 on `eleven_v3`). The
+step still writes one `{content_hash}.mp3` + sidecar + DB row per
+scene; `narration_fit` is unchanged. Cached hashes are never
+overwritten — a hit in the middle of a timeline breaks the batch.
+Existing projects keep their old per-scene audio until N1 retry.
+⚠ Listen on a re-narrated `1cdf55ac` is still required; this is the
+mechanism, not the ear-sign-off.
+
 ### 15.3 🟡 Populate `cost_cents` — every LLM call reports 0
 
 `LlmCallRepository.insert` takes `cost_cents: int = 0` and **no caller
@@ -2430,3 +2511,129 @@ is worth recording so it is not re-litigated:
 model and it produces a comparable crosshair sheet. Once a key exists,
 evaluating a candidate is ~30 minutes. That is the cheap path if volume
 ever makes $0.66/video material.
+
+---
+
+## 16. Review of P-OQ-RV-Q10 (batched TTS) — 2026-08-29
+
+Review of the scene-batching work built against §15.2. Findings numbered
+`RV-Q11+`, continuing §12's sequence.
+
+**Method.** Diffs read in full; the duration claim was not taken on trust
+but measured, by slicing a real narration mp3 from `1cdf55ac` into four
+pieces through the production `slice_mp3` and decoding each to PCM.
+All 29 new tests pass — which is part of RV-Q12.
+
+### 16.0 Verified good
+
+- **The slices tile the batch exactly.** `audio_end_i ==
+  audio_start_{i+1}` by construction (each non-last scene ends where the
+  next scene's first character starts), so concatenating every slice
+  reproduces the batch with no gap and no overlap. The first slice keeps
+  its leading silence (`audio_start = 0.0`), the last absorbs the
+  trailing padding via `audio_duration_s`.
+- **`char_ends[-1]` now equals the slice's own duration exactly.** This
+  incidentally *strengthens* §12.5's open concern: captions and ducking
+  both advance their concat clock by `char_ends[-1]` and assume it
+  matches real file duration. For batched scenes that is now true by
+  construction rather than by luck.
+- Guards in the right places: joined-text mismatch, parallel-array length
+  mismatch, scene overlap (`next_first < last_abs`), empty text,
+  non-positive audio window.
+- Cache-flush and duplicate-hash semantics are documented in the module
+  docstring rather than left implicit.
+
+### 16.1 🔴 RV-Q11 — BLOCKING: the MP3 re-encode makes every sliced scene the wrong length
+
+`slice_mp3` cuts with `atrim` (sample-exact on decoded PCM) and then
+**re-encodes to MP3**, which re-quantises to 1152-sample frames.
+Measured on a real narration file, cut into four pieces:
+
+| slice | MP3 (as built) | PCM/WAV |
+|---|---|---|
+| 0 | **+20.11 ms** | +0.01 ms |
+| 1 | **+10.18 ms** | +0.01 ms |
+| 2 | **+7.62 ms** | −0.01 ms |
+| **total across 4** | **+29.35 ms** | ~0 |
+
+⚠ **The alignment is exact and the audio is not.** The split rebases from
+the batch perfectly, so `narration_fit` derives shot durations saying
+scene *i* is X seconds while the file on disk is X + 8–20 ms.
+`mux_narration` concatenates the real files, so the voice **progressively
+falls behind the picture** — ~10 ms per batched scene, ~90 ms on this
+9-scene project, several hundred ms on long-form. Captions ride the
+alignment clock, so they drift against the audio too.
+
+This is exactly the failure `app/renderer/audio.py`'s docstring exists to
+prevent (it records +145 ms over five boundaries and the same "the voice
+slowly falls behind" symptom), and exactly the invariant §2.3 states.
+
+**Fix, measured not theorised:** write the slices as PCM/WAV. Sample-exact
+at ±0.01 ms. Costs ~5× the bytes (759 kB vs 139 kB for 8.8 s) and two
+path literals (`narration.py:387`, `:514`). Nothing downstream cares
+about the container — `mux_narration`'s concat filter decodes to PCM
+anyway, which is the whole reason it uses the filter and not the demuxer.
+
+*(The last slice showed −24 ms in both codecs, but that is an artifact of
+the test asking for `end = whole-file decode duration`; production clamps
+the last slice to the probed duration.)*
+
+### 16.2 🔴 RV-Q12 — the test was written to tolerate the defect
+
+```python
+# MP3 padding is a fraction of a frame; the cut is 1.000s of PCM.
+assert _ffprobe_duration(out) == pytest.approx(1.0, abs=0.08)
+```
+
+An **80 ms** tolerance on a defect that measures 20 ms, and only ONE
+slice is asserted when the entire failure mode is accumulation across
+several. The comment shows the padding was known and absorbed rather
+than measured.
+
+⚠ Same shape as this repo's own recorded lesson — `test_music.py`'s
+header: *"a new input got a fingerprint test but not a behaviour test"*.
+
+**The test that catches it:** slice a file into N pieces and assert the
+**sum** equals the original within ~1 ms.
+
+### 16.3 🟡 RV-Q13 — editing one scene un-does the feature for that scene
+
+`plan_tts_batches` flushing on a cached hash is correct. But
+`scripts/edit_narration_text.py` exists: change one scene's words, its
+hash changes, and it becomes the ONLY miss in the timeline — so it is
+synthesised **alone**, with a fresh performance, while its neighbours
+keep their batched one.
+
+That reproduces the exact voice-character discontinuity RV-Q10 exists to
+remove, precisely when a human edits a line. At minimum it belongs in the
+docstring; the honest fix is re-batching the edited scene with its
+neighbours, which means discarding their cached audio.
+
+### 16.4 🟡 RV-Q14 — this change and §15.1's ducking detector now share a field
+
+The joiner pause is absorbed into the previous scene's **last character**
+(`rebased_ends[-1] = next_first - audio_start`), so a scene's final
+character — normally `.` or `।` — now carries the inter-scene pause and
+becomes long.
+
+But §15.1's detector only releases the bed for characters that are
+`isspace()`. A stretched `.` is not whitespace, so **the longest pauses
+in the video — the scene joins — will never swell.**
+
+Not a regression (they did not swell before either), but this change
+creates the data that would make them the best swells available, and it
+introduces a long-non-whitespace character shape the detector was never
+designed against. Worth a test either way now that two features read the
+same field for different purposes.
+
+### 16.5 Recommended order
+
+1. **RV-Q11** — blocking. One codec change plus two path literals.
+2. **RV-Q12** — the sum-of-slices test, which is what proves RV-Q11 fixed.
+3. **RV-Q14** — decide whether scene joins should swell, and test the
+   stretched-last-character shape either way.
+4. **RV-Q13** — docstring now, re-batching later if it bites.
+
+⚠ **Do not re-narrate `1cdf55ac` for the listen until RV-Q11 is fixed** —
+the audio would be measurably out of sync with the picture, and the
+listen would be judging the wrong thing.
