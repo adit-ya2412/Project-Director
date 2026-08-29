@@ -2843,7 +2843,52 @@ while the fix itself (PCM has no frame grid to re-quantise to, by
 construction) stands regardless. Re-narration for the listen is no
 longer blocked on this finding.
 
-### 16.6 🔴 RV-Q15 — batching makes v3 speak 25–32% slower, so the video gets a third longer
+### 16.6 ⚪ RV-Q15 — ~~batching makes v3 speak 25–32% slower~~ **WITHDRAWN: the measurement skipped a production step**
+
+⚠⚠ **WITHDRAWN 2026-08-29, same day, on the user's challenge.** The user
+asked how a batch synthesised at `speed=1.4` could be compared against an
+original also at 1.4 — and the answer is that **`speed` is never sent to
+the API at all.** `narration_tempo.py` applies it afterwards with ffmpeg
+`atempo`, because v3's own speed parameter was measured non-functional
+(no monotonic relationship between requested value and duration). The
+throwaway script called `provider.synthesize()` and used the raw bytes,
+**skipping `apply_narration_tempo` entirely** — so it compared un-sped
+audio against the project's already-sped files.
+
+| | raw batch | after the atempo step | vs original |
+|---|---|---|---|
+| batch 1 | 108.32 s | **77.39 s** | **101%** |
+| batch 2 | 102.88 s | **73.49 s** | **96%** |
+
+**Batching does not change the pacing.** 101% and 96% sit inside v3's own
+call-to-call variance. Nothing below the withdrawal notice should be
+acted on; it is kept only as the record of how the claim was produced.
+
+⚠ **The corrected join-pause figures** (RV-Q14's actual input, measured
+after tempo): **831, 657, 486, 600, 686, 714, 771, 534 ms — mean 660 ms.**
+Still comfortably longer than the 300–580 ms within-scene pauses, so
+RV-Q14's question stands; the earlier 680–1164 ms figures were the same
+un-sped artifact and are wrong.
+
+#### ⚠ The meta-lesson — this is the SECOND withdrawal in a row
+
+RV-Q11 was withdrawn because its measurement decoded through a pipe
+instead of a file path. RV-Q15 because its measurement skipped
+`apply_narration_tempo`. Both were ad-hoc scripts that reimplemented part
+of the production path and diverged from it in one invisible way, and
+both produced a confident 🔴 finding with a table of numbers.
+
+**Rule for anyone measuring this system: drive the real code path, or
+state explicitly which steps you bypassed and why they cannot matter.**
+A number is not evidence if the harness that produced it is not the thing
+that runs in production. Both of these survived review-by-reasoning and
+died to one question from a human who knew the pipeline.
+
+---
+
+#### Original claim, retained for the record
+
+
 
 Found while producing the RV-Q14 listening test, not by review. **This is
 a bigger problem than the defect RV-Q10 fixes.**
