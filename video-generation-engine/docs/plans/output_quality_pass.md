@@ -2842,3 +2842,62 @@ be reproduced via a literal PCM-sample-count decode in this environment
 while the fix itself (PCM has no frame grid to re-quantise to, by
 construction) stands regardless. Re-narration for the listen is no
 longer blocked on this finding.
+
+### 16.6 🔴 RV-Q15 — batching makes v3 speak 25–32% slower, so the video gets a third longer
+
+Found while producing the RV-Q14 listening test, not by review. **This is
+a bigger problem than the defect RV-Q10 fixes.**
+
+Nine scenes of `1cdf55ac` synthesised as ONE take (1371 chars, one call,
+well under v3's 5000 limit), twice, against the nine per-scene files the
+project already has:
+
+| scene | old | batch 1 | batch 2 | speech-only vs old |
+|---|---|---|---|---|
+| sc_01 | 8.81s | 13.04s | 12.72s | 148% / 144% |
+| sc_02 | 7.89s | 10.04s | 9.38s | 127% / 119% |
+| sc_03 | 11.66s | 14.36s | 13.55s | 123% / 116% |
+| sc_04 | 8.53s | 11.96s | 11.96s | 140% / 140% |
+| sc_05 | 11.33s | 15.08s | 14.19s | 133% / 125% |
+| sc_06 | 8.92s | 12.96s | 12.08s | 145% / 135% |
+| sc_07 | 12.40s | 14.76s | 13.56s | 119% / 109% |
+| sc_08 | 2.64s | 3.00s | 2.94s | 113% / 111% |
+| sc_09 | 4.13s | 5.65s | 5.07s | 137% / 123% |
+| **total** | **76.31s** | **100.85s** | **95.44s** | **132% / 125%** |
+
+⚠ **Those figures already EXCLUDE the join pauses** (7.39s / 7.04s). The
+full takes are 108.24s and 102.48s against 76.31s — **34–42% longer video
+from identical text.** Every scene is slower, in both samples.
+
+**Confounds ruled out.** `styles.py` warns that v3's "own natural pacing
+varies call to call", so one sample would prove nothing — hence two, and
+they agree (sc_04 landed on 140% both times). And the original could have
+been synthesised at a different `speed`: recovered it by brute-forcing
+`compute_narration_content_hash` against the stored hashes, which is
+exact because speed is IN the key. Original = `speed=1.4, language=hi` —
+**identical parameters to the batch.** The comparison is clean.
+
+**Why it matters more than the voice switch.**
+- `retention_fast`'s shot durations derive from narration, so every shot
+  grows ~30%. Q5 validated a 3.5s dead-stop ceiling by ear; a 30% stretch
+  pushes shots through it.
+- The pre-flight length estimate (Q8's measured 14.4 chars/sec) is wrong
+  by a quarter for any batched project — it would under-predict runtime.
+- A 76s reel becomes 102–108s. For short-form that is a format change,
+  not a tuning detail.
+
+**Open, and cheap to answer:** does the slowdown scale with batch size?
+If two- or three-scene batches cost 5% instead of 30%, that is the sweet
+spot — most joins still share a performance, with the pacing mostly
+intact. Nine scenes in one call may simply be too much context. Measure
+before choosing between:
+
+1. small batches (if the effect scales),
+2. compensating `speed` per batch (⚠ speed is in the cache key and is
+   style-owned — this is not a free knob),
+3. re-tuning the pacing bands around the slower delivery,
+4. abandoning batching for §15.2's partial fix (pin voice settings), which
+   reduces the voice switch without touching pacing at all.
+
+⚠ **RV-Q10 must not ship on the strength of the voice-switch fix alone
+until this is settled.**
