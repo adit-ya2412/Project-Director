@@ -2803,7 +2803,54 @@ remove, precisely when a human edits a line. At minimum it belongs in the
 docstring; the honest fix is re-batching the edited scene with its
 neighbours, which means discarding their cached audio.
 
-### 16.4 🟡 RV-Q14 — this change and §15.1's ducking detector now share a field
+### 16.4 ⚪ RV-Q14 — ~~scene joins will never swell~~ **MOSTLY WRONG: right mechanism, wrong character**
+
+⚠ **CORRECTED 2026-08-29 by building the A/B it asked for.** The finding
+claimed the join pause is absorbed into the previous scene's last
+character, "normally `.` or `।`", which is not whitespace, so §15.1's
+detector would never release the bed there. The mechanism is right. The
+character is not: **every scene's `narration_text` in this project ends
+with `
+
+`**, so the stretched character IS whitespace and IS already
+released.
+
+Measured while building the demo: an A/B of joins-ducked vs
+joins-released differed by 0.94 s, not the 5.28 s the join pauses total —
+because both versions were already swelling at the joins. There was
+nothing to demonstrate.
+
+**Not entirely void:** a script whose scene text did NOT end with a
+trailing blank line would hit exactly what was described. It is a latent
+dependency on script formatting, not an active defect. Worth a test that
+pins the behaviour for a scene ending in `।` with no trailing newline.
+
+#### What the exercise did establish
+
+The user reported the batched narration "sounds slow" despite being the
+same length. Measured against the per-scene take:
+
+| | old (9 calls) | new (1 batch) |
+|---|---|---|
+| total | 76.31 s | 77.39 s |
+| actual speech | 61.19 s | **52.83 s** |
+| silence | 15.12 s (19.8%) | **24.55 s (31.7%)** |
+| silent stretches | 32 | 41 |
+
+⚠ **The words are 14% FASTER; there is simply 9.4 s more silence.**
+Perceived pace follows the rests, not the words — which is also why the
+same take was reported as *clearer*. Both observations, one cause.
+
+And with the music bed at the ear-signed 8 dB depth, dead air below
+−40 dB goes **24.55 s → 0.00 s**. User verdict: *"yes it fixed the silent
+issue"*. So the batched take's extra silence is not a pacing problem to
+solve in narration — it is space the bed already fills.
+
+---
+
+#### Original finding, retained for the record
+
+
 
 The joiner pause is absorbed into the previous scene's **last character**
 (`rebased_ends[-1] = next_first - audio_start`), so a scene's final
