@@ -145,10 +145,21 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
         min_shot_duration_s_override=0.8,
         max_shot_duration_s_override=3.5,
         narration_speed=1.4,
-        # §5.2: driving, barely ducked. Offsets from the measured
-        # archival mix (-14 / -20), not a new listening pass.
+        # §5.2 set these as offsets from the measured archival mix
+        # (-14 / -20), explicitly "not a new listening pass".
+        # ⚠ EAR-SIGNED 2026-08-29 (output_quality_pass.md §15.1): the duck
+        # went -14 -> -18. Once the pause detector actually worked, a 4 dB
+        # duck depth left the bed nothing to swell back into - the user's
+        # verdict on the fixed envelope at 4 dB was "works, but not much
+        # noticeable change". Four depths were rendered on real narration
+        # and compared by ear: 4 dB (too shallow), 8 dB (chosen), 12 dB
+        # and 14 dB (both "start to feel weird" - the music reads as
+        # absent under the voice rather than pushed back).
+        # The bed stays -10: in A/B/C the pause level is identical, so
+        # what the ear is judging is how far the music DROPS under speech,
+        # not how loud it returns.
         music_bed_gain_db=-10.0,
-        music_duck_gain_db=-14.0,
+        music_duck_gain_db=-18.0,
         # Decisions 5 + 5a (analysis.md, 2026-08-24): the WHOOSH layer is
         # OFF for this style - two punch-ins per ~1.75s shot meant one
         # clip played ~100 times per reel (A4/D3). Stinger and transition

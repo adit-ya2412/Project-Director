@@ -24,6 +24,7 @@ import pytest
 
 from app.renderer.captions import MIN_CUE_DURATION_S
 from app.renderer.music import (
+    DUCK_CHAR_PAUSE_S,
     DUCK_MERGE_THRESHOLD_S,
     DUCK_RAMP_S,
     DUCK_RAMP_STEPS,
@@ -104,6 +105,7 @@ def test_duck_merge_threshold_matches_captions():
 def test_speaking_intervals_splits_on_long_hole_merges_on_short():
     """1.2 s hole → two ducks; 0.2 s hole → one merged duck."""
     alignment = {
+        "characters": ["a", "b", "c", "d", "e"],
         "character_start_times_seconds": [0.0, 0.4, 1.8, 2.2, 2.5],
         # ends: 0–0.3, 0.4–0.6, then 1.8 (gap from 0.6 = 1.2 s) –2.0,
         # 2.2–2.35 (gap 0.2 s), 2.5–3.0
@@ -113,13 +115,45 @@ def test_speaking_intervals_splits_on_long_hole_merges_on_short():
     assert intervals == [(0.0, 0.6), (1.8, 3.0)]
 
 
+def test_speaking_intervals_splits_on_long_newline_not_inter_char_gap():
+    """§15.1: zero inter-character gaps; pause is a 0.40 s newline."""
+    alignment = {
+        "characters": ["h", "i", "\n", "b", "y"],
+        "character_start_times_seconds": [0.00, 0.05, 0.10, 0.50, 0.55],
+        "character_end_times_seconds": [0.05, 0.10, 0.50, 0.55, 0.60],
+    }
+    assert speaking_intervals_from_alignment([alignment]) == [(0.00, 0.10), (0.50, 0.60)]
+
+
+def test_long_spoken_character_is_not_a_pause_when_letters_are_present():
+    """A 0.5 s phoneme is speech; only whitespace that long releases the bed."""
+    alignment = {
+        "characters": ["a", "b"],
+        "character_start_times_seconds": [0.0, 0.1],
+        "character_end_times_seconds": [0.1, 0.6],
+    }
+    assert speaking_intervals_from_alignment([alignment]) == [(0.0, 0.6)]
+
+
+def test_duration_only_split_when_characters_array_absent():
+    """No `characters` key: any char longer than DUCK_CHAR_PAUSE_S is a pause."""
+    alignment = {
+        "character_start_times_seconds": [0.0, 0.1, 0.5],
+        "character_end_times_seconds": [0.1, 0.5, 0.6],
+    }
+    # middle char is 0.4 s > 0.30
+    assert speaking_intervals_from_alignment([alignment]) == [(0.0, 0.1), (0.5, 0.6)]
+
+
 def test_speaking_intervals_concat_clock_across_scenes():
     """Scene 1 starts at scene 0's last character_end."""
     scene0 = {
+        "characters": ["a", "b"],
         "character_start_times_seconds": [0.1, 0.5],
         "character_end_times_seconds": [0.4, 2.0],
     }
     scene1 = {
+        "characters": ["c", "d"],
         "character_start_times_seconds": [0.0, 0.5],
         "character_end_times_seconds": [0.4, 1.0],
     }
@@ -153,10 +187,12 @@ def test_none_then_scene_does_not_desync_clock():
 def test_scene_boundary_gap_narrower_than_two_ramps_merges():
     """RV-Q3: 50 ms between scenes would overlap 80 ms ramps."""
     scene0 = {
+        "characters": ["a"],
         "character_start_times_seconds": [0.0],
         "character_end_times_seconds": [2.0],
     }
     scene1 = {
+        "characters": ["b"],
         "character_start_times_seconds": [0.05],
         "character_end_times_seconds": [2.0],
     }
@@ -216,6 +252,7 @@ def test_ramp_guard_is_idempotent_for_already_merged_intervals():
 
 def test_speaking_intervals_does_not_duck_leading_silence():
     alignment = {
+        "characters": ["a"],
         "character_start_times_seconds": [0.5],
         "character_end_times_seconds": [1.5],
     }
@@ -261,15 +298,32 @@ def test_duck_envelope_hash_includes_merge_and_ramp_constants():
     base = duck_envelope_content_hash([(0.0, 1.0)])
     assert duck_envelope_content_hash([(0.0, 1.0)], merge_threshold_s=0.5) != base
     assert duck_envelope_content_hash([(0.0, 1.0)], ramp_s=0.05) != base
+    assert duck_envelope_content_hash([(0.0, 1.0)], char_pause_s=0.5) != base
 
 
 def test_touching_runs_across_scenes_merge():
     a = {
+        "characters": ["a"],
         "character_start_times_seconds": [0.0],
         "character_end_times_seconds": [1.0],
     }
     b = {
+        "characters": ["b"],
         "character_start_times_seconds": [0.0],
         "character_end_times_seconds": [1.0],
     }
     assert speaking_intervals_from_alignment([a, b]) == [(0.0, 2.0)]
+
+
+def test_newline_pauses_do_not_overlap_ramps():
+    """§15.1: real splits finally create inter-interval gaps; ramps must not multiply."""
+    alignment = {
+        "characters": ["a", "\n", "b"],
+        "character_start_times_seconds": [0.0, 0.2, 0.6],
+        "character_end_times_seconds": [0.2, 0.6, 0.8],
+    }
+    intervals = speaking_intervals_from_alignment([alignment])
+    assert intervals == [(0.0, 0.2), (0.6, 0.8)]
+    windows = duck_ramp_windows(intervals, relative_duck=0.5)
+    assert _overlapping_pairs(windows) == []
+    assert DUCK_CHAR_PAUSE_S == 0.30

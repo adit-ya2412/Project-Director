@@ -232,7 +232,19 @@ def test_draft_format_follows_the_style_aspect():
 
 def test_music_gains_are_style_owned_and_archival_keeps_the_measured_mix():
     """Leftover item 5 / §5.2. Archival is today's measured mix;
-    retention_fast is louder and less ducked; stillness is quieter."""
+    retention_fast has a louder bed; stillness is quieter.
+
+    ⚠ This test used to also assert retention_fast was LESS ducked than
+    archival, from §5.2's "driving, barely ducked" intent - which that
+    section set as an arithmetic offset and explicitly flagged as "not a
+    new listening pass". A listening pass happened 2026-08-29
+    (output_quality_pass.md §15.1) once the pause detector actually
+    worked, and overturned it: at a 4 dB depth the bed had nothing to
+    swell back into ("works, but not much noticeable change"), and 12/14
+    dB "started to feel weird". 8 dB was chosen by ear. So retention_fast
+    is now MORE ducked than archival, and the old inequality is gone
+    deliberately - do not restore it from the prose in §5.2.
+    """
     archival = resolve_music_gains("documentary_archival")
     assert archival == resolve_music_gains(None)
     assert archival.bed_gain_db == settings.music_bed_gain_db == -14.0
@@ -240,9 +252,11 @@ def test_music_gains_are_style_owned_and_archival_keeps_the_measured_mix():
 
     fast = resolve_music_gains("retention_fast")
     assert fast.bed_gain_db == -10.0
-    assert fast.duck_gain_db == -14.0
+    assert fast.duck_gain_db == -18.0
+    # Ear-signed depth. The bed stays louder than archival's; what changed
+    # is how far the music drops under the voice.
     assert fast.bed_gain_db > archival.bed_gain_db
-    assert (fast.bed_gain_db - fast.duck_gain_db) < (archival.bed_gain_db - archival.duck_gain_db)
+    assert (fast.bed_gain_db - fast.duck_gain_db) == 8.0
 
     still = resolve_music_gains("stillness")
     assert still.bed_gain_db == -22.0

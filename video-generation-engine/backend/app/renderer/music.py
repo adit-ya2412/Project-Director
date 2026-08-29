@@ -25,16 +25,30 @@ from unordered iteration).
 
 ## What "every interval narration is speaking" means here
 
-OQ-1b (2026-08-28): when per-character alignment is available (the same
-`character_start_times_seconds` / `character_end_times_seconds` arrays
-captions already consume), duck windows follow real speech runs on the
-audio-concat clock — scene i starts at the sum of previous scenes' last
-`character_end`. Gaps ≤ `DUCK_MERGE_THRESHOLD_S` (`MIN_CUE_DURATION_S`
-from captions, 0.8 s) stay ducked so a breath is not a release; leading
-silence before the first character and trailing silence after a scene's
-last character are NOT ducked. Ramps in/out of each duck are a small
-number of stepped `between()` windows (not ffmpeg volume expressions —
-see above), still a precomputed static envelope (I5; no live sidechain).
+OQ-1b (2026-08-28) + §15.1 (2026-08-29): when per-character alignment is
+available, duck windows follow real speech runs on the audio-concat
+clock — scene i starts at the sum of previous scenes' last
+`character_end`.
+
+ElevenLabs never leaves a gap *between* characters (measured: 0
+inter-character gaps on six projects). The pauses live *inside* a
+character's own duration — on `1cdf55ac`, 17 characters ≥0.30 s, all
+newlines, longest 0.584 s. So a run splits when a character's OWN
+duration exceeds `DUCK_CHAR_PAUSE_S` (0.30 s, the §13.4 counting
+cutoff), not when `next_start - this_end` is large.
+`DUCK_MERGE_THRESHOLD_S` (0.8 s, captions' min cue) is the wrong
+quantity for this: every measured pause is below it, so using it as the
+split would leave the detector inert. When the `characters` array is
+present, only whitespace characters that long are pauses (a 0.4 s
+spoken phoneme is not a bed swell). Inter-character gaps, if they ever
+appear, still merge below 0.8 s.
+
+Leading silence before the first character and trailing silence after a
+scene's last character are NOT ducked. The long pause character itself
+is NOT ducked — that is the swell. Ramps in/out of each duck are a
+small number of stepped `between()` windows (not ffmpeg volume
+expressions — see above), still a precomputed static envelope (I5; no
+live sidechain).
 
 When alignment is missing/None, fall back to per-SCENE granularity from
 ffprobe-measured narration file durations (`compute_narration_intervals`),
@@ -76,9 +90,17 @@ logger = get_logger(__name__)
 
 _FADE_SECONDS = 1.0
 
-# Same pause threshold as captions so ducking and captions agree what a
-# pause is (OQ-1b). Constant, not a Settings knob — ear sign-off pending.
+# Inter-character GAP merge (OQ-1b). Captions' min cue duration — kept
+# for the rare case ElevenLabs does leave a hole between characters.
+# NOT the intra-character pause detector: §13.4 measured those at
+# 0.30–0.584 s, all below 0.8 s.
 DUCK_MERGE_THRESHOLD_S = MIN_CUE_DURATION_S  # 0.8 s
+
+# Intra-character pause (§15.1 / §13.4). A character whose own
+# duration exceeds this is a pause (on real EL data: newlines), and the
+# bed is released for that window. 0.30 s is the cutoff the listen
+# counted with; 0.8 s would miss every measured pause.
+DUCK_CHAR_PAUSE_S = 0.30
 
 # Starting ear default for duck in/out ramps — not signed off (OQ-1b).
 DUCK_RAMP_S = 0.080
@@ -184,18 +206,20 @@ def speaking_intervals_from_alignment(
     alignment_by_scene: Sequence[Mapping[str, Any] | None],
     *,
     merge_threshold_s: float = DUCK_MERGE_THRESHOLD_S,
+    char_pause_s: float = DUCK_CHAR_PAUSE_S,
 ) -> list[tuple[float, float]]:
     """Duck windows from per-character alignment on the audio-concat clock.
 
     Scene i starts at the sum of previous scenes' last `character_end`
-    (same clock as OQ-0a silence map / `derive_caption_cues`). Inside a
-    scene, consecutive characters form one speaking run; a gap
-    (`next_start - this_end`) ≤ `merge_threshold_s` stays ducked. Leading
-    silence before the first character and trailing silence after the
-    last character of a scene are NOT ducked. Empty/malformed alignment
-    for a scene skips that scene's windows (logged) without raising.
+    (same clock as OQ-0a silence map / `derive_caption_cues`).
+
+    A run splits when a character's OWN duration exceeds `char_pause_s`
+    (§15.1: ElevenLabs leaves no inter-character gaps; pauses live
+    inside newline characters). That character is excluded from the duck
+    window. Inter-character gaps ≤ `merge_threshold_s` still merge if
+    they ever appear. Leading/trailing scene silence is not ducked.
     """
-    parsed: list[tuple[list[float], list[float]] | None] = []
+    parsed: list[tuple[list[float], list[float], list[str] | None] | None] = []
     for scene_index, alignment in enumerate(alignment_by_scene):
         parsed.append(_parse_scene_alignment(alignment, scene_index=scene_index))
     if any(scene is None for scene in parsed):
@@ -215,28 +239,78 @@ def speaking_intervals_from_alignment(
 
     intervals: list[tuple[float, float]] = []
     scene_offset = 0.0
-    for local_starts, local_ends in parsed:
-        run_start = local_starts[0]
-        run_end = local_ends[0]
-        for i in range(1, len(local_starts)):
-            gap = local_starts[i] - local_ends[i - 1]
-            if gap <= merge_threshold_s:
-                run_end = local_ends[i]
-            else:
-                intervals.append((scene_offset + run_start, scene_offset + run_end))
-                run_start = local_starts[i]
-                run_end = local_ends[i]
-        intervals.append((scene_offset + run_start, scene_offset + run_end))
+    for local_starts, local_ends, local_chars in parsed:
+        for start, end in _runs_from_characters(
+            local_starts,
+            local_ends,
+            local_chars,
+            char_pause_s=char_pause_s,
+            merge_threshold_s=merge_threshold_s,
+        ):
+            intervals.append((scene_offset + start, scene_offset + end))
         scene_offset += local_ends[-1]
 
     return _merge_touching_intervals(intervals)
+
+
+def _is_pause_character(
+    duration_s: float,
+    char: str | None,
+    char_pause_s: float,
+) -> bool:
+    """True when this character is a bed-release, not speech.
+
+    Duration-only when the `characters` array is absent. When present,
+    only whitespace that long counts — a slow phoneme is not a pause.
+    """
+    if duration_s <= char_pause_s:
+        return False
+    if char is None:
+        return True
+    return char.isspace()
+
+
+def _runs_from_characters(
+    starts: list[float],
+    ends: list[float],
+    chars: list[str] | None,
+    *,
+    char_pause_s: float,
+    merge_threshold_s: float,
+) -> list[tuple[float, float]]:
+    """Local (per-scene) duck windows. Pause characters are holes."""
+    runs: list[tuple[float, float]] = []
+    run_start: float | None = None
+    run_end: float | None = None
+    for i, (start, end) in enumerate(zip(starts, ends, strict=True)):
+        ch = chars[i] if chars is not None else None
+        if _is_pause_character(end - start, ch, char_pause_s):
+            if run_start is not None and run_end is not None:
+                runs.append((run_start, run_end))
+                run_start = None
+                run_end = None
+            continue
+        if run_start is None:
+            run_start = start
+            run_end = end
+            continue
+        gap = start - run_end
+        if gap <= merge_threshold_s:
+            run_end = end
+        else:
+            runs.append((run_start, run_end))
+            run_start = start
+            run_end = end
+    if run_start is not None and run_end is not None:
+        runs.append((run_start, run_end))
+    return runs
 
 
 def _parse_scene_alignment(
     alignment: Mapping[str, Any] | None,
     *,
     scene_index: int,
-) -> tuple[list[float], list[float]] | None:
+) -> tuple[list[float], list[float], list[str] | None] | None:
     if alignment is None:
         logger.warning(
             "music.duck_alignment_skipped",
@@ -257,13 +331,19 @@ def _parse_scene_alignment(
         )
         return None
     try:
-        return [float(x) for x in starts_raw], [float(x) for x in ends_raw]
+        starts = [float(x) for x in starts_raw]
+        ends = [float(x) for x in ends_raw]
     except (TypeError, ValueError):
         logger.warning(
             "music.duck_alignment_skipped",
             extra={"scene_index": scene_index, "reason": "non_numeric_times"},
         )
         return None
+    chars_raw = alignment.get("characters")
+    chars: list[str] | None = None
+    if isinstance(chars_raw, list) and len(chars_raw) == len(starts):
+        chars = [str(c) if c is not None else "" for c in chars_raw]
+    return starts, ends, chars
 
 
 def _merge_touching_intervals(
@@ -295,18 +375,20 @@ def duck_envelope_content_hash(
     intervals: list[tuple[float, float]],
     *,
     merge_threshold_s: float = DUCK_MERGE_THRESHOLD_S,
+    char_pause_s: float = DUCK_CHAR_PAUSE_S,
     ramp_s: float = DUCK_RAMP_S,
 ) -> str:
     """Fingerprint input for the alignment-derived duck envelope (OQ-1b).
 
-    Hashes the canonical `(start, end)` duck windows plus merge/ramp
-    constants. When alignment is absent the render step passes `None`
-    instead (file-duration fallback is fully determined by
+    Hashes the canonical `(start, end)` duck windows plus merge/ramp/
+    char-pause constants. When alignment is absent the render step
+    passes `None` instead (file-duration fallback is fully determined by
     `narration_content_hashes`).
     """
     payload = {
         "intervals": [[round(start, 3), round(end, 3)] for start, end in intervals],
         "merge_threshold_s": merge_threshold_s,
+        "char_pause_s": char_pause_s,
         "ramp_s": ramp_s,
         "ramp_steps": DUCK_RAMP_STEPS,
     }
@@ -512,6 +594,7 @@ async def mux_music(
             "source": source,
             "interval_count": len(intervals),
             "merge_threshold_s": DUCK_MERGE_THRESHOLD_S,
+            "char_pause_s": DUCK_CHAR_PAUSE_S,
             "ramp_s": DUCK_RAMP_S,
             "ramp_steps": DUCK_RAMP_STEPS,
         },

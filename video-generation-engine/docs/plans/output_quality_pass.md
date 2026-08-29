@@ -504,19 +504,22 @@ explicit `duck_envelope_hash`, following `cue_list_hash`'s precedent.
 decisions. Start from the values `captions.py` already uses for cue merging
 so the two subsystems agree about what a pause is.
 
-**Shipped shape (P-OQ1b, 2026-08-28).** Speaking intervals from alignment
-on the audio-concat clock; merge gaps ≤ **0.8 s** (`MIN_CUE_DURATION_S`);
-**80 ms / 4-step** ramps as extra `between()` windows (relative-duck
-multiply architecture unchanged — no volume expressions, no live
-compressor). `duck_envelope_hash` hashes canonical `(start,end)` windows
-+ merge_threshold + ramp_s + ramp_steps when alignment is present;
-**`None` when alignment is absent** (file-duration fallback is fully
-determined by `narration_content_hashes`). Touching runs across scene
-joins merge so ramps cannot double-multiply; empty alignment windows
-fall back to file-duration intervals (orchestrator review). RV2:
-`alignment_by_scene` resolved once in `RenderStep.render_video` →
-fingerprint + `mux_music`. Bed/duck dB unchanged. Merge/ramp still
-awaiting ear sign-off.
+**Shipped shape (P-OQ1b, 2026-08-28; detector fix P-OQ1b-char, 2026-08-29).**
+Speaking intervals from alignment on the audio-concat clock. A run
+splits when a character's **own duration** exceeds `DUCK_CHAR_PAUSE_S`
+(**0.30 s**, the §13.4 counting cutoff) — ElevenLabs never leaves an
+inter-character gap, so splitting on `next_start - this_end` was inert
+(one duck window, 100% of every measured timeline). The pause character
+itself is not ducked. When the `characters` array is present, only
+whitespace that long counts (a slow phoneme is not a swell).
+Inter-character gaps, if they ever appear, still merge below 0.8 s.
+⚠ **Plan correction:** §15.1 said keep `DUCK_MERGE_THRESHOLD_S` (0.8 s)
+as the split threshold. Every measured pause on F1 is ≤ 0.584 s, so
+0.8 s would have left the detector inert. 0.8 s is captions' min cue
+duration, the wrong quantity for "this newline is a pause."
+
+**80 ms / 4-step** ramps as extra `between()` windows. `duck_envelope_hash`
+includes `char_pause_s`. RV2 unchanged. **Re-listen required** (§13.4).
 
 ### 4.3 OQ-1c — the narration chain (~1 d)
 
@@ -767,7 +770,7 @@ Mark ✅ as each completes, and add the matching §10 entry in the same edit.
 | 2 | **OQ-1d** ✅ — measure the `amix` question (§4.4) | OQ-0a | no |
 | 3 | **OQ-1a** ✅ **DONE, ear-confirmed 2026-08-29 (§13.2)** — loudness target (§4.1) | OQ-0a's before numbers | ⚠ listen |
 | 4 | **OQ-1c** ⚠ built, awaiting listen — per-scene gain matching (§4.3) | OQ-0a's per-scene spread | ⚠ listen |
-| 5 | **OQ-1b** ❌ **INERT — see §13.4, fix before re-listening** — speech-accurate ducking (§4.2) | OQ-1a and OQ-1c settled, so the bed is judged against a stable voice level | ⚠ listen |
+| 5 | **OQ-1b** ✅ **DONE — detector fixed (P-OQ1b-char) and depth ear-signed at 8 dB (P-OQ1b-depth)** — speech-accurate ducking (§4.2 / §15.1) | OQ-1a and OQ-1c settled, so the bed is judged against a stable voice level | ⚠ listen |
 | 6 | **OQ-4.1** ✅ **measured corpus-wide, 0 violations (§13.6)** — transition-vs-shot validation (§7.1) | OQ-0a's report says whether it is already occurring | no |
 | 7 | **OQ-0b** ✅ — contact sheet (§3.2) | OQ-0a used in anger at least once | no |
 | 8 | **OQ-2** ⚠ **re-cut 2026-08-29 (§14) — focal now its own call on `gpt-5.5`; re-backfill then watch** — subject-aware camera (§5) | OQ-0b, plus `backfill_focal.py --apply` | ⚠ watch |
@@ -1375,6 +1378,99 @@ first); RV-Q9 alimiter; OQ-4.1 live measurement; OQ-3. Also still open
 from the verification pass: `loudness.py`'s docstring says dynamic "is
 rejected" where the code detects, warns and accepts — accurate behaviour,
 inaccurate word.
+
+### P-OQ1b-char — duck on character duration, not inter-character gaps (2026-08-29)
+
+**Scope executed:** §15.1 / §13.4 detector fix only. No RV-Q10 TTS
+batching, no OQ-1c/1a changes, no compressor.
+
+**Changes:**
+- `backend/app/renderer/music.py` — `_runs_from_characters` splits when
+  `end - start > DUCK_CHAR_PAUSE_S` (0.30 s); that character is a hole
+  in the duck envelope. Inter-character gaps still merge below 0.8 s.
+  If `characters` is present and aligned, only `isspace()` characters
+  that long are pauses. `duck_envelope_content_hash` includes
+  `char_pause_s`.
+- `backend/tests/unit/renderer/test_music.py` — zero-gap newline split;
+  long letter is not a pause; duration-only fallback; ramp non-overlap
+  across a 0.40 s newline.
+- This plan: §4.2 shipped-shape correction; §9 row 5 re-listen; §15.1
+  threshold correction.
+
+**Measured (unit, F1-shaped):** `h i \\n b y` with zero inter-char gaps
+and a 0.40 s newline → duck windows `[(0.00, 0.10), (0.50, 0.60)]` — the
+bed is released for the newline. A 0.50 s letter `"b"` stays one window.
+Ramp windows on a 0.40 s hole do not overlap (gap 0.40 > 2×0.08).
+
+**Verification:**
+```
+cd backend
+python -m pytest tests/unit/renderer/test_music.py tests/integration/test_render_music_mix.py tests/unit/renderer/test_fingerprint.py --noconftest -q
+```
+→ **85 passed.**
+
+**Effects / notes for the reviewer:** fingerprint MISS on music renders
+(`char_pause_s` in the envelope hash). 0.30 s is the listen's counting
+cutoff, not an ear-signed value — too low and a slow phoneme without a
+`characters` array would swell the bed.
+
+**What is NOT done:** re-render + listen on `1cdf55ac`; RV-Q10 scene-batch
+TTS; changing bed/duck dB.
+
+---
+
+### P-OQ1b-depth — duck depth 4 dB -> 8 dB, ear-signed (2026-08-29)
+
+**Scope executed:** `retention_fast`'s `music_duck_gain_db` only, after a
+listening pass on the fixed envelope. No detector change, no other style.
+
+**Why:** with §15.1's detector working, the user's verdict at the shipped
+gains was *"yup works, but yeah not much noticeable change"*. The
+mechanism was provably correct (+4.0 dB in all 17 gaps) — the limit was
+that a 4 dB duck depth leaves the bed almost nothing to swell back into.
+⚠ **The fix was NOT in the detector.** Anyone hitting "the music still
+does not breathe" should check the depth before re-tuning
+`DUCK_CHAR_PAUSE_S`.
+
+**Method:** four depths rendered on the real narration + real bed of
+`1cdf55ac` via `mux_music` directly (Postgres was down; no full render
+needed), cut to one 18 s window covering four real swells (13.7, 19.9,
+26.1, 27.9 s) so the candidates could be A/B'd:
+
+| candidate | bed / duck | depth | verdict |
+|---|---|---|---|
+| A | −10 / −14 | 4 dB | shipped value — "not much noticeable change" |
+| **B** | **−10 / −18** | **8 dB** | **chosen** |
+| C | −10 / −22 | 12 dB | "starts to feel weird" |
+| D | −8 / −22 | 14 dB | not preferred |
+
+⚠ A/B/C share a bed of −10, so the level the music RETURNS to is
+identical in all three. What the ear was judging is how far the music
+drops under the voice — worth knowing before someone reads the table as
+"louder music".
+
+**Changes:**
+- `app/script/styles.py` — `retention_fast.music_duck_gain_db` −14 → −18,
+  with the listening evidence in the comment.
+- `tests/unit/script/test_styles.py` — the assertion that retention_fast
+  is LESS ducked than archival is **removed deliberately**. It encoded
+  §5.2's "driving, barely ducked" intent, which §5.2 itself flagged as an
+  arithmetic offset and "not a new listening pass". retention_fast is now
+  more ducked than archival (8 dB vs 6 dB) because an ear said so.
+
+**Verification:** `pytest tests/unit/script/ tests/unit/renderer/
+--noconftest -q` → 310 passed; the 4 failures are the pre-existing
+`test_suggestions` / `test_preflight` ones confirmed failing at `b9aaf69`.
+
+**Effects / notes for the reviewer:** `music_duck_gain_db` is already in
+`compute_render_fingerprint`, so every `retention_fast` render with music
+correctly misses cache.
+
+**What is NOT done:** the other three styles keep their gains — only
+`retention_fast` was listened to. ⚠ `stillness` is the one to check next
+(bed −22 / duck −28, 6 dB): §4.2 described its music as reading
+"near-absent", and that diagnosis predates both the detector fix and this
+depth finding.
 
 ---
 
@@ -2223,9 +2319,13 @@ The pauses are real but live INSIDE a single character's duration — on
 0.584 s.
 
 **Fix:** split a run when a character's OWN duration exceeds the
-threshold, not when the gap between characters does. Keep
-`DUCK_MERGE_THRESHOLD_S` as the threshold so captions and ducking still
-agree about what a pause is.
+threshold, not when the gap between characters does.
+
+⚠ **Correction (P-OQ1b-char):** do **not** use `DUCK_MERGE_THRESHOLD_S`
+(0.8 s, captions' min cue) as that split. F1's pauses max at 0.584 s;
+0.8 s would still duck 100% of the timeline. Shipped threshold is
+`DUCK_CHAR_PAUSE_S = 0.30` (the cutoff §13.4 counted with). When
+`characters` is present, only whitespace that long is a pause.
 
 ⚠ Re-check §12.3's ramp invariant afterwards: real splits mean real
 inter-interval gaps for the first time, so `duck_ramp_windows`' merge
