@@ -1,6 +1,6 @@
 # Output Quality Pass — Audio Finishing, Subject-Aware Camera, Edit Rhythm, and the Review Harness
 
-**Status:** OQ-0a + OQ-0b + OQ-1d built; OQ-1a + OQ-1b + OQ-1c built awaiting listen; OQ-2 built awaiting watch. §12 review findings RV-Q1–Q8 **fixed 2026-08-29** (see P-OQ-RV). RV-Q10 **built 2026-08-29** (P-OQ-RV-Q10), reviewed (§16), and its blocking findings **RV-Q11/RV-Q12 fixed 2026-08-29** (see P-OQ-RV-Q10a in §10): sliced narration is now written as PCM/WAV, not re-encoded MP3, so it is no longer blocked for the listen on that finding. §16.4 (RV-Q14, whether scene joins should swell the bed) is still open, awaiting a creative decision. **§15.3 (P-OQ4.4) and §15.4 (P-OQ-15.4) built 2026-08-29; orchestrator review is §17** — 1024 shipped, 512 not. RV-Q16/RV-Q18 **resolved by repeat measurement (§17.6): 512 is closed, 1024 stands**; the gate's own run-to-run instability at full res is now tracked as RV-Q20. The only open action from that review is **RV-Q19 — apply the `a8b3c1d4e5f6` migration to shared Postgres (human call)**. OQ-3 / remaining OQ-4 design-only.
+**Status:** OQ-0a + OQ-0b + OQ-1d built; OQ-1a + OQ-1b + OQ-1c built awaiting listen; OQ-2 built awaiting watch. §12 review findings RV-Q1–Q8 **fixed 2026-08-29** (see P-OQ-RV). RV-Q10 **built 2026-08-29** (P-OQ-RV-Q10), reviewed (§16), and its blocking findings **RV-Q11/RV-Q12 fixed 2026-08-29** (see P-OQ-RV-Q10a in §10): sliced narration is now written as PCM/WAV, not re-encoded MP3, so it is no longer blocked for the listen on that finding. §16.4 (RV-Q14, whether scene joins should swell the bed) is still open, awaiting a creative decision. **§15.3 (P-OQ4.4) and §15.4 (P-OQ-15.4) built 2026-08-29; orchestrator review is §17** — 1024 shipped, 512 not. RV-Q16/RV-Q18 **resolved by repeat measurement (§17.6): 512 is closed, 1024 stands**; the gate's own run-to-run instability at full res is now tracked as RV-Q20. The only open action from that review is **RV-Q19 — apply the `a8b3c1d4e5f6` migration to shared Postgres (human call)**. §18 (RV-Q22) answers the user's "most assets get rejected" observation with the recorded verdicts: **70% reject rate is real but is a search-relevance signal, not a vision-model defect** — shots still finish 79% real / 20% generated — and leaves one cheap open experiment, §18.5. OQ-3 / remaining OQ-4 design-only.
 ⚠ **§14 re-cuts OQ-2: the focal question was being asked of a model that cannot answer it (gpt-4o-mini), and a schema default hid that. Now its own call on gpt-5.5.**
 ⚠ **§13 is the first measurement against a REAL project — it overturns three conclusions and adds RV-Q10, the only audible defect a human has actually reported. Read it before §12.**
 ⚠ **§2.3 and §4.1 were corrected 2026-08-29 against measured ffmpeg behaviour — the original text was wrong. See §12.6.**
@@ -3464,3 +3464,105 @@ zero, which is the right direction for a cost meter. Worth one line in
 `LLM_USD_PER_1M_TOKENS` when a `-mini` / `-nano` variant of a priced
 family first appears: add the cheaper key, and the longest-prefix rule
 picks it automatically.
+
+## 18. RV-Q22 — "most of the assets get rejected": what the 70% actually is
+
+**Raised by the user 2026-08-29**, from an observation across every
+project: *most assets are rejected — is `gpt-4o-mini` flawed?* Measured
+rather than reasoned, from the verdicts already on disk.
+Harness: `backend/scripts/measure_gate_reject_rate.py` (SELECT-only;
+run it **before** any pytest session, §11).
+
+### 18.1 The observation is correct
+
+**448 depiction-gate calls across 16 projects; 313 rejected = 70%.**
+Per project 38% – 91%. This is not a misperception and not a handful of
+bad runs — it is the steady state.
+
+### 18.2 …but the gate is mostly right, and the defect is upstream
+
+Rejects split by reason language:
+
+| class | share | reading |
+|---|---|---|
+| wrong **subject** only | 42% | gate right; search fed it junk |
+| era / "modern" only | 16% | A30a false-reject risk |
+| both | 19% | mixed |
+| unclassified | 24% | |
+
+The reasons are not subtle judgement calls. Actual recorded rejects:
+
+- *"The image depicts **a hard disk drive** … entirely unrelated to the
+  wartime strategic map"*
+- *"a modern vehicle's **fuel gauge**"* — for a 1940s German map
+- *"a landscape scene with **horses and boats**"* — for an industrial
+  coal hopper
+- *"a **contemporary protest** with stickers and signs"*
+
+Most of the "modern" bucket is wrong-subject wearing the word *modern*
+(the hard drive and the fuel gauge are both in it), so 16% is an upper
+bound on the genuinely arguable class, not an estimate of it. **The
+70% is a search-relevance number that the gate is reporting, not a
+vision-model error rate.** A stronger model would reject the hard drive
+more confidently, not find a better photograph — which is exactly what
+A30 predicted when it scoped vision to detection rather than retrieval.
+
+### 18.3 The rejects are not costing shots
+
+On the latest timeline version of every project:
+
+**680 shots → 540 real found assets (79%), 139 generated (20%), 1
+unfilled.** A reject abandons that rung; the shot falls down the ladder
+(A30) and usually lands on a later rung, not on generation.
+
+The clincher is `6b790c76`: **91% of its gate calls rejected**, and it
+finished **46/46 shots on real found assets with zero generated clips.**
+
+Across the 16 projects the correlation between a project's gate reject
+rate and its share of generated shots is **r = −0.51** — *negative*.
+Projects whose gates reject more end up with **fewer** generated clips,
+not more. The likely reading (observational, n=16, not established):
+reject count tracks how many rungs the resolver worked through, i.e.
+how rich the candidate pool was, so it is closer to an effort measure
+than a damage measure. **Do not read the reject rate as the damage
+signal. Read the `gen` column.**
+
+### 18.4 What it is worth fixing, in order
+
+1. **Search relevance / ranking** — the 42%+ wrong-subject share is the
+   whole prize. Not a vision problem.
+2. **The 20% generation fallback** is the real cost of a thin candidate
+   pool: a quality drop on a documentary *and* the expensive path
+   (Kling per clip versus free search).
+3. **§17.7 RV-Q20 noise** is real but small here: if borderline images
+   are ~15% of calls and a third of those flip, that is ~5% of calls
+   decided by chance. It is not the 70%.
+
+### 18.5 🟡 The untested assumption — the gate only ever sees candidate #1
+
+`resolve_assets.py` checks the **top-ranked** candidate of a rung
+(`checked_top_candidate`) and, on `confidently_wrong`, `break`s the
+candidate loop — discarding every other candidate in that pool
+**unexamined**.
+
+This is deliberate. A30 (`13_Implementation_Guide.md`): *"Scoped to the
+top candidate only because verifying a whole pool multiplies cost for
+no extra signal"*, resting on the finding that the failing shots were
+ones *"whose candidate pool contains nothing on-topic."*
+
+That premise has never been re-tested, and §18.2 gives a reason to
+doubt it: if **ranking** is what put the hard drive first, the pool may
+have been fine and the gate was shown the wrong member of it.
+
+**Cheap to settle, and it is the next thing to do here.** Replay a
+dozen rungs that died on a reject and ask the gate about candidate #2.
+- If #2 usually also fails → A30 holds, close this, spend the effort on
+  search terms instead.
+- If #2 often passes → the fix is ranking (or "try the next candidate
+  once, with a budget"), and it claws back a real share of the 20%
+  generation fallback for roughly one extra mini call per rejected rung.
+
+**Do not change the `break` before measuring.** It is a cost guard with
+a written rationale, and §17.6 is a fresh reminder of what happens when
+a single draw is treated as a finding.
+
