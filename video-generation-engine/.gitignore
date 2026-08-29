@@ -112,3 +112,8 @@ tmp/
 # relevant plan doc's log; the raw media never belongs in the repo.
 _spike_*/
 
+# Re-fetched candidate images used to replay a ranking pool against the
+# depiction gate (output_quality_pass.md §18.5). Provider bytes, cached
+# only so a sweep can be re-run without re-hitting the API. 18MB and
+# growing; the findings live in the plan, the pixels never belong here.
+backend/scripts/_rvq22_cache/

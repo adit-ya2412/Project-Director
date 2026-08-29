@@ -1,6 +1,6 @@
 # Output Quality Pass — Audio Finishing, Subject-Aware Camera, Edit Rhythm, and the Review Harness
 
-**Status:** OQ-0a + OQ-0b + OQ-1d built; OQ-1a + OQ-1b + OQ-1c built awaiting listen; OQ-2 built awaiting watch. §12 review findings RV-Q1–Q8 **fixed 2026-08-29** (see P-OQ-RV). RV-Q10 **built 2026-08-29** (P-OQ-RV-Q10), reviewed (§16), and its blocking findings **RV-Q11/RV-Q12 fixed 2026-08-29** (see P-OQ-RV-Q10a in §10): sliced narration is now written as PCM/WAV, not re-encoded MP3, so it is no longer blocked for the listen on that finding. §16.4 (RV-Q14, whether scene joins should swell the bed) is still open, awaiting a creative decision. **§15.3 (P-OQ4.4) and §15.4 (P-OQ-15.4) built 2026-08-29; orchestrator review is §17** — 1024 shipped, 512 not. RV-Q16/RV-Q18 **resolved by repeat measurement (§17.6): 512 is closed, 1024 stands**; the gate's own run-to-run instability at full res is now tracked as RV-Q20. The only open action from that review is **RV-Q19 — apply the `a8b3c1d4e5f6` migration to shared Postgres (human call)**. §18 (RV-Q22) answers the user's "most assets get rejected" observation with the recorded verdicts: **70% reject rate is real but is a search-relevance signal, not a vision-model defect** — shots still finish 79% real / 20% generated — and leaves one cheap open experiment, §18.5. OQ-3 / remaining OQ-4 design-only.
+**Status:** OQ-0a + OQ-0b + OQ-1d built; OQ-1a + OQ-1b + OQ-1c built awaiting listen; OQ-2 built awaiting watch. §12 review findings RV-Q1–Q8 **fixed 2026-08-29** (see P-OQ-RV). RV-Q10 **built 2026-08-29** (P-OQ-RV-Q10), reviewed (§16), and its blocking findings **RV-Q11/RV-Q12 fixed 2026-08-29** (see P-OQ-RV-Q10a in §10): sliced narration is now written as PCM/WAV, not re-encoded MP3, so it is no longer blocked for the listen on that finding. §16.4 (RV-Q14, whether scene joins should swell the bed) is still open, awaiting a creative decision. **§15.3 (P-OQ4.4) and §15.4 (P-OQ-15.4) built 2026-08-29; orchestrator review is §17** — 1024 shipped, 512 not. RV-Q16/RV-Q18 **resolved by repeat measurement (§17.6): 512 is closed, 1024 stands**; the gate's own run-to-run instability at full res is now tracked as RV-Q20. The only open action from that review is **RV-Q19 — apply the `a8b3c1d4e5f6` migration to shared Postgres (human call)**. §18 (RV-Q22) answers the user's "most assets get rejected" observation with the recorded verdicts: **70% reject rate is real but is a search-relevance signal, not a vision-model defect** — shots still finish 79% real / 20% generated — and §18.5 (P-OQ-18.5) **measured candidate #2 after a #1 reject: on the replayable *contemporary Pexels* sample a rejected #1 still had a passing #2 — but that is n=1 unique rejected image across 2 prompts, with no archival rung in the set, so A30 is not refuted (review §18.6 / RV-Q23). The `break` was not changed.** OQ-3 / remaining OQ-4 design-only.
 ⚠ **§14 re-cuts OQ-2: the focal question was being asked of a model that cannot answer it (gpt-4o-mini), and a schema default hid that. Now its own call on gpt-5.5.**
 ⚠ **§13 is the first measurement against a REAL project — it overturns three conclusions and adds RV-Q10, the only audible defect a human has actually reported. Read it before §12.**
 ⚠ **§2.3 and §4.1 were corrected 2026-08-29 against measured ffmpeg behaviour — the original text was wrong. See §12.6.**
@@ -1907,6 +1907,67 @@ the §15.3 Alembic revision; folding depiction savings into
 `total_project_spend_cents`; the gate's run-to-run instability at full
 res (§17.7 RV-Q20).
 
+### P-OQ-18.5 — RV-Q22 candidate #2 after a #1 reject (2026-08-29)
+
+**Scope executed:** §18.5 only. Replay ranking pools that already died
+on a depiction reject and ask the production gate about candidate #2.
+Did **not** change `resolve_assets.py`'s `break` on `confidently_wrong`.
+Did not re-run search. Did not write `llm_call` rows.
+
+**Changes:**
+- `backend/scripts/measure_rung_second_candidate.py` — frozen 13 rungs
+  from `1cdf55ac` (ranking log 2026-08-28 08:57–09:01 + `llm_call`
+  rejects + latest timeline prompts). Re-fetches Pexels `source_id` #1
+  and #2 (rejected bytes are not on disk), caches under
+  `scripts/_rvq22_cache/`, calls `OpenAIPlanningProvider.check_depiction`
+  three times per cell (§17.6).
+- `backend/tests/unit/workflow/test_rung_second_candidate.py` —
+  `cell_kind` 0/N / N/N / MIXED.
+
+**Measured:** 13 frozen rungs; **4 replayable** (both Pexels photos still
+live); **9 skipped** (`GET /v1/photos/{id}` and `/videos/videos/{id}`
+both 404 — those source ids are gone). Production path
+(`depiction_image_max_px=1024`). Three draws per cell.
+
+| rung | #1 reject/3 | kind | #2 reject/3 | kind | #2 pass given #1 reject? |
+|---|---|---|---|---|---|
+| sc_02_sh_02 | 2/3 | MIXED | 0/3 | pass | majority (gloves on the wheel were #2) |
+| sc_02_sh_05 | 1/3 | MIXED | 0/3 | pass | historic reject did not reproduce on #1 |
+| sc_03_sh_02 | **3/3** | reject | **0/3** | pass | **YES** |
+| sc_03_sh_03 | **3/3** | reject | **0/3** | pass | **YES** |
+
+A30's premise ("bad top ⇒ bad pool"): among the **2** rungs where #1 is
+a stable 3/3 reject, **#2 is a stable 0/3 pass on 2/2 = 100%**. Looser
+(majority-reject #1 and majority-pass #2): **3/4** replayable rungs.
+On the two YES rows the reasons name the miss on #1 (drift car; people
+working on a car with no documents) and the hit on #2 (driver in a
+suit; budget papers + calculator). That is ranking putting the wrong
+member first, not an empty pool.
+
+n=4 is below the dozen §18.5 asked for. The missing nine are not
+unwillingness — those Pexels ids 404. The four that still exist all
+point the same way. Not closed as "A30 holds".
+
+**Verification:**
+```
+cd backend
+python -m pytest tests/unit/workflow/test_rung_second_candidate.py --noconftest -q
+```
+→ **1 passed** (before the live sweep). Live:
+`python scripts/measure_rung_second_candidate.py` (78 planned calls, 24
+completed + 9 fetch skips; 429s retried). No `PYTEST_TRUNCATE_DB`.
+SELECT-only DB probe to freeze `_CASES` ran **before** pytest.
+
+**Effects / notes for the reviewer:** the `break` is untouched. A
+follow-up that tries candidate #2 once on `confidently_wrong` (one extra
+mini call per rejected rung) is the change §18.5 named, and these
+numbers say it is worth doing — as its own task. MIXED #1 on 2/4
+replayable rungs is RV-Q20 again (historic reject ≠ 3/3 today).
+
+**What is NOT done:** changing the `break`; expanding the frozen set
+past the 4 live Pexels pairs; applying the §15.3 migration; search-
+relevance work (§18.4.1).
+
 ## 11. Testing & DB safety — mandatory, binding on this plan
 
 **Restated from `style_extensions.md` §6 and `analysis.md`'s TEST-DB
@@ -3541,7 +3602,23 @@ signal. Read the `gen` column.**
    are ~15% of calls and a third of those flip, that is ~5% of calls
    decided by chance. It is not the 70%.
 
-### 18.5 🟡 The untested assumption — the gate only ever sees candidate #1
+### 18.5 🟡 Measured — A30's premise is bent, not broken (P-OQ-18.5)
+
+**Measured 2026-08-29.** Production `check_depiction`, three draws per
+cell, frozen `1cdf55ac` ranking pools. 13 rungs nominated; 4 still
+fetchable on Pexels; 9 `source_id`s 404. Of the 2 rungs where candidate
+#1 is a stable 3/3 reject, candidate #2 is a stable 0/3 pass on both.
+The `break` was **not** changed — that is a follow-up (try #2 once, or
+fix ranking). Full table in §10 P-OQ-18.5.
+
+⚠ **Read §18.6 (RV-Q23) before quoting that as a result.** Those two
+rungs share **the same candidate #1**, so it is one rejected image under
+two prompts, not two independent rungs; and all 13 nominated rungs are
+contemporary Pexels stock, with no archival rung in the set — the class
+§18.2 shows the reject problem actually lives in. Re-freeze on Wikimedia
+rungs before treating A30 as refuted.
+
+#### Original entry
 
 `resolve_assets.py` checks the **top-ranked** candidate of a rung
 (`checked_top_candidate`) and, on `confidently_wrong`, `break`s the
@@ -3568,4 +3645,82 @@ dozen rungs that died on a reject and ask the gate about candidate #2.
 **Do not change the `break` before measuring.** It is a cost guard with
 a written rationale, and §17.6 is a fresh reminder of what happens when
 a single draw is treated as a finding.
+
+### 18.6 Review of P-OQ-18.5 — RV-Q23 (2026-08-29)
+
+Orchestrator review of the candidate-#2 replay. Method, harness and
+`_CASES` read in full; `cell_kind` test re-run (1 passed). The live
+sweep was not re-run.
+
+**Verified good.** The protocol held where it has broken before: three
+draws per cell, MIXED cells flagged rather than rounded, the `break`
+untouched, no `llm_call` writes, DB probe run before pytest, and the
+shortfall (4 of 13) stated in the log instead of buried. The two
+qualitative reads are the most valuable thing in it: for `sc_03_sh_03`
+the search subject was *"motorsport budget documents / race team
+invoices / racing calculator"* and ranking put **a photo of people
+working on a car** first, with the documents-and-calculator photo
+second. That is ranking failing on a query it should find easy, and it
+is exactly the mechanism §18.2 suspected.
+
+#### 18.6.1 🔴 RV-Q23 — the headline is one image, not two rungs
+
+`sc_03_sh_02` and `sc_03_sh_03` have **the same candidate #1**
+(Pexels `15397789`). So "2/2 stable #1-rejects have a passing #2" rests
+on **one unique rejected image**, asked about under two different shot
+prompts. The two gate questions are genuinely different (an F2 paddock
+driver versus budget documents on a worktable) and both #2s are
+different images, so the rows are not duplicates — but they are not two
+independent draws of *"does a rejected pool still contain a good
+member"* either, and the log's `2/2 = 100%` reads as though they are.
+
+**Restate it honestly: n = 1 unique rejected top candidate, 2 prompts,
+both with a passing #2.** That is a lead, not a refutation of A30.
+
+#### 18.6.2 🔴 RV-Q23b — the sample excludes the class that matters
+
+All 13 nominated rungs are **Pexels**, and every prompt in the frozen
+set is contemporary ("contemporary karting documentary", "contemporary
+motorsport documentary mood"). There is **not one archival or period
+rung in the sample**.
+
+§18.2's worst rejects are all in the other class — a hard disk drive
+for a 1940s strategic map, "a modern industrial site with contemporary
+signage" for Leuna. Whether ranking or the pool is at fault for
+*contemporary stock photography* says little about whether it is at
+fault for *archival material*, where the query is harder, the corpus is
+thinner, and A30's "pool contains nothing on-topic" premise is far more
+likely to be true. The finding as measured may well be real **and**
+not transfer.
+
+#### 18.6.3 🟡 RV-Q23c — the provider choice caused the 9 losses
+
+The log attributes the shortfall to Pexels ids that 404. That is
+accurate and it was avoidable: `asset` holds **70 wikimedia images to
+65 pexels**, and Wikimedia files are content-addressed and effectively
+permanent, where stock-library ids rot. The most replayable rungs are
+also the archival ones RV-Q23b says are missing. Re-freezing the set on
+Wikimedia rungs fixes the sample size and the representativeness
+problem in one move.
+
+Also note the replay re-fetches **by `source_id`, not the historical
+bytes** — the provider may serve a different rendition today. Combined
+with MIXED #1 on 2 of 4 rungs (a historic reject not reproducing), some
+of what is being measured is §17.7's noise rather than the pool.
+
+#### 18.6.4 What this changes
+
+Nothing shipped, and nothing should yet. §18.5's heading and the
+document status line both currently say A30's premise "does not hold";
+on n=1 unique image, in the wrong asset class, that is stronger than
+the evidence. **Both are softened to "does not hold on the replayable
+contemporary sample" in this edit.**
+
+**Next, and it is one task:** re-freeze on ~12 **Wikimedia** rungs from
+an archival project (`58f0a5e6` / `1cdf55ac`'s wartime shots), same
+three-draw protocol, and report the same table. If #2 passes there too,
+the ranking fix is justified and the `break` change becomes a real
+proposal. If #2 also fails there, A30 holds for the class that
+actually drives the 20% generation fallback, and the effort belongs in
+search terms (§18.4.1) instead.
 
