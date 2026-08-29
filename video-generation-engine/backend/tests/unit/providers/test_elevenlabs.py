@@ -13,7 +13,11 @@ import pytest
 from app.core.config import settings
 from app.core.errors import PermanentError, TransientError
 from app.providers.base import NarrationRequest
-from app.providers.elevenlabs import ElevenLabsNarrationProvider, compute_narration_content_hash
+from app.providers.elevenlabs import (
+    ElevenLabsNarrationProvider,
+    compute_narration_content_hash,
+    tts_request_character_limit,
+)
 
 _REQUEST = NarrationRequest(
     text="Germany possessed abundant coal, but lacked domestic oil reserves.",
@@ -225,6 +229,13 @@ async def test_synthesize_raises_permanent_error_on_missing_alignment(monkeypatc
     provider = ElevenLabsNarrationProvider(transport=httpx.MockTransport(handler))
     with pytest.raises(PermanentError, match="alignment"):
         await provider.synthesize(_REQUEST)
+
+
+def test_tts_request_character_limit_matches_published_model_caps():
+    assert tts_request_character_limit("eleven_v3") == 5000
+    assert tts_request_character_limit("eleven_multilingual_v2") == 10000
+    assert tts_request_character_limit("eleven_flash_v2_5") == 40000
+    assert tts_request_character_limit("unknown_model") == 5000
 
 
 def test_content_hash_is_stable_and_sensitive_to_every_input():

@@ -1,12 +1,17 @@
 """The master clock step (M8 step 2 - see docs/13_Implementation_Guide.md,
 "Phase M8 — Renderer", build order item 2).
 
-Runs one TTS request per scene (D1, settled: per-scene, not per-video - the
-cache key and `narration_span` offsets are both per-scene already), then
-reconciles the real spoken durations into a NEW Timeline version via
-`narration_fit.reconcile_timeline_durations` - the arithmetic itself lives
-there and is proven by its own test suite; this step is the plumbing
-around it (provider call, cache, budget, `append_version`).
+Runs TTS, then reconciles the real spoken durations into a NEW Timeline
+version via `narration_fit.reconcile_timeline_durations` - the arithmetic
+itself lives there and is proven by its own test suite; this step is the
+plumbing around it (provider call, cache, budget, `append_version`).
+
+Cache keys and `Shot.narration_span` stay per-scene (D1). RV-Q10 batches
+contiguous uncached unique-hash scenes into one provider call so the
+voice cannot change character at a scene join, then splits the returned
+alignment and audio back into per-scene files. A cache hit is never
+overwritten (the hash is the request, not the bytes), so an already-
+synthesised scene in the middle of a timeline breaks the batch.
 
 ## Where this sits in the pipeline, and why
 
@@ -108,14 +113,23 @@ from app.providers.elevenlabs import (
     ElevenLabsNarrationProvider,
     canonical_narration_speed,
     compute_narration_content_hash,
+    tts_request_character_limit,
 )
 from app.providers.fakes.narration import FakeNarrationProvider
+from app.renderer.narration_slice import slice_wav
 from app.renderer.narration_tempo import apply_narration_tempo
 from app.repositories.generated_clip_repository import GeneratedClipRepository
 from app.repositories.narration_repository import NarrationRepository
 from app.schemas.timeline import ProducedBy, Scene, Timeline, TimelineStatus
 from app.script.styles import resolve_constraint_bundle, resolve_narration_speed
 from app.timeline.duration import compute_timeline_duration
+from app.timeline.narration_batch import (
+    NarrationBatchMember,
+    SceneNarrationSlice,
+    join_batch_text,
+    plan_tts_batches,
+    split_batched_alignment,
+)
 from app.timeline.narration_fit import SceneAlignment, reconcile_timeline_durations
 from app.utils.bounded_gather import narration_concurrency, reserve_then_gather
 from app.workflow.context import RunContext
@@ -125,8 +139,9 @@ from app.workflow.step import StepResult
 _DRY_RUN_VOICE_ID = "dry-run-voice"
 
 # Track C §3.3: alignment lives in the DB row. After pytest truncates
-# `narration` the mp3 is still on disk but unusable without this sidecar
-# (mp3-only legacy files still re-synthesise). Written next to the mp3.
+# `narration` the audio file is still on disk but unusable without this
+# sidecar (legacy audio-only files still re-synthesise). Written next to
+# the audio file.
 _ALIGNMENT_SIDECAR_SUFFIX = ".alignment.json"
 _ALIGNMENT_KEYS = frozenset(
     {"characters", "character_start_times_seconds", "character_end_times_seconds"}
@@ -135,26 +150,32 @@ _ALIGNMENT_KEYS = frozenset(
 
 @dataclass(frozen=True)
 class _SynthJob:
-    """One unique content-hash that still needs a paid TTS call."""
+    """One paid TTS call: one scene, or several contiguous unique-hash scenes."""
 
-    content_hash: str
-    scene_id: str
-    text: str
+    members: tuple[NarrationBatchMember, ...]
     estimated_cents: int
 
+    @property
+    def scene_id(self) -> str:
+        return self.members[0].scene_id
 
-def _alignment_sidecar_path(mp3_path: Path) -> Path:
-    return mp3_path.with_name(mp3_path.stem + _ALIGNMENT_SIDECAR_SUFFIX)
+    @property
+    def text(self) -> str:
+        return join_batch_text(self.members)
 
 
-def _write_alignment_sidecar(mp3_path: Path, alignment: dict) -> None:
-    _alignment_sidecar_path(mp3_path).write_text(
+def _alignment_sidecar_path(audio_path: Path) -> Path:
+    return audio_path.with_name(audio_path.stem + _ALIGNMENT_SIDECAR_SUFFIX)
+
+
+def _write_alignment_sidecar(audio_path: Path, alignment: dict) -> None:
+    _alignment_sidecar_path(audio_path).write_text(
         json.dumps(alignment, ensure_ascii=False), encoding="utf-8"
     )
 
 
-def _read_alignment_sidecar(mp3_path: Path) -> dict | None:
-    sidecar = _alignment_sidecar_path(mp3_path)
+def _read_alignment_sidecar(audio_path: Path) -> dict | None:
+    sidecar = _alignment_sidecar_path(audio_path)
     if not sidecar.is_file() or sidecar.stat().st_size == 0:
         return None
     try:
@@ -166,15 +187,15 @@ def _read_alignment_sidecar(mp3_path: Path) -> dict | None:
     return data
 
 
-def _ensure_alignment_sidecar(mp3_path: Path, alignment: dict) -> None:
-    """Back-fill the sidecar next to an existing mp3 so a later DB wipe
-    can restore without re-paying. No-op if the mp3 is gone (another
-    project's path after a cache hit, or a deleted file)."""
-    if not mp3_path.is_file():
+def _ensure_alignment_sidecar(audio_path: Path, alignment: dict) -> None:
+    """Back-fill the sidecar next to an existing audio file so a later DB
+    wipe can restore without re-paying. No-op if the audio file is gone
+    (another project's path after a cache hit, or a deleted file)."""
+    if not audio_path.is_file():
         return
-    sidecar = _alignment_sidecar_path(mp3_path)
+    sidecar = _alignment_sidecar_path(audio_path)
     if not sidecar.is_file():
-        _write_alignment_sidecar(mp3_path, alignment)
+        _write_alignment_sidecar(audio_path, alignment)
 
 
 class NarrationStep:
@@ -249,13 +270,17 @@ class NarrationStep:
     async def _synthesize_scene_alignments(
         self, ctx: RunContext, timeline: Timeline, *, voice_id: str, language_code: str | None
     ) -> dict[str, SceneAlignment]:
-        """One TTS request per unique content hash (D1: per-scene text,
-        settled), reusing the global content-hash cache. A hash already
-        synthesised by ANY project is never paid for twice; a hash whose
-        DB row was wiped but whose mp3 + alignment sidecar still sit in
-        this project's narration dir is restored rather than re-paid
-        (Track C §3.3). Paid calls go through `reserve_then_gather` at
-        ElevenLabs' concurrent-request cap of 3 (Q4 / Q5)."""
+        """TTS for uncached scenes, reusing the global content-hash cache.
+
+        Unique-by-hash still holds: a hash already synthesised by ANY
+        project is never paid for twice; a hash whose DB row was wiped
+        but whose mp3 + alignment sidecar still sit in this project's
+        narration dir is restored rather than re-paid (Track C §3.3).
+        RV-Q10 packs contiguous remaining misses into one request (up to
+        the model character cap) so the voice cannot change character at
+        a scene join, then splits audio+alignment back into per-scene
+        files. Paid calls go through `reserve_then_gather` at ElevenLabs'
+        concurrent-request cap of 3 (Q4 / Q5)."""
         project_uuid = uuid_module.UUID(ctx.project_id)
         narration_repo = NarrationRepository(ctx.session)
         clip_repo = GeneratedClipRepository(ctx.session)
@@ -266,10 +291,11 @@ class NarrationStep:
         project_dir.mkdir(parents=True, exist_ok=True)
 
         alignments: dict[str, SceneAlignment] = {}
-        jobs: list[_SynthJob] = []
-        queued_hashes: set[str] = set()
         hash_to_scene_ids: dict[str, list[str]] = {}
+        cached_hashes: set[str] = set()
+        ordered_members: list[NarrationBatchMember] = []
         speed = resolve_narration_speed(timeline.metadata.render_style)
+        cents_per_char = settings.elevenlabs_cost_cents_per_character
 
         for scene in timeline.scenes:
             content_hash = compute_narration_content_hash(
@@ -281,10 +307,22 @@ class NarrationStep:
                 language_code=language_code,
             )
             hash_to_scene_ids.setdefault(content_hash, []).append(scene.id)
+            ordered_members.append(
+                NarrationBatchMember(
+                    scene_id=scene.id,
+                    content_hash=content_hash,
+                    text=scene.narration_text,
+                )
+            )
+            if content_hash in cached_hashes:
+                first_id = hash_to_scene_ids[content_hash][0]
+                alignments[scene.id] = alignments[first_id]
+                continue
 
             row = await narration_repo.get_by_content_hash(content_hash)
             if row is not None:
                 _ensure_alignment_sidecar(Path(row.local_path), row.alignment)
+                cached_hashes.add(content_hash)
                 alignments[scene.id] = SceneAlignment.from_raw(row.alignment)
                 continue
 
@@ -298,21 +336,21 @@ class NarrationStep:
                 project_dir=project_dir,
             )
             if restored is not None:
+                cached_hashes.add(content_hash)
                 alignments[scene.id] = SceneAlignment.from_raw(restored.alignment)
                 continue
 
-            if content_hash not in queued_hashes:
-                queued_hashes.add(content_hash)
-                jobs.append(
-                    _SynthJob(
-                        content_hash=content_hash,
-                        scene_id=scene.id,
-                        text=scene.narration_text,
-                        estimated_cents=round(
-                            len(scene.narration_text) * settings.elevenlabs_cost_cents_per_character
-                        ),
-                    )
-                )
+        jobs = [
+            _SynthJob(
+                members=tuple(batch),
+                estimated_cents=round(len(join_batch_text(batch)) * cents_per_char),
+            )
+            for batch in plan_tts_batches(
+                ordered_members,
+                cached_hashes=cached_hashes,
+                max_characters=tts_request_character_limit(settings.elevenlabs_model),
+            )
+        ]
 
         if jobs:
             db_lock = asyncio.Lock()
@@ -339,7 +377,35 @@ class NarrationStep:
                 nonlocal reserved_cents
                 reserved_cents -= job.estimated_cents
 
-            async def submit(job: _SynthJob) -> dict:
+            async def _persist_slice(
+                *,
+                member: NarrationBatchMember,
+                content: bytes,
+                alignment: dict,
+                character_count: int,
+                cost_cents: int,
+                extension: str,
+            ) -> None:
+                path = project_dir / f"{member.content_hash}{extension}"
+                path.write_bytes(content)
+                _write_alignment_sidecar(path, alignment)
+                async with db_lock:
+                    await narration_repo.insert(
+                        project_id=project_uuid,
+                        scene_id=member.scene_id,
+                        provider=provider.name,
+                        voice_id=voice_id,
+                        model_id=settings.elevenlabs_model,
+                        output_format=settings.elevenlabs_output_format,
+                        text=member.text,
+                        content_hash=member.content_hash,
+                        local_path=str(path),
+                        alignment=alignment,
+                        character_count=character_count,
+                        cost_cents=cost_cents,
+                    )
+
+            async def submit(job: _SynthJob) -> dict[str, dict]:
                 result = await provider.synthesize(
                     NarrationRequest(
                         text=job.text,
@@ -365,25 +431,57 @@ class NarrationStep:
                         canonical_narration_speed(speed),
                         ffmpeg_binary=settings.ffmpeg_binary,
                     )
-                path = project_dir / f"{job.content_hash}.mp3"
-                path.write_bytes(content)
-                _write_alignment_sidecar(path, alignment)
-                async with db_lock:
-                    await narration_repo.insert(
-                        project_id=project_uuid,
-                        scene_id=job.scene_id,
-                        provider=provider.name,
-                        voice_id=voice_id,
-                        model_id=settings.elevenlabs_model,
-                        output_format=settings.elevenlabs_output_format,
-                        text=job.text,
-                        content_hash=job.content_hash,
-                        local_path=str(path),
+                if len(job.members) == 1:
+                    # A genuine, single ElevenLabs response - real MP3
+                    # bytes (or DRY_RUN's fake stand-in), never re-encoded.
+                    member = job.members[0]
+                    await _persist_slice(
+                        member=member,
+                        content=content,
                         alignment=alignment,
-                        character_count=result.character_count,
-                        cost_cents=job.estimated_cents,
+                        character_count=len(member.text),
+                        cost_cents=round(len(member.text) * cents_per_char),
+                        extension=".mp3",
                     )
-                return alignment
+                    return {member.content_hash: alignment}
+
+                slices = split_batched_alignment(alignment, job.members)
+                # Cut every slice before inserting any row. A mid-batch
+                # ffmpeg failure must not cache the first scenes and
+                # leave the join synthesised as two performances.
+                pieces: list[tuple[SceneNarrationSlice, bytes]] = []
+                for sl in slices:
+                    if settings.dry_run:
+                        piece = (
+                            f"fake-narration-audio:{sl.scene_id}:{sl.text}".encode()
+                        )
+                    else:
+                        # RV-Q11: PCM/WAV, not a second MP3 encode - see
+                        # `slice_wav`'s docstring for the measured drift
+                        # a lossy re-encode introduced here.
+                        piece = await slice_wav(
+                            content,
+                            sl.audio_start_s,
+                            sl.audio_end_s,
+                            ffmpeg_binary=settings.ffmpeg_binary,
+                        )
+                    pieces.append((sl, piece))
+                persisted: dict[str, dict] = {}
+                for sl, piece in pieces:
+                    await _persist_slice(
+                        member=NarrationBatchMember(
+                            scene_id=sl.scene_id,
+                            content_hash=sl.content_hash,
+                            text=sl.text,
+                        ),
+                        content=piece,
+                        alignment=sl.alignment,
+                        character_count=len(sl.text),
+                        cost_cents=round(len(sl.text) * cents_per_char),
+                        extension=".wav",
+                    )
+                    persisted[sl.content_hash] = sl.alignment
+                return persisted
 
             results = await reserve_then_gather(
                 jobs,
@@ -393,14 +491,16 @@ class NarrationStep:
                 release=release,
                 concurrency=narration_concurrency(),
             )
-            # Narration has no placeholder: any hash that failed fails
+            # Narration has no placeholder: any batch that failed fails
             # the whole step. Siblings already finished (and are cached)
-            # so a retry only re-pays the failed hash.
+            # so a retry only re-pays the failed batch.
             for job, result in zip(jobs, results, strict=True):
                 if isinstance(result, Exception):
                     raise result
-                for scene_id in hash_to_scene_ids[job.content_hash]:
-                    alignments[scene_id] = SceneAlignment.from_raw(result)
+                for member in job.members:
+                    scene_alignment = SceneAlignment.from_raw(result[member.content_hash])
+                    for scene_id in hash_to_scene_ids[member.content_hash]:
+                        alignments[scene_id] = scene_alignment
 
         return alignments
 
@@ -415,33 +515,43 @@ class NarrationStep:
         provider_name: str,
         project_dir: Path,
     ):
-        """Re-insert a wiped DB row from this project's mp3 + sidecar.
+        """Re-insert a wiped DB row from this project's audio + sidecar.
 
-        Both files must exist and be non-empty. An mp3 without a sidecar
-        (every file written before C2) is not enough to rebuild
-        `alignment`, so those still re-synthesise."""
-        mp3_path = project_dir / f"{content_hash}.mp3"
-        if not mp3_path.is_file() or mp3_path.stat().st_size == 0:
-            return None
-        alignment = _read_alignment_sidecar(mp3_path)
-        if alignment is None:
-            return None
-        return await narration_repo.insert(
-            project_id=project_uuid,
-            scene_id=scene.id,
-            provider=provider_name,
-            voice_id=voice_id,
-            model_id=settings.elevenlabs_model,
-            output_format=settings.elevenlabs_output_format,
-            text=scene.narration_text,
-            content_hash=content_hash,
-            local_path=str(mp3_path),
-            alignment=alignment,
-            character_count=len(scene.narration_text),
-            cost_cents=round(
-                len(scene.narration_text) * settings.elevenlabs_cost_cents_per_character
-            ),
-        )
+        A hash produced by the solo synthesis path (`len(job.members) ==
+        1`, above) is stored as `.mp3` - genuine, unre-encoded ElevenLabs
+        bytes. A hash produced by the batched-slice path (RV-Q11) is
+        stored as `.wav` - PCM, to stay sample-exact (see
+        `app.renderer.narration_slice`'s module docstring). This function
+        runs before batching is decided, so it does not know which path
+        produced a given wiped row, and checks both extensions.
+
+        Both the audio file and its sidecar must exist and be non-empty.
+        Audio without a sidecar (every file written before C2) is not
+        enough to rebuild `alignment`, so those still re-synthesise."""
+        for suffix in (".mp3", ".wav"):
+            audio_path = project_dir / f"{content_hash}{suffix}"
+            if not audio_path.is_file() or audio_path.stat().st_size == 0:
+                continue
+            alignment = _read_alignment_sidecar(audio_path)
+            if alignment is None:
+                continue
+            return await narration_repo.insert(
+                project_id=project_uuid,
+                scene_id=scene.id,
+                provider=provider_name,
+                voice_id=voice_id,
+                model_id=settings.elevenlabs_model,
+                output_format=settings.elevenlabs_output_format,
+                text=scene.narration_text,
+                content_hash=content_hash,
+                local_path=str(audio_path),
+                alignment=alignment,
+                character_count=len(scene.narration_text),
+                cost_cents=round(
+                    len(scene.narration_text) * settings.elevenlabs_cost_cents_per_character
+                ),
+            )
+        return None
 
     async def _reconcile_and_append(
         self, ctx: RunContext, timeline: Timeline, alignments: dict[str, SceneAlignment]

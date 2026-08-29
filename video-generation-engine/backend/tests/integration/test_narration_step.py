@@ -550,6 +550,9 @@ async def test_tts_concurrency_never_exceeds_elevenlabs_cap(project_id, monkeypa
     monkeypatch.setattr(settings, "dry_run", False)
     monkeypatch.setattr(settings, "elevenlabs_voice_id", _VOICE_ID)
     monkeypatch.setattr(settings, "narration_concurrency", 3)
+    # RV-Q10 would otherwise pack all four unique scenes into one request.
+    # Force one scene per job so this still measures the gather cap.
+    monkeypatch.setattr(narration_module, "tts_request_character_limit", lambda model: 1)
 
     texts = [f"Scene text number {i} here" for i in range(4)]
     scenes = [_single_shot_scene(f"sc_{i:02d}", i, text) for i, text in enumerate(texts)]
@@ -573,6 +576,9 @@ async def test_tts_concurrency_never_exceeds_elevenlabs_cap(project_id, monkeypa
 async def test_one_scene_tts_failure_fails_the_whole_step(project_id, monkeypatch):
     monkeypatch.setattr(settings, "dry_run", False)
     monkeypatch.setattr(settings, "elevenlabs_voice_id", _VOICE_ID)
+    # Keep the two scenes as separate jobs so a failure of sc_02 still
+    # leaves sc_01 cached (the batch-all path would pay/fail together).
+    monkeypatch.setattr(narration_module, "tts_request_character_limit", lambda model: 1)
 
     scenes = [
         _single_shot_scene("sc_01", 0, "First scene text"),

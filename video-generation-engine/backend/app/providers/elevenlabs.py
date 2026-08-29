@@ -36,10 +36,26 @@ from app.core.errors import PermanentError, TransientError
 from app.providers.base import NarrationRequest, NarrationResult
 
 _API_BASE_URL = "https://api.elevenlabs.io"
-# A scene's narration is a handful of sentences, not a live stream - a
-# generous bounded timeout is simpler and safer than a poll loop (compare
-# FalImageProvider, which also treats its provider as fast-and-synchronous).
-_REQUEST_TIMEOUT_S = 60.0
+# A scene's narration is a handful of sentences; RV-Q10 may batch a
+# contiguous run up to the model character cap (~5 min of audio on
+# eleven_v3). 60s was enough per-scene and too tight for a batch.
+_REQUEST_TIMEOUT_S = 300.0
+
+# Published API per-request caps
+# (https://elevenlabs.io/docs/overview/models, checked 2026-08-29).
+# RV-Q10 packs contiguous scenes until this many characters; a single
+# scene that is itself over the cap is still sent as one request, same
+# as the pre-batch path. Unknown models use the conservative v3 cap.
+_TTS_CHAR_LIMIT_BY_MODEL = {
+    "eleven_v3": 5000,
+    "eleven_multilingual_v2": 10000,
+    "eleven_multilingual_v1": 10000,
+    "eleven_flash_v2_5": 40000,
+    "eleven_flash_v2": 30000,
+    "eleven_turbo_v2_5": 40000,
+    "eleven_turbo_v2": 30000,
+}
+_TTS_CHAR_LIMIT_DEFAULT = 5000
 
 
 # Live-checked 2026-08-20 against POST .../with-timestamps on
@@ -70,6 +86,11 @@ _SPEED_MAX = 1.4
 def canonical_narration_speed(speed: float) -> float:
     """Clamp and round so the value we hash is the value we send."""
     return round(min(_SPEED_MAX, max(_SPEED_MIN, float(speed))), 3)
+
+
+def tts_request_character_limit(model: str) -> int:
+    """Per-request character cap for `model`. Used by RV-Q10 batching."""
+    return _TTS_CHAR_LIMIT_BY_MODEL.get(model, _TTS_CHAR_LIMIT_DEFAULT)
 
 
 def compute_narration_content_hash(

@@ -187,11 +187,11 @@ class AssetProvider(Protocol):
 
 @dataclass(frozen=True)
 class NarrationRequest:
-    """One scene's TTS request (M8, D1). Per-scene, not per-video (M8
-    settled decision): `Shot.narration_span` is a character-offset pair
-    into its own scene's `narration_text`, so synthesising one scene at a
-    time is what makes the returned alignment line up with it directly,
-    with no cross-scene offset arithmetic.
+    """One TTS request (M8, D1). Cache keys and `Shot.narration_span`
+    stay per-scene; RV-Q10 may set `text` to several contiguous scenes
+    joined by a newline, which `NarrationStep` splits back into one
+    alignment per scene before `narration_fit` sees them. `scene_id` is
+    the first scene in that request (tracing), not a cache key.
 
     `voice_id`/`model`/`output_format`/`speed` are explicit fields here
     rather than baked into the provider instance (contrast

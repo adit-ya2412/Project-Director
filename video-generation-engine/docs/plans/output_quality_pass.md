@@ -1,6 +1,6 @@
 # Output Quality Pass — Audio Finishing, Subject-Aware Camera, Edit Rhythm, and the Review Harness
 
-**Status:** OQ-0a + OQ-0b + OQ-1d built; OQ-1a + OQ-1b + OQ-1c built awaiting listen; OQ-2 built awaiting watch. §12 review findings RV-Q1–Q8 **fixed 2026-08-29** (see P-OQ-RV). RV-Q10 **built 2026-08-29** (P-OQ-RV-Q10) and **reviewed — see §16: RV-Q11 is blocking, the sliced audio is 8-20 ms longer per scene than its own alignment says. Do NOT re-narrate for the listen until it is fixed.** OQ-3 / remaining OQ-4 design-only.
+**Status:** OQ-0a + OQ-0b + OQ-1d built; OQ-1a + OQ-1b + OQ-1c built awaiting listen; OQ-2 built awaiting watch. §12 review findings RV-Q1–Q8 **fixed 2026-08-29** (see P-OQ-RV). RV-Q10 **built 2026-08-29** (P-OQ-RV-Q10), reviewed (§16), and its blocking findings **RV-Q11/RV-Q12 fixed 2026-08-29** (see P-OQ-RV-Q10a in §10): sliced narration is now written as PCM/WAV, not re-encoded MP3, so it is no longer blocked for the listen on that finding. §16.4 (RV-Q14, whether scene joins should swell the bed) is still open, awaiting a creative decision. OQ-3 / remaining OQ-4 design-only.
 ⚠ **§14 re-cuts OQ-2: the focal question was being asked of a model that cannot answer it (gpt-4o-mini), and a schema default hid that. Now its own call on gpt-5.5.**
 ⚠ **§13 is the first measurement against a REAL project — it overturns three conclusions and adds RV-Q10, the only audible defect a human has actually reported. Read it before §12.**
 ⚠ **§2.3 and §4.1 were corrected 2026-08-29 against measured ffmpeg behaviour — the original text was wrong. See §12.6.**
@@ -1545,6 +1545,171 @@ crossfade at joins; invalidating existing narration rows.
 
 ---
 
+### P-OQ-RV-Q10a — RV-Q11/Q12 fixes (2026-08-29)
+
+**Scope executed:** §16.1 RV-Q11 (blocking) and §16.2 RV-Q12 only.
+§16.3 RV-Q13 got a docstring note (no behaviour change, as directed).
+§16.4 RV-Q14 (whether scene joins should swell the music bed) is
+untouched — a creative decision awaiting the user, explicitly out of
+scope here.
+
+**Changes:**
+- `backend/app/renderer/narration_slice.py` — `slice_mp3` renamed
+  `slice_wav`; the encode step changed from `-c:a libmp3lame -b:a 128k`
+  to `-c:a pcm_s16le`, and the container from `.mp3` to `.wav` (sample
+  rate stays pinned to 44100). Reason: `atrim` cuts exact decoded
+  samples, but the old code then RE-ENCODED that exact cut to MP3, a
+  framed codec (1152-sample frames) that re-quantises whatever it
+  re-encodes to its own frame grid. PCM has no frame grid to quantise
+  to, so the cut a caller asked for is the cut it gets, by construction,
+  independent of any codec's gapless-header support. Module docstring
+  rewritten to state the measured numbers instead of arguing the second
+  lame pass was an acceptable cost (it is not — see Measured below).
+- `backend/app/workflow/steps/narration.py`:
+  - `_persist_slice` (was hardcoding `f"{content_hash}.mp3"`) now takes
+    an explicit `extension` parameter. The solo-synthesis call site
+    (`len(job.members) == 1` — genuine, unre-encoded ElevenLabs bytes,
+    or DRY_RUN's fake stand-in) passes `.mp3`; the batched-slice call
+    site (post `slice_wav`) passes `.wav`. This one function serves
+    both call sites the plan's brief described as "narration.py:387 and
+    :514" — reading the code, both of those line numbers are inside
+    `_persist_slice` and `_restore_row_from_disk` respectively, and
+    `_persist_slice` is shared by BOTH the solo and batched paths, not
+    split across the two cited lines as the brief assumed. Fixed by
+    parameterising the one shared function rather than duplicating it.
+  - `_restore_row_from_disk` (the actual second site, restoring a wiped
+    DB row from disk) ran BEFORE batching is decided, so for a given
+    content hash it cannot know whether a previous run wrote `.mp3`
+    (solo) or `.wav` (batched-slice). Changed from a single hardcoded
+    `{content_hash}.mp3` lookup to a loop over `(".mp3", ".wav")`,
+    returning the first extension whose file AND sidecar both exist and
+    are non-empty. `test_mp3_without_sidecar_still_resynthesizes`'s
+    contract (audio without a sidecar still re-synthesises) is
+    preserved by construction — the loop's `continue` falls through to
+    the next extension and then to `return None`.
+  - `slice_mp3` import renamed to `slice_wav`; comments referencing "the
+    mp3" (`_ensure_alignment_sidecar` and neighbours) generalised to
+    "the audio file" since that is no longer always true.
+- `backend/app/timeline/narration_batch.py` — docstring only. Fixed
+  "one alignment + one mp3 per scene" to "one alignment + one audio
+  file per scene" (no longer strictly mp3), and added the §16.3/RV-Q13
+  paragraph: editing one scene's text via `scripts/edit_narration_text.py`
+  changes its hash, making it the only cache miss, so it synthesises
+  ALONE with a fresh performance while its batched neighbours keep
+  their original one — reproducing the voice-join discontinuity this
+  feature exists to remove, for exactly the scene a human just asked to
+  fix. Documented as a real gap, not fixed: the honest fix is
+  re-batching the edited scene with its still-cached neighbours, which
+  means deliberately discarding those neighbours' cached audio and
+  re-paying for it. No batching/splitting logic changed, per the task
+  boundary.
+- `backend/tests/unit/workflow/test_narration_batch.py` — replaced
+  `test_slice_mp3_preserves_requested_window` (single slice, 80ms
+  tolerance) with `test_slice_wav_sum_of_consecutive_slices_matches_source`
+  (5 consecutive, contiguous slices — the last ending exactly at the
+  source's own decoded duration, matching the real last-scene-of-a-batch
+  case — summed and compared to the source's own decoded duration within
+  0.5ms). Duration is measured by decoding to raw PCM and counting
+  bytes/2/48000 (`_decode_duration_s`), not by trusting `ffprobe`
+  container metadata, per the task brief — container metadata for MP3
+  is exactly what let the original 80ms-tolerance test hide the defect.
+  Renamed the rejection test to `test_slice_wav_rejects_non_positive_window`.
+  Removed now-unused `_ffprobe_duration`/`subprocess`/`json` imports.
+
+**Measured — an important discrepancy from §16.1's numbers:**
+
+§16.1 reported, on a real narration file cut into four pieces through
+the OLD `slice_mp3`: interior slices +20.11ms / +10.18ms / +7.62ms
+(+29.35ms summed), measured "by decoding to PCM". Repeating that exact
+experiment in this environment — same real file
+(`415dd8cd9d79511...mp3`, `1cdf55ac`'s project, 8.806083s decoded),
+cut into 4 EQUAL pieces through the OLD `libmp3lame` re-encode, then
+measured the way this task specifies (`ffmpeg -i X -ac 1 -ar 48000 -f
+s16le -`, bytes/2/48000, not `ffprobe`'s container-metadata duration) —
+produced **0.0000ms drift on every slice and 0.0000ms total**, both
+before and after this fix. Scanning further (all 9 real per-scene files
+in that project, several boundary choices, several synthetic sine
+sources) never reproduced anything close to §16.1's tens-of-milliseconds
+figures via true PCM-sample decoding in this ffmpeg build (`ffmpeg
+9.0-full_build-www.gyan.dev`, `libmp3lame`) — everything measured stayed
+under 0.05ms, with one narrow, reproducible exception: cutting a slice
+whose END lands exactly at the source's own decoded duration (the real
+last-scene case) shows a small, duration-dependent spike — e.g. a
+`sine=duration=8.806` source cut at fractions `[0, .211, .487, .733,
+1.0]` measures +0.90ms on that last slice alone (+0.92ms summed across
+5) through the OLD mp3 re-encode, and +0.001ms / +0.02ms summed through
+the fixed PCM path. That scenario is what
+`test_slice_wav_sum_of_consecutive_slices_matches_source` uses (0.5ms
+tolerance) — confirmed by temporarily reverting `slice_wav` to the old
+`libmp3lame` encode and watching it fail (`assert 8.8069375 ==
+8.806020833333333 ± 5.0e-04`), then restoring.
+
+Two explanations seem plausible for why §16.1's magnitude does not
+reproduce here: this ffmpeg/libmp3lame build may write and honour a
+gapless (Xing/LAME) info header far more precisely than whichever build
+produced the original numbers, so a same-encoder mp3→PCM→mp3→PCM round
+trip is nearly exact regardless of cut alignment; or §16.1's own
+"decoding to PCM" step differed from this task's specified method
+(e.g. read `ffprobe`'s reported stream duration on the re-encoded file
+rather than literally counting decoded PCM bytes — which is exactly
+what the pre-existing test being replaced did, and exactly what RV-Q12
+itself calls out as untrustworthy for MP3). **This does not change the
+fix or its justification** — PCM is unconditionally sample-exact by
+construction, with no dependency on any encoder writing correct
+metadata or any decoder correctly parsing it, which is a categorically
+safer property for a duration-preserving invariant (§2.3) than "this
+particular build's gapless support happens to be very good today." But
+the reviewer should know the dramatic headline number in §16.1 could
+not be reproduced with a literal PCM-sample-count measurement in this
+environment, and treat that entry's specific figures as unconfirmed
+pending a repeat on whatever ffmpeg build produced them.
+
+**Verification:**
+```
+cd backend
+unset PYTEST_TRUNCATE_DB
+python -m pytest tests/unit/workflow/test_narration_batch.py tests/unit/providers/test_elevenlabs.py tests/unit/renderer/ --noconftest -q
+```
+→ **277 passed.** Ruff clean (`ruff check app/ tests/unit/workflow/test_narration_batch.py --line-length 100`).
+
+**Effects, notes for the reviewer:**
+- Batched-slice narration audio is now larger on disk (PCM vs MP3,
+  ~5x the bytes for the same clip) — cheap relative to the correctness
+  this buys, and these files live only long enough for `mux_narration`
+  to decode and re-mux them once.
+- `mux_narration` needed no changes: its concat FILTER decodes every
+  input to PCM before joining regardless of container, so a `.wav`
+  input is exactly as usable as `.mp3` — this was checked, not assumed,
+  by reading `app/renderer/audio.py` end to end for any hardcoded `.mp3`
+  suffix/glob assumption; none exists outside the two sites fixed here.
+  Ducking, caption alignment, and metrics all read `local_path` from the
+  DB row as an opaque string — none of them assume an extension.
+- A hash whose row is wiped (pytest truncation, or manual DB surgery)
+  and whose disk file was originally a batched slice now restores
+  correctly from its `.wav`; before this fix `_restore_row_from_disk`
+  would have found nothing (looking only for `.mp3`) and silently
+  re-paid for a re-synthesis of a scene whose audio was sitting right
+  there on disk.
+- The blocking §16.1 finding is fixed regardless of whether its specific
+  measured magnitude reproduces here (see Measured above) — PCM/WAV is
+  the correct fix independent of that question.
+
+**What is NOT done:** §16.4 (RV-Q14, whether scene joins should swell
+the bed) — explicitly out of scope, awaiting the user's creative
+decision. §16.3 (RV-Q13) — docstring only, as directed; re-batching an
+edited scene with its neighbours is real, unbuilt work.
+`scripts/edit_narration_text.py` itself is unchanged. No re-narration of
+`1cdf55ac` or any other project; no invalidation of existing `.mp3` files
+already on disk from prior (pre-fix) batched runs. Those are found fine
+by `_restore_row_from_disk`'s new two-extension check (nothing
+re-synthesises unnecessarily), but the audio bytes themselves still
+carry whatever the old MP3 re-encode produced for that cut until the
+scene is naturally re-synthesised (a new project, a cache miss, or an
+N1 voice retry) — this fix changes what NEW slices are written, not
+what is already on disk.
+
+---
+
 ## 11. Testing & DB safety — mandatory, binding on this plan
 
 **Restated from `style_extensions.md` §6 and `analysis.md`'s TEST-DB
@@ -2543,30 +2708,59 @@ All 29 new tests pass — which is part of RV-Q12.
 - Cache-flush and duplicate-hash semantics are documented in the module
   docstring rather than left implicit.
 
-### 16.1 🔴 RV-Q11 — BLOCKING: the MP3 re-encode makes every sliced scene the wrong length
+### 16.1 ⚪ RV-Q11 — ~~BLOCKING~~ **WITHDRAWN: the measurement was broken, not the code** ✅ FIXED 2026-08-29 (see P-OQ-RV-Q10a)
 
 `slice_mp3` cuts with `atrim` (sample-exact on decoded PCM) and then
 **re-encodes to MP3**, which re-quantises to 1152-sample frames.
 Measured on a real narration file, cut into four pieces:
 
+⚠⚠ **CORRECTED 2026-08-29, SAME DAY. THE NUMBERS BELOW WERE WRONG AND
+THE SEVERITY WAS WRONG. This finding is NOT blocking.** The implementing
+agent could not reproduce them and said so; re-measuring proved the agent
+right. Kept in full, because how a review finding was manufactured out of
+a broken measurement is more useful than a tidy correction.
+
+**What was originally reported:** interior slices +20.11 / +10.18 /
++7.62 ms, +29.35 ms over four, "the voice progressively falls behind the
+picture, ~90 ms on this project, several hundred on long-form".
+
+**What is actually true.** Those numbers came from decoding each slice
+through `ffmpeg -i pipe:0`. **A piped MP3 decode does not apply the
+LAME/Xing gapless header, so it emits the encoder delay and padding as
+real samples; a decode from a file path strips them.** The same file:
+
+| decode of the whole source file | duration |
+|---|---|
+| via `pipe:0` (what the review used) | 8.830458 s |
+| via a file path | 8.806083 s |
+| **difference** | **+24.37 ms of padding, counted as audio** |
+
+Re-measuring the OLD MP3 re-encode with file-path decodes:
+
 | slice | MP3 (as built) | PCM/WAV |
 |---|---|---|
-| 0 | **+20.11 ms** | +0.01 ms |
-| 1 | **+10.18 ms** | +0.01 ms |
-| 2 | **+7.62 ms** | −0.01 ms |
-| **total across 4** | **+29.35 ms** | ~0 |
+| 0 | +0.59 ms | +0.01 ms |
+| 1 | +0.03 ms | +0.01 ms |
+| 2 | +0.02 ms | −0.01 ms |
+| 3 | −0.00 ms | — |
+| **total across 4** | **+0.62 ms** | ~0 |
 
-⚠ **The alignment is exact and the audio is not.** The split rebases from
-the batch perfectly, so `narration_fit` derives shot durations saying
-scene *i* is X seconds while the file on disk is X + 8–20 ms.
-`mux_narration` concatenates the real files, so the voice **progressively
-falls behind the picture** — ~10 ms per batched scene, ~90 ms on this
-9-scene project, several hundred ms on long-form. Captions ride the
-alignment clock, so they drift against the audio too.
+So the MP3 path drifts ~0.15 ms per slice, not ~10 ms. On a 30-scene
+long-form that is ~5 ms — well under one frame, and inaudible. **There
+was no "voice falls behind" defect.**
 
-This is exactly the failure `app/renderer/audio.py`'s docstring exists to
-prevent (it records +145 ms over five boundaries and the same "the voice
-slowly falls behind" symptom), and exactly the invariant §2.3 states.
+⚠ **The lesson, which is the part worth keeping:** every other audio
+measurement in §13 and §14 used file paths and stands. This one used a
+pipe, and a pipe silently changes what "the duration of this audio" means
+for a framed codec. The invariant in §2.3 is real; this reading of it was
+not. **Measure MP3 durations from a file path, never from a pipe.**
+
+**Why the PCM change was still kept** (see P-OQ-RV-Q10a): not as a bug
+fix but as robustness. PCM is sample-exact *by construction*, with no
+dependency on a decoder honouring gapless metadata — and the MP3 path's
+correctness rests entirely on that metadata being read, which is one
+refactor (or one piped decode) away from not happening. The cost is ~5x
+the bytes for a file that lives only until it is muxed.
 
 **Fix, measured not theorised:** write the slices as PCM/WAV. Sample-exact
 at ±0.01 ms. Costs ~5× the bytes (759 kB vs 139 kB for 8.8 s) and two
@@ -2578,7 +2772,7 @@ anyway, which is the whole reason it uses the filter and not the demuxer.
 the test asking for `end = whole-file decode duration`; production clamps
 the last slice to the probed duration.)*
 
-### 16.2 🔴 RV-Q12 — the test was written to tolerate the defect
+### 16.2 🔴 RV-Q12 — the test was written to tolerate the defect ✅ FIXED 2026-08-29 (see P-OQ-RV-Q10a)
 
 ```python
 # MP3 padding is a fraction of a frame; the cut is 1.000s of PCM.
@@ -2628,12 +2822,23 @@ same field for different purposes.
 
 ### 16.5 Recommended order
 
-1. **RV-Q11** — blocking. One codec change plus two path literals.
-2. **RV-Q12** — the sum-of-slices test, which is what proves RV-Q11 fixed.
+1. **RV-Q11** — blocking. One codec change plus two path literals. ✅ FIXED 2026-08-29.
+2. **RV-Q12** — the sum-of-slices test, which is what proves RV-Q11 fixed. ✅ FIXED 2026-08-29.
 3. **RV-Q14** — decide whether scene joins should swell, and test the
-   stretched-last-character shape either way.
-4. **RV-Q13** — docstring now, re-batching later if it bites.
+   stretched-last-character shape either way. Still open — a creative
+   decision awaiting the user.
+4. **RV-Q13** — docstring now, re-batching later if it bites. Docstring
+   done 2026-08-29 (see `app/timeline/narration_batch.py`); re-batching
+   still unbuilt.
 
-⚠ **Do not re-narrate `1cdf55ac` for the listen until RV-Q11 is fixed** —
-the audio would be measurably out of sync with the picture, and the
-listen would be judging the wrong thing.
+✅ **RV-Q11 and RV-Q12 fixed 2026-08-29** (see `P-OQ-RV-Q10a` in §10) —
+sliced narration is now written as PCM/WAV, not re-encoded MP3, and the
+regression test sums >=4 consecutive decoded slices against the source
+instead of tolerating one slice within 80ms. See that log entry's
+"Measured" section for an important caveat: the dramatic per-slice
+drift reported directly above (§16.1: +20.11/+10.18/+7.62ms) could not
+be reproduced via a literal PCM-sample-count decode in this environment
+— treat those specific numbers as unconfirmed on this ffmpeg build,
+while the fix itself (PCM has no frame grid to re-quantise to, by
+construction) stands regardless. Re-narration for the listen is no
+longer blocked on this finding.
