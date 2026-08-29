@@ -1710,6 +1710,65 @@ what is already on disk.
 
 ---
 
+### P-OQ-E2E — first end-to-end render with everything on (2026-08-29)
+
+**Scope executed:** no new code. One full render of `1cdf55ac` exercising
+every change from this plan together for the first time — batched
+narration through the real `NarrationStep`, PCM slicing, per-scene level
+match, loudness pass, speech-accurate ducking at the ear-signed 8 dB,
+`amix normalize=0`, and all 34 subject focals.
+
+⚠ **Everything before this was validated in isolation** — standalone
+scripts, direct function calls, hand-built A/Bs. Six changes had never
+been proven together through the real pipeline.
+
+**Measured** (`scripts/render_metrics.py` on the finished file):
+
+| | old (`before.mp4`) | new (`oq_full.mp4`) |
+|---|---|---|
+| integrated loudness | −22.3 LUFS | **−16.5** (target −16) |
+| true peak | −5.9 dBFS | **+0.2** ⚠ still unguarded |
+| duration | 76.37 s | **72.80 s** |
+| shots over the 3.5 s ceiling | — | **0** |
+| shots under the 0.8 s floor | 1 (0.762 s) | **0** (min 0.84 s) |
+| dead air ≥ 0.5 s | — | **0 gaps** |
+| black / frozen frames | none | none |
+| transitions ≥ their shot | none | none |
+| camera mix | 67/20/13 | 67/20/13 |
+
+**Human verdict:** *"yess everything seems fine now"* — including the
+scene 1→2 join at 9.52 s, the "Training" seam that started RV-Q10.
+
+#### ⚠ Two predictions in this plan were wrong, and the render disproved both
+
+1. **§16.6 feared batching would lengthen the video** (more silence per
+   join). It came out **3.6 s SHORTER** — the batched speech is 14%
+   faster, so reconciliation more than absorbs the added pauses.
+2. **RV-Q15 feared the pacing bands would break.** Zero shots outside
+   either bound, and the render actually stopped violating the 0.8 s
+   floor the previous one breached.
+
+#### A capability gap this exposed
+
+**There is no supported way to force a re-narration.** `NarrationStep
+.is_satisfied` returns True on `timeline.produced_by == NARRATION` — a
+stamp on the timeline version, not the presence of audio. Deleting the
+narration rows does not re-trigger it; it only makes the next render fail
+with *"timeline is produced_by=narration but no narration row exists"*.
+This render only worked by calling `NarrationStep().run()` directly,
+bypassing the gate.
+
+⚠ Same shape as `RenderStep.is_satisfied`, which short-circuits on
+`video_path` existing. Both steps decide they are done from a stamp
+rather than from the artifact. That is fine for resume-after-crash and
+wrong for "re-record this" — which is a real workflow the moment someone
+edits a line (see RV-Q13). Worth a deliberate re-narrate path rather than
+leaving it to whoever next deletes rows by hand.
+
+**State:** the project's narration is now the batched `.wav` take. The
+original nine per-scene `.mp3` files and their DB rows are backed up in
+the session scratchpad (`f1/narration_backup/`).
+
 ## 11. Testing & DB safety — mandatory, binding on this plan
 
 **Restated from `style_extensions.md` §6 and `analysis.md`'s TEST-DB
