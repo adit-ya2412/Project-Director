@@ -44,10 +44,13 @@ this document, then the one feature section you are building, then the code.
 This plan is written to be executed by more than one agent, in sequence,
 across sessions. The pickup protocol:
 
-1. **Find the next unstarted task** by reading §9 (Sequencing) top to bottom
-   and stopping at the first row without a ✅ and without a corresponding
-   entry in §10 (Implementation log). §9 is the authority on order — not
-   this list, and not the section numbering.
+1. **Find the next unstarted task in §15 (What to pick up next).** §15 is
+   the authority on order as of 2026-08-29 — not this list, not the section
+   numbering, and **not §9**, whose table is now historical and says so at
+   its head. Cross-check §10 (Implementation log) for a matching entry
+   before assuming a §15 item is unstarted. Open review findings live in
+   §12 / §16 / §17 / §18 as `RV-Q*` and are picked up the same way; each says
+   in its own text whether it is blocking.
 2. **Check the gate.** Every task in §9 states a gate — a measurement or a
    prior task that must be complete first. If the gate is unmet, do the
    gate, not the task. Gates here are not ceremony: two of the items are
