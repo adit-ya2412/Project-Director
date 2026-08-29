@@ -3050,7 +3050,12 @@ later without re-reading §18 end to end.
 
 **Open, in the order worth picking up:**
 
-1. **RV-Q24 (§18.7.1) — the best remaining thread.** The archival
+1. **RV-Q24 (§18.7.1) — the best remaining thread.**
+   → Its downstream consequence now has its own design doc:
+   [`animated_explainer.md`](animated_explainer.md), written 2026-08-29,
+   **design only, nothing built**. That plan's §4 gate *is* RV-Q24's
+   classification test with thresholds attached, so doing one does the
+   other — run it from there, not twice. The archival
    rejects cluster on shot prompts describing a *composed* image
    ("1940s German strategic map … with an empty fuel gauge motif")
    rather than a photographable one — so part of the 70% is the **shot
@@ -3921,6 +3926,14 @@ model:
 2. **Teach the shot planner the constraint** — for an archival style,
    prefer prompts a camera could have taken. This is the higher-leverage
    half, and it is upstream of every cost lever in §15.
+
+**Both of those live in [`animated_explainer.md`](animated_explainer.md)
+as of 2026-08-29** (its §5 A1 and §7 respectively), because they are the
+same question seen from two ends: *the planner keeps asking for images
+that must be made rather than found.* Read that plan's §4 before
+starting either — it fixes thresholds in advance so the census cannot be
+rationalised after the fact, and one of its outcomes is "close it, fix
+the prompt writing instead".
 
 Sequencing note: this supersedes nothing already shipped, and it must
 not be started as a code change. Measure the classification first —
