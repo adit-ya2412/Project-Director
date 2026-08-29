@@ -1,6 +1,6 @@
 # Output Quality Pass — Audio Finishing, Subject-Aware Camera, Edit Rhythm, and the Review Harness
 
-**Status:** OQ-0a + OQ-0b + OQ-1d built; OQ-1a + OQ-1b + OQ-1c built awaiting listen; OQ-2 built awaiting watch. §12 review findings RV-Q1–Q8 **fixed 2026-08-29** (see P-OQ-RV). RV-Q10 **built 2026-08-29** (P-OQ-RV-Q10), reviewed (§16), and its blocking findings **RV-Q11/RV-Q12 fixed 2026-08-29** (see P-OQ-RV-Q10a in §10): sliced narration is now written as PCM/WAV, not re-encoded MP3, so it is no longer blocked for the listen on that finding. §16.4 (RV-Q14, whether scene joins should swell the bed) is still open, awaiting a creative decision. **§15.3 (P-OQ4.4) and §15.4 (P-OQ-15.4) built 2026-08-29; orchestrator review is §17** — 1024 shipped, 512 not. RV-Q16/RV-Q18 **resolved by repeat measurement (§17.6): 512 is closed, 1024 stands**; the gate's own run-to-run instability at full res is now tracked as RV-Q20. The only open action from that review is **RV-Q19 — apply the `a8b3c1d4e5f6` migration to shared Postgres (human call)**. §18 (RV-Q22) answers the user's "most assets get rejected" observation with the recorded verdicts: **70% reject rate is real but is a search-relevance signal, not a vision-model defect** — shots still finish 79% real / 20% generated — and §18.5 (P-OQ-18.5) **measured candidate #2 after a #1 reject: on the replayable *contemporary Pexels* sample a rejected #1 still had a passing #2 — but that is n=1 unique rejected image across 2 prompts, with no archival rung in the set, so A30 is not refuted (review §18.6 / RV-Q23). Re-measured on 12 Wikimedia archival rungs (P-OQ-18.5b): **#2 never passes when #1 is a stable reject (0/7) — A30 holds for that class; `break` unchanged.** Review §18.7 confirms that closure and reads a further finding out of the same table (**RV-Q24**): the stable rejects cluster on shot prompts that describe a *composed* image ("strategic map … with an empty fuel gauge motif") rather than a photographable subject — so part of the 70% is the **shot planner asking for photographs that were never taken**, which no ranking or vision change can fix. OQ-3 / remaining OQ-4 design-only.
+**Status:** OQ-0a + OQ-0b + OQ-1d built; OQ-1a + OQ-1b + OQ-1c built awaiting listen; OQ-2 built awaiting watch. §12 review findings RV-Q1–Q8 **fixed 2026-08-29** (see P-OQ-RV). RV-Q10 **built 2026-08-29** (P-OQ-RV-Q10), reviewed (§16), and its blocking findings **RV-Q11/RV-Q12 fixed 2026-08-29** (see P-OQ-RV-Q10a in §10): sliced narration is now written as PCM/WAV, not re-encoded MP3, so it is no longer blocked for the listen on that finding. §16.4 (RV-Q14, whether scene joins should swell the bed) is still open, awaiting a creative decision. **§15.3 (P-OQ4.4) and §15.4 (P-OQ-15.4) built 2026-08-29; orchestrator review is §17** — 1024 shipped, 512 not. RV-Q16/RV-Q18 **resolved by repeat measurement (§17.6): 512 is closed, 1024 stands**; the gate's own run-to-run instability at full res is now tracked as RV-Q20. **RV-Q19 done: `a8b3c1d4e5f6` applied to shared Postgres 2026-08-29, so §15.3 is live and new calls write real `cost_cents`** (historical rows stay 0). §18 (RV-Q22) answers the user's "most assets get rejected" observation with the recorded verdicts: **70% reject rate is real but is a search-relevance signal, not a vision-model defect** — shots still finish 79% real / 20% generated — and §18.5 (P-OQ-18.5) **measured candidate #2 after a #1 reject: on the replayable *contemporary Pexels* sample a rejected #1 still had a passing #2 — but that is n=1 unique rejected image across 2 prompts, with no archival rung in the set, so A30 is not refuted (review §18.6 / RV-Q23). Re-measured on 12 Wikimedia archival rungs (P-OQ-18.5b): **#2 never passes when #1 is a stable reject (0/7) — A30 holds for that class; `break` unchanged.** Review §18.7 confirms that closure and reads a further finding out of the same table (**RV-Q24**): the stable rejects cluster on shot prompts that describe a *composed* image ("strategic map … with an empty fuel gauge motif") rather than a photographable subject — so part of the 70% is the **shot planner asking for photographs that were never taken**, which no ranking or vision change can fix. OQ-3 / remaining OQ-4 design-only.
 ⚠ **§14 re-cuts OQ-2: the focal question was being asked of a model that cannot answer it (gpt-4o-mini), and a schema default hid that. Now its own call on gpt-5.5.**
 ⚠ **§13 is the first measurement against a REAL project — it overturns three conclusions and adds RV-Q10, the only audible defect a human has actually reported. Read it before §12.**
 ⚠ **§2.3 and §4.1 were corrected 2026-08-29 against measured ffmpeg behaviour — the original text was wrong. See §12.6.**
@@ -3029,6 +3029,52 @@ rejection table, and only then keep it.
 - **RV-Q14's latent case:** a script whose scene text does NOT end with a
   blank line would lose the join swell. Wants a test pinning it.
 
+### 15.7 ⏸ Parked 2026-08-29 — the asset-rejection thread (§18)
+
+Stopped here at the user's call: *"leave it, we can do it later — I need
+to generate videos now."* **Nothing in §18 is blocking a render.** The
+70% reject rate is the steady state every existing project was built
+under, shots still finish 79% real / 20% generated, and no code was
+changed by any of it. This subsection exists so the thread is findable
+later without re-reading §18 end to end.
+
+**Settled, do not re-litigate:**
+- The 70% reject rate is real, and it is a **search-relevance signal,
+  not a `gpt-4o-mini` defect** (§18.1–18.3). Reject rate correlates
+  *negatively* with generation fallback (r = −0.51) — read the `gen`
+  column for damage, not the reject count.
+- **A30 holds for archival**: when candidate #1 is a stable reject,
+  candidate #2 never passes (0/7, §18.5 / P-OQ-18.5b). The `break` in
+  `resolve_assets.py` stays. "Try candidate #2 once" is closed.
+- `depiction_image_max_px` stays at **1024**; 512 is closed (§17.6).
+
+**Open, in the order worth picking up:**
+
+1. **RV-Q24 (§18.7.1) — the best remaining thread.** The archival
+   rejects cluster on shot prompts describing a *composed* image
+   ("1940s German strategic map … with an empty fuel gauge motif")
+   rather than a photographable one — so part of the 70% is the **shot
+   planner asking for photographs that were never taken**. A hypothesis
+   with a visible mechanism, not a result; §18.7.2 has the exact
+   classification test that settles it, and the two changes that follow
+   if it holds (route composed shots to generation up front; teach the
+   planner the constraint). **Start here.**
+2. **RV-Q20 (§17.7)** — the gate is unstable at full res: a real plant
+   still rejected 2 times in 3 on identical bytes. Not a downscale
+   defect, not blocking, but it is a real quality leak. Three options
+   costed in §17.7.
+3. **RV-Q21 (§17.8)** — one line in `LLM_USD_PER_1M_TOKENS` when a
+   `-mini` / `-nano` variant of a priced family first ships.
+
+**Harnesses already built, all re-runnable, all SELECT-only or
+API-cheap** — do not rewrite these:
+`scripts/measure_gate_reject_rate.py`, `scripts/measure_depiction_noise.py`,
+`scripts/measure_depiction_downscale.py`,
+`scripts/freeze_rvq22_wikimedia.py`,
+`scripts/measure_rung_second_candidate.py`.
+⚠ Each reads the shared Postgres — run them **before** any pytest
+session, never after (§11).
+
 ### 15.6 Parked: should we add a non-OpenAI provider?
 
 Asked 2026-08-29 (DeepSeek / Grok / GLM). **Not now**, and the reasoning
@@ -3465,7 +3511,16 @@ resolution, or it could be a second full-res draw that would have
 kept it too. Cheap to answer: three repeats of that one image at full
 and at 512.
 
-### 17.4 ⚪ RV-Q19 — 15.3's migration is not applied
+### 17.4 ✅ DONE — RV-Q19, 15.3's migration is applied (2026-08-29)
+
+> **Applied 2026-08-29** at the user's instruction, against the shared
+> Postgres: `alembic upgrade head`, `f7c1d9a3b2e4 → a8b3c1d4e5f6`.
+> Verified in `information_schema`: `cost_cents` now nullable,
+> `input_usd_per_1m` / `output_usd_per_1m` present as `double
+> precision`, both nullable. The 952 pre-existing rows keep
+> `cost_cents = 0` and null rates — **not backfilled**, by design;
+> only calls made from now on carry real cost. §15.3 is live.
+> Original entry below.
 
 `a8b3c1d4e5f6` is on disk, `down_revision=f7c1d9a3b2e4`. The SQLAlchemy
 model now has nullable `cost_cents` plus two rate columns. Any live
@@ -3476,10 +3531,8 @@ happen before 15.3 is real in the database.
 
 ### 17.5 Recommended order — updated 2026-08-29 after §17.6
 
-1. **RV-Q19** — apply the 15.3 migration when you are ready to let new
-   calls write cost. Additive, nullable columns. **Still the only open
-   action from this review**, and it is a human call because it touches
-   shared Postgres.
+1. ~~**RV-Q19**~~ ✅ **applied 2026-08-29** — see §17.4. New calls write
+   real `cost_cents`; historical rows stay 0.
 2. ~~RV-Q18~~ / ~~RV-Q16~~ — done, see §17.6. `depiction_image_max_px`
    stays at **1024**; 512 is closed, not deferred.
 3. **RV-Q17** is closed with them: the 512 prize is not collectable at
