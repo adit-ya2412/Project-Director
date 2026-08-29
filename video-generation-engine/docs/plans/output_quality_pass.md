@@ -1,6 +1,6 @@
 # Output Quality Pass — Audio Finishing, Subject-Aware Camera, Edit Rhythm, and the Review Harness
 
-**Status:** OQ-0a + OQ-0b + OQ-1d built; OQ-1a + OQ-1b + OQ-1c built awaiting listen; OQ-2 built awaiting watch. §12 review findings RV-Q1–Q8 **fixed 2026-08-29** (see P-OQ-RV). RV-Q10 **built 2026-08-29** (P-OQ-RV-Q10), reviewed (§16), and its blocking findings **RV-Q11/RV-Q12 fixed 2026-08-29** (see P-OQ-RV-Q10a in §10): sliced narration is now written as PCM/WAV, not re-encoded MP3, so it is no longer blocked for the listen on that finding. §16.4 (RV-Q14, whether scene joins should swell the bed) is still open, awaiting a creative decision. **§15.3 (P-OQ4.4) and §15.4 (P-OQ-15.4) built 2026-08-29; orchestrator review is §17** — 1024 shipped, 512 not. RV-Q16/RV-Q18 **resolved by repeat measurement (§17.6): 512 is closed, 1024 stands**; the gate's own run-to-run instability at full res is now tracked as RV-Q20. The only open action from that review is **RV-Q19 — apply the `a8b3c1d4e5f6` migration to shared Postgres (human call)**. §18 (RV-Q22) answers the user's "most assets get rejected" observation with the recorded verdicts: **70% reject rate is real but is a search-relevance signal, not a vision-model defect** — shots still finish 79% real / 20% generated — and §18.5 (P-OQ-18.5) **measured candidate #2 after a #1 reject: on the replayable *contemporary Pexels* sample a rejected #1 still had a passing #2 — but that is n=1 unique rejected image across 2 prompts, with no archival rung in the set, so A30 is not refuted (review §18.6 / RV-Q23). The `break` was not changed.** OQ-3 / remaining OQ-4 design-only.
+**Status:** OQ-0a + OQ-0b + OQ-1d built; OQ-1a + OQ-1b + OQ-1c built awaiting listen; OQ-2 built awaiting watch. §12 review findings RV-Q1–Q8 **fixed 2026-08-29** (see P-OQ-RV). RV-Q10 **built 2026-08-29** (P-OQ-RV-Q10), reviewed (§16), and its blocking findings **RV-Q11/RV-Q12 fixed 2026-08-29** (see P-OQ-RV-Q10a in §10): sliced narration is now written as PCM/WAV, not re-encoded MP3, so it is no longer blocked for the listen on that finding. §16.4 (RV-Q14, whether scene joins should swell the bed) is still open, awaiting a creative decision. **§15.3 (P-OQ4.4) and §15.4 (P-OQ-15.4) built 2026-08-29; orchestrator review is §17** — 1024 shipped, 512 not. RV-Q16/RV-Q18 **resolved by repeat measurement (§17.6): 512 is closed, 1024 stands**; the gate's own run-to-run instability at full res is now tracked as RV-Q20. The only open action from that review is **RV-Q19 — apply the `a8b3c1d4e5f6` migration to shared Postgres (human call)**. §18 (RV-Q22) answers the user's "most assets get rejected" observation with the recorded verdicts: **70% reject rate is real but is a search-relevance signal, not a vision-model defect** — shots still finish 79% real / 20% generated — and §18.5 (P-OQ-18.5) **measured candidate #2 after a #1 reject: on the replayable *contemporary Pexels* sample a rejected #1 still had a passing #2 — but that is n=1 unique rejected image across 2 prompts, with no archival rung in the set, so A30 is not refuted (review §18.6 / RV-Q23). Re-measured on 12 Wikimedia archival rungs (P-OQ-18.5b): **#2 never passes when #1 is a stable reject (0/7) — A30 holds for that class; `break` unchanged.** Review §18.7 confirms that closure and reads a further finding out of the same table (**RV-Q24**): the stable rejects cluster on shot prompts that describe a *composed* image ("strategic map … with an empty fuel gauge motif") rather than a photographable subject — so part of the 70% is the **shot planner asking for photographs that were never taken**, which no ranking or vision change can fix. OQ-3 / remaining OQ-4 design-only.
 ⚠ **§14 re-cuts OQ-2: the focal question was being asked of a model that cannot answer it (gpt-4o-mini), and a schema default hid that. Now its own call on gpt-5.5.**
 ⚠ **§13 is the first measurement against a REAL project — it overturns three conclusions and adds RV-Q10, the only audible defect a human has actually reported. Read it before §12.**
 ⚠ **§2.3 and §4.1 were corrected 2026-08-29 against measured ffmpeg behaviour — the original text was wrong. See §12.6.**
@@ -1968,6 +1968,72 @@ replayable rungs is RV-Q20 again (historic reject ≠ 3/3 today).
 past the 4 live Pexels pairs; applying the §15.3 migration; search-
 relevance work (§18.4.1).
 
+### P-OQ-18.5b — RV-Q23 re-measure on Wikimedia archival rungs (2026-08-29)
+
+**Scope executed:** §18.6.4 / RV-Q23 re-freeze only. Same three-draw
+protocol, MIXED flagged, `break` untouched, no `llm_call` writes.
+Not an extension of the Pexels set — a replacement sample in the class
+that actually drives generation fallback.
+
+**Changes:**
+- `backend/scripts/freeze_rvq22_wikimedia.py` — SELECT reject shots from
+  Oil and War / Radar WWII, live Commons search+rank+fetch (historical_
+  search rung, licence + relevance gates, fetch cap 5), require
+  **distinct `source_id_1`** before writing
+  `scripts/_rvq22_archival_cases.json`. `58f0a5e6` is not in this
+  Postgres; `b6a2ae69` (Oil and War) supplied the 12 rungs.
+- `backend/scripts/measure_rung_second_candidate.py` — loads that JSON,
+  reads cached Wikimedia bytes, refuses to start if #1 ids collide,
+  calls production `check_depiction`.
+
+**Measured:** 12 rungs, 12 distinct #1s, 12/12 fetchable, 72 vision
+calls (`gpt-4o-mini`, `depiction_image_max_px=1024`).
+
+| rung | #1 | #1 kind | #2 | #2 kind | #2 pass given stable #1 reject? |
+|---|---|---|---|---|---|
+| sc_01_sh_02 fuel gauge vs map | 3/3 | reject | 3/3 | reject | no (Honda gauge / Mazda gauge) |
+| sc_02_sh_02 Fischer portrait | 1/3 | MIXED | 0/3 | pass | — (historic reject did not hold) |
+| sc_02_sh_03 Tropsch portrait | 2/3 | MIXED | 2/3 | MIXED | — |
+| sc_02_sh_05 coal hopper | 3/3 | reject | 3/3 | reject | no (boats / PA mine, not German hopper) |
+| sc_02_sh_06 synthetic fuel | 3/3 | reject | 3/3 | reject | no (P-51s / Polish elevator) |
+| sc_02_sh_10 FT reactor | 3/3 | reject | 3/3 | reject | no (Kontakt-Öfen / similar oven) |
+| sc_03_sh_05 German tanks | 0/3 | pass | 3/3 | reject | — (#1 now passes) |
+| sc_03_sh_06 Luftwaffe | 3/3 | reject | 3/3 | reject | no (city aerial / soldiers+motorcycle) |
+| sc_05_sh_05 N.Africa wreck | 3/3 | reject | 2/3 | MIXED | no |
+| sc_06_sh_03 fuel drums | 1/3 | MIXED | 3/3 | reject | — |
+| sc_07_sh_02 apartheid sign | 0/3 | pass | 2/3 | MIXED | — |
+| sc_08_sh_01 FT lab | 3/3 | reject | 3/3 | reject | no (Haber letter / Haber letter) |
+
+A30 test: among **7** rungs where #1 is a stable 3/3 reject, **#2 is a
+stable 0/3 pass on 0/7 = 0%**. Looser majority-pass on #2 given
+majority-reject #1: **0**. MIXED cells on 5 rungs (RV-Q20, not ranking).
+
+The Honda/Mazda pair is §18.2's fuel-gauge reject in the flesh: ranking
+put two modern dashboards at the top of a "1940s German strategic map"
+query. Trying #2 would have spent a second mini call to reject a second
+gauge. Same pattern on coal (wrong geography), aircraft vs plant,
+letters vs laboratory. **The pool really did not contain an on-topic
+still in the top two.**
+
+**Decision: A30 holds for archival Wikimedia.** Close §18.5. Effort
+belongs in search terms / relevance (§18.4.1), not in changing the
+`break`. The contemporary-Pexels lead (P-OQ-18.5) does not transfer.
+
+**Verification:** freeze
+`python scripts/freeze_rvq22_wikimedia.py` (SELECT then Commons;
+distinct #1 checked). Measure
+`python scripts/measure_rung_second_candidate.py`. No pytest after the
+SELECT. No `PYTEST_TRUNCATE_DB`. No `break` edit.
+
+**Effects / notes for the reviewer:** pools are **today's** Commons
+ranking of the historic search queries, not a 2026-08-15 ranking log
+(none exists for these projects). Files persist, which is the point.
+`sc_02_sh_02` #1/#2 are two scans of the same Fischer portrait — still
+two source_ids, not a duplicate-#1 violation.
+
+**What is NOT done:** changing the `break`; search-term work; applying
+the §15.3 migration.
+
 ## 11. Testing & DB safety — mandatory, binding on this plan
 
 **Restated from `style_extensions.md` §6 and `analysis.md`'s TEST-DB
@@ -3602,21 +3668,17 @@ signal. Read the `gen` column.**
    are ~15% of calls and a third of those flip, that is ~5% of calls
    decided by chance. It is not the 70%.
 
-### 18.5 🟡 Measured — A30's premise is bent, not broken (P-OQ-18.5)
+### 18.5 ✅ Closed — A30 holds on archival Wikimedia (P-OQ-18.5b)
 
-**Measured 2026-08-29.** Production `check_depiction`, three draws per
-cell, frozen `1cdf55ac` ranking pools. 13 rungs nominated; 4 still
-fetchable on Pexels; 9 `source_id`s 404. Of the 2 rungs where candidate
-#1 is a stable 3/3 reject, candidate #2 is a stable 0/3 pass on both.
-The `break` was **not** changed — that is a follow-up (try #2 once, or
-fix ranking). Full table in §10 P-OQ-18.5.
+**Re-measured 2026-08-29 against RV-Q23.** 12 Wikimedia rungs from
+*Oil and War* (`b6a2ae69`), 12 distinct #1s, three draws per cell.
+Among 7 rungs where #1 is a stable 3/3 reject, **#2 never passes
+(0/7)**. The `break` stays. Search terms (§18.4.1) are the next lever,
+not try-next-once. Full table in §10 P-OQ-18.5b.
 
-⚠ **Read §18.6 (RV-Q23) before quoting that as a result.** Those two
-rungs share **the same candidate #1**, so it is one rejected image under
-two prompts, not two independent rungs; and all 13 nominated rungs are
-contemporary Pexels stock, with no archival rung in the set — the class
-§18.2 shows the reject problem actually lives in. Re-freeze on Wikimedia
-rungs before treating A30 as refuted.
+The Pexels pass (P-OQ-18.5) remains on file as a contemporary-stock
+lead that did not transfer. Read §18.6 for why that pass was not
+enough.
 
 #### Original entry
 
@@ -3716,11 +3778,99 @@ on n=1 unique image, in the wrong asset class, that is stronger than
 the evidence. **Both are softened to "does not hold on the replayable
 contemporary sample" in this edit.**
 
-**Next, and it is one task:** re-freeze on ~12 **Wikimedia** rungs from
-an archival project (`58f0a5e6` / `1cdf55ac`'s wartime shots), same
-three-draw protocol, and report the same table. If #2 passes there too,
-the ranking fix is justified and the `break` change becomes a real
-proposal. If #2 also fails there, A30 holds for the class that
-actually drives the 20% generation fallback, and the effort belongs in
-search terms (§18.4.1) instead.
+**Next, and it is one task:** ~~re-freeze on ~12 **Wikimedia** rungs~~
+✅ **done P-OQ-18.5b.** #2 also fails there (0/7 stable #1-rejects have
+a passing #2). **A30 holds for archival Wikimedia.** Effort belongs in
+search terms (§18.4.1). The `break` is not a proposal.
+
+### 18.7 Review of P-OQ-18.5b, and the finding underneath it — RV-Q24 (2026-08-29)
+
+Orchestrator review of the Wikimedia re-measure. `_rvq22_archival_
+cases.json`, `freeze_rvq22_wikimedia.py` and the amended harness read in
+full; the live sweep was not re-run.
+
+**The closure is sound. A30 holds for archival, and §18.5 is closed.**
+12 distinct #1s (the RV-Q23 defect fixed), 12/12 fetchable (the Pexels
+404 problem fixed by provider choice), 7 stable #1-rejects, **0 passing
+#2s**. The freeze goes through production `WikimediaAssetProvider`,
+`rank_candidates` and `passes_relevance_gate`, and both `shot_prompt`
+and `search_subject` are lifted from the historic `llm_call.request` —
+so these are the **real production queries**, not paraphrases. The
+Honda-gauge / Mazda-gauge pair is §18.2's fuel-gauge reject reproduced
+end to end.
+
+**One caveat on comparability, not on the result.** The Pexels run
+replayed a frozen 2026-08-28 ranking log; this one re-searches Commons
+today. So "the contemporary lead did not transfer" changes two things at
+once — asset class *and* replay method. The archival conclusion stands
+on its own 0/7; the cross-class comparison should not be leaned on.
+
+#### 18.7.1 🔴 RV-Q24 — the rejects are concentrated in shots no archive can satisfy
+
+The table's own rows say something the entry does not. Sort the 12 rungs
+by what the **shot prompt asks for**:
+
+| #1 outcome | rungs | what the prompt asks for |
+|---|---|---|
+| stable **pass** (0/3) | German tank column; apartheid building signage | a canonical, abundantly photographed subject |
+| MIXED | Fischer portrait; Tropsch portrait; Wehrmacht fuel drums | a named person or a generic wartime object |
+| stable **reject** (3/3) | fuel-gauge-and-map; 1920s coal hopper; fuel flowing from a refinery pipe; FT reactor vessel; Luftwaffe formation above clouds; N. Africa wreck; FT laboratory | a **composed image**, often fusing two motifs or specifying an action |
+
+The clearest case is `sc_01_sh_02`. Production shot prompt:
+
+> *"1940s German strategic map focused on Germany, stark dry fuel
+> reservoir gauge and empty oil storage tank motif"*
+
+and the production search subject derived from it:
+
+> *"Germany strategic map 1940 / German wartime map / WWII oil storage /
+> **empty fuel gauge**"*
+
+That is a **designed composite** — a map *and* a gauge motif — turned
+into a literal archive query. Commons answers "empty fuel gauge" with a
+Honda dashboard, then a Mazda dashboard, and the gate correctly rejects
+both. No amount of ranking, re-ranking, or trying candidate #3 fixes
+that: **the photograph being asked for was never taken.** Same shape on
+"dark liquid fuel flowing from a steel refinery pipe into a metal
+collection vessel" and "steel catalytic reactor vessel with dense
+valvework".
+
+Meanwhile the two rungs whose #1 passed on the first try are the two
+plainest nameable subjects in the set — a German tank column and an
+apartheid-era building with segregated signage.
+
+**So §18.4.1's "search relevance" is the right area and slightly the
+wrong name.** A share of the 70% is not a retrieval failure at all; it
+is the **shot planner specifying images that do not exist as
+photographs**, and the search + gate stack faithfully reporting that
+several rungs later, after paying for the searches.
+
+n=12, one project, and the split above is my reading of the prompts
+rather than a labelled measurement — **a hypothesis with a visible
+mechanism, not a result.** It is cheap to test properly and it is now
+the most promising thread in §18.
+
+#### 18.7.2 The test, and why it changes what gets built
+
+Classify every shot prompt in 3–4 archival projects as **findable**
+(a nameable subject, event, person, or place that a photographer
+plausibly stood in front of) versus **composed** (fuses motifs,
+specifies an action or an arrangement, or names an abstract state), then
+join to the recorded depiction verdicts. If composed prompts carry most
+of the rejects, two changes follow, and neither is a better vision
+model:
+
+1. **Route composed shots to generation up front** instead of after
+   three failed search rungs. That converts wasted searches and gate
+   calls into a deliberate decision, and it is the honest use of
+   generation — the 20% fallback stops being a failure mode and becomes
+   an intent.
+2. **Teach the shot planner the constraint** — for an archival style,
+   prefer prompts a camera could have taken. This is the higher-leverage
+   half, and it is upstream of every cost lever in §15.
+
+Sequencing note: this supersedes nothing already shipped, and it must
+not be started as a code change. Measure the classification first —
+§17.6 and §18.6 are both cases where a single unmeasured draw became a
+"finding".
 

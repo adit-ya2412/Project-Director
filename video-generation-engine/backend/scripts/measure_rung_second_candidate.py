@@ -10,11 +10,11 @@ Hits `OpenAIPlanningProvider.check_depiction` directly (same path as
 `measure_depiction_downscale.py`) — never `check_candidate_plausibility`,
 so nothing is written to `llm_call`. Does not change the `break`.
 
-Frozen set: 13 rungs from project `1cdf55ac` whose ranking log (2026-08-28
-08:57–09:01) listed ≥2 Pexels photos and whose depiction-check row for
-that shot's prompt was a reject. Candidate bytes are not persisted on a
-reject, so photos are re-fetched by Pexels `source_id` (the same photo
-the ranker saw, not the historical bytes) and cached next to this file.
+Frozen set: Wikimedia rungs from archival projects (Oil and War /
+Radar WWII), written by `freeze_rvq22_wikimedia.py` into
+`_rvq22_archival_cases.json`. Distinct candidate #1 source_ids are
+checked before any vision call. Pexels `_CASES` below are the §18.5
+first pass (superseded by §18.6).
 
 §17.6: three draws per cell. Report rates. Flag any cell that is neither
 0/N nor N/N.
@@ -27,6 +27,7 @@ DB was consulted once, SELECT-only, to build `_CASES` — before any pytest.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,7 @@ import httpx
 _BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_BACKEND))
 
+from app.assets.validation import mime_type_for_extension, validate_and_identify_image  # noqa: E402
 from app.core.config import settings  # noqa: E402
 from app.core.errors import PermanentError, TransientError  # noqa: E402
 from app.providers.base import DepictionCheckRequest  # noqa: E402
@@ -43,6 +45,7 @@ from app.providers.openai_provider import OpenAIPlanningProvider  # noqa: E402
 
 _RUNS = 3
 _CACHE = Path(__file__).resolve().parent / "_rvq22_cache"
+_ARCHIVAL_JSON = Path(__file__).resolve().parent / "_rvq22_archival_cases.json"
 _PEXELS_PHOTO = "https://api.pexels.com/v1/photos/{id}"
 
 
@@ -224,11 +227,37 @@ async def _fetch_pexels_photo(photo_id: str) -> bytes:
     raise TransientError(f"pexels photo {photo_id} fetch failed: {last_exc}")
 
 
+def _load_archival_cases() -> list[Case]:
+    if not _ARCHIVAL_JSON.is_file():
+        return []
+    raw = json.loads(_ARCHIVAL_JSON.read_text(encoding="utf-8"))
+    return [
+        Case(
+            row["id"],
+            str(row["source_id_1"]),
+            str(row["source_id_2"]),
+            int(row["n_pool"]),
+            row["shot_prompt"],
+            row["search_subject"],
+            row["historic_reason"],
+        )
+        for row in raw
+    ]
+
+
+def _cache_bytes(source_id: str) -> bytes:
+    path = _CACHE / f"wiki_{source_id}.bin"
+    if not path.is_file():
+        raise PermanentError(f"missing cache {path.name}")
+    return path.read_bytes()
+
+
 async def _ask(
     provider: OpenAIPlanningProvider,
     *,
     case: Case,
     image: bytes,
+    content_type: str,
     rank: int,
     run: int,
 ) -> dict:
@@ -239,7 +268,7 @@ async def _ask(
             completion = await provider.check_depiction(
                 DepictionCheckRequest(
                     image=image,
-                    image_content_type="image/jpeg",
+                    image_content_type=content_type,
                     shot_prompt=case.shot_prompt,
                     search_subject=case.search_subject,
                 )
@@ -268,32 +297,49 @@ async def main() -> int:
     if not settings.openai_api_key:
         print("FAIL: settings.openai_api_key is empty")
         return 2
-    if not settings.pexels_api_key:
-        print("FAIL: settings.pexels_api_key is empty — needed to re-fetch ranked photos")
+
+    cases = _load_archival_cases()
+    source = "wikimedia archival json"
+    if not cases:
+        cases = list(_CASES)
+        source = "legacy pexels _CASES"
+
+    ones = [c.source_id_1 for c in cases]
+    if len(ones) != len(set(ones)):
+        dup = sorted({i for i in ones if ones.count(i) > 1})
+        print("FAIL: duplicate candidate #1 before any vision call:", dup)
         return 2
 
     print(f"model={settings.openai_vision_model}  depiction_image_max_px={settings.depiction_image_max_px}")
-    print(f"cases={len(_CASES)}  runs/cell={_RUNS}  (production check_depiction, no llm_call writes)")
+    print(f"source={source}  cases={len(cases)}  runs/cell={_RUNS}  distinct #1={len(set(ones))}")
     print()
 
     provider = OpenAIPlanningProvider()
     per_case: dict[str, dict[int, list[dict]]] = {}
     skipped: list[str] = []
 
-    for case in _CASES:
+    for case in cases:
         print(f"== {case.id}  pool={case.n_pool}  #{case.source_id_1} vs #{case.source_id_2}")
         print(f"   historic reject: {case.historic_reason}")
         try:
-            img1 = await _fetch_pexels_photo(case.source_id_1)
-            img2 = await _fetch_pexels_photo(case.source_id_2)
+            if source.startswith("wikimedia"):
+                img1, img2 = _cache_bytes(case.source_id_1), _cache_bytes(case.source_id_2)
+            else:
+                img1 = await _fetch_pexels_photo(case.source_id_1)
+                img2 = await _fetch_pexels_photo(case.source_id_2)
+            ext1, _, _ = validate_and_identify_image(img1)
+            ext2, _, _ = validate_and_identify_image(img2)
+            type1, type2 = mime_type_for_extension(ext1), mime_type_for_extension(ext2)
         except (PermanentError, TransientError) as exc:
             print(f"   SKIP fetch: {exc}")
             skipped.append(f"{case.id}: {exc}")
             continue
         per_case[case.id] = {1: [], 2: []}
-        for rank, image in ((1, img1), (2, img2)):
+        for rank, image, ctype in ((1, img1, type1), (2, img2, type2)):
             for run in range(1, _RUNS + 1):
-                row = await _ask(provider, case=case, image=image, rank=rank, run=run)
+                row = await _ask(
+                    provider, case=case, image=image, content_type=ctype, rank=rank, run=run
+                )
                 per_case[case.id][rank].append(row)
                 print(
                     f"   #{rank} run {run}/{_RUNS}  wrong={row['confidently_wrong']!s:<5}  "
@@ -303,12 +349,12 @@ async def main() -> int:
         print()
 
     print("RATES  (reject/runs)   MIXED = neither 0/N nor N/N")
-    print(f"{'id':<14} {'#1':>8} {'#1 kind':<8} {'#2':>8} {'#2 kind':<8}  #2 pass given #1 reject?")
+    print(f"{'id':<28} {'#1':>6} {'#1 kind':<8} {'#2':>6} {'#2 kind':<8}  #2 pass given #1 reject?")
     n_stable_rej1 = 0
     n_stable_pass2_given = 0
     n_maj_pass2_given = 0
     n_mixed = 0
-    for case in _CASES:
+    for case in cases:
         cells = per_case.get(case.id)
         if cells is None:
             print(f"{case.id:<14} SKIP")
@@ -330,11 +376,11 @@ async def main() -> int:
             n_maj_pass2_given += 1
             if given == "-":
                 given = "majority-pass (#1 not 3/3)"
-        print(f"{case.id:<14} {r1}/{_RUNS} {k1:<8} {r2}/{_RUNS} {k2:<8}  {given}")
+        print(f"{case.id:<28} {r1}/{_RUNS} {k1:<8} {r2}/{_RUNS} {k2:<8}  {given}")
 
     n_measured = len(per_case)
     print()
-    print(f"measured rungs: {n_measured}/{len(_CASES)}  skipped={len(skipped)}")
+    print(f"measured rungs: {n_measured}/{len(cases)}  skipped={len(skipped)}")
     print(f"MIXED cells (either rank): {n_mixed} rungs")
     print(
         f"A30 test: among {n_stable_rej1} rungs where #1 is 3/3 reject, "
