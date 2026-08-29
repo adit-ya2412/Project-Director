@@ -781,6 +781,11 @@ Mark ✅ as each completes, and add the matching §10 entry in the same edit.
 | 13 | **OQ-4.2, 4.3, 4.4** — Linux ceiling, backfill, cost | independent; slot into any gap | no |
 | 14 | **OQ-3c** — hook and end card (§6.3) | a product conversation with the user first | ⚠ watch |
 
+⚠ **THIS TABLE IS NO LONGER THE AUTHORITY — §15 IS (2026-08-29).** It
+records the ORIGINAL plan order and is kept for that. What is actually
+left, after a night of measuring, is §15; the reviews that reshaped it
+are §12 and §16.
+
 ⚠ **READ §12 BEFORE PICKING UP THE NEXT ROW (added 2026-08-29).** The
 review of the seven built tasks found one blocking defect and eight
 smaller ones. **§12.7's order takes precedence over this table** until its
@@ -2603,7 +2608,18 @@ Ordered by "does a viewer notice" first, cost second. Everything here is
 scoped from measured evidence in §13/§14, not from the original plan's
 guesses.
 
-### 15.1 🔴 Fix the ducking detector (OQ-1b) — the feature that is shipped and inert
+### 15.1 ✅ DONE — ducking detector fixed, depth ear-signed (P-OQ1b-char, P-OQ1b-depth)
+
+⚠ Both halves shipped and confirmed by ear. The detector now splits on
+character duration (17 duck windows on real data, was 1), and the duck
+DEPTH went −14 → −18 dB after a listening pass, because at 4 dB the bed
+had nothing to swell back into. Dead air below −40 dB measures 24.55 s →
+0.00 s. **If someone later reports flat music, check the depth before
+touching `DUCK_CHAR_PAUSE_S`.** Original problem statement retained
+below for the reasoning.
+
+#### Original entry
+
 
 **The one-line cause (§13.4):** `speaking_intervals_from_alignment`
 splits speech runs on the gap BETWEEN consecutive characters, and
@@ -2629,7 +2645,15 @@ guard finally has something to do.
 **Then re-render and listen.** The user has already confirmed by ear that
 the bed never comes up; this is the change that would make it.
 
-### 15.2 🔴 RV-Q10 — the voice changes character at scene starts
+### 15.2 ✅ DONE — batched TTS shipped and confirmed (P-OQ-RV-Q10, P-OQ-RV-Q10a, P-OQ-E2E)
+
+⚠ Nine TTS calls became one; the user confirmed the scene 1→2 join at
+9.52 s in the end-to-end render. Reviewed in §16 — RV-Q11 and RV-Q15
+were both **withdrawn** as broken measurements, RV-Q14 corrected,
+RV-Q12 fixed, RV-Q13 documented-not-fixed. Original entry below.
+
+#### Original entry
+
 
 The only audible defect a human has actually reported (§13.5). Located:
 "Training" is character 0 of scene 2 at t=8.80 s, the scene 1→2 join.
@@ -2710,6 +2734,23 @@ rejection table, and only then keep it.
 - **OQ-3a's gate needs re-measuring (§13.8)** against character
   durations, for the same reason as §15.1. The feature is not dead; the
   measurement looked in the wrong field.
+
+### 15.5b ⚠ New, surfaced by the end-to-end render (2026-08-29)
+
+- **No supported way to force a re-narration.** `NarrationStep
+  .is_satisfied` keys off `timeline.produced_by`, a stamp, not the
+  presence of audio — so clearing the rows does not re-trigger it, it
+  only makes the next render fail. `RenderStep.is_satisfied` has the same
+  shape against `video_path`. Fine for resume-after-crash, wrong for
+  "re-record this line", which RV-Q13 makes a real workflow. See P-OQ-E2E.
+- **`stillness`'s music depth is still 6 dB.** Its music was diagnosed as
+  "near-absent" in §4.2 — before anyone knew the detector was inert AND
+  before the depth finding. That diagnosis is unsafe to trust; it wants
+  the same 10-minute A/B `retention_fast` got.
+- **True peak +0.2 dBFS** on the end-to-end render. Inaudible (checked),
+  still unguarded. §13.3 has the fix.
+- **RV-Q14's latent case:** a script whose scene text does NOT end with a
+  blank line would lose the join swell. Wants a test pinning it.
 
 ### 15.6 Parked: should we add a non-OpenAI provider?
 
