@@ -29,9 +29,10 @@ _BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_BACKEND))
 sys.path.insert(0, str(_BACKEND / "scripts"))
 
+from measure_depiction_downscale import _CASES, _find_asset, _mime, _one  # noqa: E402
+
 from app.core.config import settings  # noqa: E402
 from app.providers.openai_provider import OpenAIPlanningProvider  # noqa: E402
-from measure_depiction_downscale import _CASES, _find_asset, _mime, _one  # noqa: E402
 
 REPEATS = 3
 SIZES = (0, 1024, 512)  # 0 = full-res
