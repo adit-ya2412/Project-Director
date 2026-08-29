@@ -61,17 +61,16 @@ _MODELS_REJECTING_TEMPERATURE: set[str] = set()
 
 
 def _downscale_for_focal(image: bytes, content_type: str, max_px: int) -> tuple[bytes, str]:
-    """Shrink an image to `max_px` on its longest edge for the focal call.
+    """Shrink an image to `max_px` on its longest edge for vision calls.
 
-    97% of a focal call's input tokens were the image itself (~4,282 of
-    4,402), and the answer is a NORMALISED coordinate - resolution buys
-    nothing once the subject is still identifiable. Measured on real
-    assets across five sizes, answer drift against the full-size answer
-    is flat from 1024 down to 512 and only degrades at 384; 512 costs 10%
-    of the tokens (output_quality_pass.md §14.7).
+    Shared by `locate_subject` (`focal_image_max_px`) and
+    `check_depiction` (`depiction_image_max_px`) — same resize
+    (longest-edge, LANCZOS, JPEG q88). Name kept for the focal call that
+    introduced it; depiction re-uses it after its own re-measurement
+    (output_quality_pass.md §14.7 / P-OQ-15.4).
 
     Never raises: an unreadable or already-small image is returned
-    untouched, because a focal hint is not worth failing a resolve over.
+    untouched (a vision hint/gate miss is not worth failing a resolve).
     """
     if max_px <= 0:
         return image, content_type
@@ -89,7 +88,7 @@ def _downscale_for_focal(image: bytes, content_type: str, max_px: int) -> tuple[
             im.save(buf, format="JPEG", quality=88)
             return buf.getvalue(), "image/jpeg"
     except (OSError, ValueError) as exc:
-        logger.warning("focal.downscale_failed", extra={"error": str(exc)[:200]})
+        logger.warning("vision.downscale_failed", extra={"error": str(exc)[:200]})
         return image, content_type
 
 class OpenAIPlanningProvider:
@@ -307,9 +306,16 @@ class OpenAIPlanningProvider:
         override. Same model (`settings.openai_vision_model`) and call
         shape as `check_constraints`, its own prompt for the same reason
         as before - a different question from "does this violate a fixed
-        rule"."""
-        image_b64 = base64.b64encode(request.image).decode("ascii")
-        data_url = f"data:{request.image_content_type};base64,{image_b64}"
+        rule".
+
+        Image longest edge is capped at `settings.depiction_image_max_px`
+        (1024 as of P-OQ-15.4): 512 flipped a full-res reject into an
+        accept on a process diagram; 1024 held with 0 flips."""
+        shrunk, shrunk_type = _downscale_for_focal(
+            request.image, request.image_content_type, settings.depiction_image_max_px
+        )
+        image_b64 = base64.b64encode(shrunk).decode("ascii")
+        data_url = f"data:{shrunk_type};base64,{image_b64}"
 
         system_message: ChatCompletionSystemMessageParam = {
             "role": "system",

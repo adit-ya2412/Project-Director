@@ -1,6 +1,6 @@
 # Output Quality Pass — Audio Finishing, Subject-Aware Camera, Edit Rhythm, and the Review Harness
 
-**Status:** OQ-0a + OQ-0b + OQ-1d built; OQ-1a + OQ-1b + OQ-1c built awaiting listen; OQ-2 built awaiting watch. §12 review findings RV-Q1–Q8 **fixed 2026-08-29** (see P-OQ-RV). RV-Q10 **built 2026-08-29** (P-OQ-RV-Q10), reviewed (§16), and its blocking findings **RV-Q11/RV-Q12 fixed 2026-08-29** (see P-OQ-RV-Q10a in §10): sliced narration is now written as PCM/WAV, not re-encoded MP3, so it is no longer blocked for the listen on that finding. §16.4 (RV-Q14, whether scene joins should swell the bed) is still open, awaiting a creative decision. OQ-3 / remaining OQ-4 design-only.
+**Status:** OQ-0a + OQ-0b + OQ-1d built; OQ-1a + OQ-1b + OQ-1c built awaiting listen; OQ-2 built awaiting watch. §12 review findings RV-Q1–Q8 **fixed 2026-08-29** (see P-OQ-RV). RV-Q10 **built 2026-08-29** (P-OQ-RV-Q10), reviewed (§16), and its blocking findings **RV-Q11/RV-Q12 fixed 2026-08-29** (see P-OQ-RV-Q10a in §10): sliced narration is now written as PCM/WAV, not re-encoded MP3, so it is no longer blocked for the listen on that finding. §16.4 (RV-Q14, whether scene joins should swell the bed) is still open, awaiting a creative decision. **§15.3 (P-OQ4.4) and §15.4 (P-OQ-15.4) built 2026-08-29; orchestrator review is §17** — 1024 shipped, 512 not. RV-Q16/RV-Q18 **resolved by repeat measurement (§17.6): 512 is closed, 1024 stands**; the gate's own run-to-run instability at full res is now tracked as RV-Q20. The only open action from that review is **RV-Q19 — apply the `a8b3c1d4e5f6` migration to shared Postgres (human call)**. OQ-3 / remaining OQ-4 design-only.
 ⚠ **§14 re-cuts OQ-2: the focal question was being asked of a model that cannot answer it (gpt-4o-mini), and a schema default hid that. Now its own call on gpt-5.5.**
 ⚠ **§13 is the first measurement against a REAL project — it overturns three conclusions and adds RV-Q10, the only audible defect a human has actually reported. Read it before §12.**
 ⚠ **§2.3 and §4.1 were corrected 2026-08-29 against measured ffmpeg behaviour — the original text was wrong. See §12.6.**
@@ -739,7 +739,7 @@ or endangers something above.
 | 7.1 | **No validation that a transition's duration < its shot's duration.** `retention_fast` has a 0.8 s shot floor against a 0.4 s default transition, and D5 makes transitions *overlap*. | motion doc §7 (⚠ "a check that appears to be absent") | The style itself mitigates it (fast-cut is cuts-only), but nothing structurally prevents a planner emitting a dissolve on a short shot. OQ-0a's report tells you whether it is already happening; then add the validation. | ~0.5 d |
 | 7.2 | **Q3's remainder: the argv-length ceiling on the real Linux target is unmeasured.** A Windows-specific crash was bracketed at ~85–90 dissolve-joined shots. | motion doc §10/Q3 | It gates long-form, which is otherwise complete. The plan's own estimate: 20 minutes in a container. | ~0.5 d |
 | 7.3 | **Backfill pre-§19 timelines carrying `resolution = (1080, 1920)`.** | motion doc §19.11 residual 2 | The frontend computes warnings against 2.25× the real target area for every project created before §19. The schema default is fixed; existing rows are not. | ~0.5 d |
-| 7.4 | **LLM calls are never costed.** | Backlog, cited in motion doc §7 | Every plan has made planning fan out further (long-form, hierarchical planning, rewrites, vision checks). Nobody can currently answer what a run costs — and OQ-2 adds a vision question to every asset. | ~1 d |
+| 7.4 | ~~**LLM calls are never costed.**~~ ✅ **DONE (P-OQ4.4 / §15.3)** | Backlog, cited in motion doc §7 | Every plan has made planning fan out further (long-form, hierarchical planning, rewrites, vision checks). Nobody can currently answer what a run costs — and OQ-2 adds a vision question to every asset. | ~1 d |
 | 7.5 | **A8, the motion-vs-still bake-off, is still unanswered.** | motion doc §1/A8 | Motion is ~50¢/shot with no evidence a viewer prefers it. Not a build task — it becomes nearly free once OQ-0b exists (two contact sheets, one question), which is the main reason OQ-0b is in this plan. | ~0.5 d after OQ-0b |
 
 ---
@@ -778,7 +778,7 @@ Mark ✅ as each completes, and add the matching §10 entry in the same edit.
 | 10 | **OQ-3a gate measurement** — pause distribution (§6.1) | none; may be done any time, and may kill OQ-3a | no |
 | 11 | **OQ-3a** — beat-aligned cuts | its gate passing | ⚠ watch |
 | 12 | **OQ-3b** — global variance (§6.2) | OQ-0a's distribution metric | ⚠ watch |
-| 13 | **OQ-4.2, 4.3, 4.4** — Linux ceiling, backfill, cost | independent; slot into any gap | no |
+| 13 | **OQ-4.2, 4.3**; **OQ-4.4** ✅ **DONE (P-OQ4.4)** — Linux ceiling, backfill, cost | independent; slot into any gap | no |
 | 14 | **OQ-3c** — hook and end card (§6.3) | a product conversation with the user first | ⚠ watch |
 
 ⚠ **THIS TABLE IS NO LONGER THE AUTHORITY — §15 IS (2026-08-29).** It
@@ -1774,6 +1774,136 @@ leaving it to whoever next deletes rows by hand.
 original nine per-scene `.mp3` files and their DB rows are backed up in
 the session scratchpad (`f1/narration_backup/`).
 
+### P-OQ4.4 — populate llm_call cost_cents (2026-08-29)
+
+**Scope executed:** §15.3 / OQ-4.4 only — price every `llm_call` insert.
+Did not start §15.4 (depiction downscale). Did not touch renderer,
+fingerprint, narration, or `total_project_spend_cents` / the project
+budget cap.
+
+**Changes:**
+- `backend/app/core/config.py` — module-level `LLM_USD_PER_1M_TOKENS`
+  beside the fal/ElevenLabs cost estimates: gpt-5.5 ($5/$30),
+  gpt-5.6-terra ($2/$12), gpt-4o-mini ($0.15/$0.60) as of 2026-08-29.
+- `backend/app/assets/llm_pricing.py` — sibling to `cost.py` (that
+  module's docstring is generation/budget-only and would lie). Pure
+  `llm_call_pricing` + `attach_llm_call_pricing`; longest-prefix model
+  match; unknown → all None.
+- `backend/app/models/llm_call.py` +
+  `backend/alembic/versions/a8b3c1d4e5f6_llm_call_nullable_cost_and_rates.py`
+  — `cost_cents` nullable; add `input_usd_per_1m` /
+  `output_usd_per_1m`. `down_revision=f7c1d9a3b2e4` (chain tip).
+  **Migration file only — `alembic upgrade` was NOT run against shared
+  Postgres.**
+- `backend/app/repositories/llm_call_repository.py` — `insert` accepts
+  `cost_cents: int | None` and the two rates (default None, not 0).
+- All six `llm_call_repo.insert` sites wired (plan named four; code also
+  has rewrite + suitability): `depiction_check`, `focal_check`,
+  `constraint_check`, `planners/repair` (Director/Scene/Shot/Asset/
+  CaptionRomanizer/Act), `script/rewrite`, `script/suitability`. Each
+  stamps `request["pricing"]` and passes cost + rates.
+- `backend/tests/unit/assets/test_llm_pricing.py` — pure unit coverage
+  for exact/snapshot/known models, unknown → None, missing tokens → 0
+  with rates, 35035-token mini → 1¢.
+
+**Measured:** formula check only (no live spend re-measure). Example:
+35035 in + 5 out on gpt-4o-mini → `round(0.525825) = 1` cent; rates
+0.15 / 0.60 stored on the row. Unknown `fake-vision-model` →
+`cost_cents is None`.
+
+**Verification:**
+`.\.venv\Scripts\python.exe -m pytest backend/tests/unit/assets/test_llm_pricing.py --noconftest -q`
+→ **10 passed**. No `PYTEST_TRUNCATE_DB`, no `make test`, no DB tests.
+
+**Effects / notes for the reviewer:** existing rows still have
+`cost_cents=0` and null rates until the migration is applied and new
+calls land — this does not backfill. Integer cents are coarse for
+mini; that is why rates live on the row. Plan §15.3 named four insert
+sites; the code has six — leaving rewrite/suitability at 0 would
+re-create the bug.
+
+**What is NOT done:** §15.4 depiction downscale; applying the Alembic
+revision to shared Postgres; folding LLM spend into
+`total_project_spend_cents`; backfill of historical `llm_call` rows.
+
+### P-OQ-15.4 — depiction-gate downscale (2026-08-29)
+
+**Scope executed:** §15.4 only — re-measure A30a `confidently_wrong` at
+full / 1024 / 512 on a frozen on-disk set; ship the size that holds the
+keep-bar (0 extra false rejects and 0 extra false accepts vs full-res).
+Did not change the A30a prompt, polarity, or `openai_vision_model`. Did
+not re-run Hindi search (A17). Did not apply the §15.3 migration. Did
+not touch renderer / fingerprint.
+
+**Measurement method:**
+`backend/scripts/measure_depiction_downscale.py` calls
+`OpenAIPlanningProvider.check_depiction` directly (no `llm_call` writes).
+512/1024 images are shrunk with production `_downscale_for_focal` and
+passed as request bytes. 11 cases from on-disk assets (preferred
+`58f0a5e6` / `35290b04` / hinglish fixture hashes; FT diagram + Polish
+elevator found under other project dirs). Greek topographic map and
+motorcycle re-enactors from the original A30a table are **not on disk** —
+not invented; contrast covered via wrong-country map, wrong structure
+type, modern-vs-archival, and plausible plant/diagram stills.
+
+**Rejection table** (`confidently_wrong`, input_tokens, cost_cents via
+`llm_call_pricing` on gpt-4o-mini):
+
+| id | full wrong / tok / ¢ | 1024 | 512 |
+|---|---|---|---|
+| sasol_ctl_keep | F / 38147 / 1 | F / 26813 / 0 | F / 9812 / 0 |
+| leuna_bundesarchiv_keep | T / 15442 / 0 | T / 15442 / 0 | T / 9775 / 0 |
+| ft_diagram_keep | T / 26768 / 0 | T / 26768 / 0 | **F** / 9767 / 0 |
+| plant_58f0_keep | T / 38111 / 1 | T / 26777 / 0 | T / 9776 / 0 |
+| crucifixion_vs_oil_map | T / 38134 / 1 | T / 26800 / 0 | T / 9799 / 0 |
+| south_america_vs_sa_embargo | T / 38137 / 1 | T / 26803 / 0 | T / 9802 / 0 |
+| ships_vs_oil_depot | T / 26751 / 0 | T / 26751 / 0 | T / 9750 / 0 |
+| polish_elevator_vs_leuna | T / 26784 / 0 | T / 26784 / 0 | T / 9783 / 0 |
+| gorki_map_vs_germany_coalfields | T / 26803 / 0 | T / 26803 / 0 | T / 9802 / 0 |
+| montparnasse_vs_resource_map | T / 26773 / 0 | T / 26773 / 0 | T / 9772 / 0 |
+| modern_holzvergaser_vs_archival | T / 26756 / 0 | T / 26756 / 0 | T / 9755 / 0 |
+
+**Keep-bar:** 512 **FAIL** — `ft_diagram_keep` full True → 512 False
+(extra false accept). 1024 **HOLD** — 0 flips.
+
+**Tokens before/after (avg input_tokens / call on this set):**
+full **29,873** → 1024 **25,752** (−14%) → 512 **9,781** (−67%, not
+shipped). Sum cost_cents on the set: full 4 → 1024 0 → 512 0 (integer
+cents are coarse at mini rates; token counts are the real signal).
+
+**Changes (production wired at 1024):**
+- `backend/app/core/config.py` — `depiction_image_max_px: int = 1024`,
+  separate from `focal_image_max_px`; comment cites this log.
+- `backend/app/providers/openai_provider.py` — `_downscale_for_focal`
+  docstring now shared (not focal-only); `check_depiction` applies it
+  the same way `locate_subject` does.
+- `backend/scripts/measure_depiction_downscale.py` — frozen measurement
+  harness.
+- `backend/tests/unit/providers/test_openai_provider_depiction.py` —
+  large JPEG longest edge ≤ setting; already-small image not upscaled.
+
+**Verification:**
+`.\.venv\Scripts\python.exe -m pytest backend/tests/unit/providers/test_openai_provider_depiction.py --noconftest -q`
+→ **6 passed**. No `PYTEST_TRUNCATE_DB`, no `make test`, no alembic.
+
+**Effects / notes for the reviewer:** the on-disk "Bundesarchiv Leuna"
+hash (`9ce690…`) is rejected at every size as a modern site with
+contemporary signage — that is full-res behaviour, not a downscale
+regression; keep-bar is agreement with full-res, not with 2026-08-15
+A30a human grades. 1024 is a smaller win than focal's 512 (−14% vs
+−84%) because many gate images are already near/under 1024 and OpenAI
+image token buckets are coarse; still a real cut on large stills (e.g.
+Sasol 38147 → 26813).
+
+**What is NOT done:** ~~a second pass on `ft_diagram_keep` to separate
+model noise from resolution~~ — done 2026-08-29, §17.6: 512 is now
+closed on measurement (rejected 2/3 vs 0/3 at full), and this log's
+`ft_diagram_keep` full-res `True` did not reproduce. Still open:
+re-acquiring the missing A30a Greek-map / motorcycle fixtures; applying
+the §15.3 Alembic revision; folding depiction savings into
+`total_project_spend_cents`; the gate's run-to-run instability at full
+res (§17.7 RV-Q20).
+
 ## 11. Testing & DB safety — mandatory, binding on this plan
 
 **Restated from `style_extensions.md` §6 and `analysis.md`'s TEST-DB
@@ -2572,11 +2702,9 @@ longest edge, re-encode JPEG q88, pass through untouched when already
 small, never raise (an unreadable image is not worth failing a resolve
 over).
 
-⚠ **Deliberately NOT applied to `check_depiction`.** That gate consumes
-83% of all input tokens and would save more, but its accept/reject
-balance was calibrated twice (A30/A30a) against full-size images on
-gpt-4o-mini. Shrinking what it sees re-opens that calibration. Worth
-doing as its own measured task, with the A30a benchmark re-run.
+⚠ **Depiction gate now has its own cap** (`depiction_image_max_px=1024`,
+P-OQ-15.4) — not this 512, which flipped one full-res reject into an
+accept on a process diagram. Focal and depiction caps stay separate.
 
 Measured on the real 34-asset backfill, before and after:
 
@@ -2596,7 +2724,10 @@ Across the 15 completed projects in the DB (633 shots): ~$14.9 → ~$3.9.
   section came from a hand-written price table in a throwaway script.
   A `{model: (in_per_1m, out_per_1m)}` map passed at the `insert` sites
   would make this self-reporting — OQ-4.4, and now clearly worth the hour.
-- Downscaling the depiction gate (above), which is the larger prize.
+  *(§15.3 / P-OQ4.4 later wired pricing at insert sites; historical rows
+  stay 0 until migration + backfill.)*
+- ~~Downscaling the depiction gate~~ ✅ **DONE at 1024** (P-OQ-15.4);
+  512 failed the keep-bar.
 - A global focal store keyed by content hash: sidecars live per project,
   so the same stock photo is paid for again in every project that uses it.
 
@@ -2679,19 +2810,16 @@ Existing projects keep their old per-scene audio until N1 retry.
 ⚠ Listen on a re-narrated `1cdf55ac` is still required; this is the
 mechanism, not the ear-sign-off.
 
-### 15.3 🟡 Populate `cost_cents` — every LLM call reports 0
+### 15.3 ✅ DONE — Populate `cost_cents` (P-OQ4.4)
 
-`LlmCallRepository.insert` takes `cost_cents: int = 0` and **no caller
-ever passes it**. The repo prices fal images (4¢), fal video (50¢) and
-ElevenLabs (per character) but has no LLM pricing at all — so when asked
-"what does gpt-5.5 cost us", the system could not answer and §14.7's
-whole table had to be produced by a throwaway script with hand-typed
-rates.
-
-**Shape:** a `{model: (input_per_1m, output_per_1m)}` map beside the
-existing `*_cost_cents_estimate` settings, and `cost_cents=` passed at
-the four `insert` call sites (`depiction_check`, `focal_check`,
-`constraint_check`, and the planner path). Known rates as of 2026-08-29:
+**Shipped shape (P-OQ4.4, 2026-08-29).** `LLM_USD_PER_1M_TOKENS` in
+`config.py`; pure `llm_call_pricing` in `assets/llm_pricing.py`
+(sibling — `cost.py`'s docstring is generation-budget-only);
+`cost_cents` nullable with `input_usd_per_1m` / `output_usd_per_1m`
+columns (migration `a8b3c1d4e5f6`, not applied here); every insert site
+passes cost + rates and stamps `request["pricing"]`. Unknown model →
+`None`, never 0. Plan named four insert sites; code has six
+(rewrite + suitability also wired).
 
 | model | in / out per 1M |
 |---|---|
@@ -2699,15 +2827,34 @@ the four `insert` call sites (`depiction_check`, `focal_check`,
 | gpt-5.6-terra | $2 / $12 |
 | gpt-4o-mini | $0.15 / $0.60 |
 
-⚠ Store the rate used ALONGSIDE the cost, or a later price change
-silently rewrites history. And treat an unknown model as `None`, never
-0 — a missing price must not look like a free call, which is exactly the
-failure mode §14.6's rule is about.
+### 15.4 ✅ DONE — depiction gate downscaled to 1024 (P-OQ-15.4)
 
-This is OQ-4.4, and it is the difference between answering cost
-questions in an hour and answering them in a session.
+⚠ **Measured first; did not ship 512 because focal did.** Keep-bar vs
+full-res on the same image/prompt/model: **512 FAIL** (1 extra false
+accept on `ft_diagram_keep`); **1024 HOLD** (0 flips). Production wired
+at `depiction_image_max_px=1024` only.
 
-### 15.4 🟡 Downscale the depiction gate — the larger cost prize, gated on re-calibration
+✅ **Settled 2026-08-29 by repeat measurement (§17.6). 1024 stands;
+512 is closed.** RV-Q16 was right that a single full-res draw is not
+the A30a calibration, and wrong about which way that cut. Three runs
+per cell: `ft_diagram_keep` is kept **0/3 at full** and rejected **2/3
+at 512** — downscaling makes A30a's false-reject *more* likely, not
+less. The frozen sweep's full-res `True` on that case did not
+reproduce, so the keep-bar's baseline was itself noise. Same run showed
+full and 1024 disagreeing on **byte-identical input** (that image is
+already ≤1024, so nothing was resized), which is the noise floor §15.4
+never established. Gate instability at full res is now RV-Q20 (§17.7).
+
+**Shipped shape (P-OQ-15.4, 2026-08-29).** Separate setting from
+`focal_image_max_px`. `check_depiction` reuses `_downscale_for_focal`
+(longest edge, LANCZOS, JPEG q88; never raises). Avg input tokens on the
+11-case set: full **29,873** → 1024 **25,752** (−14%) → 512 **9,781**
+(−67%, rejected). Greek map + motorcycle re-enactors from the original
+A30a table were not on disk; contrast used wrong-country map, wrong
+structure, modern-vs-archival, and plausible plant/diagram stills
+instead. Full rejection table in §10 P-OQ-15.4.
+
+#### Original entry
 
 `check_depiction` burns **83% of all input tokens** (35,035 per call on
 gpt-4o-mini, which bills images at a high token multiplier). §14.7's
@@ -2768,9 +2915,10 @@ is worth recording so it is not re-litigated:
   (the Qwen-VL and GLM-V lineages) target exactly "where is X in this
   image", which is the task gpt-4o-mini failed at. That is worth a probe
   IF the focal answer's ~0.08 jitter (§14.7) ever becomes a problem.
-- The real blocker on the biggest line item (§15.4) is not the vendor,
-  it is the A30a calibration. Provider choice is downstream of deciding
-  to re-open that.
+- ~~The real blocker on the biggest line item (§15.4) is not the vendor,
+  it is the A30a calibration.~~ §15.4 measured and shipped at **1024**
+  (512 failed). Provider choice remains downstream of any further
+  resolution or model change.
 
 ⚠ **The harness already exists** (`model_bakeoff.py`): point it at a new
 model and it produces a comparable crosshair sheet. Once a key exists,
@@ -3093,3 +3241,226 @@ before choosing between:
 
 ⚠ **RV-Q10 must not ship on the strength of the voice-switch fix alone
 until this is settled.**
+
+---
+
+## 17. Review of P-OQ4.4 + P-OQ-15.4 — 2026-08-29
+
+Orchestrator review of §15.3 (cost meter) and §15.4 (depiction
+downscale). Findings continue the `RV-Q*` sequence from §16. Diffs and
+the §10 rejection table were read in full; the 16 unit tests were
+re-run (`test_llm_pricing.py` + `test_openai_provider_depiction.py`,
+`--noconftest`) → **16 passed**. The live vision sweep was not
+re-run.
+
+### 17.0 Verified good
+
+- **15.3 matches the plan's failure mode, not just its four call
+  sites.** `llm_call_repo.insert` had six callers; rewrite and
+  suitability are wired too. Unknown model → `cost_cents is None`,
+  never 0. Snapshot ids (`gpt-4o-mini-2024-07-18`) hit via longest
+  prefix. Rates live on the row *and* on `request["pricing"]`, so a
+  later price-table edit cannot rewrite history.
+- **15.3 does not quietly change the budget cap.**
+  `total_project_spend_cents` still sums generated_clip + narration
+  only. That was in scope to leave alone.
+- **15.4 did not "just do 512".** Same image, prompt, model; full /
+  1024 / 512; production `_downscale_for_focal` used as the shrink.
+  Greek map / motorcycle re-enactors were not invented when missing
+  from disk.
+- **1024 is a no-op on already-small stills, by construction.** Several
+  rows have identical token counts at full and 1024 (`ft_diagram_keep`
+  26768/26768, `leuna_bundesarchiv_keep` 15442/15442, and five others).
+  Those images were already ≤1024; 512 is the first actual shrink.
+
+### 17.1 ✅ RESOLVED RV-Q16 — the keep-bar was the wrong referee, but 512 is still wrong
+
+> **Resolved 2026-08-29 by measurement (§17.6).** The critique below
+> stands — a single full-res draw is not the A30a calibration. But the
+> repeat measurement answered the question in the *opposite* direction
+> from option (a): re-run three times, `ft_diagram_keep` is kept 0/3 at
+> full and rejected **2/3 at 512**. 512 does not rescue A30a's
+> false-reject; it makes it more likely. Option (a) is withdrawn.
+> **1024 stands.** Read §17.6 for the numbers before this subsection.
+
+`ft_diagram_keep` is the A30a *keep* case: a process diagram of the
+right general chemistry, the exact false-reject A30a's second wording
+was written to restore. The measured cells:
+
+| size | `confidently_wrong` | vs full-res keep-bar | vs A30a human label |
+|---|---|---|---|
+| full | True (reject) | baseline | **false reject** |
+| 1024 | True (reject) | hold (same as full) | **false reject** |
+| 512 | False (keep) | counted as extra false *accept* | **agrees with A30a** |
+
+Shipping 1024 therefore preserves full-res's reject of the diagram.
+Shipping 512 would be the only size on this sweep that *kept* it.
+
+The implementing log already says the keep-bar is agreement with
+full-res, "not with 2026-08-15 A30a human grades." That sentence is
+correct and is the defect: §15.4 asked whether shrinking re-opens the
+**calibrated** accept/reject balance. Full-res on this on-disk file is
+not that calibration — it is one more `gpt-4o-mini` draw, and on this
+draw it repeats A30's original false reject.
+
+Same cloud on the other "keep" rows: `leuna_bundesarchiv_keep` and
+`plant_58f0_keep` are rejected at **every** size. The log notes the
+Leuna hash is a modern site with contemporary signage, not the 2026-08-15
+Bundesarchiv photograph. So the frozen set is not the original A30a
+table; a keep-bar against full-res on these files cannot claim to have
+re-measured A30a.
+
+**Not changed in code.** 1024 stays until this is decided: either
+(a) treat 512's keep of the diagram as the A30a-aligned outcome and
+ship it, or (b) re-run `ft_diagram_keep` several times at each size
+(§17.3) and only then pick.
+
+### 17.2 🟡 RV-Q17 — 1024 is a 14% token cut, not the prize §15.4 named
+
+§15.4 analogised focal's −84% at 512. Measured here: full 29,873 →
+1024 25,752 (−14%) → 512 9,781 (−67%). The 1024 number is small
+because most of this set already sits in OpenAI's 1024 token bucket.
+The actual cost prize is still 512, which is the size RV-Q16 says the
+keep-bar may have rejected for the wrong reason.
+
+### 17.3 ✅ RESOLVED RV-Q18 — one call per cell, no noise floor
+
+> **Resolved 2026-08-29 (§17.6).** Confirmed, and worse than framed:
+> `ft_diagram_keep` flips between runs on **byte-identical input**.
+
+§14.7 ran 512 twice on the same images and recorded ~0.08 of jitter
+before trusting a size. This sweep did not. `gpt-4o-mini` is the same
+non-deterministic model. The single `ft_diagram_keep` flip could be
+resolution, or it could be a second full-res draw that would have
+kept it too. Cheap to answer: three repeats of that one image at full
+and at 512.
+
+### 17.4 ⚪ RV-Q19 — 15.3's migration is not applied
+
+`a8b3c1d4e5f6` is on disk, `down_revision=f7c1d9a3b2e4`. The SQLAlchemy
+model now has nullable `cost_cents` plus two rate columns. Any live
+`llm_call` insert against current Postgres will fail until
+`alembic upgrade`. Historical rows stay `cost_cents=0`. This is
+operational, not a logic bug — it is the next thing that has to
+happen before 15.3 is real in the database.
+
+### 17.5 Recommended order — updated 2026-08-29 after §17.6
+
+1. **RV-Q19** — apply the 15.3 migration when you are ready to let new
+   calls write cost. Additive, nullable columns. **Still the only open
+   action from this review**, and it is a human call because it touches
+   shared Postgres.
+2. ~~RV-Q18~~ / ~~RV-Q16~~ — done, see §17.6. `depiction_image_max_px`
+   stays at **1024**; 512 is closed, not deferred.
+3. **RV-Q17** is closed with them: the 512 prize is not collectable at
+   this gate's accuracy.
+4. **RV-Q20** (new, §17.7) — the gate's own instability at full res is
+   now the open *quality* question. It is not a downscale defect and
+   does not block anything shipped.
+
+### 17.6 ✅ The repeat measurement — RV-Q18 and RV-Q16 answered (2026-08-29)
+
+**What was run.** `scratchpad/rvq18_repeats.py`, importing `_CASES`,
+`_find_asset` and `_one` from the frozen harness
+(`backend/scripts/measure_depiction_downscale.py`) so it hits the same
+`check_depiction` path, same prompt, same `gpt-4o-mini`. The four A30a
+**keep** cases — the only ones the keep-bar turns on — three runs each
+at full / 1024 / 512. 36 live vision calls.
+
+**Reject rate (`confidently_wrong` true / runs):**
+
+| case | full | 1024 | 512 | shrunk at 1024? |
+|---|---|---|---|---|
+| `sasol_ctl_keep` | 0/3 | 0/3 | 0/3 | yes (38147 → 26813 tok) |
+| `leuna_bundesarchiv_keep` | 3/3 | 3/3 | 3/3 | no (byte-identical) |
+| `ft_diagram_keep` | **0/3** | **1/3** | **2/3** | no (byte-identical) |
+| `plant_58f0_keep` | 2/3 | 3/3 | 3/3 | yes (38111 → 26777 tok) |
+
+**Finding 1 — the noise floor is real, and it is inside this set.**
+`ft_diagram_keep` is already ≤1024, so `_downscale_for_focal` returns
+`image, content_type` unchanged (`if max(im.size) <= max_px`). Full and
+1024 therefore sent **the same bytes to the same model with the same
+prompt** — and disagreed, 0/3 versus 1/3. That is not a resolution
+effect; it cannot be. Any single-draw comparison on this gate is
+reading noise. §14.7 already knew this about focal and ran repeats;
+§15.4 did not, and that is exactly where its table broke.
+
+**Finding 2 — §15.4's `ft_diagram_keep` full-res cell is not
+reproducible.** The frozen sweep recorded full = `True` (reject). Three
+repeats give 0/3 rejects. The keep-bar's *baseline* for the one case
+that failed 512 was itself a noise draw, so "512 introduces an extra
+false accept" was never a measurement of 512.
+
+**Finding 3 — RV-Q16 resolves against 512, not for it.** RV-Q16
+hypothesised that 512's keep of the diagram was the A30a-aligned answer
+and that full-res was repeating A30's original false reject. Backwards.
+Full res keeps it every time; **512 rejects it two times in three**.
+Downscaling makes A30a's false-reject *more* likely on the one image
+that case exists to protect. `plant_58f0_keep` points the same way,
+2/3 → 3/3, though at n=3 that is within noise on its own.
+
+**Decision: `depiction_image_max_px` stays at 1024. 512 is closed.**
+Not "deferred pending better fixtures" — measured and rejected. The
+−67% token cut is real and is not collectable without paying for it in
+false rejects on exactly the images A30a was calibrated to protect.
+No code changed; 1024 was already what shipped.
+
+**1024's warrant, restated honestly.** On 7 of the 11 sweep images 1024
+is a literal no-op (byte-identical, same token count). It only shrinks
+the large stills — `sasol_ctl_keep` (0/3 at both) and `plant_58f0_keep`
+(2/3 → 3/3, within noise). So 1024 is a **−14% token cut that is
+provably harmless on the control and unproven-but-plausible on one
+noisy case.** That is a modest, defensible win, and it is the honest
+size of it — not the −84% §15.4 reached for by analogy with focal.
+
+### 17.7 🟡 RV-Q20 — the depiction gate is unstable at full resolution
+
+Fallout of §17.6, and the more important finding of the two. At **full
+res, no downscaling anywhere**:
+
+- `plant_58f0_keep` — a plausible industrial plant still from a real
+  project — is rejected **2 times in 3**. Two runs called it "a modern
+  industrial facility"; the third accepted the same bytes.
+- `ft_diagram_keep` is stable at full (0/3) but flips at 1/3 on
+  identical bytes at the next size down.
+- `leuna_bundesarchiv_keep` is rejected 3/3 at every size, with a
+  consistent and *correct-sounding* reason ("modern industrial site with
+  contemporary signage"). The on-disk hash is a modern Leuna photo, not
+  the 2026-08-15 Bundesarchiv archival one, so this is the gate being
+  right about the wrong file — a fixture problem, not a gate problem.
+
+So a real asset that passes search and download can still be discarded
+on a coin-flip, and nothing in the pipeline records that it was a
+coin-flip: `check_candidate_plausibility`'s caller breaks the candidate
+loop on `confidently_wrong` and moves on. This is A30a's original
+false-reject failure mode, alive at full resolution, independent of
+every cost lever in §15.
+
+**Not fixed here, and not blocking anything shipped** — it is the
+status quo the whole cost pass inherited, now measured instead of
+assumed. Options if it is picked up: (a) ask twice and reject only on
+agreement (doubles gate cost, which the 1024 cut roughly pays for);
+(b) `seed=` the depiction call for run-to-run stability, which makes it
+reproducible without making it *right*; (c) move the gate to the focal
+model, which §14.7 already showed is far better at reading these images
+(0/34 dead-centre versus 11/12) — the expensive option, and the one
+A30a's asymmetric calibration was written to avoid needing.
+
+**Do not confuse this with a downscale regression.** Downscaling is a
+contributing factor at 512 and a non-factor at 1024; the instability is
+the model.
+
+### 17.8 ⚪ RV-Q21 — prefix pricing can overcharge a future model
+
+`llm_pricing._lookup_rates` falls back to longest-prefix so dated
+snapshot ids price correctly (`gpt-4o-mini-2024-07-18` → mini rates,
+verified). The same rule means a future `gpt-5.5-mini` would silently
+price at **`gpt-5.5` rates — 33x its likely real cost** — because it
+starts with `gpt-5.5`. Nothing configures such a model today
+(`openai_planning_model` `gpt-5.6-terra`; `openai_vision_model` and
+`openai_planning_model_cheap` `gpt-4o-mini`; `openai_focal_model`
+`gpt-5.5`), and the failure is an over-estimate rather than a silent
+zero, which is the right direction for a cost meter. Worth one line in
+`LLM_USD_PER_1M_TOKENS` when a `-mini` / `-nano` variant of a priced
+family first appears: add the cheaper key, and the longest-prefix rule
+picks it automatically.

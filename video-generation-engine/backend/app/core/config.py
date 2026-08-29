@@ -76,10 +76,17 @@ class Settings(BaseSettings):
     # assets, answer drift vs the full-size answer is FLAT from 1024 down
     # to 512 (0.077 / 0.074 / 0.084) and only degrades at 384 (0.133).
     # 512 costs 10% of the tokens full size did. See output_quality_pass.md
-    # §14.7. ⚠ Deliberately NOT applied to `check_depiction`: that gate's
-    # accept/reject balance was calibrated (A30a) against full-size images
-    # on gpt-4o-mini, and changing what it sees re-opens that calibration.
+    # §14.7.
     focal_image_max_px: int = 512
+    # Longest edge the A30a depiction gate sends. Separate from
+    # `focal_image_max_px` on purpose: focal's answer is a normalised
+    # coordinate (512 held), but this gate's accept/reject balance was
+    # calibrated twice against full-size images on gpt-4o-mini.
+    # Re-measured 2026-08-29 (output_quality_pass.md P-OQ-15.4): on 11
+    # on-disk assets, 512 flipped one verdict vs full-res
+    # (`ft_diagram_keep`: full True → 512 False = extra false accept);
+    # 1024 held with 0 flips. Ship 1024.
+    depiction_image_max_px: int = 1024
     # Hard cap on generations per shot (M6.5, A13): attempt 0 (original
     # prompt) + up to 2 bounded retries (revised prompt/same seed, then
     # revised prompt/varied seed) before a constraint-violating shot is
@@ -107,6 +114,8 @@ class Settings(BaseSettings):
     # fal's actual per-model pricing varies; refine these after real usage.
     fal_image_cost_cents_estimate: int = 4
     fal_video_cost_cents_estimate: int = 50
+    # LLM token pricing lives in module-level `LLM_USD_PER_1M_TOKENS`
+    # (OQ-4.4) — not an env knob; see that constant below Settings.
 
     # --- ElevenLabs (M5+) ---
     elevenlabs_api_key: str | None = None
@@ -441,3 +450,14 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+
+# OQ-4.4 (2026-08-29): USD per 1M tokens (input, output) for llm_call
+# inserts. Dated OpenAI snapshot ids (e.g. gpt-4o-mini-2024-07-18) match
+# by longest prefix — see `app.assets.llm_pricing.llm_call_pricing`.
+# Bump the date comment when rates change; historical rows store the
+# rates they used on the row itself.
+LLM_USD_PER_1M_TOKENS: dict[str, tuple[float, float]] = {
+    "gpt-5.5": (5.0, 30.0),
+    "gpt-5.6-terra": (2.0, 12.0),
+    "gpt-4o-mini": (0.15, 0.60),
+}

@@ -15,6 +15,7 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
+from app.assets.llm_pricing import attach_llm_call_pricing
 from app.core.config import settings
 from app.core.errors import PermanentError
 from app.providers.base import PlanningLLMProvider
@@ -51,16 +52,25 @@ async def run_structured_with_repair(
         )
         # Concurrent planners share one session; the LLM call is safe
         # in parallel, the insert is not (Track C C1).
+        request, pricing = attach_llm_call_pricing(
+            model=completion.model,
+            input_tokens=completion.input_tokens,
+            output_tokens=completion.output_tokens,
+            request=completion.request,
+        )
         async with db_lock if db_lock is not None else nullcontext():
             await llm_call_repo.insert(
                 project_id=project_id,
                 agent=agent,
                 prompt_version=prompt_version,
                 model=completion.model,
-                request=completion.request,
+                request=request,
                 response=completion.response,
                 input_tokens=completion.input_tokens,
                 output_tokens=completion.output_tokens,
+                cost_cents=pricing.cost_cents,
+                input_usd_per_1m=pricing.input_usd_per_1m,
+                output_usd_per_1m=pricing.output_usd_per_1m,
             )
 
         parsed: OutputT = completion.parsed  # type: ignore[assignment]

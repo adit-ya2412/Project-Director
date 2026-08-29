@@ -54,6 +54,7 @@ from dataclasses import dataclass, field
 
 from pydantic import BaseModel
 
+from app.assets.llm_pricing import attach_llm_call_pricing
 from app.core.config import settings
 from app.planners.fragments import split_narration_fragments
 from app.prompts.loader import load_prompt
@@ -223,15 +224,24 @@ async def rewrite_script(
         user_content=user_content,
         response_model=ScriptRewriteOutput,
     )
+    request, pricing = attach_llm_call_pricing(
+        model=completion.model,
+        input_tokens=completion.input_tokens,
+        output_tokens=completion.output_tokens,
+        request=completion.request,
+    )
     await llm_call_repo.insert(
         project_id=uuid.UUID(project_id),
         agent=_AGENT_NAME,
         prompt_version=_PROMPT_VERSION,
         model=completion.model,
-        request=completion.request,
+        request=request,
         response=completion.response,
         input_tokens=completion.input_tokens,
         output_tokens=completion.output_tokens,
+        cost_cents=pricing.cost_cents,
+        input_usd_per_1m=pricing.input_usd_per_1m,
+        output_usd_per_1m=pricing.output_usd_per_1m,
     )
     output = completion.parsed
     assert isinstance(output, ScriptRewriteOutput)

@@ -9,7 +9,7 @@ timeline?" three weeks later.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -32,7 +32,12 @@ class LlmCallModel(Base):
     response: Mapped[dict] = mapped_column(JSONB, nullable=False)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    cost_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # None = unknown model (missing price must not look free). Rates are
+    # the USD/1M used at insert time so a later price-table change does
+    # not rewrite history (OQ-4.4).
+    cost_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    input_usd_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    output_usd_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

@@ -24,6 +24,7 @@ Two independent ways to make zero calls, both legitimate:
 import hashlib
 import uuid
 
+from app.assets.llm_pricing import attach_llm_call_pricing
 from app.providers.base import ConstraintCheckRequest, ConstraintVerdict, VisionConstraintProvider
 from app.repositories.llm_call_repository import LlmCallRepository
 
@@ -60,15 +61,24 @@ async def check_generated_image_constraints(
             constraints=constraints,
         )
     )
+    request, pricing = attach_llm_call_pricing(
+        model=completion.model,
+        input_tokens=completion.input_tokens,
+        output_tokens=completion.output_tokens,
+        request=completion.request,
+    )
     await llm_call_repo.insert(
         project_id=project_id,
         agent=_AGENT_NAME,
         prompt_version=_PROMPT_VERSION,
         model=completion.model,
-        request=completion.request,
+        request=request,
         response=completion.response,
         input_tokens=completion.input_tokens,
         output_tokens=completion.output_tokens,
+        cost_cents=pricing.cost_cents,
+        input_usd_per_1m=pricing.input_usd_per_1m,
+        output_usd_per_1m=pricing.output_usd_per_1m,
     )
     verdict = completion.parsed
     # The provider's own contract (real or fake) is to return exactly

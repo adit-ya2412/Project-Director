@@ -24,7 +24,9 @@ class LlmCallRepository:
         response: dict,
         input_tokens: int | None,
         output_tokens: int | None,
-        cost_cents: int = 0,
+        cost_cents: int | None = None,
+        input_usd_per_1m: float | None = None,
+        output_usd_per_1m: float | None = None,
     ) -> LlmCallModel:
         call = LlmCallModel(
             project_id=project_id,
@@ -36,6 +38,8 @@ class LlmCallRepository:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cost_cents=cost_cents,
+            input_usd_per_1m=input_usd_per_1m,
+            output_usd_per_1m=output_usd_per_1m,
         )
         self._session.add(call)
         await self._session.flush()
