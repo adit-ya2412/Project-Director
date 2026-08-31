@@ -117,10 +117,78 @@ def test_archival_montage_fragment_loads_and_references_real_mechanisms():
 
 def test_styles_without_fragments_still_resolve_to_none():
     """The loader contract Feature B must not break: missing fragment ==
-    'base prompt already does the right thing' (None), never an error -
-    documentary_archival/stillness have no fragment even though they are
-    registered styles."""
+    'base prompt already does the right thing' (None), never an error.
+    `documentary_archival` and `stillness` USED to belong on this list
+    (§1.2/A1 and A4 of long_form_direction.md), but both now have their
+    own fragments - see
+    `test_stillness_fragment_loads_and_the_other_styles_are_unaffected`
+    and `test_documentary_archival_fragment_loads_and_the_other_styles_are_unaffected`
+    below. Only a genuinely unregistered style, or no style at all,
+    belongs here now."""
     assert load_style_fragment("shot_planner", None) is None
-    assert load_style_fragment("shot_planner", "documentary_archival") is None
-    assert load_style_fragment("shot_planner", "stillness") is None
     assert load_style_fragment("shot_planner", "not_a_real_style") is None
+
+
+def test_stillness_fragment_loads_and_the_other_styles_are_unaffected():
+    """A1 (long_form_direction.md §3): `stillness` reached the Shot
+    Planner with the generic base prompt only, contradicting its own
+    suitability blurb ("long static holds, no camera motion, deliberate
+    quiet" - §1.2). This is the loader-level proof that the new fragment
+    file is actually picked up, plus a regression guard that adding it
+    left the other three styles' resolution untouched."""
+    fragment = load_style_fragment("shot_planner", "stillness")
+    assert fragment is not None
+    assert "static" in fragment
+    assert "slow_push" in fragment
+    for token in ("punch_in", "pull_back", "slow_zoom", "pan", "split_frame"):
+        assert token in fragment, f"off-limits camera vocabulary {token!r} missing"
+    for token in ("cut", "dissolve"):
+        assert token in fragment, f"transition vocabulary {token!r} missing"
+
+    # The other two styles must resolve exactly as before. (documentary_archival
+    # is checked separately below - A4 gave it a fragment too.)
+    assert load_style_fragment("shot_planner", "retention_fast") is not None
+    assert load_style_fragment("shot_planner", "archival_montage") is not None
+
+
+def test_documentary_archival_fragment_loads_and_the_other_styles_are_unaffected():
+    """A4 (long_form_direction.md §3): `documentary_archival` reached the
+    Shot Planner with the generic base prompt only, so it had no chapter-
+    card / act-boundary / long-form pacing direction at all (§1.1/§1.5).
+    This is the loader-level proof the new fragment file is picked up,
+    plus a regression guard that adding it left the other three styles'
+    resolution untouched.
+
+    Note the trade this fragment makes (long_form_direction.md §4.1):
+    `documentary_archival` is `settings.default_render_style`, so giving
+    it a fragment switches off the Director's per-project
+    `camera_language` line for every landscape project, not just
+    long-form ones (`suppress_camera_language=style_fragment is not
+    None` in `app/planners/shot/planner.py`). The fragment therefore
+    carries its own fixed camera-restraint clause to replace that line,
+    checked below alongside the long-form vocabulary."""
+    fragment = load_style_fragment("shot_planner", "documentary_archival")
+    assert fragment is not None
+    # The long-form vocabulary the fragment must reference to be usable
+    # against A6's "Long-form context" block (act / opens this act / canvas).
+    assert "act:" in fragment
+    assert "opens this act: yes" in fragment
+    assert "text_card" in fragment
+    assert "fadeblack" in fragment
+    # punch_in is named as off-limits, not merely omitted.
+    assert "punch_in" in fragment
+    for token in ("pan", "slow_push", "pull_back", "static", "slow_zoom"):
+        assert token in fragment, f"camera vocabulary {token!r} missing"
+    for token in ("cut", "dissolve"):
+        assert token in fragment, f"transition vocabulary {token!r} missing"
+    # The camera_language replacement clause (§4.1's trade), stated plainly.
+    assert "camera_language" in fragment
+    # A5 owns vertical pan / CameraDirection.UP/DOWN - must not appear here.
+    assert "UP" not in fragment
+    assert "DOWN" not in fragment
+    assert "vertical" not in fragment.lower()
+
+    # The other three styles must resolve exactly as before.
+    assert load_style_fragment("shot_planner", "stillness") is not None
+    assert load_style_fragment("shot_planner", "retention_fast") is not None
+    assert load_style_fragment("shot_planner", "archival_montage") is not None
