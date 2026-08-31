@@ -97,6 +97,27 @@ def test_music_hash_joins_act_beds_in_order_not_sorted():
     assert music_content_hash_for(timeline) == "bbb|aaa"
 
 
+def test_old_timeline_document_without_acts_field_still_validates():
+    """A3 (long_form_direction.md): `Timeline.acts` must default cleanly
+    when loading a JSON document written before this field existed - the
+    same "predates this field" convention `Scene.act_id` and every other
+    additive field on this schema already follows. No Alembic migration
+    is needed either: `TimelineVersionModel.document` is a JSONB blob
+    (`app/models/timeline_version.py`), so an old row simply has no
+    `acts` key and Pydantic supplies the `default_factory=list`."""
+    document = {
+        "timeline_id": "tl",
+        "project_id": "p",
+        "version": 1,
+        "produced_by": "director",
+        "created_at": datetime.now(UTC).isoformat(),
+        "scenes": [],
+    }
+    assert "acts" not in document
+    timeline = Timeline.model_validate(document)
+    assert timeline.acts == []
+
+
 def test_music_hash_falls_back_to_selected_track():
     sel = MusicTrackSelection(
         provider="local", track_id="t", source_url="u", licence="cc0", content_hash="only"

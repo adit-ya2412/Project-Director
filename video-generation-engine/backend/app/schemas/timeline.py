@@ -95,6 +95,19 @@ class CameraDirection(StrEnum):
     OUT = "out"
     LEFT = "left"
     RIGHT = "right"
+    # Vertical PAN (A5, long_form_direction.md §3) - the mirror of
+    # LEFT/RIGHT onto `y`, legal only on a landscape canvas (a tall
+    # subject on a wide frame - a standing portrait, an engraving, a
+    # full-page plate). The Shot Planner's validator rejects UP/DOWN on a
+    # portrait canvas (`_make_validator`), the same "fail loudly rather
+    # than render with nowhere to go" reasoning A5's plan section states.
+    # DOWN means the camera reveals the frame moving downward (pans from
+    # the top of the image toward the bottom - the natural reading-order
+    # default, mirroring PAN's own RIGHT default for horizontal travel);
+    # UP is the reverse (pans from the bottom toward the top). See
+    # `build_zoompan_expression`'s PAN branch for the exact mirror.
+    UP = "up"
+    DOWN = "down"
     NONE = "none"
 
 
@@ -533,6 +546,24 @@ class CreativeContext(BaseModel):
     constraints: list[str] = Field(default_factory=list)
 
 
+class Act(BaseModel):
+    """long_form_direction.md A3 (2026-08-31): a chapter-level creative
+    decision - the title `ActPlanOutput` (`app/planners/act/schemas.py`)
+    produces and Path B scene planning used to discard once `act_id` was
+    stamped onto each Scene (`app/planners/scene/planner.py::
+    _plan_hierarchical`). `id` is the same id that appears in
+    `Scene.act_id`; `order` mirrors `ActPlanOutput.order`. Kept as its
+    own Timeline-level list rather than denormalised onto every Scene -
+    the title belongs to the act, and the I1/I2 "immutable decision
+    record" argument that already governs a locked asset (`Shot.
+    asset_locked`) applies here exactly as well. See `Timeline.acts`'s
+    own docstring for the emptiness convention."""
+
+    id: str
+    order: int
+    title: str
+
+
 class Timeline(BaseModel):
     schema_version: str = SCHEMA_VERSION
     timeline_id: str
@@ -548,6 +579,14 @@ class Timeline(BaseModel):
     music_plan: MusicPlan | None = None
     sfx_plan: SfxPlan | None = None
     scenes: list[Scene] = Field(default_factory=list)
+    # long_form_direction.md A3 (2026-08-31): written by hierarchical
+    # (Path B) scene planning when N > 70, alongside the `act_id` it
+    # already stamps onto each Scene - see `Act`'s own docstring for why
+    # this lives here rather than on Scene. Empty on every Path A project
+    # (<=70 fragments, every `Scene.act_id` is None) and on every
+    # timeline that predates this field - the same "empty means Path A or
+    # older" convention `Scene.act_id` itself already documents.
+    acts: list[Act] = Field(default_factory=list)
 
     @field_validator("schema_version")
     @classmethod
