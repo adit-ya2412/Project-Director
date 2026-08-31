@@ -512,6 +512,61 @@ async def test_split_frame_with_wide_framing_is_rejected(project_id, monkeypatch
             )
 
 
+async def test_vertical_pan_is_rejected_on_a_portrait_canvas(project_id, monkeypatch):
+    """A5 (long_form_direction.md §3): vertical pan only makes sense on a
+    landscape canvas - a tall subject on a wide frame. `retention_fast`
+    is 720x1280 (portrait), so `direction=down` on a `pan` shot must fail
+    the validator loudly (a HARD failure via `run_structured_with_repair`'s
+    retry, not a silent downgrade - see `_make_validator`'s own comment
+    for why: the canvas is already in this scene's own prompt, so the
+    model had the information and made an out-of-band choice, unlike
+    `_cap_glitch_transitions`'s cross-scene blindness)."""
+    monkeypatch.setattr(settings, "planner_max_repair_attempts", 1)
+    scene = _scene()
+    bad = _valid_output_for(scene)
+    bad.shots[0].camera.movement = CameraMovement.PAN
+    bad.shots[0].camera.direction = CameraDirection.DOWN
+    bad.shots[0].camera.intensity = 0.2
+    async with async_session_factory() as session:
+        provider = FakePlanningProvider(responses=[bad, bad])
+        planner = ShotPlanner(provider, LlmCallRepository(session))
+        with pytest.raises(PermanentError, match="vertical pan"):
+            await planner.plan(
+                project_id=project_id,
+                scenes=[scene],
+                creative_context=CreativeContext(),
+                min_shot_duration_s=1.0,
+                max_shot_duration_s=8.0,
+                max_shots_per_project=40,
+                render_style="retention_fast",
+            )
+
+
+async def test_vertical_pan_is_accepted_on_a_landscape_canvas(project_id):
+    """The positive case mirroring the rejection above -
+    `documentary_archival` is 1280x720 (landscape), so the same
+    `direction=down` `pan` shot must plan through untouched."""
+    scene = _scene()
+    output = _valid_output_for(scene)
+    output.shots[0].camera.movement = CameraMovement.PAN
+    output.shots[0].camera.direction = CameraDirection.DOWN
+    output.shots[0].camera.intensity = 0.2
+    async with async_session_factory() as session:
+        provider = FakePlanningProvider(responses=[output])
+        planner = ShotPlanner(provider, LlmCallRepository(session))
+        planned = await planner.plan(
+            project_id=project_id,
+            scenes=[scene],
+            creative_context=CreativeContext(),
+            min_shot_duration_s=1.0,
+            max_shot_duration_s=8.0,
+            max_shots_per_project=40,
+            render_style="documentary_archival",
+        )
+    assert planned[0].shots[0].camera.movement == CameraMovement.PAN
+    assert planned[0].shots[0].camera.direction == CameraDirection.DOWN
+
+
 async def test_split_frame_secondary_prompt_lands_on_the_shot(project_id):
     scene = _scene()
     output = _valid_output_for(scene)
@@ -558,7 +613,22 @@ async def test_retention_fast_omits_director_camera_language(project_id):
     assert _CAMERA_LINE not in user
 
 
-async def test_documentary_archival_still_receives_director_camera_language(project_id):
+async def test_documentary_archival_no_longer_receives_director_camera_language(project_id):
+    """Was `test_documentary_archival_still_receives_director_camera_language`
+    before A4 (long_form_direction.md §3): `documentary_archival` had no
+    style fragment, so it was the one style still receiving the
+    Director's per-project `camera_language` line. A4 gave it a fragment
+    (`app/prompts/shot_planner_styles/documentary_archival.md`), which -
+    per Q6's `suppress_camera_language=style_fragment is not None` rule -
+    switches that line off for this style too, exactly as it already did
+    for `retention_fast`/`archival_montage`/`stillness`. This is the
+    deliberate §4.1 trade (documented in the plan's own P-LF-A4 log
+    entry): `documentary_archival` is `settings.default_render_style`,
+    so this changes the default path for every landscape project. The
+    fragment's own fixed camera-restraint clause is what replaces the
+    lost per-project line now - see
+    `test_documentary_archival_fragment_loads_and_the_other_styles_are_unaffected`
+    in `test_shot_text_cards.py`."""
     scene = _scene()
     ctx = CreativeContext(camera_language=_CAMERA_LINE)
     async with async_session_factory() as session:
@@ -573,4 +643,6 @@ async def test_documentary_archival_still_receives_director_camera_language(proj
             max_shots_per_project=40,
             render_style="documentary_archival",
         )
-    assert f"camera_language: {_CAMERA_LINE}" in provider.calls[0]["user_content"]
+    user = provider.calls[0]["user_content"]
+    assert "camera_language:" not in user
+    assert _CAMERA_LINE not in user

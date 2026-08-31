@@ -60,6 +60,7 @@ from app.planners.scene.schemas import ScenePlannerOutput, ScenePlanOutput
 from app.prompts.loader import load_prompt
 from app.providers.base import PlanningLLMProvider
 from app.repositories.llm_call_repository import LlmCallRepository
+from app.schemas.timeline import Act as TimelineAct
 from app.schemas.timeline import CreativeContext, Scene
 from app.utils.bounded_gather import bounded_gather, planner_concurrency
 
@@ -302,7 +303,11 @@ class ScenePlanner:
         creative_context: CreativeContext,
         max_scenes: int,
         max_video_duration_s: float,
-    ) -> list[Scene]:
+    ) -> tuple[list[Scene], list[TimelineAct]]:
+        """Returns `(scenes, acts)`. `acts` is populated only on Path B
+        (`_plan_hierarchical`) - Path A (`_plan_single`) always returns an
+        empty list, matching how `Scene.act_id` stays `None` on that path
+        (long_form_direction.md A3)."""
         fragments = split_narration_fragments(script)
         if len(fragments) > settings.scene_planner_act_threshold:
             return await self._plan_hierarchical(
@@ -313,13 +318,14 @@ class ScenePlanner:
                 max_scenes=max_scenes,
                 max_video_duration_s=max_video_duration_s,
             )
-        return await self._plan_single(
+        scenes = await self._plan_single(
             project_id=project_id,
             script=script,
             creative_context=creative_context,
             max_scenes=max_scenes,
             max_video_duration_s=max_video_duration_s,
         )
+        return scenes, []
 
     async def _plan_single(
         self,
@@ -355,7 +361,7 @@ class ScenePlanner:
         creative_context: CreativeContext,
         max_scenes: int,
         max_video_duration_s: float,
-    ) -> list[Scene]:
+    ) -> tuple[list[Scene], list[TimelineAct]]:
         """Path B: act pass, then per-act scene planning on re-based
         local fragment lists (never absolute indices in the prompt)."""
         n_total = len(fragments)
@@ -389,4 +395,9 @@ class ScenePlanner:
             if isinstance(item, Exception):
                 raise item
             scenes.extend(item)
-        return [s.model_copy(update={"order": i}) for i, s in enumerate(scenes)]
+        ordered_scenes = [s.model_copy(update={"order": i}) for i, s in enumerate(scenes)]
+        # long_form_direction.md A3: the titles ActPlanner already produced,
+        # persisted alongside the act_id stamping above instead of being
+        # discarded once scenes are named.
+        timeline_acts = [TimelineAct(id=a.id, order=a.order, title=a.title) for a in acts]
+        return ordered_scenes, timeline_acts

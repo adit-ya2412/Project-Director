@@ -208,7 +208,7 @@ class GenerateTimelineStep:
 
         if not timeline.scenes:
             bundle = _constraint_bundle(timeline, script=script)
-            scenes = await ScenePlanner(provider, llm_call_repo).plan(
+            scenes, acts = await ScenePlanner(provider, llm_call_repo).plan(
                 project_id=ctx.project_id,
                 script=script,
                 creative_context=timeline.creative_context,
@@ -218,13 +218,16 @@ class GenerateTimelineStep:
 
             def _apply_scenes(base: Timeline) -> Timeline:
                 base.scenes = scenes
+                # A3: acts is [] on Path A, matching the empty-default
+                # every pre-A3 timeline already loads with.
+                base.acts = acts
                 return base
 
             await ctx.timeline_service.append_version(
                 ctx.project_id,
                 produced_by=ProducedBy.SCENE_PLANNER,
                 transform=_apply_scenes,
-                owns=frozenset({"scenes"}),
+                owns=frozenset({"scenes", "acts"}),
             )
             timeline = await ctx.timeline_service.get_active(ctx.project_id)
             assert timeline is not None
@@ -242,6 +245,8 @@ class GenerateTimelineStep:
                 max_shot_duration_s=max_shot_duration_s,
                 max_shots_per_project=max_shots_per_project,
                 render_style=timeline.metadata.render_style,
+                acts=timeline.acts,
+                frame_aspect=timeline.metadata.frame_aspect,
             )
             total_duration_s = compute_timeline_duration(
                 [shot for scene in planned_scenes for shot in scene.shots]

@@ -161,7 +161,7 @@ async def test_scene_plan_produces_ordered_scenes_that_tile_cleanly(project_id):
         provider = FakePlanningProvider(responses=[_valid_output_for(SCRIPT)])
         planner = ScenePlanner(provider, LlmCallRepository(session))
 
-        scenes = await planner.plan(
+        scenes, _ = await planner.plan(
             project_id=project_id,
             script=SCRIPT,
             creative_context=CreativeContext(tone="sober", visual_style="archival"),
@@ -198,7 +198,7 @@ async def test_scene_plan_handles_blank_lines_between_stanzas(project_id):
         provider = FakePlanningProvider(responses=[output])
         planner = ScenePlanner(provider, LlmCallRepository(session))
 
-        scenes = await planner.plan(
+        scenes, _ = await planner.plan(
             project_id=project_id,
             script=BLANK_LINE_SCRIPT,
             creative_context=CreativeContext(),
@@ -230,7 +230,7 @@ async def test_single_fragment_script_gets_exactly_one_scene(project_id):
         provider = FakePlanningProvider(responses=[output])
         planner = ScenePlanner(provider, LlmCallRepository(session))
 
-        scenes = await planner.plan(
+        scenes, _ = await planner.plan(
             project_id=project_id,
             script=ONE_FRAGMENT_SCRIPT,
             creative_context=CreativeContext(),
@@ -321,7 +321,7 @@ async def test_scene_plan_snaps_a_fragment_end_short_by_one(project_id):
         provider = FakePlanningProvider(responses=[_output_with_end_short_by(MULTI_SCRIPT, 1)])
         planner = ScenePlanner(provider, LlmCallRepository(session))
 
-        scenes = await planner.plan(
+        scenes, _ = await planner.plan(
             project_id=project_id,
             script=MULTI_SCRIPT,
             creative_context=CreativeContext(),
@@ -345,7 +345,7 @@ async def test_scene_plan_snaps_a_large_fragment_end_drift_but_logs_a_warning(pr
         planner = ScenePlanner(provider, LlmCallRepository(session))
 
         with caplog.at_level(logging.WARNING, logger="app.planners.scene.planner"):
-            scenes = await planner.plan(
+            scenes, _ = await planner.plan(
                 project_id=project_id,
                 script=MULTI_SCRIPT,
                 creative_context=CreativeContext(),
@@ -383,7 +383,7 @@ async def test_path_a_leaves_act_id_none(project_id):
     async with async_session_factory() as session:
         provider = FakePlanningProvider(responses=[_valid_output_for(SCRIPT)])
         planner = ScenePlanner(provider, LlmCallRepository(session))
-        scenes = await planner.plan(
+        scenes, acts = await planner.plan(
             project_id=project_id,
             script=SCRIPT,
             creative_context=CreativeContext(),
@@ -391,6 +391,9 @@ async def test_path_a_leaves_act_id_none(project_id):
             max_video_duration_s=90.0,
         )
     assert all(s.act_id is None for s in scenes)
+    # A3 (long_form_direction.md): Path A never produces acts - the
+    # Timeline's `acts` list stays empty, matching `act_id`'s own None.
+    assert acts == []
 
 
 async def test_path_b_rebases_indices_and_sets_act_id(project_id, monkeypatch):
@@ -418,7 +421,7 @@ async def test_path_b_rebases_indices_and_sets_act_id(project_id, monkeypatch):
     async with async_session_factory() as session:
         provider = FakePlanningProvider(responses=[acts, act1_scenes, act2_scenes, act3_scenes])
         planner = ScenePlanner(provider, LlmCallRepository(session))
-        scenes = await planner.plan(
+        scenes, timeline_acts = await planner.plan(
             project_id=project_id,
             script=MULTI_SCRIPT,
             creative_context=CreativeContext(tone="sober"),
@@ -430,6 +433,12 @@ async def test_path_b_rebases_indices_and_sets_act_id(project_id, monkeypatch):
     assert [s.act_id for s in scenes] == ["act_01", "act_02", "act_03"]
     assert [s.order for s in scenes] == [0, 1, 2]
     assert "".join(s.narration_text for s in scenes) == MULTI_SCRIPT
+    # A3 (long_form_direction.md): the titles ActPlanOutput produced are
+    # persisted onto the Timeline's own acts list, ids matching the
+    # act_id stamped onto each scene above - not discarded.
+    assert [a.id for a in timeline_acts] == ["act_01", "act_02", "act_03"]
+    assert [a.order for a in timeline_acts] == [0, 1, 2]
+    assert [a.title for a in timeline_acts] == ["Coal", "Oil", "War"]
     # Per-act prompts must be locally numbered 1..M, never "fragments 3 to 5".
     scene_prompts = [c["user_content"] for c in provider.calls[1:]]
     assert all("3 to 5" not in p and "fragments 3" not in p for p in scene_prompts)

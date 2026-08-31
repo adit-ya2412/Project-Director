@@ -40,7 +40,9 @@ from app.prompts.loader import load_prompt, load_style_fragment
 from app.providers.base import PlanningLLMProvider
 from app.repositories.llm_call_repository import LlmCallRepository
 from app.schemas.timeline import (
+    Act,
     Camera,
+    CameraDirection,
     CameraMovement,
     CreativeContext,
     Framing,
@@ -49,6 +51,7 @@ from app.schemas.timeline import (
     Transition,
     TransitionType,
 )
+from app.script.styles import RenderFormat, resolve_render_format
 from app.utils.bounded_gather import bounded_gather, planner_concurrency
 
 logger = get_logger(__name__)
@@ -117,11 +120,18 @@ def _cap_glitch_transitions(planned_scenes: list[Scene]) -> list[Scene]:
     return out
 
 
-def _cap_text_cards(planned_scenes: list[Scene], *, min_gap: int) -> list[Scene]:
-    """Enforce a project-wide minimum shot gap between text cards.
+def _cap_text_cards(
+    planned_scenes: list[Scene],
+    *,
+    min_gap: int,
+    chapter_shot_ids: frozenset[str] = frozenset(),
+) -> list[Scene]:
+    """Enforce a project-wide minimum shot gap between text cards, with
+    CHAPTER cards (A4's act-boundary titles) outranking ordinary ones.
 
     Walks every shot in scene/shot order and clears `text_card` on any
-    card that lands fewer than `min_gap` shots after the last kept one.
+    ORDINARY card that lands fewer than `min_gap` shots away from the
+    last kept one.
 
     Why this exists (prompt_fixes.md §2.1's rule, third instance): the
     prompt asks for "roughly one card every four to six shots", but the
@@ -136,40 +146,121 @@ def _cap_text_cards(planned_scenes: list[Scene], *, min_gap: int) -> list[Scene]
     at the front. Silently correct + log, per style_extensions.md §2.7 -
     the model was structurally denied the information needed to get this
     right, so failing the run would punish it for our own architecture.
+    That contract is preserved here unchanged: a chapter card losing to
+    the spacing rule is not a data error either, it is the same
+    structural blindness with a worse consequence (A4's whole visible
+    payoff silently vanishing, long_form_direction.md §3 A7), so it is
+    still corrected and logged, never raised.
+
+    **Identifying a chapter card (A7).** `chapter_shot_ids` is a set of
+    `Shot.id`, not a new field on `Shot`: A4's own fragment
+    (`documentary_archival.md`) instructs the model to place a chapter
+    card on "this scene's first shot" for a scene told it opens an act,
+    so the caller (`ShotPlanner.plan`) derives the set as the first shot
+    of every scene in A6's `opening_scene_ids`. No schema change is
+    needed, and there is nothing on `Shot` itself to drift out of sync
+    with the fragment's own wording - the identification is exactly the
+    rule the model was told to follow.
+
+    **Precedence:**
+    - A chapter card is NEVER cleared.
+    - An ordinary card that collides with a chapter card yields. Only
+      one direction needs an explicit correction: if an ordinary card
+      was already KEPT and a chapter card then lands within `min_gap` of
+      it, the ordinary card is retroactively cleared and the gap counter
+      restarts from the chapter card. The other direction (an ordinary
+      card arriving shortly AFTER an already-kept chapter card) falls
+      out of the existing spacing rule unchanged, since the chapter card
+      is already the "last kept" card by the time the ordinary one is
+      checked.
+    - Two chapter cards colliding are both kept - chapter cards are
+      never cleared, full stop - even though §3 A7 notes this
+      "realistically cannot" happen (acts are minutes apart). See
+      `test_two_chapter_cards_within_the_gap_are_both_kept` in
+      `test_shot_planner_text_card_cap.py` for the asserted, not
+      assumed, behaviour.
 
     Needs no new fingerprint input: `text_card` lives on the Shot, and
     the whole timeline document is already hashed (same reasoning as
-    Feature B's original text_card wiring).
+    Feature B's original text_card wiring). `chapter_shot_ids` is
+    derived, not persisted.
     """
     if min_gap <= 0:
         return planned_scenes
-    out: list[Scene] = []
+
+    flat: list[Shot] = [shot for scene in planned_scenes for shot in scene.shots]
+    original_cards: list[str | None] = [(s.text_card or "").strip() or None for s in flat]
+    decisions: list[str | None] = list(original_cards)
+
     shots_since_kept: int | None = None  # None = no card kept yet
-    cleared = 0
-    kept = 0
+    last_kept_index: int | None = None
+    last_kept_is_chapter = False
+    kept_chapter = 0
+    kept_ordinary = 0
+    cleared_ordinary_spacing = 0
+    cleared_ordinary_for_chapter = 0
+
+    for i, shot in enumerate(flat):
+        card = original_cards[i]
+        if card is None:
+            if shots_since_kept is not None:
+                shots_since_kept += 1
+            continue
+
+        if shot.id in chapter_shot_ids:
+            # A chapter card is never cleared. If the most recently kept
+            # card is an ordinary one landing inside the gap, IT yields
+            # instead - the ordinary card was kept first only because it
+            # was planned first; the chapter card still outranks it.
+            if (
+                shots_since_kept is not None
+                and shots_since_kept < min_gap
+                and not last_kept_is_chapter
+            ):
+                decisions[last_kept_index] = None  # type: ignore[index]
+                cleared_ordinary_for_chapter += 1
+                kept_ordinary -= 1
+            kept_chapter += 1
+            shots_since_kept = 0
+            last_kept_index = i
+            last_kept_is_chapter = True
+        elif shots_since_kept is None or shots_since_kept >= min_gap:
+            kept_ordinary += 1
+            shots_since_kept = 0
+            last_kept_index = i
+            last_kept_is_chapter = False
+        else:
+            decisions[i] = None
+            cleared_ordinary_spacing += 1
+            shots_since_kept += 1
+
+    total_cleared = cleared_ordinary_spacing + cleared_ordinary_for_chapter
+    if total_cleared:
+        # stdlib logger - extra={}, never bare kwargs (TypeError). Split
+        # by kind (A7) so this line can finally say WHICH kind of card
+        # was dropped - the pre-A7 single `cleared` count could not.
+        logger.warning(
+            "shot_planner.text_cards_too_dense_trimmed",
+            extra={
+                "kept_chapter": kept_chapter,
+                "kept_ordinary": kept_ordinary,
+                "cleared_ordinary_spacing": cleared_ordinary_spacing,
+                "cleared_ordinary_for_chapter": cleared_ordinary_for_chapter,
+                "min_gap": min_gap,
+            },
+        )
+
+    out: list[Scene] = []
+    idx = 0
     for scene in planned_scenes:
         new_shots: list[Shot] = []
         for shot in scene.shots:
-            has_card = bool((shot.text_card or "").strip())
-            if has_card:
-                if shots_since_kept is None or shots_since_kept >= min_gap:
-                    kept += 1
-                    shots_since_kept = 0
-                else:
-                    shot = shot.model_copy(update={"text_card": None})
-                    cleared += 1
-                    if shots_since_kept is not None:
-                        shots_since_kept += 1
-            elif shots_since_kept is not None:
-                shots_since_kept += 1
+            new_card = decisions[idx]
+            if new_card != original_cards[idx]:
+                shot = shot.model_copy(update={"text_card": new_card})
             new_shots.append(shot)
+            idx += 1
         out.append(scene.model_copy(update={"shots": new_shots}))
-    if cleared:
-        # stdlib logger - extra={}, never bare kwargs (TypeError).
-        logger.warning(
-            "shot_planner.text_cards_too_dense_trimmed",
-            extra={"kept": kept, "cleared": cleared, "min_gap": min_gap},
-        )
     return out
 
 
@@ -230,6 +321,10 @@ def _build_user_content(
     fragments: list[NarrationFragment],
     *,
     suppress_camera_language: bool = False,
+    act: Act | None = None,
+    act_ordinal: tuple[int, int] | None = None,
+    opens_act: bool = False,
+    render_format: RenderFormat | None = None,
 ) -> str:
     numbered_fragments = "\n".join(f"{f.index}. {f.text}" for f in fragments)
     camera_line = (
@@ -237,6 +332,43 @@ def _build_user_content(
         if suppress_camera_language
         else f"- camera_language: {creative_context.camera_language}\n"
     )
+    # long_form_direction.md A6 (2026-08-31) added act + canvas context
+    # gated TOGETHER on `act is not None` (Path B / hierarchical scene
+    # planning - Path A projects, <=70 fragments, never stamp `act_id`).
+    # A5 (2026-08-31) deliberately DECOUPLES the two, per its own §3
+    # instruction: canvas resolution has nothing to do with act presence
+    # (A5's vertical-pan gate needs it on every project, not just Path
+    # B), so `canvas_line` is now built from `render_format` alone. This
+    # breaks A6's byte-identity property on purpose - see
+    # `test_shot_planner_context.py`'s updated Path-A test and A5's own
+    # §7 log entry for why that is an accepted, one-time cost here.
+    canvas_line = ""
+    if render_format is not None:
+        canvas_line = (
+            f"- canvas: {render_format.width}x{render_format.height} "
+            f"({render_format.aspect_ratio})\n"
+        )
+    long_form_context = ""
+    if act is not None:
+        ordinal_line = ""
+        if act_ordinal is not None:
+            position, total = act_ordinal
+            ordinal_line = f"- act position: act {position} of {total}\n"
+        long_form_context = (
+            "\n"
+            "Long-form context:\n"
+            f"- act: {act.title}\n"
+            f"{ordinal_line}"
+            f"- opens this act: {'yes' if opens_act else 'no'}\n"
+            f"{canvas_line}"
+        )
+    elif canvas_line:
+        # No act (Path A, or a Path B project whose scene has none) but a
+        # canvas WAS resolved - A5's prompt wording (v1.md) reads this to
+        # decide whether a vertical pan has anywhere to travel. Same
+        # heading as the act-bearing block above so there is only ever
+        # one "Long-form context:" shape in this function's output.
+        long_form_context = "\nLong-form context:\n" f"{canvas_line}"
     return (
         f"Scene: {scene.title}\n"
         f"Narrative purpose: {scene.narrative_purpose}\n"
@@ -253,6 +385,7 @@ def _build_user_content(
         f"- historical_period: {creative_context.historical_period}\n"
         f"- visual_style: {creative_context.visual_style}\n"
         f"{camera_line}"
+        f"{long_form_context}"
     )
 
 
@@ -261,6 +394,7 @@ def _make_validator(
     fragments: list[NarrationFragment],
     min_shot_duration_s: float,
     max_shot_duration_s: float,
+    render_format: RenderFormat,
 ):
     fragment_count = len(fragments)
 
@@ -348,6 +482,32 @@ def _make_validator(
                     f"shot {s.id}: framing=split is only for split_frame, "
                     f"got {s.camera.movement.value}"
                 )
+            # A5 (long_form_direction.md §3): vertical pan only makes
+            # sense on a landscape canvas - a tall subject on a wide
+            # frame. Hard-fail (not a silent downgrade like
+            # `_cap_glitch_transitions`/`_cap_text_cards`): those two
+            # exist because the model is called once per scene and
+            # cannot see the OTHER scenes it needs to self-correct
+            # against. This check needs nothing outside the current
+            # call - the canvas line is already IN this scene's own
+            # prompt (`_build_user_content`) - so the model had the
+            # information and still made an out-of-band choice; a hard
+            # failure gives it that feedback back and lets it correct
+            # itself (`run_structured_with_repair`'s retry), rather than
+            # silently rewriting a directed creative decision (canon 3.1)
+            # into a movement/direction the model never asked for.
+            if (
+                s.camera.direction in (CameraDirection.UP, CameraDirection.DOWN)
+                and not render_format.is_landscape
+            ):
+                violations.append(
+                    f"shot {s.id}: camera.direction={s.camera.direction.value} is a "
+                    "vertical pan, which is only legal on a landscape canvas (a tall "
+                    "subject on a wide frame) - this project's canvas is "
+                    f"{render_format.width}x{render_format.height} "
+                    f"({render_format.aspect_ratio}), a portrait frame with nowhere for "
+                    "a vertical pan to travel"
+                )
 
         total = sum(s.duration_s for s in shots)
         tolerance = max(1.0, 0.2 * scene.duration_s)
@@ -423,6 +583,8 @@ class ShotPlanner:
         max_shot_duration_s: float,
         max_shots_per_project: int,
         render_style: str | None = None,
+        acts: list[Act] | None = None,
+        frame_aspect: str | None = None,
     ) -> list[Scene]:
         system_prompt = load_prompt(self.name, self._PROMPT_VERSION)
         # Track B (2026-08-17), plan §4.3: one base prompt plus one
@@ -437,8 +599,28 @@ class ShotPlanner:
             system_prompt = f"{system_prompt}\n\n{style_fragment}"
         db_lock = asyncio.Lock()
 
+        # long_form_direction.md A6 (2026-08-31, RV2 "resolve once, thread
+        # explicitly"): the canvas is one value for the whole project, not
+        # per scene, so it is resolved exactly once here rather than
+        # inside the per-scene closure. `acts` is `[]` on every Path A
+        # project (§3 A6) and every timeline predating A3, so all three
+        # lookups below are empty and every scene falls through to the
+        # `act is None` branch in `_build_user_content` - byte-identical
+        # to pre-A6 output.
+        acts_by_id = {a.id: a for a in (acts or [])}
+        acts_sorted = sorted((acts or []), key=lambda a: a.order)
+        act_ordinals = {a.id: (i + 1, len(acts_sorted)) for i, a in enumerate(acts_sorted)}
+        opening_scene_ids: set[str] = set()
+        seen_act_ids: set[str] = set()
+        for s in sorted(scenes, key=lambda sc: sc.order):
+            if s.act_id and s.act_id not in seen_act_ids:
+                seen_act_ids.add(s.act_id)
+                opening_scene_ids.add(s.id)
+        render_format = resolve_render_format(render_style, frame_aspect=frame_aspect)
+
         async def _one_scene(scene: Scene) -> Scene:
             fragments = split_narration_fragments(scene.narration_text)
+            act = acts_by_id.get(scene.act_id) if scene.act_id else None
             output = await run_structured_with_repair(
                 provider=self._provider,
                 llm_call_repo=self._llm_call_repo,
@@ -454,10 +636,17 @@ class ShotPlanner:
                     # the request with the Director's camera_language —
                     # the two contradict with no stated precedence.
                     suppress_camera_language=style_fragment is not None,
+                    act=act,
+                    act_ordinal=act_ordinals.get(scene.act_id) if act is not None else None,
+                    opens_act=scene.id in opening_scene_ids,
+                    # A5 (long_form_direction.md §3): decoupled from `act`
+                    # - resolved once above, unconditionally, so every
+                    # project (Path A included) learns its own canvas.
+                    render_format=render_format,
                 ),
                 response_model=ShotPlannerOutput,
                 validate=_make_validator(
-                    scene, fragments, min_shot_duration_s, max_shot_duration_s
+                    scene, fragments, min_shot_duration_s, max_shot_duration_s, render_format
                 ),
                 db_lock=db_lock,
             )
@@ -487,4 +676,18 @@ class ShotPlanner:
         # Both post-gather corrective passes for whole-project rates no
         # single per-scene call can see (prompt_fixes.md §2.1).
         capped = _cap_glitch_transitions(planned_scenes)
-        return _cap_text_cards(capped, min_gap=settings.text_card_min_shot_gap)
+        # A7 (long_form_direction.md §3): a chapter card is A4's fragment
+        # instructing the model to put it on an act-opening scene's FIRST
+        # shot - so identify one by shot id, not a new Shot field. Reuse
+        # `opening_scene_ids` (A6, computed above) rather than
+        # recomputing "which scene opens an act" a second way.
+        chapter_shot_ids = frozenset(
+            scene.shots[0].id
+            for scene in capped
+            if scene.id in opening_scene_ids and scene.shots
+        )
+        return _cap_text_cards(
+            capped,
+            min_gap=settings.text_card_min_shot_gap,
+            chapter_shot_ids=chapter_shot_ids,
+        )
