@@ -63,6 +63,7 @@ from app.core.errors import PermanentError
 from app.core.logging import get_logger
 from app.renderer.ken_burns import (
     WORKING_CANVAS_SCALE,
+    MovingCropExpression,
     ZoompanExpression,
     build_zoompan_expression,
     ken_burns_crop_and_zoompan_focal,
@@ -361,6 +362,80 @@ def _ken_burns_filter(
     )
 
 
+def _ken_burns_pan_filter(
+    index: int,
+    settings: RenderSettings,
+    label: str,
+    expr: MovingCropExpression,
+    frames: int,
+) -> str:
+    """PAN's mechanism (A2 horizontal, A5 vertical, long_form_direction.md
+    §3) - a moving `crop` over the FULL scaled image, not `zoompan`.
+    `crop` has no `zoompan`-style `d=`/`fps=` pair to manufacture `frames`
+    frames from a single decoded input, so - exactly like STATIC's own
+    `_normalize_filter` - `tpad=stop_mode=clone` materialises the hold
+    first, with the same double-`fps=` bracket around it (Track C §14.1:
+    ffmpeg 7.1.5's xfade rejects a post-tpad stream as rate 1/0 when the
+    other input is a motion clip). `crop`'s `x`/`y` are evaluated PER
+    OUTPUT FRAME using ffmpeg's own `n`/`iw`/`ih` - confirmed against a
+    real render (a synthetic horizontal-gradient still, sampled
+    centre-pixel colour per frame): ffmpeg 9.0's `crop` has no `eval`
+    AVOption at all (`ffmpeg -h filter=crop` lists none), and evaluates
+    `x`/`y` per frame by default, so the expression's arithmetic runs
+    against the real per-frame width/height with no extra flag needed -
+    see `MovingCropExpression`.
+
+    Dispatches on `expr.y_expr` (A5): `None` means horizontal (A2) - this
+    branch is BYTE-IDENTICAL to what it always emitted, `scale=-2:{h}`
+    (height-only, aspect preserved, `-2` keeps width even) and a literal
+    `0` for `y`. A set `y_expr` means vertical (A5's mirror): `scale=
+    {w}:-2` instead (width-only, so the FULL scaled height is the travel
+    margin) and a literal `0` for `x` (see `MovingCropExpression`'s own
+    docstring for why `0` is the correct "centred" value there). Either
+    way, the `force_original_aspect_ratio=increase` + centred-crop pair
+    every other movement uses is deliberately avoided - that pair THROWS
+    AWAY the margin PAN needs to travel across (A2's whole finding).
+    """
+    w, h = settings.width, settings.height
+    hold_s = (frames - 1) / settings.fps
+    # A2 shipped `scale=-2:{h}` for horizontal (and A5 mirrored it as
+    # `scale={w}:-2`), which pins ONE axis and lets the other fall where
+    # the source aspect puts it. When the source is narrower than the
+    # output aspect that leaves the scaled frame NARROWER than the crop
+    # window, and `crop` does not degrade - it refuses to configure:
+    #   "Invalid too big or non positive size for width '1280'"
+    # -> exit 127, nothing written, the whole render dies. Measured
+    # 2026-08-31 against this project's own 648 assets: 111 (17.1%) are
+    # narrower than 9:16 and would kill a horizontal PAN on the SHIPPED
+    # 720x1280 canvas; 582 (89.8%) are narrower than 16:9 and would kill
+    # one on 1280x720. The `max(...,0)` guard in `ken_burns.py` cannot
+    # help - it clamps TRAVEL, and the failure is the crop window itself
+    # not fitting, which happens before travel is ever evaluated.
+    #
+    # Scaling to COVER the output instead guarantees both axes are >= the
+    # crop window, so `crop` always configures, and it yields travel on
+    # whichever axis actually has excess pixels (zero on the other -
+    # degrading to a static hold, which is what the guard intended).
+    # This is byte-identical in PIXELS to A2 wherever A2 worked: for a
+    # source wider than the output aspect, cover-scaling pins height
+    # exactly as `-2:{h}` did (verified: 2980x1676 -> 2276x1280 both
+    # ways). The emitted STRING changes for every pan, which is why the
+    # A2/A5 filter-string tests were updated alongside this.
+    scale = f"{w}:{h}:force_original_aspect_ratio=increase"
+    if expr.y_expr is None:
+        crop = f"crop={w}:{h}:'{expr.x_expr}':0"
+    else:
+        crop = f"crop={w}:{h}:0:'{expr.y_expr}'"
+    return (
+        f"[{index}:v]scale={scale},setsar=1,"
+        f"fps={settings.fps},"
+        f"tpad=stop_mode=clone:stop_duration={hold_s:.6f},"
+        f"fps={settings.fps},"
+        f"{crop},"
+        f"format={settings.pixel_format}[{label}]"
+    )
+
+
 def _ken_burns_aim(
     probe: MediaProbe,
     settings: RenderSettings,
@@ -391,13 +466,22 @@ def _per_shot_filter(
         return _motion_filter(input_index, settings, label, probe, shot.duration_s)
     crop_x, crop_y, zoompan_focal = _ken_burns_aim(probe, settings, focal)
     expr = (
-        build_zoompan_expression(shot.camera, frames=frames, focal=zoompan_focal)
+        build_zoompan_expression(
+            shot.camera,
+            frames=frames,
+            focal=zoompan_focal,
+            canvas_w=settings.width,
+            canvas_h=settings.height,
+            duration_s=shot.duration_s,
+        )
         if probe.kind is MediaKind.STILL
         else None
     )
     if expr is None:
         hold_s = (frames - 1) / settings.fps
         return _normalize_filter(input_index, settings, label, hold_s=hold_s)
+    if isinstance(expr, MovingCropExpression):
+        return _ken_burns_pan_filter(input_index, settings, label, expr, frames)
     return _ken_burns_filter(
         input_index, settings, label, expr, frames, crop_x=crop_x, crop_y=crop_y
     )
@@ -899,7 +983,14 @@ async def _render_run(
     ]
     ken_burns_exprs = [
         (
-            build_zoompan_expression(shot.camera, frames=f, focal=aim[2])
+            build_zoompan_expression(
+                shot.camera,
+                frames=f,
+                focal=aim[2],
+                canvas_w=settings.width,
+                canvas_h=settings.height,
+                duration_s=shot.duration_s,
+            )
             if media_probes[shot.id].kind is MediaKind.STILL
             else None
         )
@@ -932,6 +1023,8 @@ async def _render_run(
             # is correct — no hold.
             hold_s = (frame_counts[i] - 1) / settings.fps
             filters.append(_normalize_filter(i, settings, label, hold_s=hold_s))
+        elif isinstance(expr, MovingCropExpression):
+            filters.append(_ken_burns_pan_filter(i, settings, label, expr, frame_counts[i]))
         else:
             crop_x, crop_y, _residual = ken_burns_aims[i]
             filters.append(

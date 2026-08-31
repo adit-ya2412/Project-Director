@@ -3,7 +3,15 @@ real ffmpeg `zoompan` graph this feeds is proven separately, against a
 real render, in tests/integration/test_render_ken_burns.py.
 """
 
-from app.renderer.ken_burns import build_punch_in_expression, build_zoompan_expression
+import pytest
+
+from app.renderer.ken_burns import (
+    _MAX_PAN_PX_PER_SEC,
+    MovingCropExpression,
+    ZoompanExpression,
+    build_punch_in_expression,
+    build_zoompan_expression,
+)
 from app.schemas.timeline import Camera, CameraDirection, CameraMovement
 
 
@@ -134,37 +142,256 @@ def test_punch_in_with_focal_aims_and_clamps():
     assert "min(max(" in expr.x_expr
 
 
-def test_pan_x_is_not_retargeted_by_focal():
-    """OQ-2: PAN keeps directional x; focal must not rewrite it."""
-    without = build_zoompan_expression(_camera(CameraMovement.PAN, CameraDirection.RIGHT), frames=90)
-    with_focal = build_zoompan_expression(
-        _camera(CameraMovement.PAN, CameraDirection.RIGHT),
-        frames=90,
-        focal=(0.2, 0.8),
+_PAN_KWARGS = {"canvas_w": 720, "duration_s": 2.0}
+
+
+def test_pan_returns_a_moving_crop_expression_not_a_zoompan_expression():
+    """A2: PAN's mechanism changed shape entirely - `slideshow.py`
+    dispatches on this return type, not on `camera.movement`."""
+    expr = build_zoompan_expression(
+        _camera(CameraMovement.PAN, CameraDirection.RIGHT), frames=90, **_PAN_KWARGS
     )
+    assert isinstance(expr, MovingCropExpression)
+    assert not isinstance(expr, ZoompanExpression)
+
+
+def test_pan_without_canvas_w_or_duration_s_raises_not_crashes_unclearly():
+    """A caller bug (both real call sites in slideshow.py always supply
+    both), deliberately loud rather than a silent wrong render - distinct
+    from the intensity=0 contract, which must stay a clean `None`."""
+    with pytest.raises(ValueError):
+        build_zoompan_expression(_camera(CameraMovement.PAN, CameraDirection.RIGHT), frames=90)
+
+
+def test_pan_x_is_not_retargeted_by_focal():
+    """OQ-2: PAN keeps directional x; focal must not rewrite it. Uses a
+    non-default intensity (0.5) so the assertion below cannot coincide
+    with `camera.intensity`'s OWN formatted value in `x_expr`."""
+    camera = _camera(CameraMovement.PAN, CameraDirection.RIGHT, intensity=0.5)
+    without = build_zoompan_expression(camera, frames=90, **_PAN_KWARGS)
+    with_focal = build_zoompan_expression(camera, frames=90, focal=(0.2, 0.8), **_PAN_KWARGS)
     assert without is not None and with_focal is not None
     assert without.x_expr == with_focal.x_expr
     assert "0.200000" not in with_focal.x_expr
 
 
 def test_pan_left_moves_right_to_left():
-    expr = build_zoompan_expression(_camera(CameraMovement.PAN, CameraDirection.LEFT), frames=90)
+    expr = build_zoompan_expression(
+        _camera(CameraMovement.PAN, CameraDirection.LEFT), frames=90, **_PAN_KWARGS
+    )
     assert expr is not None
-    assert "(1-on/" in expr.x_expr
+    assert "(1-n/" in expr.x_expr
 
 
 def test_pan_right_moves_left_to_right():
-    expr = build_zoompan_expression(_camera(CameraMovement.PAN, CameraDirection.RIGHT), frames=90)
+    expr = build_zoompan_expression(
+        _camera(CameraMovement.PAN, CameraDirection.RIGHT), frames=90, **_PAN_KWARGS
+    )
     assert expr is not None
-    assert "(on/" in expr.x_expr
-    assert "(1-on/" not in expr.x_expr
+    assert "(n/" in expr.x_expr
+    assert "(1-n/" not in expr.x_expr
 
 
 def test_pan_with_no_meaningful_direction_defaults_to_left_to_right_and_never_crashes():
     for direction in (CameraDirection.NONE, CameraDirection.IN, CameraDirection.OUT):
-        expr = build_zoompan_expression(_camera(CameraMovement.PAN, direction), frames=90)
+        expr = build_zoompan_expression(
+            _camera(CameraMovement.PAN, direction), frames=90, **_PAN_KWARGS
+        )
         assert expr is not None
-        assert "(on/" in expr.x_expr
+        assert "(n/" in expr.x_expr
+
+
+def test_pan_travels_the_full_scaled_image_not_a_precropped_canvas():
+    """A2: the mechanism itself - travel is expressed against `iw` (the
+    scaled frame's real width) and the literal output width, not any
+    zoompan-style pre-cropped working canvas."""
+    expr = build_zoompan_expression(
+        _camera(CameraMovement.PAN, CameraDirection.RIGHT, intensity=1.0),
+        frames=90,
+        canvas_w=720,
+        duration_s=5.0,
+    )
+    assert expr is not None
+    assert "iw-720" in expr.x_expr
+    assert "zoompan" not in expr.x_expr
+
+
+def test_pan_travel_cap_binds_on_a_short_shot():
+    """The GATE from long_form_direction.md §3 A2: a short shot's travel
+    must be capped in px/second, not left at "full image" speed - the
+    exact bug that made every `retention_fast`/`archival_montage` pan a
+    whip pan. At full intensity the cap literally appears in the
+    expression as `_MAX_PAN_PX_PER_SEC * duration_s`."""
+    duration_s = 1.75
+    expr = build_zoompan_expression(
+        _camera(CameraMovement.PAN, CameraDirection.RIGHT, intensity=1.0),
+        frames=52,
+        canvas_w=720,
+        duration_s=duration_s,
+    )
+    assert expr is not None
+    cap_px = _MAX_PAN_PX_PER_SEC * duration_s
+    assert f"{cap_px:.6f}" in expr.x_expr
+
+
+def test_pan_travel_scales_with_intensity():
+    """Travel is intensity's share of the available image, not an
+    on/off toggle - a lower intensity must produce a smaller cap-side
+    multiplier in the expression."""
+    low = build_zoompan_expression(
+        _camera(CameraMovement.PAN, CameraDirection.RIGHT, intensity=0.1),
+        frames=90,
+        **_PAN_KWARGS,
+    )
+    high = build_zoompan_expression(
+        _camera(CameraMovement.PAN, CameraDirection.RIGHT, intensity=0.9),
+        frames=90,
+        **_PAN_KWARGS,
+    )
+    assert low is not None and high is not None
+    assert "0.100000" in low.x_expr
+    assert "0.900000" in high.x_expr
+    assert low.x_expr != high.x_expr
+
+
+def test_vertical_pan_returns_a_moving_crop_expression_with_y_set_and_x_pinned():
+    """A5: UP/DOWN mirror A2's mechanism onto `y` - `x_expr` is pinned to
+    the literal `"0"` (the "centred literal" the plan asks for) and
+    `y_expr` carries the moving expression, the opposite of a horizontal
+    pan's shape."""
+    expr = build_zoompan_expression(
+        _camera(CameraMovement.PAN, CameraDirection.DOWN, intensity=1.0),
+        frames=90,
+        canvas_w=720,
+        canvas_h=1280,
+        duration_s=5.0,
+    )
+    assert isinstance(expr, MovingCropExpression)
+    assert expr.x_expr == "0"
+    assert expr.y_expr is not None
+    assert "ih-1280" in expr.y_expr
+    assert "iw" not in expr.y_expr
+
+
+def test_horizontal_pan_leaves_y_expr_none_byte_identical_shape():
+    """Byte-identical discipline (§2): a horizontal pan's
+    `MovingCropExpression` must keep the exact pre-A5 shape - `y_expr`
+    defaults to `None` so `_ken_burns_pan_filter` takes the unchanged
+    branch."""
+    expr = build_zoompan_expression(
+        _camera(CameraMovement.PAN, CameraDirection.RIGHT, intensity=1.0),
+        frames=90,
+        **_PAN_KWARGS,
+    )
+    assert isinstance(expr, MovingCropExpression)
+    assert expr.y_expr is None
+
+
+def test_vertical_pan_down_moves_top_to_bottom():
+    expr = build_zoompan_expression(
+        _camera(CameraMovement.PAN, CameraDirection.DOWN),
+        frames=90,
+        canvas_w=720,
+        canvas_h=1280,
+        duration_s=2.0,
+    )
+    assert expr is not None and expr.y_expr is not None
+    assert "(n/" in expr.y_expr
+    assert "(1-n/" not in expr.y_expr
+
+
+def test_vertical_pan_up_moves_bottom_to_top():
+    expr = build_zoompan_expression(
+        _camera(CameraMovement.PAN, CameraDirection.UP),
+        frames=90,
+        canvas_w=720,
+        canvas_h=1280,
+        duration_s=2.0,
+    )
+    assert expr is not None and expr.y_expr is not None
+    assert "(1-n/" in expr.y_expr
+
+
+def test_vertical_pan_without_canvas_h_raises_not_crashes_unclearly():
+    """Same caller-bug contract as the missing canvas_w/duration_s case -
+    both real call sites always supply canvas_h now, so this should never
+    fire in production."""
+    with pytest.raises(ValueError):
+        build_zoompan_expression(
+            _camera(CameraMovement.PAN, CameraDirection.DOWN, intensity=1.0),
+            frames=90,
+            canvas_w=720,
+            duration_s=2.0,
+        )
+
+
+def test_vertical_pan_shares_the_same_cap_and_intensity_arithmetic_as_horizontal():
+    """A5 must not invent a second travel policy - held at the same
+    intensity/canvas/duration, the vertical formula's cap-side literal
+    must be numerically identical to the horizontal one's."""
+    duration_s = 1.75
+    horizontal = build_zoompan_expression(
+        _camera(CameraMovement.PAN, CameraDirection.RIGHT, intensity=1.0),
+        frames=52,
+        canvas_w=720,
+        duration_s=duration_s,
+    )
+    vertical = build_zoompan_expression(
+        _camera(CameraMovement.PAN, CameraDirection.DOWN, intensity=1.0),
+        frames=52,
+        canvas_w=720,
+        canvas_h=720,
+        duration_s=duration_s,
+    )
+    assert horizontal is not None and vertical is not None
+    cap_px = _MAX_PAN_PX_PER_SEC * duration_s
+    assert f"{cap_px:.6f}" in horizontal.x_expr
+    assert f"{cap_px:.6f}" in vertical.y_expr
+    # Same canvas value on both axes here (720) - the two expressions'
+    # travel arithmetic must be textually identical modulo iw/ih.
+    assert horizontal.x_expr.replace("iw", "X") == vertical.y_expr.replace("ih", "X")
+
+
+def test_pan_zero_intensity_still_degrades_to_no_motion_without_canvas_or_duration():
+    """The existing contract (unchanged by A2): intensity=0 is a data
+    case, not a caller bug, so it must return `None` even when the
+    PAN-only kwargs are omitted - never raise, never divide by zero."""
+    expr = build_zoompan_expression(
+        _camera(CameraMovement.PAN, CameraDirection.RIGHT, intensity=0.0), frames=90
+    )
+    assert expr is None
+
+
+def test_non_pan_movements_are_unaffected_by_the_new_pan_only_kwargs():
+    """Byte-identical discipline (§2): `canvas_w`/`canvas_h`/`duration_s`
+    exist only for PAN's travel cap. Every other movement must produce
+    the EXACT SAME expression whether or not a caller happens to pass
+    them."""
+    for movement, direction in (
+        (CameraMovement.SLOW_ZOOM, CameraDirection.IN),
+        (CameraMovement.SLOW_PUSH, CameraDirection.NONE),
+        (CameraMovement.PULL_BACK, CameraDirection.NONE),
+        (CameraMovement.PUNCH_IN, CameraDirection.NONE),
+    ):
+        camera = _camera(movement, direction, intensity=0.4)
+        without = build_zoompan_expression(camera, frames=90)
+        with_unused = build_zoompan_expression(
+            camera, frames=90, canvas_w=720, canvas_h=1280, duration_s=2.0
+        )
+        assert without == with_unused
+
+
+def test_horizontal_pan_is_unaffected_by_the_new_canvas_h_kwarg():
+    """Byte-identical discipline (§2), the horizontal-pan-specific case:
+    A5 added `canvas_h` for the vertical mirror only - a horizontal
+    (LEFT/RIGHT/undirected) pan must produce the exact same expression
+    whether or not a caller happens to pass it."""
+    camera = _camera(CameraMovement.PAN, CameraDirection.RIGHT, intensity=0.4)
+    without = build_zoompan_expression(camera, frames=90, canvas_w=720, duration_s=2.0)
+    with_canvas_h = build_zoompan_expression(
+        camera, frames=90, canvas_w=720, canvas_h=1280, duration_s=2.0
+    )
+    assert without == with_canvas_h
 
 
 def test_zoom_never_exceeds_max_zoom_at_the_last_frame():

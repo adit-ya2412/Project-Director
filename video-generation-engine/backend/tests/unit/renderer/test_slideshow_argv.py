@@ -9,9 +9,11 @@ from pathlib import Path
 
 import pytest
 
+from app.renderer.ken_burns import MovingCropExpression, build_zoompan_expression
 from app.renderer.motion import MediaKind, MediaProbe
 from app.renderer.slideshow import (
     RenderSettings,
+    _ken_burns_pan_filter,
     _normalize_filter,
     _render_run,
     filter_graph_file_flag,
@@ -20,6 +22,7 @@ from app.renderer.slideshow import (
 )
 from app.schemas.timeline import (
     Camera,
+    CameraDirection,
     CameraMovement,
     Shot,
     ShotIntent,
@@ -58,6 +61,96 @@ def test_normalize_filter_holds_duration_with_tpad_not_a_loop():
     # when the other input is a motion clip (rate 1/0).
     assert fragment.index("scale=") < fragment.index("fps=")
     assert fragment.index("fps=") < fragment.index("tpad=")
+
+
+def test_ken_burns_pan_filter_holds_via_tpad_then_crops_no_zoompan():
+    """A2: PAN's moving-crop chain (`_ken_burns_pan_filter`) - built from
+    the REAL arithmetic function (`build_zoompan_expression`), matching
+    the same "pin the argv/filter contract without shelling out" shape
+    every other test in this file uses."""
+    settings = _settings()
+    camera = Camera(movement=CameraMovement.PAN, direction=CameraDirection.RIGHT, intensity=1.0)
+    expr = build_zoompan_expression(
+        camera, frames=90, canvas_w=settings.width, duration_s=90 / settings.fps
+    )
+    assert isinstance(expr, MovingCropExpression)
+    fragment = _ken_burns_pan_filter(0, settings, "n0", expr, 90)
+    assert "zoompan" not in fragment
+    assert f"crop={settings.width}:{settings.height}:'{expr.x_expr}':0" in fragment
+    # Same tpad-materialises-the-hold shape `_normalize_filter` uses (one
+    # decoded frame in, `frames` frames out) - `crop` has no `zoompan`-
+    # style `d=`/`fps=` pair to do this itself.
+    assert "tpad=stop_mode=clone:stop_duration=" in fragment
+    assert fragment.index("scale=") < fragment.index("fps=")
+    assert fragment.index("fps=") < fragment.index("tpad=")
+    assert fragment.index("tpad=") < fragment.index("crop=")
+
+
+def test_ken_burns_pan_filter_vertical_scales_width_only_and_crops_y():
+    """A5: a vertical (UP/DOWN) pan puts the moving expression on `y`
+    with `x` pinned to the literal `0`.
+
+    The scale is `{w}:{h}:force_original_aspect_ratio=increase` on BOTH
+    axes, not the per-axis `scale={w}:-2` / `scale=-2:{h}` A2 and A5
+    originally emitted. Pinning one axis let the other fall short of the
+    crop window whenever the source was narrower than the output aspect,
+    and `crop` does not degrade there - it refuses to configure and kills
+    the render (measured: 17.1% of this project's assets on the shipped
+    9:16 canvas, 89.8% on 16:9). Cover-scaling guarantees both axes are
+    >= the crop window while staying pixel-identical wherever the old
+    chain worked."""
+    settings = _settings()
+    camera = Camera(movement=CameraMovement.PAN, direction=CameraDirection.DOWN, intensity=1.0)
+    expr = build_zoompan_expression(
+        camera,
+        frames=90,
+        canvas_w=settings.width,
+        canvas_h=settings.height,
+        duration_s=90 / settings.fps,
+    )
+    assert isinstance(expr, MovingCropExpression)
+    assert expr.y_expr is not None
+    fragment = _ken_burns_pan_filter(0, settings, "n0", expr, 90)
+    assert "zoompan" not in fragment
+    assert (
+        f"scale={settings.width}:{settings.height}:force_original_aspect_ratio=increase"
+        in fragment
+    )
+    assert f"crop={settings.width}:{settings.height}:0:'{expr.y_expr}'" in fragment
+    assert fragment.index("scale=") < fragment.index("fps=")
+    assert fragment.index("fps=") < fragment.index("tpad=")
+    assert fragment.index("tpad=") < fragment.index("crop=")
+
+
+def test_ken_burns_pan_filter_horizontal_unchanged_by_the_vertical_addition():
+    """The horizontal branch added by A2 still puts the moving
+    expression on `x` with `y` pinned to `0` after A5 added the vertical
+    branch alongside it.
+
+    Byte-identical discipline (§2) applies to PIXELS here, not to the
+    string: the shared cover-scale replaced A2's `scale=-2:{h}`, which
+    was a crash for any source narrower than the output aspect. Frame-
+    hash verified identical on the reference landscape asset the pan work
+    was signed off against (2980x1676 at 720x1280) - cover-scaling pins
+    height to exactly the same 2276x1280 that `-2:{h}` produced whenever
+    the source is wider than the output."""
+    settings = _settings()
+    camera = Camera(movement=CameraMovement.PAN, direction=CameraDirection.RIGHT, intensity=1.0)
+    expr = build_zoompan_expression(
+        camera,
+        frames=90,
+        canvas_w=settings.width,
+        canvas_h=settings.height,
+        duration_s=90 / settings.fps,
+    )
+    assert isinstance(expr, MovingCropExpression)
+    assert expr.y_expr is None
+    fragment = _ken_burns_pan_filter(0, settings, "n0", expr, 90)
+    assert (
+        f"scale={settings.width}:{settings.height}:force_original_aspect_ratio=increase"
+        in fragment
+    )
+    assert f"crop={settings.width}:{settings.height}:'{expr.x_expr}':0" in fragment
 
 
 def test_filter_graph_file_flag_probes_capability_not_version(monkeypatch):
