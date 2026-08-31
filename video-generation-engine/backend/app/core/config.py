@@ -373,14 +373,47 @@ class Settings(BaseSettings):
 
     # --- Script pre-flight (motion_new_styles_and_long_form_videos.md
     # §3, Track D) - estimates a script's spoken duration BEFORE any
-    # narration exists, from character count alone. Each constant is
-    # Calibrated for the configured voice (`0muxiGNHAVvmM1qWRtyV`)
-    # against live Multilingual v2 (Q8, 2026-08-20): English 15.1,
-    # Hinglish 14.0, Hindi 14.9 — one constant near 14.4 lands within 5%
-    # of all three. The old `script_chars_per_second_hi = 12.9` was 15.5%
-    # too slow on real Hindi and is gone (R11 / Q8). Speed is applied by
+    # narration exists, from character count alone. Speed is applied by
     # `preflight._chars_per_second` via `resolve_narration_speed(style)`.
-    script_chars_per_second_en: float = 14.4
+    #
+    # RECALIBRATED for `eleven_v3` (long_form_direction.md §3 A10,
+    # 2026-09-01) - `settings.elevenlabs_model` moved to `eleven_v3` and
+    # this constant was still the Q8-era Multilingual v2 number, which is
+    # exactly what made a real long-form run fail (95 fragments measured
+    # 316.88s of narration against a 271.5s optimistic estimate from the
+    # old 14.4). Measured from all 461 real on-disk narration rows in the
+    # dev DB with ffprobe (real duration) against each row's stored
+    # `character_count`, normalised to remove the style's own `atempo`
+    # speed-up (`narration_tempo.py`) using the speed value THAT WAS IN
+    # FORCE AT SYNTHESIS TIME for each row (retention_fast's 1.2->1.4 and
+    # archival_montage's 1.15->1.25 bumps both land inside this dataset's
+    # date range, so a few dozen older rows would be silently
+    # mis-normalised by today's style value alone):
+    #   - eleven_v3: n=212 rows / 13 projects, mean 13.41 chars/s, median
+    #     13.11, stdev 2.41 (min 6.94, max 23.01 - the "varies call to
+    #     call" behaviour `styles.py` already documented for `v3` is
+    #     real and large). The single project on `documentary_archival`
+    #     (the exact style/model of the failure, n=26, one script) came
+    #     in at mean 12.21 / median 12.29 - within 1% of the failure's
+    #     own implied rate of 12.34 chars/s (316.88s / 3,910 chars).
+    #   - eleven_multilingual_v2: n=249 rows / 8 projects, mean 14.10
+    #     chars/s, median 14.00, stdev 1.73 - close to the old Q8 number
+    #     (14.4) once era-corrected, so Q8's original measurement was not
+    #     wrong; it was simply never re-taken after the model switch.
+    # Chosen value 12.0: below both the aggregate v3 median (13.11, ~8%
+    # margin) and the documentary_archival-specific mean/median (~12.2-
+    # 12.3, ~2-3% margin) - deliberately pessimistic rather than a
+    # tighter fit to the mean, because this constant feeds
+    # `check_feasibility`'s total-duration check UNMARGINED (see that
+    # function's own docstring) and an optimistic estimate here is what
+    # let the failing run burn a full Director+planners+82-shots+
+    # narration pipeline before dying; a pessimistic one costs at most an
+    # unnecessary pre-flight rejection. Language mix (Devanagari-ratio
+    # proxy) still explains far less variance than voice choice does, so
+    # this remains ONE constant, not a split - see `_chars_per_second`'s
+    # own docstring. Full per-model/per-voice/per-language tables in
+    # long_form_direction.md §7's `P-LF-A10` entry.
+    script_chars_per_second_en: float = 12.0
     script_preflight_margin_fraction: float = 0.2
     # Q7: warning-only floor. A 400-char script (~28 s) is legal; the
     # author may have wanted that. `check_feasibility` reports it on

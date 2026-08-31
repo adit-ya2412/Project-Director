@@ -194,14 +194,23 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
         # degrades).
         #
         # Measured cause (project 606f393e, "OSHO the legend", 36
-        # fragments): the narration duration cap is
+        # fragments): at the time, the narration duration cap was
         # `(n_fragments/31) * max_video_duration_s`, which for 36
-        # fragments is 104.5s — algebraically a RATE limit of 2.903
+        # fragments was 104.5s — algebraically a RATE limit of 2.903
         # s/fragment, not a length limit. At 1.15x, three of four
         # candidate voices overshot it (by 0.04s, 6.7s and 13.5s); at
         # 1.25x, three of the four clear it. Raising the speed keeps the
         # reel ~102s instead of letting the cap rise and the video
         # sprawl past 120s.
+        #
+        # ⚠ SUPERSEDED 2026-09-01 (long_form_direction.md §3 A9): that
+        # rate-limit formula was the SHORT-FORM-density bug A9 fixed - it
+        # capped every style at ~2.9s/fragment regardless of how slow the
+        # style actually runs. `resolve_constraint_bundle` now bounds
+        # duration by shot CAPACITY (`shots_available *
+        # max_shot_duration_s`) instead. The 104.5s figure above is
+        # preserved as the historical reason this project's speed was
+        # bumped, not as a description of the current formula.
         #
         # ⚠ Hinglish (this project's language_code=hi) is called out in
         # the parent plan as likely to degrade EARLIER and differently
@@ -372,10 +381,13 @@ def get_pacing_band(style: str) -> StylePacingBand:
 
 
 # Track C C1 §2.3: projected from the five short fixtures (plan §0).
-# ~3.2 fragments/scene, ~0.9 shots/fragment. 31 fragments ≈ today's 90 s.
+# ~3.2 fragments/scene, ~0.9 shots/fragment. 31 fragments ≈ today's 90 s
+# (that ratio used to also size the duration cap via `_N_AT_SHORT_CAP`,
+# retired 2026-09-01 - long_form_direction.md §3 A9 - because it baked
+# SHORT-FORM density into every style's duration ceiling; the shot/scene
+# sizing below is unrelated to that bug and is untouched).
 _FRAGS_PER_SCENE = 3.2
 _SHOTS_PER_FRAG = 0.9
-_N_AT_SHORT_CAP = 31.0
 _SCENE_HEADROOM = 5
 _SHOT_SCALE = 1.18  # 206 * 0.9 * 1.18 ≈ 220 at 10 min
 
@@ -445,15 +457,9 @@ def resolve_constraint_bundle(
             settings.max_shots_per_project,
             math.ceil(n_fragments * _SHOTS_PER_FRAG * _SHOT_SCALE),
         )
-        implied_duration = (n_fragments / _N_AT_SHORT_CAP) * settings.max_video_duration_s
-        max_video_duration_s = min(
-            settings.max_long_form_duration_s,
-            max(settings.max_video_duration_s, implied_duration),
-        )
     else:
         max_scenes = settings.max_scenes
         shots_base = settings.max_shots_per_project
-        max_video_duration_s = settings.max_video_duration_s
 
     # Length sets the base; style multiplies. retention_fast's 58 is
     # 58/40 of the 90 s cap; at 10 min that same ratio applies to the
@@ -463,6 +469,31 @@ def resolve_constraint_bundle(
         max_shots_per_project = math.ceil(shots_base * style_mult)
     else:
         max_shots_per_project = shots_base
+
+    if n_fragments:
+        # A9 (docs/plans/long_form_direction.md §3): bound duration by
+        # what the shots can actually CARRY, not by short-form density
+        # extrapolated to any length. The old formula
+        # `(n_fragments / _N_AT_SHORT_CAP) * settings.max_video_duration_s`
+        # encoded "a 90s short has ~31 fragments" - SHORT-FORM density -
+        # and applied it to every length, so a documentary (which runs
+        # slower per fragment by nature) hit this proxy long before any
+        # real constraint. A shot may own a CONTIGUOUS RANGE of
+        # fragments, so shots <= fragments; each shot is bounded by
+        # `max_shot_duration_s` (the resolved, style-aware bound above,
+        # not the flat setting). The product is therefore the true upper
+        # bound on how much video this script's STRUCTURE can support.
+        # Uses the final resolved `max_shots_per_project` (post style
+        # multiplier), not `shots_base`, so the two numbers cannot
+        # silently disagree.
+        shots_available = min(max_shots_per_project, n_fragments)
+        capacity_s = shots_available * max_shot_duration_s
+        max_video_duration_s = min(
+            settings.max_long_form_duration_s,
+            max(settings.max_video_duration_s, capacity_s),
+        )
+    else:
+        max_video_duration_s = settings.max_video_duration_s
 
     # C6: 90 s → project_budget_cap_cents (1000). 10 min → ~6667¢ (~$67).
     # ceil so a fractional second never silently drops a cent of room.

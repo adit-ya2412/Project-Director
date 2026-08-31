@@ -77,11 +77,15 @@ class FeasibilityResult:
 
 
 def _chars_per_second(style: str | None = None) -> float:
-    """One voice-calibrated constant (Q8) scaled by the style's speaking
-    rate (R11). `retention_fast` at 1.2× is ~17.3 chars/sec, not 14.4.
-    The Hindi/Hinglish split is gone: live measurement showed language
-    spans ~8% and voice spans ~36%, so the old `HI=12.9` path made
-    Hindi estimates *worse*."""
+    """One voice-calibrated constant scaled by the style's speaking rate
+    (R11). `retention_fast` at 1.4× is ~16.8 chars/sec, not the base
+    12.0 (see `config.py::script_chars_per_second_en`'s own docstring for
+    the A10, 2026-09-01 `eleven_v3` recalibration this constant now
+    reflects - it was originally Q8's Multilingual v2 measurement). The
+    Hindi/Hinglish split is gone: live measurement showed language spans
+    ~8% and voice spans ~36%, so the old `HI=12.9` path made Hindi
+    estimates *worse* - A10's re-measurement confirmed voice still
+    dominates language mix by the same margin under `eleven_v3`."""
     return settings.script_chars_per_second_en * resolve_narration_speed(style)
 
 

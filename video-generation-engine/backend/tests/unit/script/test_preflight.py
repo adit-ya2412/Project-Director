@@ -69,11 +69,16 @@ def test_one_chars_per_second_constant_for_english_and_hindi():
 
 
 def test_retention_fast_estimate_is_shorter_because_of_speed():
-    """R11: 1.2× speaking rate must shrink D, not leave it at 14.4."""
+    """R11: retention_fast's speaking rate must shrink D, not leave it at
+    the base rate. Was asserted against 1.2x - stale since
+    `retention_fast`'s `narration_speed` was bumped 1.2 -> 1.4 on
+    2026-08-24 (styles.py's own docstring) without updating this
+    expectation; fixed 2026-09-01 alongside A10
+    (long_form_direction.md)."""
     script = "This is a plain English sentence. " * 20
     archival = estimate_duration_s(script, "documentary_archival")
     fast = estimate_duration_s(script, "retention_fast")
-    assert archival / fast == pytest.approx(1.2)
+    assert archival / fast == pytest.approx(1.4)
 
 
 def test_a_short_script_warns_and_does_not_fail():

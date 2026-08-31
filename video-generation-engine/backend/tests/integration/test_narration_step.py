@@ -355,6 +355,17 @@ async def test_reconciled_duration_exceeding_max_video_duration_fails_loudly_wit
     monkeypatch.setattr(settings, "dry_run", False)
     monkeypatch.setattr(settings, "elevenlabs_voice_id", _VOICE_ID)
     monkeypatch.setattr(settings, "max_video_duration_s", 1.0)  # scene's real total is 1.1s
+    # A9 (long_form_direction.md §3, 2026-09-01): `resolve_constraint_
+    # bundle` now bounds duration by shot CAPACITY
+    # (`min(max_shots_per_project, n_fragments) * max_shot_duration_s`),
+    # not by scaling the flat `max_video_duration_s` above. `_TEXT`
+    # ("Hello world") is a single fragment, so capacity is
+    # `1 * settings.max_shot_duration_s` (8.0s) - comfortably clearing
+    # the artificial 1.0s cap above unless the hard ceiling is pinned
+    # down too. Without this, the scene's real 1.1s total would no
+    # longer exceed the (now capacity-derived, 8.0s) cap and this test
+    # would stop reproducing the failure it exists to guard.
+    monkeypatch.setattr(settings, "max_long_form_duration_s", 1.0)
 
     shots = [_shot("sh_01", 0, (0, 5)), _shot("sh_02", 1, (5, 11))]
     seeded_version = await _seed_approved_timeline(project_id, shots)

@@ -108,10 +108,25 @@ def test_suggestion_cap_is_the_short_form_floor_on_the_fixture():
 
 
 def test_a_length_blind_cap_of_40_is_not_enough_for_long_form():
-    """R21: ~196 s retention_fast needs more than 40 marks. The derived
-    cap must still return the full set in one response."""
+    """R21: a ~241 s retention_fast script needs more than 40 marks. The
+    derived cap must still return the full set in one response.
+
+    ⚠ Recalibrated 2026-09-01 for A9 (long_form_direction.md §3): the
+    original fixture here (40 sentences, ~161s) used to need >40 marks
+    under the old short-form-density duration cap
+    (`(n_fragments/31) * max_video_duration_s`, ~2.9s/fragment flat for
+    every style). A9 replaced that with a shot-CAPACITY bound
+    (`min(max_shots_per_project, n_fragments) * max_shot_duration_s`),
+    which for `retention_fast` is 3.5s/fragment - MORE generous than the
+    old flat 2.9s/fragment, since it is a real per-shot ceiling
+    (`_DEAD_STOP_CEILING_MULTIPLIER` x target) rather than a proxy rate.
+    The old 40-sentence fixture now passes with exactly 40 marks (the
+    cap and the true minimum coincided by chance), which no longer
+    demonstrates "40 is not enough" - 60 sentences reproduces the same
+    shape (cap > 40, full round needs > 40, a 40-mark budget still falls
+    short) against the corrected formula."""
     sentence = ("word " * 16).strip() + ". "
-    script = sentence * 40
+    script = sentence * 60
     assert suggestion_cap(script, "retention_fast") > 40
     cramped = suggest_breaks(script, "retention_fast", max_suggestions=40)
     assert cramped.further_available is True
@@ -138,8 +153,33 @@ def _script_with_n_sentences(*, n_sentences: int, chars: int) -> str:
 
 
 def test_further_available_false_is_not_success_when_punctuation_cannot_pass():
-    """R23: ran-out-of-breaks and now-feasible used to share one shape."""
-    script = _script_with_n_sentences(n_sentences=120, chars=10209)
+    """R23: ran-out-of-breaks and now-feasible used to share one shape.
+
+    ⚠ Recalibrated 2026-09-01 for A9 (long_form_direction.md §3): the
+    original fixture (120 sentences, 10209 chars, ~506s) relied on the
+    old short-form-density duration cap (~2.9s/fragment flat for every
+    style) to stay unreachable via punctuation. A9's shot-CAPACITY bound
+    is more generous for `retention_fast` (3.5s/fragment, its real
+    per-shot ceiling, vs the old flat 2.9s proxy) - and because adding a
+    mark also raises `n_fragments` and therefore the capacity-derived
+    cap, that script now genuinely becomes fixable with enough marks
+    (340, all under the true 600s hard ceiling). This fixture uses far
+    FEWER starting fragments for the same near-ceiling duration (~590s
+    from only 20 sentences), so satisfying `retention_fast`'s pace still
+    requires pushing the char count itself past the flat 600s ceiling -
+    the genuinely punctuation-proof case R23/R24 exist to guard, verified
+    against the corrected formula rather than the old one.
+
+    ⚠ Char count re-derived again 2026-09-01 for A10 (long_form_
+    direction.md §3): `script_chars_per_second_en` moved 14.4 -> 12.0
+    (the `eleven_v3` recalibration), which moves `retention_fast`'s
+    effective rate from 20.16 to 16.8 chars/s. 11894 chars now estimates
+    ~708s - already over the 600s ceiling with zero marks, collapsing
+    into the OTHER shape (`test_a_script_over_the_hard_ceiling_is_not_
+    padded_with_futile_marks`'s "cut words instead", no "would need").
+    9912 chars reproduces the original ~590s-then-marks-push-it-over
+    shape at the new rate (590.00s exactly, by construction)."""
+    script = _script_with_n_sentences(n_sentences=20, chars=9912)
     result = suggest_breaks(script, "retention_fast")
     assert result.further_available is False
     assert result.would_pass is False
@@ -166,16 +206,30 @@ def test_a_script_over_the_hard_ceiling_is_not_padded_with_futile_marks():
 
 
 def test_marks_that_would_push_over_the_ceiling_are_not_offered():
-    """R24: 590.8 s is under 600 s, but enough marks to hit pace are not.
+    """R24: ~590.0 s is under 600 s, but enough marks to hit pace are not.
 
     Even the optimistic (needed − N) extra characters project over the
-    hard ceiling, so the loop must not hand back 360 marks that fail.
+    hard ceiling, so the loop must not hand back marks that fail.
+
+    ⚠ Recalibrated 2026-09-01 for A9 (long_form_direction.md §3) - see
+    `test_further_available_false_is_not_success_when_punctuation_cannot_
+    pass`'s docstring immediately above for why the original 120-sentence
+    fixture stopped reproducing this shape once the duration cap became
+    shot-capacity-based rather than short-form-density-based, and why 20
+    sentences at the same near-ceiling duration still does.
+
+    ⚠ Char count and projected-seconds re-derived again 2026-09-01 for
+    A10 (same file, same reasoning as the docstring immediately above) -
+    9912 chars at the recalibrated 16.8 chars/s (`retention_fast`) still
+    needs ~318 more marks by coincidence (unchanged from the pre-A10
+    9912-chars-vs-11894-chars comparison), but the projected total moves
+    from ~606s to ~609s against the same 600s ceiling.
     """
-    script = _script_with_n_sentences(n_sentences=120, chars=10209)
+    script = _script_with_n_sentences(n_sentences=20, chars=9912)
     result = suggest_breaks(script, "retention_fast")
     assert result.would_pass is False
     assert result.further_available is False
     assert result.suggestions == []
     assert "cut words" in result.unfixable[0]
-    assert "would need ~218 more marks" in result.unfixable[0]
-    assert "~603s against a 600s maximum" in result.unfixable[0]
+    assert "would need ~318 more marks" in result.unfixable[0]
+    assert "~609s against a 600s maximum" in result.unfixable[0]

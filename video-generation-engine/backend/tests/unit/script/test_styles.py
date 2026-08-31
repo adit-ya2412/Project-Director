@@ -68,13 +68,144 @@ def test_length_raises_caps_and_style_multiplies_the_shot_base():
 
 
 def test_short_n_keeps_todays_caps():
-    """Path A fixtures (N around 13) must not silently raise the 90 s caps."""
-    short = resolve_constraint_bundle(None, n_fragments=13)
+    """Path A fixtures genuinely below shot capacity must not silently
+    raise the 90 s caps.
+
+    N=13 used to be the fixture here, back when the duration cap was
+    `(n_fragments/31) * max_video_duration_s` - at N=13 that was 37.7s,
+    comfortably under 90s. A9 (long_form_direction.md §3) replaced that
+    with a shot-CAPACITY bound (`shots_available * max_shot_duration_s`),
+    and 13 fragments * 8.0s/shot = 104s > 90s - so N=13 now legitimately
+    gets a higher cap (see test_capacity_raises_the_cap_once_it_exceeds_
+    the_flat_default below), which is the fix working as intended, not a
+    regression. The break-even point is `max_video_duration_s /
+    max_shot_duration_s` = 90/8 = 11.25 fragments; N=10 stays under it,
+    so this is now the genuinely-short fixture."""
+    short = resolve_constraint_bundle(None, n_fragments=10)
     assert short.max_scenes == settings.max_scenes
     assert short.max_shots_per_project == settings.max_shots_per_project
     assert short.max_video_duration_s == settings.max_video_duration_s
     assert short.budget_cap_cents == settings.project_budget_cap_cents
     assert short.max_video_shots_per_project == settings.max_video_shots_per_project
+
+
+def test_capacity_raises_the_cap_once_it_exceeds_the_flat_default():
+    """A9 (long_form_direction.md §3): duration is bounded by shot
+    CAPACITY (`min(max_shots_per_project, n_fragments) *
+    max_shot_duration_s`), not by short-form density extrapolated from
+    `_N_AT_SHORT_CAP`. Just past the break-even point (90/8 = 11.25
+    fragments), the cap must legitimately exceed 90s."""
+    just_over = resolve_constraint_bundle(None, n_fragments=13)
+    assert just_over.max_video_duration_s == pytest.approx(13 * settings.max_shot_duration_s)
+    assert just_over.max_video_duration_s == pytest.approx(104.0)
+    assert just_over.max_video_duration_s > settings.max_video_duration_s
+
+
+def test_a9_sanity_table_documentary_archival():
+    """long_form_direction.md §3 A9's own sanity-check table, verified
+    against the real implementation: 20 fragments -> 160s (capacity
+    binds, no ceiling); 95 fragments -> 600s (the real failed run - shot
+    capacity of 760s is more than enough, but the 600s hard ceiling
+    binds first); 300 fragments -> 600s (capacity of 2400s, ceiling
+    binds harder)."""
+    twenty = resolve_constraint_bundle(None, n_fragments=20)
+    assert twenty.max_video_duration_s == pytest.approx(160.0)
+
+    ninety_five = resolve_constraint_bundle(None, n_fragments=95)
+    assert ninety_five.max_shots_per_project == 101  # measured in the real failed run
+    assert ninety_five.max_video_duration_s == pytest.approx(settings.max_long_form_duration_s)
+
+    three_hundred = resolve_constraint_bundle(None, n_fragments=300)
+    assert three_hundred.max_video_duration_s == pytest.approx(settings.max_long_form_duration_s)
+
+
+def test_a9_previously_failing_95_fragment_run_now_fits():
+    """The exact real failure (backend.log, 2026-09-01): a 95-fragment
+    `documentary_archival` script's narration measured 316.88s and was
+    rejected against a 275.8s cap computed from short-form density. The
+    real structural capacity was 95 * 8.0s = 760s - nothing actually
+    prevented this video. After A9, the cap must comfortably clear
+    316.88s (the 600s hard ceiling binds, since raw capacity exceeds it)."""
+    bundle = resolve_constraint_bundle("documentary_archival", n_fragments=95)
+    measured_narration_s = 316.88
+    assert bundle.max_video_duration_s == pytest.approx(600.0)
+    assert measured_narration_s < bundle.max_video_duration_s
+    # The number that used to reject this run - confirms the fix actually
+    # moved the cap, not just that 316.88 happens to be small.
+    old_formula_cap = (95 / 31.0) * settings.max_video_duration_s
+    assert old_formula_cap == pytest.approx(275.80645161290323)
+    assert measured_narration_s > old_formula_cap
+
+
+def test_a9_budget_cap_moves_with_the_higher_duration_cap():
+    """A9 explicitly calls out that `budget_cap_cents` is DERIVED from
+    `max_video_duration_s` and will move as a consequence - this pins the
+    before/after for the real failed run's fragment count so the ~2.2x
+    increase is a visible, deliberate number rather than a silent side
+    effect. `project_budget_cap_cents`/`max_video_duration_s` are the
+    same rate the implementation itself uses (styles.py's own C6
+    comment), not a second copy of the arithmetic."""
+    import math
+
+    old_cap_s = (95 / 31.0) * settings.max_video_duration_s
+    old_budget_cents = math.ceil(
+        old_cap_s * settings.project_budget_cap_cents / settings.max_video_duration_s
+    )
+    assert old_budget_cents == 3065  # ~$30.65 - what the failed run was actually capped at
+
+    bundle = resolve_constraint_bundle("documentary_archival", n_fragments=95)
+    assert bundle.budget_cap_cents == 6667  # ~$66.67
+
+    ratio = bundle.budget_cap_cents / old_budget_cents
+    assert ratio == pytest.approx(2.175, abs=0.01)  # ~2.2x, flagged for the user's own decision
+
+
+def test_a9_more_fragments_still_raises_the_cap():
+    """suggestions.py:225 relies on this: `bundle.max_video_duration_s`
+    below the 10-minute ceiling must be non-decreasing in `n_fragments`,
+    since `_unfixable_by_punctuation` treats it as NOT punctuation-proof
+    on that assumption ("more fragments raise that cap, which is why the
+    196s R21 script starts over 116s and still passes after
+    suggestions"). Capacity is linear in fragments (up to the shot cap),
+    so this must still hold under A9's new formula."""
+    caps = [
+        resolve_constraint_bundle(None, n_fragments=n).max_video_duration_s
+        for n in range(5, 120, 5)
+    ]
+    assert all(later >= earlier for earlier, later in zip(caps, caps[1:]))
+    # And it is a REAL raise, not merely non-decreasing by coincidence -
+    # comfortably below the 600s ceiling so the increase is visible.
+    assert resolve_constraint_bundle(None, n_fragments=15).max_video_duration_s < 600.0
+    assert (
+        resolve_constraint_bundle(None, n_fragments=15).max_video_duration_s
+        < resolve_constraint_bundle(None, n_fragments=40).max_video_duration_s
+    )
+
+
+def test_a9_retention_fast_50_fragment_reel_is_not_wildly_longer():
+    """A9's own caution: fast styles must not regress. A typical
+    `retention_fast` 50-fragment reel's real pacing (its own
+    `target_shot_duration_s` check in `preflight.check_feasibility`)
+    binds at ~105s (50 * 1.75 * (1 + script_preflight_margin_fraction))
+    regardless of the duration cap's value - the duration cap moving from
+    the old formula's 145.16s to A9's 175s changes nothing reachable in
+    practice, since the pace check was already the tighter constraint in
+    both cases."""
+    bundle = resolve_constraint_bundle("retention_fast", n_fragments=50)
+    assert bundle.max_video_duration_s == pytest.approx(175.0)
+
+    old_cap = (50 / 31.0) * settings.max_video_duration_s
+    assert old_cap == pytest.approx(145.16129032258064)
+
+    from app.script.styles import get_pacing_band
+
+    band = get_pacing_band("retention_fast")
+    margin = 1.0 + settings.script_preflight_margin_fraction
+    pace_bound_s = 50 * band.target_shot_duration_s * margin
+    assert pace_bound_s == pytest.approx(105.0)
+    # The pace check is strictly tighter than either duration cap, old or
+    # new - so raising the duration cap here is inert in practice.
+    assert pace_bound_s < old_cap < bundle.max_video_duration_s
 
 
 def test_long_form_budget_scales_linearly_and_motion_cap_sublinearly():
