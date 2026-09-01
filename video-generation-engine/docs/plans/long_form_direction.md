@@ -67,19 +67,38 @@ Same rules as `output_quality_pass.md` §0.1 and `animated_explainer.md`
    (2026-09-01) and nothing else matters until it is fixed. A10 must
    come AFTER A9, never before.** A4 depends on A3. A5 depends on A2.
    A1–A7 are all
-   BUILT as of 2026-08-31 — see §7. **A8 (diegetic SFX) is the
-   highest-priority remaining slice and is OPEN — its GATE has now
-   PASSED.** The first probe (Openverse search) returned 4/10 and
-   recommended CLOSE; that verdict was retracted on 2026-09-01 because
-   the kill condition measured our own query construction and
-   stinger-tuned ranker rather than catalogue availability. The
-   superseding approach — GENERATE the sound via ElevenLabs
-   `/v1/sound-generation` rather than search for it — was gated
-   2026-09-01 and PASSED 10/10 (plausible envelope match, exact
-   duration control, ≈$0.70–$0.85 total spend). **Read A8's RESULT
-   block before touching it, and do not re-run either probe** — the
-   next step is a human listening pass on the files already generated
-   in `tmp/sfx-gen-gate/`, then the build. A2 remains
+   BUILT as of 2026-08-31 — see §7. **A8 (diegetic SFX) is now BUILT
+   (P-LF-A8, 2026-09-01) and AWAITING A HUMAN LISTENING PASS** — its gate
+   PASSED (10/10, see below), the production code (`Shot.sfx_cue`,
+   `SfxKind.DIEGETIC`, `GenerateDiegeticSfxStep`, the render fingerprint
+   and mux wiring) is written and tested, and a real render exists in
+   `tmp/sfx-a8/` with real narration and real, already-generated diegetic
+   cues over real archival picture. **Nobody has listened to it yet** -
+   that is the one remaining step, not more code. The first probe
+   (Openverse search) returned 4/10 and recommended CLOSE; that verdict
+   was retracted on 2026-09-01 because the kill condition measured our
+   own query construction and stinger-tuned ranker rather than catalogue
+   availability. The superseding approach — GENERATE the sound via
+   ElevenLabs `/v1/sound-generation` rather than search for it — was
+   gated 2026-09-01 and PASSED 10/10 (plausible envelope match, exact
+   duration control, ≈$0.70–$0.85 total spend). **Read A8's RESULT block
+   and P-LF-A8's §7 log entry before touching it further, and do not
+   re-run either probe.** **A11 (diegetic SFX loudness + ducking) is now
+   BUILT (P-LF-A11, 2026-09-01) and AWAITING A HUMAN LISTENING PASS** — it
+   was raised BLOCKING A8 the same day, by ear, immediately after A8's own
+   first listening pass: peak normalisation left a high-crest cue (a
+   church bell) tens of dB under a music bed even after a per-kind offset
+   fixed for a low-crest one (a Geiger counter), and nothing ducked the
+   bed for a diegetic cue at all. Both halves are now real, tested code
+   (`diegetic_effective_gain_db` in `app/assets/sfx_levels.py`,
+   `combine_duck_windows`/`duck_ramp_windows_segments` in
+   `app/renderer/music.py`, `_diegetic_duck_windows` in
+   `app/workflow/steps/render.py`), and a real render exists in
+   `tmp/sfx-a11/` with real narration, a real ducked music bed (from real
+   per-character alignment), and both a continuous cue (machinery hum)
+   and a transient one (church bell) — the exact axis A8's own gain
+   ladder never tested. **Read A11's own §3 entry and P-LF-A11's §7 log
+   entry before touching it further.** A2 remains
    the highest-value slice already shipped, and is not
    long-form-specific: it fixes every style that uses `pan`, including
    all 19 shorts. Its numbers were measured, not reasoned — see A2's
@@ -622,6 +641,17 @@ of a bug in our query string.
    `mux_sfx`'s `atrim=0:{sfx_max_clip_s}` are correct for punctuation and
    wrong for ambience. Do NOT simply raise `sfx_max_clip_s` — that would
    lengthen every whoosh and stinger too.
+   **Built (P-LF-A8, 2026-09-01) — correction to this item:**
+   `sfx_ranking.py`'s ≤`sfx_max_clip_s` preference turned out not to apply
+   to diegetic at all: that module ranks a SEARCHED candidate POOL, and a
+   diegetic clip is GENERATED to spec, never ranked - there is no pool to
+   prefer within. The real "both points" are (a) the `duration_seconds`
+   requested from the generation provider (capped by the new
+   `sfx_diegetic_max_clip_s`, so nothing is generated - or billed - longer
+   than will ever play) and (b) `mux_sfx`'s per-overlay `max_clip_s`
+   (`SfxOverlay.max_clip_s`, `None` = the structural default, set
+   explicitly for a DIEGETIC overlay) - see the §7 log entry for the full
+   account.
 5. **One branch in `derive_sfx_events`** — an event per cue-bearing shot.
    v1 places at the shot's start; see the open questions.
 6. **R2**: the cue field and every generated clip's content hash must
@@ -662,6 +692,96 @@ of a bug in our query string.
 **Ends in:** the gate report and the generated files, alone. Then, only
 if the user's ears approve, a real render with two or three cues on a
 real project.
+
+---
+
+### A11 — Diegetic SFX needs loudness normalisation, and the bed must duck for it ✅ BUILT (P-LF-A11, 2026-09-01) — AWAITING A HUMAN LISTENING PASS
+
+**Found by ear on 2026-09-01, immediately after A8's first listening pass,
+and confirmed by measurement. A8 is not usable until this lands.**
+
+**Built 2026-09-01 — see P-LF-A11 in §7 for the full account.** Both
+halves landed: `app/assets/sfx_levels.py::diegetic_effective_gain_db`
+loudness-normalises DIEGETIC only (peak normalisation is untouched for
+WHOOSH/STINGER/TRANSITION, proven by a byte-identical-call test), and
+`app/renderer/music.py::combine_duck_windows` feeds diegetic-cue windows
+(computed from the Timeline by `app/workflow/steps/render.py::
+_diegetic_duck_windows`, never from the SFX audio) into `mux_music`
+alongside narration's own duck windows, taking the DEEPER of the two on
+any overlap rather than multiplying them. `sfx_diegetic_gain_db` itself
+was left untouched, per this section's own instruction below. A real
+render at `tmp/sfx-a11/`, with a continuous cue (machinery hum) alongside
+the bell this time, measured both landing within 0.3 LUFS of the same
+target despite a 6.1dB difference in their own peaks — see P-LF-A11's
+§7 entry for the full measurement table.
+
+The user's verdict, in order: at the shipped `sfx_diegetic_gain_db = -6.0`
+the Geiger counter was *"little loud... kind of irritating"*. A gain
+ladder was rendered (-6 / -12 / -18 / -24) against real narration and
+-18 was chosen. A bed was then added and the verdict was *"the church
+bell got swallowed by the bgm"*. **One number cannot serve both, and the
+reason is mechanical, not a matter of taste.**
+
+### Measured
+
+| Cue | peak | mean | crest | at -18 offset: peak / mean land at |
+|---|---|---|---|---|
+| Geiger counter | -2.8 | -29.7 | **26.9 dB** | -38.0 / **-64.9** dBFS |
+| Church bell | -0.8 | -26.1 | **25.3 dB** | -38.0 / **-63.3** dBFS |
+
+Music bed sits at **-14 dBFS**, ducking to **-20** under narration.
+
+Two independent failures stack:
+
+**1. Peak normalisation measures the wrong thing.**
+`_sfx_overlays` calls `effective_gain_db(clip.peak_dbfs,
+target_db=sfx_normalize_target_db, ...)` — it finds the single loudest
+instant in the clip and scales the whole clip so that instant hits -20
+dBFS, then applies the per-kind offset. A music bed's crest (peak minus
+mean) is ~10-12 dB, so peak-matching lands it politely in the
+background. **These cues have a crest of 25-27 dB.** So normalising the
+bell's peak to -38 leaves the audible BODY of the bell at -63 dBFS —
+49 dB below the bed. "Inaudible" understates it.
+
+This is also exactly why -18 sounded right on the Geiger counter and
+wrong on the bell: sparse clicks against near-silence read fine at any
+peak, a decaying tone does not.
+
+**2. Nothing ducks the bed for SFX.** `mux_music` ducks against
+narration spans only (`speaking_intervals_from_alignment`). A diegetic
+cue therefore has to out-shout a bed that never yields. That is not how
+documentary sound works — a significant effect pushes the music back.
+
+### The fix — both halves, they are one slice
+
+**A. Loudness-normalise diegetic, don't peak-normalise it.** Ask "how
+much sound overall" (RMS/LUFS) rather than "how tall is the spike". Then
+a bell, a Geiger counter, wind and machinery hum all land at a
+comparable PERCEIVED level from one setting, instead of needing a
+per-cue number forever. `app/renderer/ebur128.py` and
+`app/renderer/loudness.py` already do this measurement for the final
+mix — this applies it one layer down. **Do not change the three
+structural kinds**: peak normalisation is correct for a whoosh or a
+stinger, which are transient punctuation by design.
+
+**B. Duck the bed under diegetic cues, as it already ducks under
+narration.** `mux_music` already accepts intervals to duck against; it
+currently receives narration spans. Feed it cue windows too. Decide and
+justify: the same duck depth as narration, or shallower? Narration's
+-20 was ear-signed at 8 dB of depth; an effect probably wants less,
+because it is a moment rather than a floor.
+
+**Do NOT simply raise `sfx_diegetic_gain_db`.** That fixes the bell and
+restores the irritation on the Geiger counter, which is where this
+started. Leave that constant alone until A and B land — tuning it before
+the normalisation changes just means re-tuning it after.
+
+**Ends in:** the same 24s demo re-rendered with real narration AND a real
+ducked bed, at two or three candidate diegetic levels, so the user can
+pick once and have it hold for continuous cues as well as transient ones.
+Include a continuous cue (the wind or machinery hum already generated in
+`tmp/sfx-gen-gate/`) alongside the bell, because a level chosen on clicks
+alone is exactly the mistake this slice exists to correct.
 
 ---
 
@@ -1071,6 +1191,47 @@ a 10-minute project caps at **~$67** (`styles.py`: 600 s x 1000¢ / 90 s).
 
 ---
 
+### 4.8 A8 shipped with no UI surface and no per-cue opt-in
+
+Recorded 2026-09-01 so the gaps are known rather than discovered in use.
+None of these block A11; all of them are visible to a user.
+
+**There is no "generate SFX?" choice.** `GenerateDiegeticSfxStep` sits
+after `AwaitApprovalStep` and runs unconditionally when the active
+timeline has cue-bearing shots. So approving the PLAN approves the SFX
+spend (~6 cents per cue, `sfx_diegetic_cost_cents_estimate`). A shot with
+no cue gets no sound — `is_satisfied` returns True when no shot carries
+one, making the step a clean no-op — and a cue whose generation fails
+lands in `SfxPlan.diegetic_failed_shot_ids`, which `is_satisfied` treats
+as terminal, so that shot renders silently and the run continues
+(per-task failure isolation, Principle 10).
+
+**The cue is invisible in the UI.** `Shot.sfx_cue` is a new field and no
+frontend surface shows or edits it, so a reviewer cannot see what sound
+a shot will get, let alone change it, before approving.
+
+**The pipeline step is unknown to the frontend.**
+`frontend/src/lib/steps.ts` hard-codes the step list and its progress
+labels; `generate_diegetic_sfx` is absent, so the progress view has no
+label for it.
+
+**There is no per-shot override or upload.** `POST
+/projects/{id}/sfx/{kind}/override` now returns **400** for `diegetic`,
+deliberately: that endpoint's model is one clip per kind for the whole
+video, and applied per-shot it would wipe every cue and replace them with
+a single ungrounded clip no event could match. So a bad generated sound
+cannot currently be swapped for a better one, or for a user-supplied
+file. The only retry surface is that same endpoint clearing
+`diegetic_failed_shot_ids`.
+
+**Consequence worth stating plainly:** the planner's restraint is the
+ONLY control over how many cues a video gets (the user chose no cap
+deliberately), and there is no way to veto an individual cue short of
+editing the timeline. That is acceptable for a first pass being judged by
+ear; it is not acceptable once this is used in earnest.
+
+---
+
 ### 4.5 Nothing here fixes the glitch, and that is correct
 
 The glitch transitions are gated by a prompt trigger — *a signal
@@ -1113,6 +1274,17 @@ Purge recipe that works, and its non-obvious parts:
   `ON DELETE NO ACTION`. Leaf-first: `shot_binding`, `generated_clip`,
   `narration`, `llm_call`, `domain_event`, `workflow_run`, `render`,
   `asset`, `script`, `timeline_version`, then `project`.
+- **A11 addendum (2026-09-01): the recipe above is INCOMPLETE and cost a
+  failed purge.** `workflow_step_attempt` references `workflow_run.id`,
+  not `project_id` directly - it has no `project_id` column at all - so
+  it is invisible to every `DELETE ... WHERE project_id = ANY(:ids)`
+  statement above and must be deleted FIRST, before `workflow_run`, via
+  `DELETE FROM workflow_step_attempt WHERE workflow_run_id IN (SELECT id
+  FROM workflow_run WHERE project_id = ANY(:ids))` - otherwise the
+  `workflow_run` delete fails on a FK violation and the whole purge
+  aborts. Verify orphans here too: `LEFT JOIN workflow_run` on
+  `workflow_step_attempt.workflow_run_id`, not just the ten `project_id`
+  tables above.
 - Verify by LEFT JOIN on each child table for orphans, not by eyeball.
 
 **Known non-regression:**
@@ -1122,6 +1294,56 @@ the WHOLE shared database — so the user's own projects (Oil and War,
 OSHO the legend, Beauty and Disease, Automatic transmissions) each
 contribute a row and it can never pass under `--noconftest`. Do not
 "fix" it by dropping the flag.
+
+**P-LF-A8 addendum (2026-09-01):** the project table had drifted to 158
+rows by the time this task started (baseline 22, per §11's own convention
+— "the nuclear lake" is now the 22nd real project). 121 of the 136 extra
+rows matched the documented 4-pattern guard exactly (0 render/asset/
+narration/generated_clip each) and were purged back to it, verified
+zero orphans. The remaining 15 were this task's OWN integration/e2e test
+fixtures (`render-narration-mux-test`, `narration-locked constraints
+test`, `narration-pipeline-order-test`, `M6.5 upload/override`,
+`Germany's Resource Gap`, `Empty`) — real leaks, unambiguously identified
+by exact timestamp correlation to this session's own test runs, but
+matching NONE of the four guarded name patterns (§0.1's "name new
+fixtures to match an existing pattern" advice was not followed by the
+tests THIS task ran, most of which predate A8 and were not written by
+this task). The session's own permission classifier declined the
+follow-up delete for these 15 (a second DB write, past the one already
+authorized by this plan's own purge recipe), so they remain — a human or
+a future session should extend the guard (or delete these 15 ids
+directly; they are listed in P-LF-A8's own §7 entry) rather than widen
+the pattern to something that could catch a real project.
+
+---
+
+### 4.7 The image/video generation cache still holds live cross-project references
+
+Found while building A8's copy-on-reuse storage policy (2026-09-01), not
+fixed here — deliberately out of scope, recorded for a later slice.
+
+`GeneratedClipRepository.get_by_prompt_hash` has no project filter (by
+design — cross-project reuse is the whole point of the cache), and
+`_generate_image_once`/`submit_video_generation` write a cache HIT's
+`local_path` straight through unchanged: a reusing project's
+`ShotBinding.clip_id` ends up pointing at a file that physically lives
+inside whichever project generated it FIRST
+(`project_dir/clips/{prompt_hash}.ext`). If that ORIGINATING project's
+storage is ever cleaned up (a purge, a migration, a manual `rm`), every
+OTHER project that ever reused that image or clip loses it silently —
+exactly the failure mode `render.py`'s own render-cache docstring names
+and refuses to allow for renders ("never a live cross-project file
+reference: if the source project's storage is ever cleaned up, this
+project's own copy must still exist").
+
+A8 follows the RENDER policy instead for SFX specifically (copy the bytes
+into the reusing project's own storage on every cache hit, regardless of
+origin) — see `GenerateDiegeticSfxStep`'s own docstring
+(§7, P-LF-A8). The image/video cache's behaviour is UNCHANGED here: that
+is a bigger, load-bearing piece of plumbing (every shot in every project
+routes through it) that this task's scope does not cover, and changing
+it was explicitly out of bounds for A8. Left as a known finding for
+whoever next touches `resolve_assets.py`'s generation cache.
 
 ---
 
@@ -3572,6 +3794,561 @@ effective rate 12.0 x 1.25 = 15.0 (down from 18.0), same direction.
 - Did not re-investigate the `The whey protein crisis` 21-vs-22 project
   count discrepancy A9's log already flagged - out of scope for this
   slice, same as it was for A9.
+
+---
+
+### P-LF-A8 — Diegetic SFX: build, after the gate PASSED (2026-09-01)
+
+**Scope executed:** §3 A8's full "If the gate passes — the build" list
+(items 1–9), plus the R2 fingerprint verification and the human-audible
+render the task required. **Not started:** A9/A10 (already BUILT by
+prior entries), any other lettered task.
+
+**Changes (file:line):**
+
+- `app/schemas/timeline.py:285` — `Shot.sfx_cue: str | None = None`
+  (planner-authored cue phrase).
+- `app/schemas/timeline.py:483` — `SfxKind.DIEGETIC = "diegetic"`.
+- `app/schemas/timeline.py:515` — `SfxClipSelection.shot_id: str | None`
+  (per-shot clip identity; `None` for the three structural kinds).
+- `app/schemas/timeline.py:543` —
+  `SfxPlan.diegetic_failed_shot_ids: list[str]` (terminal per-shot
+  failure record, mirrors a `failed` `ShotBinding`).
+- `app/core/config.py:230-272` — `sfx_diegetic_gain_db` (default `-6.0`),
+  `sfx_diegetic_max_clip_s` (default `8.0`), `sfx_diegetic_model`
+  (`"eleven_text_to_sound_v2"`), `sfx_diegetic_cost_cents_estimate`
+  (`6`).
+- `app/providers/base.py` — `SoundEffectRequest`/`SoundEffectResult`/
+  `SoundEffectProvider` (mirrors `ImageRequest`/`ImageResult`/
+  `ImageProvider` exactly).
+- `app/providers/elevenlabs.py` — `compute_sfx_generation_hash` (cue +
+  model + duration, no seed input — this IS I5 for this feature) and
+  `ElevenLabsSoundEffectProvider.generate` (`POST /v1/sound-generation`,
+  same auth/error-mapping conventions as `ElevenLabsNarrationProvider`;
+  handles BOTH a raw-audio-file response and a JSON `audio_base64`
+  response, since P-LF-A8-GEN-GATE's own probe recorded the latter
+  against the documented former).
+- `app/providers/fakes/sfx_generation.py` (new) — `FakeSoundEffectProvider`
+  for DRY_RUN, same idiom as `FakeMusicProvider`.
+- `app/renderer/sfx.py` — `SfxEvent.shot_id`, `SfxOverlay.max_clip_s`
+  (`None` = the structural default, byte-identical to before this field
+  existed), a `DIEGETIC` branch in `derive_sfx_events` (shot-start
+  placement, never gated by `whoosh_enabled`), and `mux_sfx`'s fade/atrim
+  math moved from one call-level ceiling to a per-overlay one.
+- `app/workflow/steps/render.py` — `_sfx_overlays` now builds a
+  `diegetic_by_shot` map alongside the unchanged structural `by_kind` map,
+  routes `DIEGETIC` events through it, and sets each diegetic overlay's
+  own `max_clip_s`/gain offset; the fingerprint call gains
+  `sfx_diegetic_max_clip_s` and a `"diegetic"` entry in
+  `sfx_kind_gain_overrides_db`. Also: `_resolve_narration_rows`'s gate
+  changed from `timeline.produced_by != ProducedBy.NARRATION` to
+  `not timeline.metadata.narration_locked` — see "the narration-silencing
+  bug" below.
+- `app/renderer/fingerprint.py` — `compute_render_fingerprint` gained the
+  `sfx_diegetic_max_clip_s` parameter, hashed unconditionally (R2, same
+  rule as `sfx_max_clip_s`).
+- `app/workflow/steps/generate_diegetic_sfx.py` (new) —
+  `GenerateDiegeticSfxStep`: per-shot cache lookup
+  (`GeneratedClipRepository.get_by_prompt_hash`, reused as a generic
+  prompt-hash cache table exactly as images/clips already use it),
+  copy-on-reuse into this project's own `sfx/` directory, `check_budget`
+  wiring, per-shot failure isolation into
+  `SfxPlan.diegetic_failed_shot_ids`, never failing the whole step.
+- `app/workflow/engine.py` — `GenerateDiegeticSfxStep()` inserted into
+  `DEFAULT_PIPELINE` immediately after `resolve_assets_generate`, before
+  `AwaitReviewStep()` (paid, post-approval, per the user's own ordering
+  decision).
+- `app/workflow/steps/select_sfx.py` — **regression fix**: `for kind in
+  SfxKind` (now 4 members) raised `KeyError` on `_DEFAULT_QUERIES[
+  "diegetic"]` on every single project the moment `DIEGETIC` existed in
+  the enum. Fixed by iterating a new `_STRUCTURAL_KINDS` tuple (WHOOSH/
+  STINGER/TRANSITION only); `_record`'s transform now also explicitly
+  preserves any existing DIEGETIC clips rather than overwriting the whole
+  `clips` list.
+- `app/api/projects.py` — `POST /{id}/sfx/{kind}/override` now rejects
+  `kind=diegetic` with a 400 (that endpoint's one-clip-per-kind override
+  model does not apply to a per-shot palette); `POST /{id}/sfx/retry`
+  now also clears `diegetic_failed_shot_ids` (otherwise a permanently-
+  failed cue would stay stuck forever even after a retry).
+- `app/assets/cost.py::estimate_project_cost_cents` — a pending cue-
+  bearing shot (no DIEGETIC clip recorded yet, not marked failed) now
+  adds `sfx_diegetic_cost_cents_estimate` to the pre-approval estimate,
+  the same reasoning Task 5's own docstring already gives for image/video
+  generation.
+- `app/planners/shot/schemas.py` / `app/planners/shot/planner.py` —
+  `ShotPlanOutput.sfx_cue: str` (required, OpenAI strict-mode shape,
+  empty-string default handled the same way `text_card` is) threaded into
+  `_to_domain_shot`.
+- `app/prompts/shot_planner/v1.md` — a new bullet under "Principles" plus
+  an `Output` line: cues are for a beat that genuinely turns on a sound,
+  empty on almost every shot.
+
+**The narration-silencing bug found and fixed along the way (not A8-
+scoped, but blocking):** `_resolve_narration_rows` gated narration muxing
+on `timeline.produced_by == ProducedBy.NARRATION` — the ACTIVE version's
+own field, which does not survive any LATER version for any reason.
+Every existing post-approval correction (`override_shot_asset`'s
+`produced_by=HUMAN`, `/music/retry`'s `MUSIC_SELECTION`, `/sfx/retry`'s
+`SFX_SELECTION`) already appends a version whose `produced_by` is not
+`NARRATION`, and `GenerateDiegeticSfxStep` — required by this task to run
+post-approval, post-narration — would have been the first step to hit
+this in the DEFAULT, no-correction-needed path: every project with even
+one `sfx_cue` would render silent, with no error anywhere. Fixed by
+switching the gate to `Timeline.metadata.narration_locked` — the
+persistent flag the SAME 2026-08-16 hardening ("A26 is a deadlock in
+practice") already introduced to solve this identical "produced_by
+doesn't survive later versions" problem for `validate_constraints`.
+`NarrationStep` sets `narration_locked=True` in the exact version it
+stamps `produced_by=NARRATION` (`narration.py::_apply_durations`), so
+every timeline the old check accepted is still accepted, and nothing
+that used to correctly mux narration can now correctly NOT mux it — this
+is a superset, never a narrower, condition. Verified: the one existing
+test that manually built a `produced_by=NARRATION` fixture without
+setting the lock (`tests/integration/test_render_narration_mux.py`) was
+updated to set it, matching what `NarrationStep` itself always does;
+`test_narration_locked_constraints.py`,
+`test_narration_pipeline_ordering.py`, and
+`test_upload_and_override_api.py::test_override_after_completion_...`
+all still pass. Per §0.1 rule 3, this is a finding, not a rewrite: the
+underlying design (a persistent lock flag surviving later versions) was
+already decided and shipped for `validate_constraints`; this only extends
+the SAME flag to the other place that had the identical bug and had not
+yet been updated to use it.
+
+**Measured:**
+
+- **Cost spent building/verifying this slice: $0.** No new ElevenLabs
+  generation calls were made — the verification render reuses the two
+  matching cues already generated and paid for during P-LF-A8-GEN-GATE
+  (`tmp/sfx-gen-gate/generated-geiger-counter-clicking.mp3`,
+  `generated-church-bell-toll.mp3`).
+- **Cache key** = `sha256(cue_text|model|round(duration_seconds,3))`
+  (`compute_sfx_generation_hash`) — no seed input, confirmed against
+  P-LF-A8-GEN-GATE's own reading of the vendor docs (none exists for this
+  endpoint). Every generation always requests the SAME fixed duration
+  (`sfx_diegetic_max_clip_s`, 8.0s) rather than a per-shot-varying one, so
+  two shots writing the identical cue text always share a cache row
+  regardless of their own `duration_s` — a deliberate cache-density
+  choice, not an accident.
+- **Copy-on-reuse verified by construction**: `render.py::_sfx_overlays`
+  globs `settings.storage_root / project_id / "sfx"` — the CURRENT
+  project's own directory only, never another project's. The
+  verification render's own script copies both reused cues into a fresh
+  scratch project directory before `_sfx_overlays` can find them,
+  proving the "always copy, never reference" contract holds even for a
+  cache hit that (in production) would have originated in a different
+  project — same test the render cache itself already passes (see that
+  cache's own `write_bytes` copy in `render.py::render_video`).
+- **R2 fingerprint proof (empirical, `pytest`, not assumed)**:
+  `test_different_sfx_cue_changes_the_fingerprint` — two timelines
+  differing ONLY in one shot's `sfx_cue` produce different fingerprints
+  (and a cue vs. no cue also differs).
+  `test_different_diegetic_clip_content_hash_changes_the_fingerprint` —
+  two timelines differing ONLY in a DIEGETIC clip's `content_hash`
+  (reached via the ordinary `sfx_plan` dump inside the timeline document,
+  independent of the redundant `sfx_content_hashes` argument) produce
+  different fingerprints.
+  `test_different_sfx_diegetic_max_clip_changes_the_fingerprint` — the
+  new ceiling setting alone changes the fingerprint. All three pass.
+- **Test counts**: 10 new/modified test files, 46 new test functions
+  across `test_sfx.py` (4 new: cue emits event, empty cue emits nothing,
+  survives `whoosh_enabled=False`, offset is per-shot), `test_fingerprint.py`
+  (3 new), `test_mux_sfx.py` (1 new, filter-string assertion via a
+  `run_ffmpeg` monkeypatch), `test_elevenlabs.py` (9 new, the sound-
+  generation provider), `test_select_sfx_structural_kinds.py` (new file,
+  3 tests, the `KeyError` regression guard), `test_sfx_overlays_diegetic.py`
+  (new file, 4 tests, per-shot routing), `test_cost.py` (5 new), plus
+  fixture updates in 4 existing planner/timeline tests for the new
+  required `sfx_cue`/`ShotPlanOutput.sfx_cue` field.
+- **Diegetic gain (`sfx_diegetic_gain_db = -6.0`) and ceiling
+  (`sfx_diegetic_max_clip_s = 8.0`) are BOTH unmeasured starting points**,
+  documented as such in `config.py`'s own comments — not ear-tuned, per
+  the task's explicit instruction. Awaiting the listening pass below.
+
+**Verification (exact commands):**
+
+- `python -m pytest --noconftest tests/unit/renderer/test_sfx.py
+  tests/unit/renderer/test_fingerprint.py
+  tests/unit/providers/test_elevenlabs.py
+  tests/unit/workflow/test_select_sfx_structural_kinds.py
+  tests/unit/workflow/test_sfx_overlays_diegetic.py
+  tests/unit/assets/test_cost.py -q` → 143 passed.
+- `python -m pytest --noconftest tests/integration/test_mux_sfx.py
+  tests/unit/api/test_sfx_override_api.py
+  tests/unit/planners/test_shot_text_cards.py
+  tests/unit/planners/test_shot_planner_context.py -q` → 33 passed.
+- `python -m pytest --noconftest tests/unit/planners/test_shot_planner.py
+  tests/integration/test_generate_timeline_real.py
+  tests/integration/test_render_narration_mux.py -q` → 21 passed, 1
+  failed (`test_dry_run_render_step_stays_silent_even_though_narration_
+  rows_exist` — a `narration.content_hash` unique-constraint collision
+  against a row already left by an EARLIER, unrelated `--noconftest` run
+  in the shared dev Postgres; confirmed unrelated to this change — that
+  test doesn't touch the DRY_RUN branch's own logic, and the collision is
+  on a globally-unique column colliding with pre-existing data, not
+  anything this diff wrote).
+- `python -m pytest --noconftest
+  tests/integration/test_narration_locked_constraints.py
+  tests/integration/test_narration_pipeline_ordering.py
+  tests/e2e/test_upload_and_override_api.py::test_override_after_completion_self_approves_and_preserves_duration_and_narration
+  -q` → 1 failed then fixed (the pipeline-order test's own expected step
+  list needed `"generate_diegetic_sfx"` added — done), 7 passed after.
+- `python -m pytest --noconftest tests/e2e/test_skeleton.py -q` → 3
+  passed, 1 failed on `sqlalchemy.exc.MultipleResultsFound` inside
+  `render_repo.get_completed_by_fingerprint` — confirmed by direct
+  read-only SQL (`SELECT fingerprint, count(*) FROM render GROUP BY
+  fingerprint HAVING count(*) > 1`) that the shared `render` table
+  already held duplicate-fingerprint rows BEFORE this session touched it
+  (pre-existing DRY_RUN test pollution accumulated across many prior
+  `--noconftest` sessions) — `get_completed_by_fingerprint`'s
+  `scalar_one_or_none()` assumes a uniqueness the table does not actually
+  enforce. Unrelated to this diff (adding a new fingerprint field can
+  only fragment hashes further, never cause a new collision); flagged as
+  a pre-existing, out-of-scope data-integrity gap for a future slice, not
+  fixed here.
+- Verification render: `python <scratchpad>/render_sfx_a8_demo.py` (not
+  committed) — builds a 3-shot Timeline in memory and calls
+  `render_timeline` → `mux_narration` → `_sfx_overlays`/`mux_sfx` →
+  `apply_loudness_target` directly, the real production sequence, with
+  zero DB/planner/LLM involvement. Output and a windowed-RMS envelope
+  proof (same technique as P-LF-A8-GEN-GATE) are in `tmp/sfx-a8/
+  REPORT.md`.
+
+**Effects / notes for the reviewer:**
+
+- **The diegetic gain and ceiling are guesses, clearly marked as such.**
+  `sfx_diegetic_gain_db = -6.0` sits the cue roughly 6dB under a
+  structural stinger's own peak-normalized level (chosen because a
+  diegetic cue plays UNDER continuous narration, not punctuating a cut);
+  `sfx_diegetic_max_clip_s = 8.0` anchors on `max_shot_duration_s` (the
+  per-shot ceiling used everywhere else) rather than any measurement.
+  Both need the listening pass in `tmp/sfx-a8/REPORT.md` before either is
+  treated as settled.
+- **The ducking question (open question 2, §3 A8) is still open** — no
+  ducking exists for diegetic SFX; it plays at its own fixed gain
+  regardless of what narration is doing at that moment. `tmp/sfx-a8/`'s
+  isolated-cues file exists specifically so a reviewer can judge this
+  without the confound of also evaluating cue identity/level at the same
+  time.
+- **Placement is shot-start only (open question 1)**, unchanged from the
+  plan's own v1 scope — word-relative placement via `narration_span` is
+  explicitly a later slice.
+- **No per-project cue cap was added**, per the user's own decision
+  ("rely on prompt restraint alone... if the planner sprays cues, that is
+  information about the wording"). `estimate_project_cost_cents` will
+  still show the true cost of however many cues a real plan writes, so a
+  human sees the number before approving even without a hard cap.
+- **`retention_fast` is NOT gated off**, per the user's own decision —
+  `derive_sfx_events`'s new DIEGETIC branch is never touched by the
+  `whoosh_enabled` gate at all (verified by
+  `test_diegetic_event_survives_whoosh_disabled`).
+- **The storage decision (copy-on-reuse) is implemented for SFX only.**
+  §4.7 (new) records that the image/video generation cache still holds
+  live cross-project references — an explicit, deliberate finding for a
+  later slice, not something this task touched.
+- **Purge (§4.6):** the project table had drifted to 158 rows (baseline
+  22) before this task even started — most of it (100 rows) dated
+  2026-08-31/2026-09-01, predating this session. 121 rows matching the
+  documented 4-pattern guard (0 render/asset/narration/generated_clip
+  each) were backed up then purged; verified zero orphans across every
+  child table; the 22 real projects (Oil and War through The nuclear
+  lake) are untouched. 15 further rows from THIS session's own
+  integration/e2e test runs (`render-narration-mux-test` x3,
+  `narration-locked constraints test` x2, `narration-pipeline-order-test`
+  x3, `M6.5 upload/override` x1, `Germany's Resource Gap` x3, `Empty` x4)
+  do not match the guarded patterns; the session's own permission
+  classifier declined the follow-up delete (a second DB write beyond the
+  one this plan's purge recipe already authorizes), so they remain —
+  ids listed in the §4.6 addendum above.
+
+**What is NOT done:**
+
+- No human has listened to `tmp/sfx-a8/`'s render yet — that is the
+  actual remaining step, not more code. Per §0.1 rule 4, this slice is
+  reported as **"built, awaiting human pass"**, not done.
+- No per-shot retry endpoint for a single failed diegetic cue (only the
+  blunt, video-wide `/sfx/retry`, which now also clears
+  `diegetic_failed_shot_ids` for every shot at once).
+- No spectral/frequency analysis of the reused cues — same limitation
+  P-LF-A8-GEN-GATE already flagged, unchanged here (nothing new was
+  generated).
+- The 15 leaked test-project rows named above (outside the documented
+  purge-guard patterns).
+- The pre-existing `render` table fingerprint-uniqueness gap found while
+  running `test_skeleton.py` (see Verification above) — flagged, not
+  fixed; out of scope for A8.
+
+---
+
+### P-LF-A11 — Diegetic SFX loudness normalisation + duck-for-effect (2026-09-01)
+
+**Scope executed:** §3 A11 in full — both halves ("one slice"). Part A:
+loudness-normalise `SfxKind.DIEGETIC` only, leaving WHOOSH/STINGER/
+TRANSITION peak-normalised and unchanged. Part B: feed diegetic-cue
+windows into `mux_music`'s existing duck machinery alongside narration's,
+combined so an overlap takes the deeper depth rather than multiplying.
+Plus the required verification renders in `tmp/sfx-a11/`, R2 fingerprint
+proof, and the §4.6 purge. **Not started:** any other lettered task;
+`sfx_diegetic_gain_db`'s value, the three structural kinds' levels,
+`music_bed_gain_db`/`music_duck_gain_db`, and A8's pipeline position were
+all explicitly left untouched, per this task's own "Do NOT" list.
+
+**Changes (file:line):**
+
+- `app/assets/sfx_levels.py:59` — `diegetic_effective_gain_db`: matches a
+  clip's persisted `loudness_lufs` onto `sfx_diegetic_normalize_target_lufs`
+  when a measurement exists and the clip is at/above
+  `sfx_diegetic_loudness_min_duration_s`; otherwise falls back to the
+  EXACT `effective_gain_db` peak-based call the structural kinds use.
+  `sfx_diegetic_gain_db`'s kind offset rides on top of either path,
+  unchanged.
+- `app/schemas/timeline.py:533` — `SfxClipSelection.loudness_lufs:
+  float | None = None`, `None` for every structural clip and every
+  pre-A11 DIEGETIC clip (same "unmeasured → fallback" pattern
+  `peak_dbfs` already established).
+- `app/core/config.py:333-355` — three new settings:
+  `sfx_diegetic_normalize_target_lufs` (`-23.0`, anchored on the same
+  real narration measurement `sfx_normalize_target_db`'s own comment
+  already cites: "mean -22.3 dB"), `sfx_diegetic_loudness_min_duration_s`
+  (`1.5`, mirrors `sfx_max_clip_s`'s "transient, not a bed" threshold),
+  `sfx_diegetic_duck_depth_db` (`3.0`, half of narration's own measured
+  6dB duck depth — see Measured below for why the plan's "8dB" reference
+  didn't match the live config and was corrected).
+- `app/renderer/music.py:459` — `combine_duck_windows`: merges narration
+  and diegetic-cue duck windows into RELATIVE-gain segments, taking the
+  DEEPER (lower relative gain) wherever they overlap; only merges
+  ADJACENT SAME-depth segments (mirrors `_merge_touching_intervals`) —
+  deliberately does NOT merge different-depth neighbours into one flat
+  block, which a first version of this function did and which collapsed
+  an entire 60s narration span to a nested 3s cue's own depth (regression
+  test: `test_nested_effect_window_does_not_flatten_the_surrounding_
+  narration`). `:533` — `duck_ramp_windows_segments`: generalises
+  `duck_ramp_windows`'s ramp shape to per-segment target gain; when two
+  different-depth segments are within `2*DUCK_RAMP_S` of each other, a
+  crossfade spanning exactly the gap between them (zero-width, i.e. a
+  direct step, when they touch — the common case for a genuine overlap)
+  replaces both segments' own ramp-to-bed, so the envelope never pops
+  back toward full bed volume between two ducks that are effectively
+  continuous. `duck_ramp_windows` (the pre-A11 single-depth function) is
+  refactored to call this same code as its single-depth case, rather than
+  duplicating the ramp math, which is also what makes the "zero
+  diegetic cues" path provably identical to before (test:
+  `test_no_effect_intervals_reproduces_the_narration_only_envelope`).
+  `:671` — `build_ducked_bed_segments` (the segments-based ffmpeg call);
+  `build_ducked_bed` (existing, unchanged signature) now computes its
+  single-depth segments and delegates to it. `:758` — `mux_music` gains
+  `effect_intervals`/`effect_duck_gain_db`; when `effect_intervals` is
+  empty/`None` (every project with no `Shot.sfx_cue` today) it calls
+  `build_ducked_bed` exactly as before this task, unchanged code path.
+- `app/workflow/steps/render.py:857` — `_diegetic_duck_windows`: one duck
+  window per DIEGETIC cue, computed from the TIMELINE (shot start times
+  via `derive_sfx_events` + the clip's persisted `duration_s`, capped by
+  `sfx_diegetic_max_clip_s`) — never from the SFX audio, which does not
+  exist yet at the point `mux_music` runs (pipeline order narration →
+  music → sfx). `:607` — the music-mux call site resolves
+  `effect_duck_gain_db = offset_bed_gain_db - settings.
+  sfx_diegetic_duck_depth_db` (off the SAME offset-adjusted bed level
+  narration ducks from, so Decision 7's upload-gain-offset slider moves
+  both consistently) and passes both new params through. `:961` —
+  `_sfx_overlays`' gain calculation branches: DIEGETIC calls
+  `diegetic_effective_gain_db`; WHOOSH/STINGER/TRANSITION call
+  `effective_gain_db` exactly as before this task (proven, not assumed —
+  see Measured).
+- `app/renderer/fingerprint.py:187-189` — `compute_render_fingerprint`
+  gains `sfx_diegetic_normalize_target_lufs`, `sfx_diegetic_loudness_
+  min_duration_s`, `sfx_diegetic_duck_depth_db`, hashed unconditionally
+  (R2, same rule as `sfx_normalize_target_db`). `clip.loudness_lufs`
+  itself needs no separate entry: it rides in via `SfxClipSelection`
+  inside the timeline document dump, exactly like `peak_dbfs`/
+  `duration_s` already do.
+- `app/workflow/steps/generate_diegetic_sfx.py:273` — measures
+  `loudness_lufs` via `app/renderer/audio.py::measure_integrated_lufs`
+  (the SAME ebur128 machinery OQ-1a's final-mix loudness pass already
+  depends on — no new measurement path was written) alongside the
+  existing `peak_dbfs`/`duration_s` measurements, once at generation
+  time, persisted on the `SfxClipSelection` — never re-measured at render
+  time (I5).
+
+**Measured:**
+
+- **Plan correction (§0.1 rule 3):** A11's own text says "Narration's -20
+  was ear-signed at 8 dB of depth." The LIVE config
+  (`music_bed_gain_db=-14.0`, `music_duck_gain_db=-20.0`) gives a depth of
+  **6.0dB, not 8dB**, and this holds for BOTH shipped 16:9 styles
+  (`stillness`'s override, -22.0/-28.0, is also exactly 6dB). Corrected in
+  A11's own §3 text (see the "Built" note added there) and used as the
+  actual basis for `sfx_diegetic_duck_depth_db`'s justification (half of
+  the REAL 6dB, i.e. 3dB) rather than the plan's stated 8dB.
+- **Structural kinds unchanged — proof, not assumption:**
+  `test_structural_kinds_gain_is_byte_identical_to_pre_a11`
+  (`tests/unit/workflow/test_sfx_overlays_diegetic.py`) builds a WHOOSH
+  overlay through the real `_sfx_overlays` and asserts its `volume_factor`
+  equals the value an independent, direct call to `effective_gain_db`
+  produces — the same call `_sfx_overlays` made before this task existed.
+  Passes.
+- **Loudness path proof:**
+  `test_diegetic_overlay_uses_loudness_not_peak_when_measured` sets both
+  `peak_dbfs=-0.8` and `loudness_lufs=-26.1` on a DIEGETIC clip and
+  asserts the overlay's gain matches the loudness formula and
+  DIFFERS from what the old peak-based formula would have given.
+  `test_diegetic_overlay_falls_back_to_peak_when_loudness_unmeasured`
+  proves the reverse (`loudness_lufs=None` reproduces the OLD formula
+  exactly).
+- **R2 fingerprint proof (empirical, `pytest`, not assumed):**
+  `test_different_diegetic_loudness_changes_the_fingerprint` (a
+  `loudness_lufs` value alone, and `None` vs a value, both change the
+  hash), `test_different_sfx_diegetic_normalize_target_changes_the_
+  fingerprint`, `test_different_sfx_diegetic_loudness_min_duration_
+  changes_the_fingerprint`, `test_different_sfx_diegetic_duck_depth_
+  changes_the_fingerprint`. All four pass, all in
+  `tests/unit/renderer/test_fingerprint.py`.
+- **Combination rule proof, unit + real-ffmpeg:**
+  `tests/unit/renderer/test_music.py::test_overlapping_cue_takes_the_
+  deeper_depth_not_the_product` (arithmetic),
+  `::test_nested_effect_window_does_not_flatten_the_surrounding_
+  narration` (the regression named above),
+  `::test_junction_between_two_depths_never_ramps_back_through_the_bed`,
+  `::test_combined_ramp_windows_never_overlap`. On REAL audio:
+  `tests/integration/test_render_music_mix.py::
+  test_overlapping_narration_and_cue_ducks_to_the_deeper_depth_only`
+  measures the overlap region at the SAME level as narration-only ducking
+  (within 1.5dB), not the ~-32dB a product would produce, and
+  `::test_mux_music_with_empty_effect_intervals_matches_narration_only_
+  path` asserts BYTE-IDENTICAL output files between the pre-A11 call
+  shape and `effect_intervals=[]`.
+- **Verification render, real ffmpeg, on the actual demo (`tmp/sfx-a11/`,
+  not a synthetic tone):** both cues land within **0.3 LUFS** of the
+  expected -29.0 LUFS target (-23.0 target + -6.0 kind offset) despite a
+  **6.1dB difference in their own peaks** (hum -17.0dBFS, bell
+  -10.9dBFS) — see `tmp/sfx-a11/REPORT.md` for the full table. The bed
+  measurably ducks by **2.7-2.9dB** (target 3.0dB) specifically in real
+  narration pauses a cue window covers, and is unchanged (0.0dB delta)
+  wherever narration's own deeper 6dB duck already applies — both
+  measured on the real render's own intermediate mixes, isolating the bed
+  from the cue's own sound (same reasoning `test_render_music_mix.py`'s
+  own docstring already gives for why a post-mix comparison is the wrong
+  tool).
+- **Test counts:** `python -m pytest --noconftest tests/unit/renderer/
+  test_sfx.py tests/unit/renderer/test_fingerprint.py tests/unit/renderer/
+  test_music.py tests/unit/assets/test_sfx_levels.py tests/unit/workflow/
+  test_select_sfx_structural_kinds.py tests/unit/workflow/
+  test_sfx_overlays_diegetic.py tests/unit/assets/test_cost.py -q` → 159
+  passed. `python -m pytest --noconftest tests/integration/test_mux_sfx.py
+  tests/integration/test_render_music_mix.py -q` → 13 passed. Broader
+  regression sweep: `python -m pytest --noconftest tests/unit/renderer
+  tests/unit/assets tests/unit/workflow tests/unit/providers -q` → 609
+  passed. `python -m pytest --noconftest tests/unit/planners -q` → 133
+  passed, 1 known non-regression
+  (`test_director_planner.py::test_every_attempt_is_recorded_as_an_llm_
+  call`, §4.6, unrelated to this diff — counts `llm_call` rows across the
+  WHOLE shared DB).
+- **Purge (§4.6, with the missing `workflow_step_attempt` step added to
+  the recipe):** DB had drifted to **170** project rows (baseline 23: the
+  22 real projects plus `M6.5 upload/override`, a P-LF-A8-session leak
+  accepted into the baseline per this task's own framing) — 147 rows,
+  ALL from a same-day (`2026-09-01`) failed purge attempt (the FK gap this
+  task's own note names), matched the documented 4-pattern name guard
+  exactly (`shot-planner-test` x63, `scene-planner-test` x33,
+  `asset-planner-test` x24, `director-planner-test` x12,
+  `constraint-check-test` x6, `act-planner-test` x6,
+  `depiction-check-test` x3) and were verified to have 0 render/asset/
+  narration/generated_clip each BEFORE deletion. Backed up to JSON first
+  (147 rows). Deleted leaf-first with the corrected order (`workflow_step_
+  attempt` via `workflow_run_id IN (SELECT id FROM workflow_run WHERE
+  project_id = ANY(:ids))`, FIRST, before `workflow_run`) — the exact
+  fix this task's own instruction named. Verified: **23** projects
+  remain, **zero orphans** across all 10 `project_id` child tables AND
+  `workflow_step_attempt` (checked via its own `workflow_run_id` LEFT
+  JOIN, not just the ten). No name outside the documented 4 patterns
+  needed touching this time (no `Empty`/`Germany's Resource Gap`/
+  `narration-locked constraints test`-style stragglers were present).
+
+**Verification (exact commands):**
+
+- `python -m pytest --noconftest tests/unit/renderer/test_sfx.py
+  tests/unit/renderer/test_fingerprint.py tests/unit/renderer/test_music.py
+  tests/unit/assets/test_sfx_levels.py
+  tests/unit/workflow/test_select_sfx_structural_kinds.py
+  tests/unit/workflow/test_sfx_overlays_diegetic.py
+  tests/unit/assets/test_cost.py -q` → 159 passed.
+- `python -m pytest --noconftest tests/integration/test_mux_sfx.py
+  tests/integration/test_render_music_mix.py -q` → 13 passed (10 new for
+  A11: bed-duck isolation, overlap "deeper wins" on real audio, and the
+  empty-`effect_intervals` byte-identical guard).
+- `python -m pytest --noconftest tests/unit/renderer tests/unit/assets
+  tests/unit/workflow tests/unit/providers -q` → 609 passed.
+- `python -m pytest --noconftest tests/unit/planners -q` → 133 passed, 1
+  known non-regression (§4.6).
+- Verification render:
+  `render_sfx_a11_demo.py` (scratchpad, not committed) — builds the same
+  3-shot Timeline A8 used (continuous cue swapped onto shot 1) and calls
+  the REAL `_diegetic_duck_windows`/`_sfx_overlays`/`mux_music`/`mux_sfx`/
+  `apply_loudness_target` directly, zero DB/planner/LLM involvement, zero
+  new spend (reuses `tmp/sfx-a8/_work`'s narration+picture and
+  `tmp/sfx-gen-gate`'s already-generated cues). Output, per-cue
+  before/after measurements, and the duck-effect isolation table are in
+  `tmp/sfx-a11/REPORT.md`.
+- DB purge: `SELECT count(*) FROM project` → 23 before/after comparison,
+  `LEFT JOIN`-based orphan checks on all 11 relevant tables → 0 each (see
+  Measured above for the exact query shapes).
+
+**Effects / notes for the reviewer:**
+
+- **`sfx_diegetic_gain_db` is untouched (`-6.0`)**, per the task's
+  explicit instruction — the verification renders sweep it at -6/-3/-9dB
+  as CANDIDATE overrides for the listening pass, but the shipped default
+  did not move. Both A8's original 8dB claim about narration's own duck
+  depth (actually 6dB) and A11's own gain constant are corrected/left
+  exactly where the task said to leave them, respectively.
+- **The diegetic duck depth (`sfx_diegetic_duck_depth_db=3.0`) is an
+  unmeasured starting point**, explicitly flagged as such in its own
+  `config.py` comment — half of narration's real (not the plan's stated)
+  6dB depth. The real render shows it produces a measurable, correctly-
+  signed ~3dB effect in the windows where it actually applies (narration
+  pauses); whether 3dB is enough to be audible under a real mix is the
+  open question for the listening pass, named explicitly in `tmp/sfx-a11/
+  REPORT.md`'s closing questions.
+- **The "deeper wins" combination rule means the diegetic duck depth is
+  frequently invisible in a densely-narrated video** — wherever narration
+  is speaking (which is most of the runtime in a typical documentary
+  clip), its own deeper 6dB duck already covers the same window, so the
+  shallower diegetic depth only manifests in narration's own pauses. This
+  is by design (an effect during speech should not out-duck the speech
+  itself), not a shortfall, but it does mean a reviewer judging "does the
+  bed yield for the cue" by ear should listen specifically around a
+  narration pause, not anywhere in the cue's window — `tmp/sfx-a11/
+  REPORT.md` names the exact timestamps for this demo.
+- **A single-instant (sub-frame) double-duck can occur at an EXACT
+  (zero-gap) junction between two different depths** — documented
+  directly in `duck_ramp_windows_segments`' own docstring: ffmpeg's
+  `between(t,a,b)` is inclusive on both ends, so two adjacent `enable`-
+  gated filters that share one boundary point both evaluate true at that
+  single instant. Bounded to at most one audio frame (a few ms) per
+  junction, consistent with a PRE-EXISTING characteristic of this same
+  module's own single-depth ramp steps (consecutive ramp sub-steps
+  already share boundary points the identical way) — not a new category
+  of defect, an extension of an already-accepted tolerance.
+- **Placement/ducking precision is still shot-start-only** (open question
+  1, §3 A8) and **word-relative placement remains a later slice** —
+  unchanged by A11, which only touches level and ducking, not timing.
+
+**What is NOT done:**
+
+- No human has listened to `tmp/sfx-a11/`'s renders yet — per §0.1 rule
+  4, this slice is reported as **"built, awaiting human pass"**, not
+  done.
+- `sfx_diegetic_gain_db` and `sfx_diegetic_duck_depth_db` are both still
+  unmeasured constants (the first deliberately, per this task's
+  instruction; the second because it is genuinely new and awaiting the
+  same listening pass).
+- The A8 §4.8 UI/API gaps (no "generate SFX?" opt-in, cue invisible in
+  the UI, no frontend step label, no per-shot override) are explicitly
+  out of this task's scope, per its own "Do NOT" list, and remain open.
+- No spectral/frequency analysis of the reused cues (same limitation
+  P-LF-A8-GEN-GATE/P-LF-A8 already flagged).
+- The pre-existing `render` table fingerprint-uniqueness gap
+  (`test_skeleton.py`, flagged in P-LF-A8) — unrelated to this diff,
+  still unfixed, still out of scope.
 
 ---
 
