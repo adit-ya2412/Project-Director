@@ -68,5 +68,14 @@ def test_every_paid_or_planning_step_is_excluded_from_the_precondition_check():
         "await_approval",
         "narration",
         "resolve_assets_generate",
+        # A8 (long_form_direction.md, 2026-09-01). `render_precondition_gap`
+        # already covers this automatically - it walks `DEFAULT_PIPELINE` and
+        # skips only `_NOT_A_PRECONDITION`, so no production change was needed
+        # when the step was added. It IS a real precondition: a project with
+        # `sfx_cue` shots whose generation never ran would otherwise render
+        # with the diegetic layer silently absent. This assertion is the
+        # canary the docstring above describes, and it fired exactly as
+        # designed - updating it is the acknowledgement, not a workaround.
+        "generate_diegetic_sfx",
         "await_review",
     }

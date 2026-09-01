@@ -1,7 +1,8 @@
-"""ElevenLabs narration provider (M8, D1). The ONLY file in the codebase
-that knows about the ElevenLabs endpoint or request/response shape (ADR-003
-provider firewall) - everything else depends on `NarrationProvider` in
-`providers/base.py`.
+"""ElevenLabs narration + sound-generation providers (M8/D1,
+long_form_direction.md A8). The ONLY file in the codebase that knows about
+an ElevenLabs endpoint or request/response shape (ADR-003 provider
+firewall) - everything else depends on `NarrationProvider` /
+`SoundEffectProvider` in `providers/base.py`.
 
 Uses the *timestamped* endpoint,
 `POST /v1/text-to-speech/{voice_id}/with-timestamps`, so audio and timing
@@ -33,7 +34,12 @@ import httpx
 
 from app.core.config import settings
 from app.core.errors import PermanentError, TransientError
-from app.providers.base import NarrationRequest, NarrationResult
+from app.providers.base import (
+    NarrationRequest,
+    NarrationResult,
+    SoundEffectRequest,
+    SoundEffectResult,
+)
 
 _API_BASE_URL = "https://api.elevenlabs.io"
 # A scene's narration is a handful of sentences; RV-Q10 may batch a
@@ -214,3 +220,110 @@ class ElevenLabsNarrationProvider:
             alignment=alignment,
             character_count=len(request.text),
         )
+
+
+# --- Sound generation (long_form_direction.md A8, 2026-09-01) -------------
+#
+# `POST /v1/sound-generation`, verified against ElevenLabs' own docs (not
+# memory) in the A8 gate (P-LF-A8-GEN-GATE, docs/plans/
+# long_form_direction.md §7): `text` (required), `duration_seconds`
+# (optional, 0.1-30s, auto-determined if omitted), `output_format` as a
+# query param (same convention as the TTS endpoint above). No seed is
+# documented for this endpoint - I5 for generated SFX comes entirely from
+# the mandatory prompt-hash cache below, never from a generation input,
+# exactly the same shape `resolve_assets.py::generation_prompt_hash`
+# already uses for images/clips. Billed 40 credits/second when
+# `duration_seconds` is specified (not character-based like narration).
+_SOUND_GENERATION_DURATION_MIN_S = 0.1
+_SOUND_GENERATION_DURATION_MAX_S = 30.0
+
+
+def compute_sfx_generation_hash(*, text: str, model: str, duration_seconds: float) -> str:
+    """The cache key for one diegetic-SFX generation request - mirrors
+    `resolve_assets.py::generation_prompt_hash` and
+    `compute_narration_content_hash` above exactly: hash the REQUEST
+    (cue text + model + duration), look up, reuse or generate-and-store.
+    This is the ONLY thing holding I5 for generated SFX, since the
+    provider accepts no seed (§3 A8's own build note) - so unlike
+    `generation_prompt_hash`, this is not optional plumbing, it is the
+    entire determinism guarantee.
+
+    `duration_seconds` is rounded to milliseconds before hashing so float
+    reprs cannot fork the cache key for the same effective request."""
+    digest_input = f"{text}|{model}|{round(duration_seconds, 3)}"
+    return hashlib.sha256(digest_input.encode()).hexdigest()
+
+
+class ElevenLabsSoundEffectProvider:
+    """`SoundEffectProvider` for `/v1/sound-generation` (A8). Synchronous,
+    single-call, no polling - unlike video generation, ElevenLabs resolves
+    a sound-generation request in one response. Shares this module's auth
+    convention (`xi-api-key` header) and error-handling shape with
+    `ElevenLabsNarrationProvider.synthesize` above (401/403 permanent, 402
+    permanent with the same top-up message, 429/5xx transient, every
+    other 4xx permanent) rather than duplicating a second interpretation
+    of the same status codes."""
+
+    name = "elevenlabs"
+
+    def __init__(self, transport: httpx.AsyncBaseTransport | None = None) -> None:
+        self._transport = transport
+
+    async def generate(self, request: SoundEffectRequest) -> SoundEffectResult:
+        if not settings.elevenlabs_api_key:
+            raise PermanentError("ELEVENLABS_API_KEY is not configured")
+
+        duration = min(
+            max(request.duration_seconds, _SOUND_GENERATION_DURATION_MIN_S),
+            _SOUND_GENERATION_DURATION_MAX_S,
+        )
+        url = f"{_API_BASE_URL}/v1/sound-generation"
+        params = {"output_format": settings.elevenlabs_output_format}
+        payload = {"text": request.text, "duration_seconds": duration}
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=_REQUEST_TIMEOUT_S, transport=self._transport
+            ) as client:
+                response = await client.post(
+                    url,
+                    params=params,
+                    json=payload,
+                    headers={"xi-api-key": settings.elevenlabs_api_key},
+                )
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "")
+                # The documented response is a raw audio file
+                # (elevenlabs.io/docs/api-reference/text-to-sound-effects).
+                # A prior probe of this same endpoint (P-LF-A8-GEN-GATE)
+                # recorded a JSON body carrying only base64 audio, the same
+                # shape as the TTS endpoint above - ambiguous enough
+                # (scoped API key, no second read) that this branches on
+                # the response's own declared content type rather than
+                # assuming either shape and crashing on the other.
+                if content_type.startswith("audio/"):
+                    content = response.content
+                else:
+                    data = response.json()
+                    content = base64.b64decode(data["audio_base64"])
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise TransientError(f"elevenlabs sound generation timed out or errored: {exc}") from exc
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in (401, 403):
+                raise PermanentError(f"elevenlabs rejected the API key: {status}") from exc
+            if status == 402:
+                raise PermanentError(
+                    "elevenlabs returned 402 Payment Required - the account is out of "
+                    "credits or the plan does not cover this request. Retrying cannot "
+                    "fix this; top up the account at https://elevenlabs.io/app/subscription"
+                ) from exc
+            if status == 429 or status >= 500:
+                raise TransientError(f"elevenlabs sound generation returned {status}") from exc
+            raise PermanentError(f"elevenlabs sound generation failed: {exc}") from exc
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PermanentError(
+                f"elevenlabs sound-generation response missing valid audio: {exc}"
+            ) from exc
+
+        return SoundEffectResult(content=content, content_type="audio/mpeg")

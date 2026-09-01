@@ -29,8 +29,15 @@ from app.schemas.timeline import (
 _SETTINGS = RenderSettings(width=720, height=1280, fps=30, pixel_format="yuv420p")
 
 
-def _timeline(shot_prompt: str = "a shot") -> Timeline:
-    shot = Shot(id="sh_01", order=0, intent=ShotIntent.EXPLAIN, duration_s=3.0, prompt=shot_prompt)
+def _timeline(shot_prompt: str = "a shot", sfx_cue: str | None = None) -> Timeline:
+    shot = Shot(
+        id="sh_01",
+        order=0,
+        intent=ShotIntent.EXPLAIN,
+        duration_s=3.0,
+        prompt=shot_prompt,
+        sfx_cue=sfx_cue,
+    )
     scene = Scene(id="sc_01", order=0, title="Scene", duration_s=3.0, shots=[shot])
     return Timeline(
         timeline_id="t1",
@@ -71,9 +78,13 @@ def _fingerprint(**overrides) -> str:
         "sfx_content_hashes": [],
         "sfx_gain_db": -8.0,
         "sfx_max_clip_s": 1.5,
+        "sfx_diegetic_max_clip_s": 8.0,
         "sfx_whoosh_enabled": True,
         "sfx_normalize_target_db": -8.0,
         "sfx_kind_gain_overrides_db": {},
+        "sfx_diegetic_normalize_target_lufs": -23.0,
+        "sfx_diegetic_loudness_min_duration_s": 1.5,
+        "sfx_diegetic_duck_depth_db": 3.0,
         "ffmpeg_version": "ffmpeg version 9.0",
         "shot_focal": {"sh_01": ""},
     }
@@ -366,6 +377,117 @@ def test_different_sfx_gain_changes_the_fingerprint():
 def test_different_sfx_max_clip_changes_the_fingerprint():
     """R12: `atrim` length is a mix input."""
     assert _fingerprint(sfx_max_clip_s=1.5) != _fingerprint(sfx_max_clip_s=3.0)
+
+
+def test_different_sfx_cue_changes_the_fingerprint():
+    """long_form_direction.md A8, R2: two timelines differing ONLY in a
+    shot's `sfx_cue` must fingerprint differently, or the render cache
+    would serve audio from a previous cue set. `sfx_cue` reaches the
+    fingerprint via the ordinary timeline-content dump (no special-casing
+    needed), same as any other Shot field."""
+    assert _fingerprint(timeline=_timeline(sfx_cue="a Geiger counter clicking")) != _fingerprint(
+        timeline=_timeline(sfx_cue="a church bell tolling")
+    )
+    assert _fingerprint(timeline=_timeline(sfx_cue=None)) != _fingerprint(
+        timeline=_timeline(sfx_cue="a Geiger counter clicking")
+    )
+
+
+def test_different_diegetic_clip_content_hash_changes_the_fingerprint():
+    """long_form_direction.md A8, R2: `SfxClipSelection.shot_id` and
+    `content_hash` for a DIEGETIC clip reach the fingerprint through the
+    ordinary `sfx_plan` dump inside the timeline document itself - not
+    only through the redundant `sfx_content_hashes` list argument
+    (`test_different_sfx_clip_hash_changes_the_fingerprint` above already
+    covers that one). Two timelines whose ONLY difference is a generated
+    cue's content hash must still fingerprint differently."""
+    from app.schemas.timeline import SfxClipSelection, SfxKind, SfxPlan
+
+    def _with_diegetic_clip(content_hash: str) -> Timeline:
+        timeline = _timeline(sfx_cue="a Geiger counter clicking")
+        timeline.sfx_plan = SfxPlan(
+            clips=[
+                SfxClipSelection(
+                    kind=SfxKind.DIEGETIC,
+                    provider="elevenlabs",
+                    track_id="hash1",
+                    source_url="",
+                    licence="generated",
+                    content_hash=content_hash,
+                    shot_id="sh_01",
+                )
+            ]
+        )
+        return timeline
+
+    assert _fingerprint(timeline=_with_diegetic_clip("aaa")) != _fingerprint(
+        timeline=_with_diegetic_clip("bbb")
+    )
+
+
+def test_different_sfx_diegetic_max_clip_changes_the_fingerprint():
+    """long_form_direction.md A8: diegetic's OWN ceiling is a real mix
+    input, distinct from `sfx_max_clip_s` - it must invalidate the cache
+    on its own even when the structural ceiling is unchanged."""
+    assert _fingerprint(sfx_diegetic_max_clip_s=8.0) != _fingerprint(sfx_diegetic_max_clip_s=12.0)
+
+
+def test_different_diegetic_loudness_changes_the_fingerprint():
+    """A11 (long_form_direction.md, 2026-09-01): `SfxClipSelection.
+    loudness_lufs` is a real mix input for a DIEGETIC clip, reached via
+    the ordinary `sfx_plan` dump - same shape as
+    `test_different_diegetic_clip_content_hash_changes_the_fingerprint`."""
+    from app.schemas.timeline import SfxClipSelection, SfxKind, SfxPlan
+
+    def _with_loudness(loudness_lufs: float | None) -> Timeline:
+        timeline = _timeline(sfx_cue="a church bell tolling")
+        timeline.sfx_plan = SfxPlan(
+            clips=[
+                SfxClipSelection(
+                    kind=SfxKind.DIEGETIC,
+                    provider="elevenlabs",
+                    track_id="hash1",
+                    source_url="",
+                    licence="generated",
+                    content_hash="aaa",
+                    shot_id="sh_01",
+                    loudness_lufs=loudness_lufs,
+                )
+            ]
+        )
+        return timeline
+
+    assert _fingerprint(timeline=_with_loudness(-29.7)) != _fingerprint(
+        timeline=_with_loudness(-23.5)
+    )
+    assert _fingerprint(timeline=_with_loudness(None)) != _fingerprint(
+        timeline=_with_loudness(-29.7)
+    )
+
+
+def test_different_sfx_diegetic_normalize_target_changes_the_fingerprint():
+    """A11: the loudness target is config-time, has nowhere else to live -
+    same R2 shape as `sfx_normalize_target_db`."""
+    assert _fingerprint(sfx_diegetic_normalize_target_lufs=-23.0) != _fingerprint(
+        sfx_diegetic_normalize_target_lufs=-20.0
+    )
+
+
+def test_different_sfx_diegetic_loudness_min_duration_changes_the_fingerprint():
+    """A11: the duration floor decides which of two gain paths a clip
+    takes - a real mix input."""
+    assert _fingerprint(sfx_diegetic_loudness_min_duration_s=1.5) != _fingerprint(
+        sfx_diegetic_loudness_min_duration_s=2.0
+    )
+
+
+def test_different_sfx_diegetic_duck_depth_changes_the_fingerprint():
+    """A11: the diegetic-cue duck depth is a real mix input to `mux_music`
+    once any shot carries an `sfx_cue` - unconditional presence (R2), same
+    as `music_bed_gain_db`/`music_duck_gain_db`."""
+    assert _fingerprint(sfx_diegetic_duck_depth_db=3.0) != _fingerprint(
+        sfx_diegetic_duck_depth_db=6.0
+    )
 
 
 def test_sfx_whoosh_gate_changes_the_fingerprint():

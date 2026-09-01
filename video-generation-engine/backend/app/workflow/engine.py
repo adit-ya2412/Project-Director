@@ -22,6 +22,7 @@ from app.workflow.step import StepResult, WorkflowStep
 from app.workflow.steps.await_approval import AwaitApprovalStep
 from app.workflow.steps.await_review import AwaitReviewStep
 from app.workflow.steps.complete import CompleteStep
+from app.workflow.steps.generate_diegetic_sfx import GenerateDiegeticSfxStep
 from app.workflow.steps.generate_timeline import GenerateTimelineStep
 from app.workflow.steps.narration import NarrationStep
 from app.workflow.steps.render import RenderStep
@@ -132,6 +133,16 @@ logger = get_logger(__name__)
 # anything renders. Already-narrated projects skip it (`narration_locked`)
 # so a DEFAULT_PIPELINE resume cannot restamp DRAFT / drop audio; those
 # go through `backfill_caption_romanization` instead.
+#
+# `GenerateDiegeticSfxStep` (long_form_direction.md A8, 2026-09-01) runs
+# AFTER `AwaitApprovalStep`, immediately following `resolve_assets_generate`
+# - it costs real money (ElevenLabs `/v1/sound-generation`), so I6 places
+# it in the paid, post-approval half of the pipeline exactly like image/
+# video generation, never beside `SelectSfxStep` above (free search,
+# pre-approval). It must run before `RenderStep` (which reads
+# `Timeline.sfx_plan.clips` for DIEGETIC entries the same way it already
+# does for WHOOSH/STINGER/TRANSITION) - see that step's own docstring for
+# why one cue failing never blocks the render.
 DEFAULT_PIPELINE: list[WorkflowStep] = [
     GenerateTimelineStep(),
     ResolveAssetsStep(name="resolve_assets_search", permitted_strategies=SEARCH_RUNGS),
@@ -141,6 +152,7 @@ DEFAULT_PIPELINE: list[WorkflowStep] = [
     NarrationStep(),
     AwaitApprovalStep(),
     ResolveAssetsStep(name="resolve_assets_generate", permitted_strategies=GENERATION_RUNGS),
+    GenerateDiegeticSfxStep(),
     AwaitReviewStep(),
     RenderStep(),
     CompleteStep(),

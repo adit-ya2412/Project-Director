@@ -45,7 +45,7 @@ from app.core.errors import PermanentError
 from app.planners.fragments import split_narration_fragments
 from app.repositories.generated_clip_repository import GeneratedClipRepository
 from app.repositories.narration_repository import NarrationRepository
-from app.schemas.timeline import AssetStrategy, PreferredMediaType, Timeline
+from app.schemas.timeline import AssetStrategy, PreferredMediaType, SfxKind, Timeline
 from app.script.styles import resolve_constraint_bundle
 
 # Binding states that mean "this shot already has media, of some kind" -
@@ -105,6 +105,32 @@ def estimate_project_cost_cents(
     # number that quietly excludes an entire acquisition category.
     if timeline.music_plan is not None:
         total += settings.music_cost_cents_estimate
+    # long_form_direction.md A8 (2026-09-01): diegetic SFX generation is
+    # paid and runs post-approval (`GenerateDiegeticSfxStep`), the same
+    # timing as image/video generation above - so a cue-bearing shot with
+    # no clip yet belongs in the pre-approval estimate for the identical
+    # reason Task 5's own docstring gives: an estimate that looks free
+    # when it is not is worse than useless. A shot already resolved
+    # (a DIEGETIC clip recorded, cache hit or fresh generation) or already
+    # marked permanently failed costs nothing further to estimate.
+    # `sfx_plan` may genuinely be `None` here (before `SelectSfxStep` has
+    # ever run and set a default one) even though `Shot.sfx_cue` is
+    # already on the Timeline (the Shot Planner writes it) - a cue-bearing
+    # shot must still be estimated in that case, so this is not gated on
+    # `sfx_plan is not None` the way the music check above is (music has
+    # no per-shot signal to check independently of its own plan).
+    diegetic_settled: set[str] = set()
+    if timeline.sfx_plan is not None:
+        diegetic_settled = {
+            clip.shot_id for clip in timeline.sfx_plan.clips if clip.kind == SfxKind.DIEGETIC
+        }
+        diegetic_settled |= set(timeline.sfx_plan.diegetic_failed_shot_ids)
+    pending_cue_shots = sum(
+        1
+        for shot in timeline.all_shots()
+        if (shot.sfx_cue or "").strip() and shot.id not in diegetic_settled
+    )
+    total += pending_cue_shots * settings.sfx_diegetic_cost_cents_estimate
     return total
 
 

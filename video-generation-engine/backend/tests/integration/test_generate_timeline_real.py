@@ -146,6 +146,7 @@ def _shot_output(scene_id: str, duration_s: float) -> ShotPlannerOutput:
                 prompt="archival photograph",
                 secondary_prompt="",
                 text_card="",
+                sfx_cue="",
             ),
         ]
     )

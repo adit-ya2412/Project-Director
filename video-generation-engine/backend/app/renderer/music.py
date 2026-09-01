@@ -62,6 +62,22 @@ this covers a track shorter OR longer than the video with the same two
 ffmpeg options, so no duration-based preference is needed when ranking
 candidates (see `app/assets/music_ranking.py`).
 
+## Ducking a second layer: diegetic SFX (A11, long_form_direction.md, 2026-09-01)
+
+The bed used to duck against narration only. A diegetic cue (a church
+bell, a Geiger counter) is a significant EFFECT, not background noise -
+documentary sound conventionally lets it push the bed back too, just not
+as far as narration does (it is a moment, not a floor). `mux_music`
+accepts an optional second set of windows (`effect_intervals`) at their
+own, shallower depth (`effect_duck_gain_db`); `combine_duck_windows`
+merges them with the narration windows onto one envelope, in RELATIVE
+gain terms, taking the DEEPER of the two wherever they overlap - two
+`volume=` filters chained in series MULTIPLY where they overlap (see
+`duck_ramp_windows`'s docstring), so ducking both depths at once would
+not duck "a bit more", it would duck to their PRODUCT. When there are no
+diegetic cues this whole path is skipped and `build_ducked_bed` runs
+exactly as it always has - see `mux_music`'s own docstring.
+
 ## Two ffmpeg passes, not one, and why
 
 `_build_ducked_bed` produces the ducked, faded, video-length music track
@@ -429,31 +445,181 @@ def duck_ramp_windows(
         return [(start, end, relative_duck) for start, end in intervals]
 
     intervals = _merge_touching_intervals(intervals, min_gap_s=2 * ramp_s)
+    # A11: delegates to the per-segment generalisation below so the two
+    # can never drift apart - this is the single-depth case of that
+    # function (every interval tagged with the same `relative_duck`),
+    # not a second implementation of the same ramp math.
+    return duck_ramp_windows_segments(
+        [(start, end, relative_duck) for start, end in intervals],
+        ramp_s=ramp_s,
+        steps=steps,
+    )
 
+
+def combine_duck_windows(
+    narration_intervals: list[tuple[float, float]],
+    narration_duck_gain_db: float,
+    effect_intervals: list[tuple[float, float]],
+    effect_duck_gain_db: float,
+    *,
+    bed_gain_db: float,
+) -> list[tuple[float, float, float]]:
+    """A11 (long_form_direction.md, 2026-09-01): merge narration duck
+    windows and diegetic-cue duck windows onto ONE envelope, in RELATIVE
+    gain terms (mirrors `_volume_chain`'s own `duck_linear / bed_linear`
+    math) so the result can go straight into `duck_ramp_windows_segments`.
+
+    Where a cue window overlaps a narration window (a bell tolling mid-
+    sentence), the DEEPER (quieter, i.e. lower relative gain) of the two
+    wins for the whole overlap - two `volume=` filters chained in series
+    MULTIPLY where they overlap (see `duck_ramp_windows`'s own docstring
+    on RV-Q3), so ducking BOTH depths at once would not "duck a bit more",
+    it would duck to their PRODUCT - audibly mud, and unbounded as more
+    layers are added. "Deeper wins" is a ceiling, not a sum: the sweep
+    below picks ONE depth per instant, never stacks two.
+
+    A cue with no narration overlap plays at its own (shallower) depth; a
+    narration window with no cue overlap is completely unaffected - this
+    function returns exactly `narration_intervals` at
+    `narration_duck_gain_db` (before ramping) when `effect_intervals` is
+    empty, so the no-diegetic-cues path (every project today) is
+    unchanged by this function's mere existence.
+
+    Only SAME-depth neighbours closer than `2*DUCK_RAMP_S` are merged
+    here (mirrors `_merge_touching_intervals` exactly, generalised to
+    gain-tagged pieces) - e.g. a narration window and a slightly earlier-
+    starting effect window that happen to end up at the identical relative
+    gain once picked by the sweep. DIFFERENT-depth neighbours are left as
+    separate segments on purpose: merging them into one flat block would
+    also flatten whatever came BEFORE/AFTER at the OTHER depth the moment
+    two windows touch (e.g. a nested 3s effect window inside a 60s
+    narration span would otherwise duck the entire 60s to the effect's
+    depth, not just the 3s it actually covers). `duck_ramp_windows_segments`
+    handles the different-depth case instead, with a short crossfade AT
+    the junction rather than a merge of the surrounding content.
+    """
+    tagged: list[tuple[float, float, float]] = []
+    narr_rel = _db_to_linear(narration_duck_gain_db) / _db_to_linear(bed_gain_db)
+    eff_rel = _db_to_linear(effect_duck_gain_db) / _db_to_linear(bed_gain_db)
+    tagged += [(start, end, narr_rel) for start, end in narration_intervals if end > start]
+    tagged += [(start, end, eff_rel) for start, end in effect_intervals if end > start]
+    if not tagged:
+        return []
+
+    points = sorted({p for start, end, _ in tagged for p in (start, end)})
+    segments: list[tuple[float, float, float]] = []
+    for a, b in zip(points, points[1:]):
+        if b <= a:
+            continue
+        mid = (a + b) / 2
+        active = [gain for start, end, gain in tagged if start <= mid < end]
+        if not active:
+            continue
+        segments.append((a, b, min(active)))  # deeper duck = lower relative gain
+
+    merge_gap = 2 * DUCK_RAMP_S
+    merged: list[tuple[float, float, float]] = []
+    for seg in segments:
+        if merged:
+            prev_start, prev_end, prev_gain = merged[-1]
+            same_depth = abs(prev_gain - seg[2]) < 1e-9
+            if same_depth and seg[0] - prev_end <= merge_gap:
+                merged[-1] = (prev_start, max(prev_end, seg[1]), prev_gain)
+                continue
+        merged.append(seg)
+    return merged
+
+
+def duck_ramp_windows_segments(
+    segments: list[tuple[float, float, float]],
+    *,
+    ramp_s: float = DUCK_RAMP_S,
+    steps: int = DUCK_RAMP_STEPS,
+) -> list[tuple[float, float, float]]:
+    """Same ramp shape as `duck_ramp_windows`, generalised to a per-
+    segment target gain (A11: narration and diegetic-cue windows can
+    carry two different depths after `combine_duck_windows`).
+
+    Each segment ramps in from the BED (1.0) and out to the BED exactly
+    as `duck_ramp_windows` always has - UNLESS its neighbour sits within
+    `2*ramp_s` (RV-Q3's own collision distance), in which case a short
+    CROSSFADE directly between the two segments' own gains, occupying
+    EXACTLY the gap between them (never wider - never reaching back into
+    either segment's own flat body, so it cannot overlap and multiply
+    with either one), replaces both that ramp-out and the neighbour's
+    ramp-in. Two independent ramps back toward 1.0 and away from it
+    again, occupying overlapping time, would both multiply AND produce
+    an audible blip toward full bed volume between two ducks that are
+    effectively touching - the crossfade removes both problems by
+    transitioning duck-depth-to-duck-depth directly. When the gap is
+    exactly zero (the common case: `combine_duck_windows`'s own sweep
+    always produces touching boundaries at a genuine overlap, e.g. a cue
+    mid-narration), the crossfade degenerates to nothing and the two
+    segments simply meet with a direct step in gain at one shared
+    instant - not a ramp collision, since neither segment's window
+    extends past that shared point. Only the junction is affected; each
+    segment's own flat body (`(start, end, gain)`) is always emitted
+    unchanged, so unlike a merge this cannot flatten unrelated content on
+    either side of a short nested window (see `combine_duck_windows`'s
+    own docstring for why that matters).
+
+    For the single-depth caller (`duck_ramp_windows`, which pre-merges
+    close intervals via `_merge_touching_intervals` before tagging them),
+    no two segments are ever within `2*ramp_s` of each other by the time
+    they reach this function, so the crossfade branch never fires there -
+    this is exactly `duck_ramp_windows`'s pre-A11 behaviour, unchanged.
+    """
+    if ramp_s <= 0 or steps < 1:
+        return list(segments)
+
+    ordered = [seg for seg in sorted(segments, key=lambda item: item[0]) if seg[1] > seg[0]]
+    n = len(ordered)
     windows: list[tuple[float, float, float]] = []
     dt = ramp_s / steps
-    for start, end in intervals:
-        if end <= start:
-            continue
-        for k in range(1, steps + 1):
-            t0 = start - ramp_s + (k - 1) * dt
-            t1 = start - ramp_s + k * dt
-            gain = 1.0 + (relative_duck - 1.0) * (k / steps)
-            if t1 <= 0 or t1 <= t0:
-                continue
-            windows.append((max(t0, 0.0), t1, gain))
-        windows.append((start, end, relative_duck))
-        for k in range(1, steps + 1):
-            t0 = end + (k - 1) * dt
-            t1 = end + k * dt
-            # k/steps of the way from full duck back toward bed (1.0).
-            gain = relative_duck + (1.0 - relative_duck) * (k / steps)
-            if t1 <= t0:
-                continue
-            # Last step lands at gain≈1.0 (noop multiply); skip it.
-            if abs(gain - 1.0) < 1e-12:
-                continue
-            windows.append((t0, t1, gain))
+
+    for i, (start, end, gain) in enumerate(ordered):
+        prev = ordered[i - 1] if i > 0 else None
+        gap_prev = (start - prev[1]) if prev is not None else None
+        junction_in = gap_prev is not None and gap_prev <= 2 * ramp_s
+        if not junction_in:
+            for k in range(1, steps + 1):
+                t0 = start - ramp_s + (k - 1) * dt
+                t1 = start - ramp_s + k * dt
+                g = 1.0 + (gain - 1.0) * (k / steps)
+                if t1 <= 0 or t1 <= t0:
+                    continue
+                windows.append((max(t0, 0.0), t1, g))
+        # else: this ramp-in was already emitted as the PREVIOUS
+        # segment's junction crossfade below - never emit both sides.
+
+        windows.append((start, end, gain))
+
+        nxt = ordered[i + 1] if i + 1 < n else None
+        gap_next = (nxt[0] - end) if nxt is not None else None
+        junction_out = gap_next is not None and gap_next <= 2 * ramp_s
+        if junction_out:
+            assert nxt is not None and gap_next is not None
+            gap = max(gap_next, 0.0)
+            step_w = gap / steps
+            for k in range(steps):
+                t0 = end + k * step_w
+                t1 = end + (k + 1) * step_w
+                frac = (k + 1) / steps
+                g = gain + (nxt[2] - gain) * frac
+                if t1 <= t0:
+                    continue
+                windows.append((t0, t1, g))
+        else:
+            for k in range(1, steps + 1):
+                t0 = end + (k - 1) * dt
+                t1 = end + k * dt
+                g = gain + (1.0 - gain) * (k / steps)
+                if t1 <= t0:
+                    continue
+                if abs(g - 1.0) < 1e-12:
+                    continue
+                windows.append((t0, t1, g))
+
     windows.sort(key=lambda item: (item[0], item[1]))
     return windows
 
@@ -476,39 +642,50 @@ async def compute_narration_intervals(
     return intervals
 
 
-def _volume_chain(
-    intervals: list[tuple[float, float]], *, bed_gain_db: float, duck_gain_db: float
-) -> str:
+def _volume_chain_segments(segments: list[tuple[float, float, float]], *, bed_gain_db: float) -> str:
     bed_linear = _db_to_linear(bed_gain_db)
-    duck_linear = _db_to_linear(duck_gain_db)
-    relative_duck = duck_linear / bed_linear
-
     filters = [f"volume={bed_linear:.6f}"]
-    for start, end, rel in duck_ramp_windows(intervals, relative_duck=relative_duck):
+    for start, end, rel in segments:
         # A single `between(t,a,b)` per filter - the escaped comma is
         # the only one, never nested inside a broader if()/expression.
         filters.append(f"volume={rel:.6f}:enable='between(t\\,{start:.3f}\\,{end:.3f})'")
     return ",".join(filters)
 
 
-async def build_ducked_bed(
+def _volume_chain(
+    intervals: list[tuple[float, float]], *, bed_gain_db: float, duck_gain_db: float
+) -> str:
+    bed_linear = _db_to_linear(bed_gain_db)
+    duck_linear = _db_to_linear(duck_gain_db)
+    relative_duck = duck_linear / bed_linear
+    # A11: same single-depth case of `_volume_chain_segments` that
+    # `duck_ramp_windows` is of `duck_ramp_windows_segments` - kept as
+    # its own function (rather than inlined at every call site) since
+    # `bed_gain_db`/`duck_gain_db` is still the common, single-depth call
+    # shape everywhere except the diegetic-duck path in `mux_music`.
+    return _volume_chain_segments(
+        duck_ramp_windows(intervals, relative_duck=relative_duck), bed_gain_db=bed_gain_db
+    )
+
+
+async def build_ducked_bed_segments(
     music_path: Path,
     video_duration: float,
-    intervals: list[tuple[float, float]],
+    segments: list[tuple[float, float, float]],
     output_path: Path,
     settings: RenderSettings,
     *,
     bed_gain_db: float,
-    duck_gain_db: float,
 ) -> Path:
-    """The music bed alone (looped/trimmed to `video_duration`, ducked
-    across `intervals`, faded in/out at the boundaries) - no video, no
-    narration, an audio-only file. Directly testable in isolation (see
-    tests/integration/test_render_music_mix.py) precisely because nothing
-    else is mixed into it yet."""
+    """Same as `build_ducked_bed`, but `segments` are already fully
+    resolved, ramped `(start, end, relative_gain)` triples (A11: the
+    narration-window depth and the diegetic-cue-window depth can differ,
+    so there is no single `duck_gain_db` left to pass here - see
+    `combine_duck_windows`/`duck_ramp_windows_segments`, which is what
+    `mux_music` calls before handing the result to this function)."""
     fade_seconds = min(_FADE_SECONDS, video_duration / 2)
     fade_out_start = max(video_duration - fade_seconds, 0.0)
-    chain = _volume_chain(intervals, bed_gain_db=bed_gain_db, duck_gain_db=duck_gain_db)
+    chain = _volume_chain_segments(segments, bed_gain_db=bed_gain_db)
 
     args = [
         settings.ffmpeg_binary,
@@ -539,6 +716,34 @@ async def build_ducked_bed(
     return output_path
 
 
+async def build_ducked_bed(
+    music_path: Path,
+    video_duration: float,
+    intervals: list[tuple[float, float]],
+    output_path: Path,
+    settings: RenderSettings,
+    *,
+    bed_gain_db: float,
+    duck_gain_db: float,
+) -> Path:
+    """The music bed alone (looped/trimmed to `video_duration`, ducked
+    across `intervals`, faded in/out at the boundaries) - no video, no
+    narration, an audio-only file. Directly testable in isolation (see
+    tests/integration/test_render_music_mix.py) precisely because nothing
+    else is mixed into it yet.
+
+    A11: the single-depth case of `build_ducked_bed_segments` (kept under
+    its original name/signature so every existing narration-only caller
+    and test is untouched byte-for-byte)."""
+    bed_linear = _db_to_linear(bed_gain_db)
+    duck_linear = _db_to_linear(duck_gain_db)
+    relative_duck = duck_linear / bed_linear
+    segments = duck_ramp_windows(intervals, relative_duck=relative_duck)
+    return await build_ducked_bed_segments(
+        music_path, video_duration, segments, output_path, settings, bed_gain_db=bed_gain_db
+    )
+
+
 async def mux_music(
     video_path: Path,
     music_path: Path,
@@ -550,6 +755,8 @@ async def mux_music(
     duck_gain_db: float,
     amix_normalize: int = 0,
     alignment_by_scene: Sequence[Mapping[str, Any] | None] | None = None,
+    effect_intervals: list[tuple[float, float]] | None = None,
+    effect_duck_gain_db: float | None = None,
 ) -> Path:
     """Mixes `music_path` (looped/trimmed to `video_path`'s real length,
     ducked under `narration_paths` if any) onto `video_path`, writing
@@ -569,6 +776,18 @@ async def mux_music(
     `alignment_by_scene` (OQ-1b): when provided, duck windows come from
     `speaking_intervals_from_alignment`; otherwise file-duration
     per-scene intervals (`compute_narration_intervals`).
+
+    `effect_intervals`/`effect_duck_gain_db` (A11, long_form_direction.md,
+    2026-09-01): diegetic-cue duck windows, computed by the caller from
+    the TIMELINE (shot start times + the cue clip's persisted duration),
+    never from the SFX audio itself - `render_video`'s own pipeline order
+    is narration -> music -> sfx, so the SFX files do not exist yet at
+    this point. When present, narration and cue windows are combined onto
+    one envelope via `combine_duck_windows` (deeper duck wins on overlap,
+    never both multiplied); when absent/empty (every project with no
+    `Shot.sfx_cue`, i.e. the overwhelming majority today), this function's
+    behaviour is completely unchanged from before this parameter existed
+    - `build_ducked_bed` is called exactly as it always was.
     """
     video_duration = await probe_duration_seconds(video_path, settings.ffprobe_binary)
     if alignment_by_scene is not None:
@@ -601,15 +820,47 @@ async def mux_music(
     )
 
     ducked_bed_path = output_path.parent / f"_ducked_bed_{output_path.stem}.m4a"
-    await build_ducked_bed(
-        music_path,
-        video_duration,
-        intervals,
-        ducked_bed_path,
-        settings,
-        bed_gain_db=bed_gain_db,
-        duck_gain_db=duck_gain_db,
-    )
+    if effect_intervals:
+        # A11: at least one diegetic cue - combine onto one envelope
+        # rather than calling `build_ducked_bed` (which only knows a
+        # single depth) at all.
+        resolved_effect_duck_gain_db = (
+            effect_duck_gain_db if effect_duck_gain_db is not None else duck_gain_db
+        )
+        combined = combine_duck_windows(
+            intervals,
+            duck_gain_db,
+            effect_intervals,
+            resolved_effect_duck_gain_db,
+            bed_gain_db=bed_gain_db,
+        )
+        segments = duck_ramp_windows_segments(combined)
+        logger.info(
+            "music.diegetic_duck_windows",
+            extra={
+                "effect_interval_count": len(effect_intervals),
+                "effect_duck_gain_db": resolved_effect_duck_gain_db,
+                "combined_segment_count": len(segments),
+            },
+        )
+        await build_ducked_bed_segments(
+            music_path,
+            video_duration,
+            segments,
+            ducked_bed_path,
+            settings,
+            bed_gain_db=bed_gain_db,
+        )
+    else:
+        await build_ducked_bed(
+            music_path,
+            video_duration,
+            intervals,
+            ducked_bed_path,
+            settings,
+            bed_gain_db=bed_gain_db,
+            duck_gain_db=duck_gain_db,
+        )
 
     args = [
         settings.ffmpeg_binary,

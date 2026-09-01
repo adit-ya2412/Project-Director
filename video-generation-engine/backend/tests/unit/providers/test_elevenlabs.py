@@ -12,10 +12,12 @@ import pytest
 
 from app.core.config import settings
 from app.core.errors import PermanentError, TransientError
-from app.providers.base import NarrationRequest
+from app.providers.base import NarrationRequest, SoundEffectRequest
 from app.providers.elevenlabs import (
     ElevenLabsNarrationProvider,
+    ElevenLabsSoundEffectProvider,
     compute_narration_content_hash,
+    compute_sfx_generation_hash,
     tts_request_character_limit,
 )
 
@@ -271,6 +273,143 @@ def test_content_hash_is_stable_and_sensitive_to_every_input():
     )
     assert base_hash != compute_narration_content_hash(
         text="hello", voice_id="v1", model="m1", output_format="o1", language_code="hi"
+    )
+
+
+# --- ElevenLabsSoundEffectProvider (long_form_direction.md A8) ----------
+
+_SFX_REQUEST = SoundEffectRequest(text="a Geiger counter clicking", duration_seconds=8.0)
+
+
+async def test_generate_sends_text_and_duration_and_returns_audio_bytes(monkeypatch):
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "fake-key")
+    seen_bodies = []
+    seen_urls = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_urls.append(str(request.url).split("?")[0])
+        assert request.headers["xi-api-key"] == "fake-key"
+        assert request.url.params["output_format"] == settings.elevenlabs_output_format
+        seen_bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200, content=b"real-sfx-bytes", headers={"content-type": "audio/mpeg"}
+        )
+
+    provider = ElevenLabsSoundEffectProvider(transport=httpx.MockTransport(handler))
+    result = await provider.generate(_SFX_REQUEST)
+
+    assert seen_urls == ["https://api.elevenlabs.io/v1/sound-generation"]
+    assert seen_bodies[0]["text"] == _SFX_REQUEST.text
+    assert seen_bodies[0]["duration_seconds"] == 8.0
+    assert result.content == b"real-sfx-bytes"
+
+
+async def test_generate_accepts_a_json_base64_response_too(monkeypatch):
+    """P-LF-A8-GEN-GATE's own probe recorded a JSON body carrying only
+    base64 audio for this endpoint - ambiguous enough against the
+    documented raw-audio-file response that the provider must handle
+    either shape without crashing."""
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "fake-key")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"audio_base64": base64.b64encode(b"json-wrapped-bytes").decode()}
+        )
+
+    provider = ElevenLabsSoundEffectProvider(transport=httpx.MockTransport(handler))
+    result = await provider.generate(_SFX_REQUEST)
+
+    assert result.content == b"json-wrapped-bytes"
+
+
+async def test_generate_clamps_duration_to_the_documented_0_1_to_30s_range(monkeypatch):
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "fake-key")
+    seen_bodies = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_bodies.append(json.loads(request.content))
+        return httpx.Response(200, content=b"x", headers={"content-type": "audio/mpeg"})
+
+    provider = ElevenLabsSoundEffectProvider(transport=httpx.MockTransport(handler))
+    await provider.generate(SoundEffectRequest(text="x", duration_seconds=45.0))
+    await provider.generate(SoundEffectRequest(text="x", duration_seconds=0.0))
+
+    assert seen_bodies[0]["duration_seconds"] == 30.0
+    assert seen_bodies[1]["duration_seconds"] == 0.1
+
+
+async def test_generate_without_api_key_raises_permanent_error(monkeypatch):
+    monkeypatch.setattr(settings, "elevenlabs_api_key", None)
+    provider = ElevenLabsSoundEffectProvider()
+    with pytest.raises(PermanentError, match="ELEVENLABS_API_KEY"):
+        await provider.generate(_SFX_REQUEST)
+
+
+async def test_generate_maps_401_to_permanent_error(monkeypatch):
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "bad-key")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, text="unauthorized")
+
+    provider = ElevenLabsSoundEffectProvider(transport=httpx.MockTransport(handler))
+    with pytest.raises(PermanentError, match="rejected the API key"):
+        await provider.generate(_SFX_REQUEST)
+
+
+async def test_generate_maps_402_to_permanent_error(monkeypatch):
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "fake-key")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(402, text="payment required")
+
+    provider = ElevenLabsSoundEffectProvider(transport=httpx.MockTransport(handler))
+    with pytest.raises(PermanentError, match="402"):
+        await provider.generate(_SFX_REQUEST)
+
+
+async def test_generate_maps_429_to_transient_error(monkeypatch):
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "fake-key")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text="rate limited")
+
+    provider = ElevenLabsSoundEffectProvider(transport=httpx.MockTransport(handler))
+    with pytest.raises(TransientError):
+        await provider.generate(_SFX_REQUEST)
+
+
+async def test_generate_maps_5xx_to_transient_error(monkeypatch):
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "fake-key")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="server error")
+
+    provider = ElevenLabsSoundEffectProvider(transport=httpx.MockTransport(handler))
+    with pytest.raises(TransientError):
+        await provider.generate(_SFX_REQUEST)
+
+
+def test_sfx_generation_hash_is_stable_and_sensitive_to_every_input():
+    base_hash = compute_sfx_generation_hash(
+        text="a Geiger counter clicking", model="eleven_text_to_sound_v2", duration_seconds=8.0
+    )
+    assert base_hash == compute_sfx_generation_hash(
+        text="a Geiger counter clicking", model="eleven_text_to_sound_v2", duration_seconds=8.0
+    )
+    assert base_hash != compute_sfx_generation_hash(
+        text="a church bell tolling", model="eleven_text_to_sound_v2", duration_seconds=8.0
+    )
+    assert base_hash != compute_sfx_generation_hash(
+        text="a Geiger counter clicking", model="other_model", duration_seconds=8.0
+    )
+    assert base_hash != compute_sfx_generation_hash(
+        text="a Geiger counter clicking", model="eleven_text_to_sound_v2", duration_seconds=5.0
+    )
+    # Float repr noise must not fork the cache key for the same request.
+    assert base_hash == compute_sfx_generation_hash(
+        text="a Geiger counter clicking",
+        model="eleven_text_to_sound_v2",
+        duration_seconds=8.0000001,
     )
 
 

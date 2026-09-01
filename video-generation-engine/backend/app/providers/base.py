@@ -484,3 +484,35 @@ class MusicProvider(Protocol):
 
     async def search(self, query: MusicSearchQuery) -> list[TrackCandidate]: ...
     async def fetch(self, candidate: TrackCandidate) -> AudioBytes: ...
+
+
+@dataclass(frozen=True)
+class SoundEffectRequest:
+    """One text-to-sound generation request (long_form_direction.md A8,
+    2026-09-01) - the generation-ladder equivalent of `ImageRequest`.
+    Deliberately no `seed` field: ElevenLabs' `/v1/sound-generation`
+    documents none (P-LF-A8-GEN-GATE), so I5 comes entirely from the
+    mandatory prompt-hash cache (`providers/elevenlabs.py::
+    compute_sfx_generation_hash`), never from a generation input."""
+
+    text: str
+    duration_seconds: float
+
+
+@dataclass(frozen=True)
+class SoundEffectResult:
+    """Bytes are what get persisted (I2), exactly like `ImageResult`."""
+
+    content: bytes
+    content_type: str = "audio/mpeg"
+
+
+class SoundEffectProvider(Protocol):
+    """Text-to-sound generation (long_form_direction.md A8) - one call,
+    no polling (unlike `VideoProvider`'s submit/poll shape): ElevenLabs'
+    sound-generation endpoint is synchronous, same request/response shape
+    as `ImageProvider.generate`."""
+
+    name: str
+
+    async def generate(self, request: SoundEffectRequest) -> SoundEffectResult: ...

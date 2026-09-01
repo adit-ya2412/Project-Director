@@ -59,6 +59,13 @@ class ShotPlanOutput(BaseModel):
     # never omitted) - which shots carry one is a per-style creative
     # decision, driven by style fragments like archival_montage.md.
     text_card: str
+    # long_form_direction.md A8 (2026-09-01): a phrase naming a sound the
+    # STORY wants at this shot's start ("faint Geiger counter clicking,
+    # sparse and distant"), or the empty string (OpenAI strict mode:
+    # required, never omitted) for the vast majority of shots -
+    # `app/planners/shot/planner.py::_to_domain_shot` empty-string-to-None
+    # normalises it, same convention as `text_card` above.
+    sfx_cue: str
 
 
 class ShotPlannerOutput(BaseModel):

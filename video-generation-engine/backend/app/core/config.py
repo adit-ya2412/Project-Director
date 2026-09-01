@@ -270,6 +270,90 @@ class Settings(BaseSettings):
     sfx_transition_gain_db: float | None = None
     sfx_max_clip_s: float = 1.5
 
+    # --- Diegetic SFX (long_form_direction.md A8, 2026-09-01) ---
+    # Unmeasured starting point, awaiting a human listening pass (§3 A8's
+    # build item 3): a diegetic clip plays UNDER narration as an ambience
+    # bed, not as a punctuation transient like WHOOSH/STINGER, so -6dB on
+    # top of the same `sfx_normalize_target_db` peak target (-20 dBFS)
+    # aims it noticeably quieter than a structural stinger by default.
+    # Follows the existing `None`-means-use-the-flat-setting pattern the
+    # three kinds above already use.
+    sfx_diegetic_gain_db: float | None = -6.0
+    # Diegetic's OWN duration ceiling - deliberately NOT `sfx_max_clip_s`
+    # (1.5s is right for a punctuation transient and would truncate any
+    # requested ambience into a click). Used at both points a generated
+    # diegetic clip's length matters: it caps the `duration_seconds`
+    # requested from ElevenLabs (so nothing is generated - and billed -
+    # longer than will ever be played) and, mirroring `sfx_max_clip_s`'s
+    # role in `mux_sfx`, is the per-overlay `atrim` ceiling applied at mux
+    # time (`SfxOverlay.max_clip_s`). `sfx_ranking.py`'s ≤`sfx_max_clip_s`
+    # candidate preference does not apply here at all - diegetic clips are
+    # generated to spec, never ranked from a candidate pool. 8.0s anchors
+    # on `max_shot_duration_s` (the per-shot ceiling everywhere else in
+    # this codebase) as a starting point, not a measured constant.
+    sfx_diegetic_max_clip_s: float = 8.0
+    # A fixed generation duration is requested for every cue (not a
+    # per-shot-varying one) so the mandatory prompt-hash cache
+    # (`compute_sfx_generation_hash`) maximises reuse: two shots writing
+    # the identical cue text always land on the same cache key regardless
+    # of their own `duration_s`, rather than fragmenting the cache by
+    # shot length.
+    sfx_diegetic_model: str = "eleven_text_to_sound_v2"
+    # Cost estimate in cents, folded into `check_budget` the same way
+    # `fal_image_cost_cents_estimate` is (§3 A8 build item 7). Documented
+    # ElevenLabs rate is 40 credits/second when `duration_seconds` is
+    # specified (P-LF-A8-GEN-GATE); this account's own $/credit could not
+    # be read (the API key lacks `user_read`), so this uses the most
+    # conservative (Starter-tier, $0.0002/credit) published rate against
+    # `sfx_diegetic_max_clip_s` seconds: 40 * 8 * 0.0002 = $0.064 ≈ 6
+    # cents. A bounded estimate, not a measured account debit - see
+    # P-LF-A8-GEN-GATE's own cost section.
+    sfx_diegetic_cost_cents_estimate: int = 6
+
+    # --- Diegetic SFX loudness + ducking (long_form_direction.md A11,
+    # 2026-09-01) ---
+    # A8's `sfx_diegetic_gain_db` peak-normalises like the three
+    # structural kinds, which is wrong for a diegetic cue: a Geiger
+    # counter / church bell measured 25-27dB of crest (peak minus mean),
+    # so matching the loudest instant onto `sfx_normalize_target_db`
+    # left the audible BODY of the sound 40-50dB under a -14dBFS music
+    # bed (measured: at a -18dB offset, peak/mean landed -38.0/-64.9 and
+    # -38.0/-63.3 dBFS respectively). Integrated LOUDNESS answers "how
+    # much sound overall" instead, so one target lands a click-heavy cue
+    # and a continuous one (wind, machinery hum) at a comparable
+    # PERCEIVED level - see `app/assets/sfx_levels.py::
+    # diegetic_effective_gain_db`. -23.0 is not ear-signed; it is the one
+    # real number already measured in this codebase for what a diegetic
+    # cue plays under (`sfx_normalize_target_db`'s own comment above cites
+    # a real render's narration: "mean -22.3 dB"), so this starts from
+    # that same anchor rather than an invented one. `sfx_diegetic_gain_db`
+    # above still rides on top UNCHANGED - A11 explicitly forbids
+    # re-tuning it before this normalisation basis was fixed (tuning
+    # before normalisation just means re-tuning after).
+    sfx_diegetic_normalize_target_lufs: float = -23.0
+    # Below this, a clip reads as punctuation (a single tap, a doorbell)
+    # rather than ambience, and ITU BS.1770 integrated loudness needs
+    # several 400ms gating blocks to mean anything - a sub-floor
+    # measurement is noisy enough that loudness-matching it against a
+    # long clip can send the gain the wrong way. Falls back to the exact
+    # peak-based path the structural kinds use rather than trusting an
+    # unreliable measurement. 1.5s mirrors `sfx_max_clip_s` - the
+    # existing "this is a transient, not a bed" threshold - deliberately,
+    # not coincidentally.
+    sfx_diegetic_loudness_min_duration_s: float = 1.5
+    # `mux_music` used to duck the bed against narration only. A
+    # significant diegetic effect should push the bed back too - not as
+    # far, since it is a MOMENT, not a floor the whole video sits under.
+    # Narration's own duck DEPTH (bed_gain_db - duck_gain_db) is 6dB on
+    # every style shipped so far (documentary_archival -14/-20, stillness
+    # -22/-28) - expressed as a depth (not an absolute level) so it
+    # tracks whichever bed level is actually in effect (style + the
+    # human's upload gain-offset slider, `offset_bed_and_duck_gain_db`).
+    # 3dB, half of narration's depth, is the starting point for "less
+    # than narration, not equal to it" - unmeasured, awaiting the same
+    # listening pass as `sfx_diegetic_gain_db` itself.
+    sfx_diegetic_duck_depth_db: float = 3.0
+
     # --- Rendering ---
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"

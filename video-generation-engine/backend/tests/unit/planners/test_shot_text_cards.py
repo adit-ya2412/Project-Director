@@ -53,6 +53,7 @@ def _shot_output(text_card: str) -> ShotPlanOutput:
         prompt="archival photograph",
         secondary_prompt="",
         text_card=text_card,
+        sfx_cue="",
     )
 
 

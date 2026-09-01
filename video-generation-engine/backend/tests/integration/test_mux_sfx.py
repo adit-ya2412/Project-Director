@@ -45,6 +45,57 @@ async def test_mux_sfx_keeps_video_duration_and_adds_audio_overlay(tmp_path: Pat
     assert _stream_duration(out, "audio") > 0
 
 
+async def test_mux_sfx_overlay_own_ceiling_overrides_the_call_level_default(tmp_path, monkeypatch):
+    """long_form_direction.md A8: a DIEGETIC overlay carries its own,
+    longer `max_clip_s` so a single `mux_sfx` call can mix a 1.5s
+    structural stinger and an 8s diegetic ambience bed without either
+    ceiling leaking onto the other. Asserted directly against the
+    generated filter string (captured via a `run_ffmpeg` monkeypatch,
+    same technique other renderer unit tests use to check filter
+    construction without a real encode) rather than inferred from
+    output duration, which `amix duration=first` would make identical
+    either way."""
+    import app.renderer.sfx as sfx_module
+
+    captured_args: list[list[str]] = []
+
+    async def _fake_run_ffmpeg(args: list[str]) -> None:
+        captured_args.append(args)
+
+    monkeypatch.setattr(sfx_module, "run_ffmpeg", _fake_run_ffmpeg)
+
+    async def _fake_has_audio_stream(path, ffprobe_binary) -> bool:
+        return True
+
+    monkeypatch.setattr(sfx_module, "_has_audio_stream", _fake_has_audio_stream)
+
+    video = tmp_path / "narrated.mp4"
+    video.write_bytes(b"not-really-a-video")  # never read - both probes above are faked
+    stinger = tmp_path / "stinger.mp3"
+    stinger.write_bytes(b"not-really-audio")
+    ambience = tmp_path / "ambience.mp3"
+    ambience.write_bytes(b"not-really-audio")
+
+    out = tmp_path / "with_sfx.mp4"
+    await mux_sfx(
+        video,
+        [
+            SfxOverlay(path=stinger, offset_s=0.0, volume_factor=1.0),  # default ceiling (1.5s)
+            SfxOverlay(
+                path=ambience, offset_s=0.0, volume_factor=1.0, max_clip_s=8.0
+            ),  # own, longer ceiling
+        ],
+        out,
+        _RENDER_SETTINGS,
+        max_clip_s=1.5,
+    )
+
+    assert len(captured_args) == 1
+    filter_complex = captured_args[0][captured_args[0].index("-filter_complex") + 1]
+    assert "atrim=0:1.500" in filter_complex
+    assert "atrim=0:8.000" in filter_complex
+
+
 async def test_mux_sfx_on_a_silent_video_becomes_the_audio(tmp_path: Path):
     """R13: no [0:a] on a silent mp4 must not crash."""
     video = tmp_path / "silent.mp4"

@@ -76,6 +76,11 @@ def test_default_pipeline_runs_narration_before_approval_and_generation_after():
         "narration",
         "await_approval",
         "resolve_assets_generate",
+        # long_form_direction.md A8 (2026-09-01): diegetic SFX generation
+        # is paid, so it runs here - post-approval, immediately following
+        # the generation half of the asset ladder - never beside
+        # `select_sfx` above (free search, pre-approval).
+        "generate_diegetic_sfx",
         # M6.5, A15/A26/A28: the review gate sits between the generation
         # pass and the renderer - a shot that ended `failed` must never
         # reach `RenderStep`, not even as a placeholder. Under the

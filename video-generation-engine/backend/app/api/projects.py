@@ -2164,7 +2164,11 @@ async def override_sfx_kind(
     """C3f (analysis.md, decision 4): human control over ONE SFX kind -
     replace its clip with an uploaded file, or disable the kind outright.
     No clip-picker UI (decision 4); `kind` is validated by FastAPI against
-    the `SfxKind` enum (whoosh / stinger / transition).
+    the `SfxKind` enum, then narrowed to the three STRUCTURAL kinds
+    (whoosh / stinger / transition) below - `diegetic` (A8,
+    long_form_direction.md) is per-shot, not one clip for the whole video,
+    and is rejected with a 400 rather than silently mishandled by this
+    endpoint's one-clip-per-kind model.
 
     Exactly one of two operations per call:
 
@@ -2195,6 +2199,24 @@ async def override_sfx_kind(
         raise HTTPException(status_code=400, detail="no timeline to override sfx on yet")
     if active.sfx_plan is None:
         raise HTTPException(status_code=400, detail="this timeline has no sfx_plan")
+    if kind == SfxKind.DIEGETIC:
+        # long_form_direction.md A8: DIEGETIC is per-SHOT (one clip per
+        # distinct cue, keyed by `SfxClipSelection.shot_id`), not one
+        # shared clip for the whole video like WHOOSH/STINGER/TRANSITION.
+        # `apply_sfx_clip_override` below removes every clip of a kind
+        # and replaces it with (at most) one - correct for the three
+        # structural kinds, but applied to DIEGETIC it would silently
+        # wipe every shot's cue and replace them all with a single
+        # ungrounded (no `shot_id`) clip that no event could ever match.
+        # No per-shot override endpoint exists yet; reject loudly rather
+        # than accept a request this endpoint cannot honour correctly.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "diegetic sfx is per-shot, not a single video-wide clip - this "
+                "endpoint's one-clip-per-kind override does not apply to it"
+            ),
+        )
 
     if file is None and enabled:
         raise HTTPException(
@@ -2289,7 +2311,17 @@ async def retry_sfx_selection(
     shared tail - resuming re-runs `SelectSfxStep` for real against the
     local library. Previously uploaded override FILES remain on disk
     under their content hashes but become unreferenced (hash dedup means
-    a future re-upload of the same bytes writes nothing new)."""
+    a future re-upload of the same bytes writes nothing new).
+
+    Also clears `diegetic_failed_shot_ids` (A8, long_form_direction.md):
+    wiping `clips` alone would leave a previously-failed cue-bearing shot
+    permanently skipped (`GenerateDiegeticSfxStep.is_satisfied` treats a
+    shot id in that list as terminal, the same way a `failed` ShotBinding
+    is). This is the only retry surface diegetic generation has today -
+    resuming re-attempts every cue-bearing shot, and a cue that already
+    generated successfully hits the mandatory prompt-hash cache (no
+    re-spend), so this is cheap even though it looks like a full
+    re-selection."""
     await _get_project_or_404(project_id, repo)
     active = await timeline_service.get_active(project_id)
     if active is None:
@@ -2301,6 +2333,7 @@ async def retry_sfx_selection(
         assert base.sfx_plan is not None
         base.sfx_plan.clips = []
         base.sfx_plan.selection_attempted = False
+        base.sfx_plan.diegetic_failed_shot_ids = []
         return base
 
     return await _resume_after_human_correction(

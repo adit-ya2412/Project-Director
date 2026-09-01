@@ -194,6 +194,22 @@ def test_missing_sfx_plan_is_400(make_client):
     assert "no sfx_plan" in res.json()["detail"]
 
 
+def test_diegetic_kind_is_rejected(make_client):
+    """long_form_direction.md A8: DIEGETIC is a valid `SfxKind` enum
+    member (so FastAPI's own path-param validation accepts it, unlike
+    `test_unknown_kind_is_422` above), but this endpoint's one-clip-
+    per-kind override model does not apply to it - it must be rejected
+    with a 400, not silently wipe every shot's cue behind a single
+    ungrounded clip."""
+    client, service, started = make_client()
+    res = client.post(
+        f"/projects/{_PROJECT}/sfx/diegetic/override", data={"enabled": "false"}
+    )
+    assert res.status_code == 400
+    assert "per-shot" in res.json()["detail"]
+    assert service.append_calls == [] and started == []
+
+
 @pytest.mark.skipif(_FFMPEG is None, reason="ffmpeg not installed")
 def test_garbage_upload_is_400_at_the_endpoint(make_client):
     client, service, _ = make_client()
@@ -263,11 +279,16 @@ def test_disable_removes_only_that_kinds_clips_and_resumes(make_client):
 def test_sfx_retry_resets_clips_and_attempt_flag(make_client):
     client, service, started = make_client()
     service._timeline.sfx_plan.selection_attempted = True
+    # long_form_direction.md A8: a shot previously marked permanently
+    # failed for diegetic generation must also become retriable again -
+    # otherwise wiping `clips` alone leaves it stuck forever.
+    service._timeline.sfx_plan.diegetic_failed_shot_ids = ["sh_01"]
 
     res = client.post(f"/projects/{_PROJECT}/sfx/retry")
     assert res.status_code == 202
     assert service._timeline.sfx_plan.clips == []
     assert service._timeline.sfx_plan.selection_attempted is False
+    assert service._timeline.sfx_plan.diegetic_failed_shot_ids == []
     assert service.append_calls[-1]["produced_by"] == ProducedBy.HUMAN
     assert service.append_calls[-1]["owns"] == frozenset({"sfx_plan"})
     assert started == [_PROJECT]

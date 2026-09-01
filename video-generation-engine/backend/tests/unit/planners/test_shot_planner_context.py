@@ -331,6 +331,7 @@ def _shot_output(shot_id: str, order: int, fragment_start: int, fragment_end: in
         prompt="archival photograph",
         secondary_prompt="",
         text_card="",
+        sfx_cue="",
     )
 
 

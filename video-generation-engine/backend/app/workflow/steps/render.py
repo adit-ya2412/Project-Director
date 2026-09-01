@@ -62,7 +62,7 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.assets.focal import format_focal_fingerprint, resolve_shot_focals
-from app.assets.sfx_levels import effective_gain_db, end_aligned_trim_start
+from app.assets.sfx_levels import diegetic_effective_gain_db, effective_gain_db, end_aligned_trim_start
 from app.core.config import settings
 from app.core.errors import EngineError, PermanentError, TransientError
 from app.models.asset import AssetModel
@@ -111,7 +111,7 @@ from app.repositories.narration_repository import NarrationRepository
 from app.repositories.render_repository import RenderRepository
 from app.repositories.shot_binding_repository import ShotBindingRepository
 from app.schemas.project import ProjectStatus
-from app.schemas.timeline import ProducedBy, SfxKind, Timeline
+from app.schemas.timeline import SfxKind, Timeline
 from app.script.styles import (
     resolve_music_gains,
     resolve_narration_speed,
@@ -386,6 +386,7 @@ async def render_video(
         sfx_content_hashes=_sfx_content_hashes(timeline),
         sfx_gain_db=settings.sfx_gain_db,
         sfx_max_clip_s=settings.sfx_max_clip_s,
+        sfx_diegetic_max_clip_s=settings.sfx_diegetic_max_clip_s,
         sfx_whoosh_enabled=sfx_whoosh_enabled,
         # C3c (analysis.md, decision 5b): normalization target + per-kind
         # offsets are real mix inputs - changing either changes output
@@ -397,7 +398,17 @@ async def render_video(
             "whoosh": settings.sfx_whoosh_gain_db,
             "stinger": settings.sfx_stinger_gain_db,
             "transition": settings.sfx_transition_gain_db,
+            "diegetic": settings.sfx_diegetic_gain_db,
         },
+        # A11 (long_form_direction.md, 2026-09-01): DIEGETIC's loudness
+        # normalisation target/floor and the diegetic-cue duck depth are
+        # config-time values with nowhere else to live - same R2 shape as
+        # `sfx_normalize_target_db` above. `clip.loudness_lufs` itself
+        # rides in via the timeline document dump (SfxClipSelection), not
+        # here - same pattern as `peak_dbfs`/`duration_s` already follow.
+        sfx_diegetic_normalize_target_lufs=settings.sfx_diegetic_normalize_target_lufs,
+        sfx_diegetic_loudness_min_duration_s=settings.sfx_diegetic_loudness_min_duration_s,
+        sfx_diegetic_duck_depth_db=settings.sfx_diegetic_duck_depth_db,
         ffmpeg_version=ffmpeg_version,
         shot_focal=shot_focal_fingerprints,
     )
@@ -553,6 +564,14 @@ async def render_video(
             fps=render_settings.fps,
             whoosh_enabled=sfx_whoosh_enabled,
         )
+        # A11 (long_form_direction.md, 2026-09-01): computed from the
+        # TIMELINE (never the SFX audio - it does not exist at this point
+        # in the pipeline, narration -> music -> sfx), so this is safe to
+        # resolve before `mux_music` runs even though `mux_sfx` itself is
+        # still several lines below.
+        diegetic_duck_windows = _diegetic_duck_windows(
+            timeline, fps=render_settings.fps, whoosh_enabled=sfx_whoosh_enabled
+        )
         # When loudness runs, music/SFX land in work_dir so a failed
         # loudnorm never leaves a half-normalized file in renders/.
         if sfx_overlays and loudness_normalize:
@@ -581,6 +600,11 @@ async def render_video(
             offset_bed_gain_db, offset_duck_gain_db = offset_bed_and_duck_gain_db(
                 music_gains.bed_gain_db, music_gains.duck_gain_db, music_gain_offset_db
             )
+            # A11: the effect duck target is a DEPTH off the same
+            # offset-adjusted bed level narration ducks from, so the
+            # human's upload gain-offset slider shifts both consistently
+            # (RV6's own reasoning, extended to the second duck depth).
+            effect_duck_gain_db = offset_bed_gain_db - settings.sfx_diegetic_duck_depth_db
             await mux_music(
                 narrated_path,
                 music_path,
@@ -602,6 +626,11 @@ async def render_video(
                 amix_normalize=music_amix_normalize,
                 # OQ-1b (RV2): same alignment list fingerprinted above.
                 alignment_by_scene=alignment_by_scene,
+                # A11: empty on every project with no diegetic cues -
+                # `mux_music` takes the exact pre-A11 code path in that
+                # case (see its own docstring).
+                effect_intervals=diegetic_duck_windows,
+                effect_duck_gain_db=effect_duck_gain_db,
             )
         if sfx_overlays:
             await mux_sfx(
@@ -679,14 +708,35 @@ async def _resolve_narration_rows(
       gracefully, it would crash the render with an ffmpeg decode error.
       DRY_RUN's whole contract is "zero spend, always produces something
       runnable"; a silent .mp4 satisfies that, a crash does not.
-    - `timeline.produced_by != NARRATION`: covers both an older project
-      whose active version predates this step's existence and any
-      pipeline that runs `RenderStep` with `NarrationStep` excluded (see
-      `tests/integration/test_narration_pipeline_ordering.py`). In
+    - `not timeline.metadata.narration_locked`: covers both an older
+      project whose active version predates this step's existence and
+      any pipeline that runs `RenderStep` with `NarrationStep` excluded
+      (see `tests/integration/test_narration_pipeline_ordering.py`). In
       neither case has anything reconciled this timeline's shot
       durations against real spoken timings, so there is no audio whose
       timing is actually known to agree with the picture - silence is
       the honest output here, not a best-effort guess.
+
+    long_form_direction.md A8 (2026-09-01) fix: this used to check
+    `timeline.produced_by != ProducedBy.NARRATION` directly - correct only
+    as long as NOTHING ever appends a further version after narration,
+    which stopped being true the moment the one-gate model let a human
+    correct a shot/track/sfx choice post-approval (`produced_by=HUMAN`/
+    `MUSIC_SELECTION`/`SFX_SELECTION`) and, now, the moment
+    `GenerateDiegeticSfxStep` runs post-approval too. `produced_by`
+    describes only the version that JUST landed, so any later version -
+    for any reason - fell straight back out of this check and silenced
+    every subsequent render, even though nothing about the actual
+    reconciled durations or narration rows had changed. `Timeline.
+    metadata.narration_locked` is the field the SAME 2026-08-16 hardening
+    ("A26 is a deadlock in practice") already introduced to solve this
+    exact "produced_by doesn't survive later versions" problem for
+    `validate_constraints` - `NarrationStep` sets `narration_locked=True`
+    in the identical version it stamps `produced_by=NARRATION` (see
+    `narration.py::_apply_durations`), so every timeline this check used
+    to accept is still accepted, and every later, unrelated correction
+    that used to wrongly silence the render is now correctly still
+    narrated.
 
     Past both of those checks, this project's narration IS supposed to
     exist (this exact scene's row is what its shots' `duration_s` were
@@ -694,12 +744,12 @@ async def _resolve_narration_rows(
     is a genuine data-integrity failure, not a case to quietly degrade
     for, so it raises `PermanentError` rather than silently falling back
     to a silent render that would contradict the timeline's own
-    `produced_by` field (same refuse-to-guess philosophy as
+    `narration_locked` flag (same refuse-to-guess philosophy as
     `app/timeline/narration_fit.py`).
     """
     if settings.dry_run:
         return None
-    if timeline.produced_by != ProducedBy.NARRATION:
+    if not timeline.metadata.narration_locked:
         return None
 
     # Mirrors NarrationStep's own voice AND language_code resolution
@@ -804,6 +854,48 @@ def _sfx_content_hashes(timeline: Timeline) -> list[str]:
     return [clip.content_hash for clip in timeline.sfx_plan.clips]
 
 
+def _diegetic_duck_windows(
+    timeline: Timeline, *, fps: int, whoosh_enabled: bool
+) -> list[tuple[float, float]]:
+    """A11 (long_form_direction.md, 2026-09-01): a duck window per
+    DIEGETIC cue, computed from the TIMELINE alone (shot start times via
+    `derive_sfx_events`, plus the clip's own persisted `duration_s`/the
+    `sfx_diegetic_max_clip_s` ceiling) - never from the SFX audio file.
+    `render_video`'s own pipeline order is narration -> music -> sfx, so
+    at the point `mux_music` runs, no SFX audio has been mixed (or even
+    necessarily downloaded/copied into this project's `sfx/` dir) yet;
+    `_sfx_overlays` (the function that DOES read those files) only runs
+    afterward. The window length mirrors `_sfx_overlays`' own ceiling
+    math exactly (`min(clip.duration_s, sfx_diegetic_max_clip_s)`,
+    `sfx_diegetic_max_clip_s` when duration is unmeasured) so the duck
+    window and the audible clip agree on how long the cue actually plays.
+    Every input here already rides inside the hashed timeline document or
+    an already-fingerprinted config value (R2) - no new fingerprint entry
+    is needed for the windows themselves."""
+    if timeline.sfx_plan is None or not timeline.sfx_plan.clips:
+        return []
+    diegetic_by_shot = {
+        clip.shot_id: clip
+        for clip in timeline.sfx_plan.clips
+        if clip.kind == SfxKind.DIEGETIC and clip.shot_id
+    }
+    if not diegetic_by_shot:
+        return []
+    windows: list[tuple[float, float]] = []
+    for event in derive_sfx_events(timeline, fps=fps, whoosh_enabled=whoosh_enabled):
+        if event.kind != SfxKind.DIEGETIC:
+            continue
+        clip = diegetic_by_shot.get(event.shot_id)
+        if clip is None:
+            continue
+        ceiling = settings.sfx_diegetic_max_clip_s
+        played_s = min(clip.duration_s, ceiling) if clip.duration_s is not None else ceiling
+        if played_s <= 0:
+            continue
+        windows.append((event.offset_s, event.offset_s + played_s))
+    return windows
+
+
 def _sfx_overlays(
     timeline: Timeline, project_id: str, *, fps: int, whoosh_enabled: bool
 ) -> list[SfxOverlay]:
@@ -812,22 +904,43 @@ def _sfx_overlays(
     `sfx_gain_db` fallback when unmeasured - is turned into a volume
     factor through `sfx_normalize_target_db` and the optional per-kind
     offset. Per clip (C3d): its stored duration becomes an end-aligned
-    trim start when it exceeds `sfx_max_clip_s`. Both values live on the
+    trim start when it exceeds its own ceiling. Both values live on the
     clip inside the hashed timeline document, so this whole assembly is
-    deterministic (I5)."""
+    deterministic (I5).
+
+    long_form_direction.md A8: the three structural kinds still resolve
+    through `by_kind` - one shared clip per kind, unchanged. DIEGETIC is
+    looked up through `diegetic_by_shot` instead, since `SfxPlan.clips`
+    can hold several different DIEGETIC clips (one per distinct cue) and
+    `SfxEvent.shot_id` says which one this event answers. Its own,
+    longer ceiling (`sfx_diegetic_max_clip_s`) rides on the overlay
+    itself (`SfxOverlay.max_clip_s`), never on the shared `mux_sfx`
+    call-level ceiling - see that field's own docstring."""
     if settings.dry_run:
         return []
     if timeline.sfx_plan is None or not timeline.sfx_plan.clips:
         return []
-    by_kind = {clip.kind: clip for clip in timeline.sfx_plan.clips}
+    by_kind = {
+        clip.kind: clip for clip in timeline.sfx_plan.clips if clip.kind != SfxKind.DIEGETIC
+    }
+    diegetic_by_shot = {
+        clip.shot_id: clip
+        for clip in timeline.sfx_plan.clips
+        if clip.kind == SfxKind.DIEGETIC and clip.shot_id
+    }
     kind_offsets = {
         SfxKind.WHOOSH: settings.sfx_whoosh_gain_db,
         SfxKind.STINGER: settings.sfx_stinger_gain_db,
         SfxKind.TRANSITION: settings.sfx_transition_gain_db,
+        SfxKind.DIEGETIC: settings.sfx_diegetic_gain_db,
     }
     overlays: list[SfxOverlay] = []
     for event in derive_sfx_events(timeline, fps=fps, whoosh_enabled=whoosh_enabled):
-        clip = by_kind.get(event.kind)
+        clip = (
+            diegetic_by_shot.get(event.shot_id)
+            if event.kind == SfxKind.DIEGETIC
+            else by_kind.get(event.kind)
+        )
         if clip is None:
             continue
         # Same glob fix as `_music_file` (C1a #1): override uploads store
@@ -838,18 +951,42 @@ def _sfx_overlays(
         )
         if path is None:
             continue
-        gain_db = effective_gain_db(
-            clip.peak_dbfs,
-            target_db=settings.sfx_normalize_target_db,
-            fallback_db=settings.sfx_gain_db,
-            kind_offset_db=kind_offsets.get(event.kind),
+        # A11 (long_form_direction.md, 2026-09-01): DIEGETIC alone takes
+        # the loudness-based path (`diegetic_effective_gain_db`) - peak
+        # normalisation is wrong for a high-crest ambience/impact clip
+        # (see that function's own docstring). The three structural
+        # kinds call `effective_gain_db` exactly as before this slice -
+        # byte-identical, asserted directly by
+        # `test_structural_kinds_gain_is_unchanged_by_a11`.
+        if event.kind == SfxKind.DIEGETIC:
+            gain_db = diegetic_effective_gain_db(
+                clip.loudness_lufs,
+                clip.peak_dbfs,
+                clip.duration_s,
+                loudness_target_lufs=settings.sfx_diegetic_normalize_target_lufs,
+                peak_target_db=settings.sfx_normalize_target_db,
+                fallback_db=settings.sfx_gain_db,
+                min_loudness_duration_s=settings.sfx_diegetic_loudness_min_duration_s,
+                kind_offset_db=kind_offsets.get(event.kind),
+            )
+        else:
+            gain_db = effective_gain_db(
+                clip.peak_dbfs,
+                target_db=settings.sfx_normalize_target_db,
+                fallback_db=settings.sfx_gain_db,
+                kind_offset_db=kind_offsets.get(event.kind),
+            )
+        max_clip_s = (
+            settings.sfx_diegetic_max_clip_s if event.kind == SfxKind.DIEGETIC else None
         )
+        ceiling = max_clip_s if max_clip_s is not None else settings.sfx_max_clip_s
         overlays.append(
             SfxOverlay(
                 path=path,
                 offset_s=event.offset_s,
                 volume_factor=10 ** (gain_db / 20),
-                trim_start_s=end_aligned_trim_start(clip.duration_s, settings.sfx_max_clip_s),
+                trim_start_s=end_aligned_trim_start(clip.duration_s, ceiling),
+                max_clip_s=max_clip_s,
             )
         )
     return overlays

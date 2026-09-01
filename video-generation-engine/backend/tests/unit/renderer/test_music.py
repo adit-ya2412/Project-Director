@@ -31,8 +31,10 @@ from app.renderer.music import (
     _db_to_linear,
     _merge_touching_intervals,
     _volume_chain,
+    combine_duck_windows,
     duck_envelope_content_hash,
     duck_ramp_windows,
+    duck_ramp_windows_segments,
     offset_bed_and_duck_gain_db,
     speaking_intervals_from_alignment,
 )
@@ -313,6 +315,118 @@ def test_touching_runs_across_scenes_merge():
         "character_end_times_seconds": [1.0],
     }
     assert speaking_intervals_from_alignment([a, b]) == [(0.0, 2.0)]
+
+
+# -- A11 (long_form_direction.md, 2026-09-01): diegetic-cue duck windows ----
+
+_BED = -14.0
+_NARR_DUCK = -20.0
+_EFFECT_DUCK = -25.0
+_NARR_REL = _db_to_linear(_NARR_DUCK) / _db_to_linear(_BED)
+_EFFECT_REL = _db_to_linear(_EFFECT_DUCK) / _db_to_linear(_BED)
+
+
+def test_no_effect_intervals_reproduces_the_narration_only_envelope():
+    """The overwhelming majority case (no diegetic cues): `combine_duck_
+    windows` + `duck_ramp_windows_segments` must be numerically IDENTICAL
+    to the pre-A11 `duck_ramp_windows` path - this is what makes A11 safe
+    to ship without moving a single existing project's audio."""
+    narration = [(1.0, 2.0), (3.0, 4.0)]
+    combined = combine_duck_windows(narration, _NARR_DUCK, [], _NARR_DUCK, bed_gain_db=_BED)
+    assert combined == [(1.0, 2.0, _NARR_REL), (3.0, 4.0, _NARR_REL)]
+    assert duck_ramp_windows_segments(combined) == duck_ramp_windows(
+        narration, relative_duck=_NARR_REL
+    )
+
+
+def test_effect_window_with_no_narration_overlap_plays_at_its_own_depth():
+    combined = combine_duck_windows([], _NARR_DUCK, [(10.0, 12.0)], _EFFECT_DUCK, bed_gain_db=_BED)
+    assert combined == [(10.0, 12.0, _EFFECT_REL)]
+
+
+def _gain_at(t: float, windows: list[tuple[float, float, float]]) -> float:
+    gain = 1.0
+    for start, end, rel in windows:
+        if start <= t <= end:
+            gain *= rel
+    return gain
+
+
+def test_overlapping_cue_takes_the_deeper_depth_not_the_product():
+    """A11's core requirement: a cue mid-narration must not double-duck
+    into mud. Effect is deeper here (-25 vs -20 dB) - the overlap must
+    read at the effect's OWN depth, never `_NARR_REL * _EFFECT_REL`."""
+    combined = combine_duck_windows(
+        [(0.0, 5.0)], _NARR_DUCK, [(2.0, 3.0)], _EFFECT_DUCK, bed_gain_db=_BED
+    )
+    ramped = duck_ramp_windows_segments(combined)
+    assert _gain_at(2.5, ramped) == pytest.approx(_EFFECT_REL)
+    assert _gain_at(2.5, ramped) != pytest.approx(_NARR_REL * _EFFECT_REL)
+
+
+def test_nested_effect_window_does_not_flatten_the_surrounding_narration():
+    """Regression for a real bug found while building this: an earlier
+    version merged ANY touching segments regardless of depth, which
+    collapsed an entire 60s narration span to the effect's depth the
+    moment a 3s cue touched it anywhere inside. The narration on EITHER
+    SIDE of the cue must keep its own (shallower) depth."""
+    combined = combine_duck_windows(
+        [(0.0, 60.0)], _NARR_DUCK, [(30.0, 33.0)], _EFFECT_DUCK, bed_gain_db=_BED
+    )
+    ramped = duck_ramp_windows_segments(combined)
+    assert _gain_at(15.0, ramped) == pytest.approx(_NARR_REL)
+    assert _gain_at(31.5, ramped) == pytest.approx(_EFFECT_REL)
+    assert _gain_at(45.0, ramped) == pytest.approx(_NARR_REL)
+    assert _gain_at(-1.0, ramped) == pytest.approx(1.0)
+    assert _gain_at(61.0, ramped) == pytest.approx(1.0)
+
+
+def test_junction_between_two_depths_never_ramps_back_through_the_bed():
+    """The failure mode a naive "independent ramp in/out" implementation
+    hits: at a touching boundary between two DIFFERENT depths, ramping
+    segment A out to 1.0 and segment B in from 1.0 would briefly pop back
+    toward full bed volume between two ducks that are effectively
+    continuous. Sampling densely across the junction must never approach
+    1.0 (it should move directly between the two duck depths)."""
+    combined = combine_duck_windows(
+        [(0.0, 30.0)], _NARR_DUCK, [(30.0, 33.0)], _EFFECT_DUCK, bed_gain_db=_BED
+    )
+    ramped = duck_ramp_windows_segments(combined)
+    samples = [_gain_at(30.0 + i * 0.002, ramped) for i in range(-20, 21)]
+    bed_level = 1.0
+    # Every sample near the junction must sit at or below the SHALLOWER
+    # of the two depths (never drift back up toward the unducked bed).
+    assert max(samples) <= max(_NARR_REL, _EFFECT_REL) + 1e-9
+    assert all(sample < bed_level - 1e-6 for sample in samples)
+
+
+def test_far_apart_different_depths_ramp_independently_through_the_bed():
+    """A genuine silence gap (> 2*DUCK_RAMP_S) between a narration window
+    and a cue window elsewhere is NOT a junction - the bed must actually
+    come back up in between, same as two ordinary narration windows."""
+    combined = combine_duck_windows(
+        [(0.0, 1.0)], _NARR_DUCK, [(6.0, 8.0)], _EFFECT_DUCK, bed_gain_db=_BED
+    )
+    ramped = duck_ramp_windows_segments(combined)
+    assert _gain_at(3.0, ramped) == pytest.approx(1.0)
+    assert _overlapping_pairs(ramped) == []
+
+
+def test_combined_ramp_windows_never_overlap():
+    """RV-Q3's own invariant, extended to the two-depth case: chained
+    `volume=` filters multiply where they overlap, so the combined,
+    ramped envelope must never contain two simultaneously-active windows
+    (beyond the single-instant touch point ffmpeg's own inclusive
+    `between()` already accepts at ordinary same-depth boundaries)."""
+    combined = combine_duck_windows(
+        [(0.0, 10.0), (20.0, 21.0)],
+        _NARR_DUCK,
+        [(5.0, 6.0), (25.0, 26.0)],
+        _EFFECT_DUCK,
+        bed_gain_db=_BED,
+    )
+    ramped = duck_ramp_windows_segments(combined)
+    assert _overlapping_pairs(ramped) == []
 
 
 def test_newline_pauses_do_not_overlap_ramps():

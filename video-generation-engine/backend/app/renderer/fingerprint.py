@@ -180,9 +180,13 @@ def compute_render_fingerprint(
     sfx_content_hashes: list[str],
     sfx_gain_db: float,
     sfx_max_clip_s: float,
+    sfx_diegetic_max_clip_s: float,
     sfx_whoosh_enabled: bool,
     sfx_normalize_target_db: float,
     sfx_kind_gain_overrides_db: dict[str, float | None],
+    sfx_diegetic_normalize_target_lufs: float,
+    sfx_diegetic_loudness_min_duration_s: float,
+    sfx_diegetic_duck_depth_db: float,
     ffmpeg_version: str,
     secondary_content_hashes: dict[str, str] | None = None,
     shot_focal: dict[str, str] | None = None,
@@ -321,6 +325,12 @@ def compute_render_fingerprint(
         # as `sfx_gain_db` / R2. Unconditional so a config bump cannot
         # cache-HIT the old, shorter mix.
         "sfx_max_clip_s": sfx_max_clip_s,
+        # long_form_direction.md A8: diegetic's OWN ceiling (R12's rule
+        # applied a second time - a real mix input with nowhere else to
+        # live). Unconditional so a config bump cannot cache-HIT the old,
+        # shorter (or longer) diegetic mix, even on a project with no
+        # diegetic clips yet.
+        "sfx_diegetic_max_clip_s": sfx_diegetic_max_clip_s,
         # Decisions 5 + 5a (analysis.md, 2026-08-24): the per-style WHOOSH
         # gate decides which overlay events get mixed at all, so flipping
         # it changes output bytes. Style-derived (render_style in the
@@ -336,6 +346,16 @@ def compute_render_fingerprint(
         # above, so they need no separate entry here.
         "sfx_normalize_target_db": sfx_normalize_target_db,
         "sfx_kind_gain_overrides_db": sfx_kind_gain_overrides_db,
+        # A11 (long_form_direction.md, 2026-09-01): DIEGETIC's loudness
+        # target/floor and the diegetic-cue duck depth are real mix
+        # inputs with nowhere else to live - same R2 shape as
+        # `sfx_normalize_target_db` immediately above. `clip.loudness_lufs`
+        # itself needs no separate entry here: it rides in via
+        # `SfxClipSelection` inside the timeline document dump, exactly
+        # like `peak_dbfs`/`duration_s` already do.
+        "sfx_diegetic_normalize_target_lufs": sfx_diegetic_normalize_target_lufs,
+        "sfx_diegetic_loudness_min_duration_s": sfx_diegetic_loudness_min_duration_s,
+        "sfx_diegetic_duck_depth_db": sfx_diegetic_duck_depth_db,
         "ffmpeg_version": ffmpeg_version,
         # Padded-panel verdict 2026-08-20: crop-to-fill. A letterbox
         # revert must miss every cached split encode (§7).

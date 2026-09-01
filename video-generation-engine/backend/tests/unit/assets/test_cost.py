@@ -53,6 +53,78 @@ def test_search_primary_shots_cost_nothing():
     assert estimate_project_cost_cents(timeline) == 0
 
 
+# --- diegetic SFX (long_form_direction.md A8) -------------------------------
+
+
+def _cue_shot(shot_id: str, cue: str | None) -> Shot:
+    # A search-primary `asset_plan` (free) isolates the assertions below to
+    # ONLY the diegetic SFX estimate - a `None` asset_plan would also carry
+    # the pre-existing "no binding yet -> assume image generation" cost
+    # (`test_shot_with_no_asset_plan_defaults_to_image_generation_cost`
+    # above), which has nothing to do with this section.
+    return Shot(
+        id=shot_id,
+        order=0,
+        intent=ShotIntent.EXPLAIN,
+        duration_s=3.0,
+        sfx_cue=cue,
+        asset_plan=AssetPlan(
+            strategy=AssetStrategy.HISTORICAL_SEARCH,
+            preferred_type=PreferredMediaType.IMAGE,
+            fallback_chain=[AssetStrategy.HISTORICAL_SEARCH],
+        ),
+    )
+
+
+def test_a_pending_cue_bearing_shot_adds_the_diegetic_estimate():
+    timeline = _timeline_with_shots([_cue_shot("sh_01", "a Geiger counter clicking")])
+    assert estimate_project_cost_cents(timeline) == settings.sfx_diegetic_cost_cents_estimate
+
+
+def test_a_shot_with_no_cue_adds_nothing():
+    timeline = _timeline_with_shots([_cue_shot("sh_01", None)])
+    assert estimate_project_cost_cents(timeline) == 0
+
+
+def test_a_cue_shot_with_an_already_settled_diegetic_clip_adds_nothing():
+    from app.schemas.timeline import SfxClipSelection, SfxKind, SfxPlan
+
+    timeline = _timeline_with_shots([_cue_shot("sh_01", "a Geiger counter clicking")])
+    timeline.sfx_plan = SfxPlan(
+        clips=[
+            SfxClipSelection(
+                kind=SfxKind.DIEGETIC,
+                provider="elevenlabs",
+                track_id="h1",
+                source_url="",
+                licence="generated",
+                content_hash="hash1",
+                shot_id="sh_01",
+            )
+        ]
+    )
+    assert estimate_project_cost_cents(timeline) == 0
+
+
+def test_a_cue_shot_already_marked_permanently_failed_adds_nothing():
+    from app.schemas.timeline import SfxPlan
+
+    timeline = _timeline_with_shots([_cue_shot("sh_01", "a Geiger counter clicking")])
+    timeline.sfx_plan = SfxPlan(diegetic_failed_shot_ids=["sh_01"])
+    assert estimate_project_cost_cents(timeline) == 0
+
+
+def test_multiple_pending_cue_shots_sum():
+    timeline = _timeline_with_shots(
+        [
+            _cue_shot("sh_01", "a Geiger counter clicking"),
+            _cue_shot("sh_02", "a distant explosion"),
+            _cue_shot("sh_03", None),
+        ]
+    )
+    assert estimate_project_cost_cents(timeline) == 2 * settings.sfx_diegetic_cost_cents_estimate
+
+
 def test_generate_image_shot_costs_the_image_estimate():
     timeline = _timeline_with_shots([_shot("sh_01", AssetStrategy.GENERATE_IMAGE)])
     assert estimate_project_cost_cents(timeline) == settings.fal_image_cost_cents_estimate

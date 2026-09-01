@@ -9,6 +9,15 @@ Two pure functions + one ffmpeg probe:
   `settings.sfx_gain_db` - never None-gain, never a crash. A per-kind
   offset (decision: `sfx_{kind}_gain_db`, default absent) rides on top
   of either path.
+- `diegetic_effective_gain_db`: A11 (long_form_direction.md, 2026-09-01).
+  DIEGETIC-only replacement for peak normalization: matches a clip's
+  measured INTEGRATED LOUDNESS (LUFS) onto a target instead of its peak,
+  since a diegetic cue's crest (25-27dB) makes peak-matching leave its
+  audible body tens of dB under a music bed. `effective_gain_db` above
+  is reused unchanged as the fallback path (unmeasured clip, or a clip
+  too short for integrated loudness to mean anything) and is still the
+  ONLY path for WHOOSH/STINGER/TRANSITION - this module makes no change
+  to those three kinds.
 - `end_aligned_trim_start`: C3d. When a clip is longer than the trim
   ceiling, trim from the END (`start = duration - max`) so the impact
   transient survives; when it fits, or its length is unknown, no shift.
@@ -44,6 +53,52 @@ def effective_gain_db(
     (`settings.sfx_gain_db`). The optional per-kind offset applies in dB
     on top of either path (decision: `sfx_{kind}_gain_db`)."""
     base = gain_to_target_db(peak_dbfs, target_db) if peak_dbfs is not None else fallback_db
+    return base if kind_offset_db is None else base + kind_offset_db
+
+
+def diegetic_effective_gain_db(
+    loudness_lufs: float | None,
+    peak_dbfs: float | None,
+    duration_s: float | None,
+    *,
+    loudness_target_lufs: float,
+    peak_target_db: float,
+    fallback_db: float,
+    min_loudness_duration_s: float,
+    kind_offset_db: float | None = None,
+) -> float:
+    """DIEGETIC-only gain decision (long_form_direction.md A11, 2026-09-01).
+
+    Peak normalisation measures the wrong thing for a diegetic cue: these
+    clips can carry 25-27dB of crest (a bell's decay, a Geiger click
+    against near-silence), so matching the single loudest instant to a
+    target leaves the audible BODY of the sound tens of dB below a music
+    bed matched the same way (a bed's own crest is ~10-12dB). Measured on
+    the two real cues that motivated this: at a -18dB offset, the Geiger
+    counter's peak/mean landed -38.0/-64.9 dBFS and the church bell's
+    -38.0/-63.3 dBFS - "inaudible" understates a -63dBFS mean under a
+    -14dBFS bed. Loudness (integrated LUFS) answers "how much sound
+    overall" instead of "how tall is the spike", so one target lands a
+    click-heavy cue (Geiger) and a continuous one (wind, machinery hum) at
+    a comparable PERCEIVED level.
+
+    Falls back to the exact peak-based path the three structural kinds
+    use (`effective_gain_db`, byte-identical call) when: no loudness
+    measurement exists yet (an old timeline, a failed probe, DRY_RUN), or
+    the clip is shorter than `min_loudness_duration_s` - below that it
+    reads as punctuation (a single tap, a doorbell) rather than ambience,
+    and ITU BS.1770 integrated loudness needs several 400ms gating blocks
+    to mean anything; a sub-floor measurement is noisy enough that
+    loudness-matching it against a long clip can send the gain the wrong
+    way. The per-kind offset (`sfx_diegetic_gain_db`) rides on top of
+    either path, exactly as it does for the three structural kinds -
+    unchanged by which path was taken.
+    """
+    long_enough = (duration_s or 0.0) >= min_loudness_duration_s
+    if loudness_lufs is not None and long_enough:
+        base = gain_to_target_db(loudness_lufs, loudness_target_lufs)
+    else:
+        base = effective_gain_db(peak_dbfs, target_db=peak_target_db, fallback_db=fallback_db)
     return base if kind_offset_db is None else base + kind_offset_db
 
 

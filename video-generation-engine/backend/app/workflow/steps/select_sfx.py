@@ -39,6 +39,15 @@ _DEFAULT_QUERIES: dict[str, list[str]] = {
     SfxKind.TRANSITION.value: ["swoosh transition", "whoosh"],
 }
 
+# long_form_direction.md A8 (2026-09-01): this step only ever searches for
+# the three STRUCTURAL kinds above - DIEGETIC has no fixed query list (its
+# "query" is each shot's own planner-authored `sfx_cue`), is never
+# searched, and is filled by `GenerateDiegeticSfxStep` instead (paid
+# generation, post-approval). Iterate this tuple, never bare `SfxKind`,
+# or a future kind added to the enum without a `_DEFAULT_QUERIES` entry
+# raises `KeyError` here on every single project.
+_STRUCTURAL_KINDS: tuple[SfxKind, ...] = (SfxKind.WHOOSH, SfxKind.STINGER, SfxKind.TRANSITION)
+
 
 def default_sfx_plan() -> SfxPlan:
     return SfxPlan(
@@ -77,7 +86,7 @@ class SelectSfxStep:
         plan = timeline.sfx_plan or default_sfx_plan()
         provider: MusicProvider = _sfx_provider()
         clips: list[SfxClipSelection] = []
-        for kind in SfxKind:
+        for kind in _STRUCTURAL_KINDS:
             terms = plan.queries.get(kind.value) or _DEFAULT_QUERIES[kind.value]
             selection = await self._select_kind(
                 ctx, provider=provider, kind=kind, terms=terms, plan=plan
@@ -87,7 +96,16 @@ class SelectSfxStep:
 
         def _record(base: Timeline) -> Timeline:
             current = base.sfx_plan or default_sfx_plan()
-            current.clips = clips
+            # A8: preserve any DIEGETIC clips already present - this step
+            # only ever resolves the three structural kinds above, so
+            # `clips` here never carries a DIEGETIC entry to begin with,
+            # but a bare `current.clips = clips` would still silently drop
+            # whatever `GenerateDiegeticSfxStep` had already generated on
+            # a project this step somehow re-runs against (e.g. a future
+            # per-kind retry surface). Explicit is cheap; an accidental
+            # wipe of paid-for generations is not.
+            diegetic = [c for c in current.clips if c.kind == SfxKind.DIEGETIC]
+            current.clips = clips + diegetic
             current.selection_attempted = True
             base.sfx_plan = current
             return base

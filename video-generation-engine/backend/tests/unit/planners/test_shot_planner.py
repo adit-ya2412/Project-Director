@@ -116,6 +116,7 @@ def _shot(
         prompt="archival photograph",
         secondary_prompt="",
         text_card="",
+        sfx_cue="",
     )
 
 

@@ -269,6 +269,20 @@ class Shot(BaseModel):
     # tied to which shot is on screen, not to spoken words) with a fixed
     # fade in/out - see `app/renderer/text_cards.py`.
     text_card: str | None = None
+    # long_form_direction.md A8 (2026-09-01): a planner-authored phrase
+    # naming a sound the STORY wants at this shot's start ("faint Geiger
+    # counter clicking, sparse and distant") - never style-derived (canon
+    # 3.1: the planner decides WHAT sound and WHERE; the renderer only
+    # executes). `None`/empty is the overwhelming majority of shots - this
+    # is for a beat that genuinely turns on a sound, not decoration. A
+    # workflow step (`GenerateDiegeticSfxStep`, post-approval, paid) turns
+    # a non-empty cue into a real generated clip
+    # (`SfxClipSelection(kind=DIEGETIC, shot_id=this shot's id, ...)` on
+    # `Timeline.sfx_plan.clips`); `derive_sfx_events` emits one `DIEGETIC`
+    # event at this shot's start for every shot that has one. Placement is
+    # the shot's start in v1 - word-relative placement via
+    # `narration_span` is a later slice (open question 1, §3 A8).
+    sfx_cue: str | None = None
 
 
 class Scene(BaseModel):
@@ -460,6 +474,13 @@ class SfxKind(StrEnum):
     WHOOSH = "whoosh"  # punch-in
     STINGER = "stinger"  # text card
     TRANSITION = "transition"  # non-cut xfade
+    # long_form_direction.md A8 (2026-09-01): the one CONTENT-driven kind -
+    # placement comes from `Shot.sfx_cue` being set, not from an editing
+    # event. Unlike the three structural kinds above (one shared clip per
+    # kind for the whole video), a DIEGETIC clip is per-SHOT - each cue is
+    # a different sound, generated (ElevenLabs `/v1/sound-generation`),
+    # never searched. See `SfxClipSelection.shot_id`.
+    DIEGETIC = "diegetic"
 
 
 class SfxClipSelection(BaseModel):
@@ -483,21 +504,61 @@ class SfxClipSelection(BaseModel):
     # through existing plumbing (no new fingerprint inputs for these).
     peak_dbfs: float | None = None
     duration_s: float | None = None
+    # long_form_direction.md A8: which Shot this DIEGETIC clip belongs to.
+    # `None` for every WHOOSH/STINGER/TRANSITION clip (one shared clip per
+    # kind - `by_kind` lookup in `render.py::_sfx_overlays` is unchanged
+    # for those). Set for DIEGETIC clips only, since `SfxPlan.clips` can
+    # hold several different DIEGETIC entries (one per distinct cue) and
+    # the renderer must know which shot's event each one answers -
+    # `render.py` builds a `shot_id -> clip` map for DIEGETIC lookups
+    # instead of the single-clip-per-kind map structural kinds use.
+    shot_id: str | None = None
+    # long_form_direction.md A11 (2026-09-01): the clip's MEASURED
+    # integrated loudness (LUFS, `app/renderer/audio.py::
+    # measure_integrated_lufs` - the same ebur128 machinery OQ-1a's final
+    # mix already uses), for DIEGETIC clips only. Peak normalisation
+    # measures the wrong thing for a cue with a 25-27dB crest (a bell's
+    # decay, a Geiger click against near-silence): matching the single
+    # loudest instant leaves the audible BODY of the sound tens of dB
+    # below a bed matched the same way. `None` for every WHOOSH/STINGER/
+    # TRANSITION clip (peak normalisation is correct for those - transient
+    # punctuation by design, unchanged by this field's existence) and for
+    # every pre-A11 DIEGETIC clip/DRY_RUN fake; `None` means the renderer
+    # falls back to the same peak-based path the structural kinds use
+    # (`app/assets/sfx_levels.py::diegetic_effective_gain_db`). Measured
+    # once at generation time and persisted here - never re-measured at
+    # render time (I5) - so it rides into the render fingerprint for free
+    # via the ordinary timeline document dump, exactly like `peak_dbfs`
+    # and `duration_s` already do.
+    loudness_lufs: float | None = None
 
 
 class SfxPlan(BaseModel):
     """Creative palette + acquired clips (plan §5.5, D6/21.2).
 
     Queries are the creative half (which kinds of sounds). `clips` and
-    `selection_attempted` are filled by `SelectSfxStep`. Placement is
-    NOT stored here — the renderer derives offsets from punch-ins, text
-    cards, and transitions already on the Timeline.
+    `selection_attempted` are filled by `SelectSfxStep` (the three
+    structural kinds, pre-approval, searched/free). DIEGETIC clips are
+    filled separately by `GenerateDiegeticSfxStep` (post-approval, paid,
+    generated) and appended onto the same `clips` list rather than a
+    second list - `render.py` already discriminates by `kind`/`shot_id`.
+    Placement is NOT stored here — the renderer derives offsets from
+    punch-ins, text cards, transitions, and (A8) `Shot.sfx_cue` already on
+    the Timeline.
     """
 
     queries: dict[str, list[str]] = Field(default_factory=dict)
     licence_requirements: list[str] = Field(default_factory=list)
     clips: list[SfxClipSelection] = Field(default_factory=list)
     selection_attempted: bool = False
+    # long_form_direction.md A8: shot ids whose diegetic cue generation
+    # was attempted and failed (a transient provider error persisted
+    # across the bounded step retries, a permanent one, or a budget cap
+    # hit) - terminal, like a `failed` ShotBinding, so a resumed run does
+    # not hammer the API again for a cue already known not to work this
+    # run. That shot simply plays with no diegetic sound (build item 6:
+    # "one cue failing must not kill the run").
+    diegetic_failed_shot_ids: list[str] = Field(default_factory=list)
 
 
 class MusicPlan(BaseModel):

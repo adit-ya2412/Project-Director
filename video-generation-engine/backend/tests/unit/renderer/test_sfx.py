@@ -97,6 +97,51 @@ def test_whoosh_enabled_false_drops_whoosh_but_keeps_other_kinds():
     assert any(e.kind == SfxKind.STINGER for e in events)
 
 
+def test_sfx_cue_emits_a_diegetic_event_at_shot_start():
+    shot = Shot(
+        id="sh_01",
+        order=0,
+        intent=ShotIntent.EXPLAIN,
+        duration_s=5.0,
+        sfx_cue="faint Geiger counter clicking",
+    )
+    events = derive_sfx_events(_timeline([shot]), fps=30, whoosh_enabled=True)
+    assert [(e.kind, e.offset_s, e.shot_id) for e in events] == [
+        (SfxKind.DIEGETIC, 0.0, "sh_01")
+    ]
+
+
+def test_empty_sfx_cue_emits_no_diegetic_event():
+    shot = Shot(id="sh_01", order=0, intent=ShotIntent.EXPLAIN, duration_s=3.0, sfx_cue="   ")
+    assert derive_sfx_events(_timeline([shot]), fps=30, whoosh_enabled=True) == []
+
+
+def test_diegetic_event_survives_whoosh_disabled():
+    """A8: the WHOOSH gate is style-specific density control for punch-in
+    stingers, unrelated to a content-driven cue - `retention_fast` is NOT
+    gated off per the plan's own decision."""
+    shot = Shot(
+        id="sh_01",
+        order=0,
+        intent=ShotIntent.EXPLAIN,
+        duration_s=3.0,
+        sfx_cue="a distant explosion",
+    )
+    events = derive_sfx_events(_timeline([shot]), fps=30, whoosh_enabled=False)
+    assert any(e.kind == SfxKind.DIEGETIC for e in events)
+
+
+def test_diegetic_event_on_second_shot_starts_at_the_second_shots_offset():
+    first = Shot(id="sh_01", order=0, intent=ShotIntent.EXPLAIN, duration_s=2.0)
+    second = Shot(
+        id="sh_02", order=1, intent=ShotIntent.EXPLAIN, duration_s=3.0, sfx_cue="a heartbeat"
+    )
+    events = derive_sfx_events(_timeline([first, second]), fps=30, whoosh_enabled=True)
+    assert [(e.kind, round(e.offset_s, 5), e.shot_id) for e in events] == [
+        (SfxKind.DIEGETIC, 2.0, "sh_02")
+    ]
+
+
 def test_whoosh_enabled_true_keeps_whoosh():
     """The default/gate-open case. Which style resolves to `True` (all of
     them except `retention_fast`) is covered separately in

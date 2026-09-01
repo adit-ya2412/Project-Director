@@ -162,6 +162,12 @@ async def _seed_narrated_timeline(
             base.scenes = scenes
             base.metadata.total_duration_s = expected_total
             base.metadata.voice_id = None  # forces settings.elevenlabs_voice_id fallback
+            # long_form_direction.md A8 fix: `_resolve_narration_rows` now
+            # gates on this flag (not `produced_by` alone, which does not
+            # survive a later version - see that function's own updated
+            # docstring), mirroring exactly what `NarrationStep` itself
+            # always sets alongside `produced_by=NARRATION`.
+            base.metadata.narration_locked = True
             return base
 
         appended = await service.append_version(

@@ -561,6 +561,10 @@ def _to_domain_shot(
         # Feature B (§4.4): empty string -> None, the persisted model's
         # "no card" shape (`derive_text_card_cues` treats both alike).
         text_card=s.text_card.strip() or None,
+        # A8 (long_form_direction.md, 2026-09-01): same empty-string-to-
+        # None convention as text_card above - `derive_sfx_events` treats
+        # both alike ("no cue").
+        sfx_cue=s.sfx_cue.strip() or None,
         asset_plan=None,
     )
 

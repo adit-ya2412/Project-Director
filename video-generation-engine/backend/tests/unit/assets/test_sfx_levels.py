@@ -7,6 +7,7 @@ import subprocess
 import pytest
 
 from app.assets.sfx_levels import (
+    diegetic_effective_gain_db,
     effective_gain_db,
     end_aligned_trim_start,
     gain_to_target_db,
@@ -91,6 +92,81 @@ def test_known_peak_normalizes_onto_the_target_and_gets_quieter():
     )
     assert gain < 0.0
     assert -5.0 + gain == pytest.approx(settings.sfx_normalize_target_db)
+
+
+# -- diegetic loudness-based gain (A11, long_form_direction.md) -------------
+
+_LOUD_KW = {
+    "loudness_target_lufs": -23.0,
+    "peak_target_db": -20.0,
+    "fallback_db": -8.0,
+    "min_loudness_duration_s": 1.5,
+}
+
+
+def test_diegetic_gain_normalizes_a_measured_loudness_onto_the_target():
+    """The Geiger counter / church bell case A11 exists to fix: a
+    high-crest clip must be matched on LOUDNESS, not peak."""
+    gain = diegetic_effective_gain_db(-29.7, -2.8, 8.0, **_LOUD_KW)
+    assert gain == pytest.approx(-23.0 - -29.7)  # target - measured LUFS
+
+
+def test_diegetic_gain_ignores_peak_when_loudness_is_known():
+    """Same clip, two wildly different peak values - the loudness-based
+    gain must not move, since peak is the wrong quantity for this kind."""
+    gain_a = diegetic_effective_gain_db(-29.7, -2.8, 8.0, **_LOUD_KW)
+    gain_b = diegetic_effective_gain_db(-29.7, -20.0, 8.0, **_LOUD_KW)
+    assert gain_a == pytest.approx(gain_b)
+
+
+def test_diegetic_gain_falls_back_to_peak_when_loudness_unmeasured():
+    """None loudness (an old timeline, DRY_RUN, a failed probe) - falls
+    back to the EXACT peak-based path the structural kinds use."""
+    gain = diegetic_effective_gain_db(None, -5.0, 8.0, **_LOUD_KW)
+    expected = effective_gain_db(-5.0, target_db=-20.0, fallback_db=-8.0)
+    assert gain == pytest.approx(expected)
+
+
+def test_diegetic_gain_falls_back_to_peak_below_the_duration_floor():
+    """A clip shorter than `min_loudness_duration_s` reads as punctuation,
+    not ambience - falls back to peak even though loudness IS known."""
+    gain = diegetic_effective_gain_db(-29.7, -2.8, 0.97, **_LOUD_KW)
+    expected = effective_gain_db(-2.8, target_db=-20.0, fallback_db=-8.0)
+    assert gain == pytest.approx(expected)
+    # And it must differ from the loudness-based answer - proves the
+    # floor actually redirected the call, not a coincidence.
+    loud_answer = diegetic_effective_gain_db(-29.7, -2.8, 8.0, **_LOUD_KW)
+    assert gain != pytest.approx(loud_answer)
+
+
+def test_diegetic_gain_falls_back_to_peak_when_duration_unknown():
+    """`None` duration must never be treated as "long enough"."""
+    gain = diegetic_effective_gain_db(-29.7, -2.8, None, **_LOUD_KW)
+    expected = effective_gain_db(-2.8, target_db=-20.0, fallback_db=-8.0)
+    assert gain == pytest.approx(expected)
+
+
+def test_diegetic_gain_at_exactly_the_duration_floor_uses_loudness():
+    gain = diegetic_effective_gain_db(-29.7, -2.8, 1.5, **_LOUD_KW)
+    assert gain == pytest.approx(-23.0 - -29.7)
+
+
+def test_diegetic_kind_offset_rides_on_top_of_the_loudness_path():
+    gain = diegetic_effective_gain_db(-29.7, -2.8, 8.0, kind_offset_db=-6.0, **_LOUD_KW)
+    assert gain == pytest.approx((-23.0 - -29.7) + -6.0)
+
+
+def test_diegetic_gain_lands_a_click_and_a_continuous_cue_at_the_same_level():
+    """The whole point of A11: one target must serve BOTH a click-heavy
+    cue (Geiger, high crest) and a continuous one (machinery hum, low
+    crest) at a comparable perceived level - measured via loudness, which
+    is crest-independent, unlike the old peak path."""
+    geiger = diegetic_effective_gain_db(-29.7, -2.8, 8.0, **_LOUD_KW)
+    hum = diegetic_effective_gain_db(-23.5, -18.0, 8.0, **_LOUD_KW)  # low-crest, hypothetical
+    played_geiger_lufs = -29.7 + geiger
+    played_hum_lufs = -23.5 + hum
+    assert played_geiger_lufs == pytest.approx(played_hum_lufs)
+    assert played_geiger_lufs == pytest.approx(-23.0)
 
 
 # -- end-aligned trim start --------------------------------------------------
