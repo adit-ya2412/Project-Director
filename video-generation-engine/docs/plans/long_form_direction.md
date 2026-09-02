@@ -98,7 +98,24 @@ Same rules as `output_quality_pass.md` §0.1 and `animated_explainer.md`
    per-character alignment), and both a continuous cue (machinery hum)
    and a transient one (church bell) — the exact axis A8's own gain
    ladder never tested. **Read A11's own §3 entry and P-LF-A11's §7 log
-   entry before touching it further.** A2 remains
+   entry before touching it further.** **A15 (a cue must end when its
+   shot does, and the transition layer needs a level) is now BUILT
+   (P-LF-A15, 2026-09-02) and AWAITING A HUMAN LISTENING PASS** — found
+   by ear on the user's first finished long-form video, immediately
+   after A11's own fix shipped. Both halves are real, tested-by-render
+   code: the mix side (`render.py::_diegetic_ceiling_s`, shared by
+   `_sfx_overlays` and `_diegetic_duck_windows`) and the generation side
+   (`generate_diegetic_sfx.py`, now per-shot) bound a diegetic cue by its
+   own shot's `duration_s` instead of the flat `sfx_diegetic_max_clip_s`
+   that let 6 of 7 real cues overrun their shot by 2.8-4.8s. The
+   transition-layer question (45 of 77 shots getting an SFX at a flat,
+   unchosen -8dB-fallback level) was deliberately left to the user: a
+   4-file ladder (level and rate, independently) exists in
+   `tmp/sfx-a15/` over the REAL, FULL 77-shot project (not a slice - the
+   project's own already-rendered `work/pre_sfx_final.mp4` intermediate
+   made a full re-render unnecessary). **Read A15's own §3 entry and
+   P-LF-A15's §7 log entry before touching it further, and do not
+   re-render the ladder until a human has heard it.** A2 remains
    the highest-value slice already shipped, and is not
    long-form-specific: it fixes every style that uses `pan`, including
    all 19 shorts. Its numbers were measured, not reasoned — see A2's
@@ -782,6 +799,365 @@ pick once and have it hold for continuous cues as well as transient ones.
 Include a continuous cue (the wind or machinery hum already generated in
 `tmp/sfx-gen-gate/`) alongside the bell, because a level chosen on clicks
 alone is exactly the mistake this slice exists to correct.
+
+---
+
+### A12 — The frontend surfaces the cue, and knows the new step
+
+**A8 shipped with no UI at all. Recorded as §4.8; this closes it.** The
+user asked for it directly on 2026-09-01 after the levels were signed
+off, so they could actually make videos without flying blind.
+
+Three concrete gaps, all verified in the frontend:
+
+**1. The pipeline step is unknown to the UI.**
+ hard-codes  and ,
+with a docstring saying it matches  "exactly".
+ is absent, so a step that now runs on every
+project carrying a cue has no label and no place in the progress order.
+Add it between  and  — its real
+pipeline position — with a label in the register of its neighbours
+("Generating sound effects" fits "Generating images for the remaining
+shots").
+
+**2.  is absent from the frontend type.**
+ mirrors the backend  (it already
+carries ,  with a comment on how rare cards are).
+Add  with the same kind of comment: empty on
+almost every shot, and what it means when set.
+
+**3. The reviewer cannot see or veto a cue.** The approval gate shows a
+shot's prompt and camera; it does not show what sound the shot will get,
+while approving the spend for it (~6c per cue,
+). Show the cue on any shot that has
+one, and give it a clear action.
+
+**Scope the clear action carefully — read this before building.**
+ returns **400** for 
+by design: its model is one clip per kind for the whole video, and
+applied per-shot it would wipe every cue and replace them with a single
+ungrounded clip no event could match. So **there is no endpoint that can
+clear one shot's cue today.** Either add a narrow per-shot endpoint, or
+implement clearing through the existing timeline-edit path if one can
+carry a single field change. **Decide which, and say why in the log.** Do
+NOT reuse the video-wide override endpoint, and do not widen it.
+
+**Ends in:** the step labelled in the progress view, the cue visible at
+the gate on shots that have one, and a working clear. The frontend's own
+build and typecheck must pass — check what the project actually uses
+(`package.json` under `frontend/`) rather than assuming a command. A human clicks through it; this is a UI
+slice and unit tests alone do not close it.
+
+---
+
+### A13 - A human-uploaded asset gets no focal, so the camera aims at nothing
+
+**Found 2026-09-01 from a real project. The user's words: "without focal
+sense my uploaded pictures are useless even though I have decided the
+picture - how am I supposed to tell, look at THIS?"**
+
+### Measured, on "The old age dilemma" (`retention_fast`, 2026-09-01)
+
+| Provider | Assets | Focal sidecar |
+|---|---|---|
+| `project_assets`, `licence='human_override'` | **24** | **none** |
+| `pexels` | 2 | yes |
+| `wikimedia` | 2 | yes |
+
+4 sidecars for 28 assets. `backend.log` agrees exactly: **120 x
+`focal.fallback` with `reason=no_sidecar`, 4 x `focal.located`.** So 86%
+of that project's shots aim their camera at the geometric centre of a
+photograph nothing ever looked at.
+
+### Where focal actually happens, and where it does not
+
+`locate_subject_focal` is called from exactly ONE place -
+`resolve_assets.py:1352`, inside the search rung loop, guarded by "top
+candidate of this rung", "not a video", "not `entity_curated`".
+
+| Arrival path | Focal? | Why |
+|---|---|---|
+| Searched (wikimedia / pexels) | **yes** | runs the rung loop |
+| Bulk upload with the script (`upload_assets`) | **yes** | becomes the `PROJECT_ASSETS` rung; `AssetCandidate.entity_curated` defaults False, so the same branch runs |
+| **Per-shot upload (`override_shot_asset`)** | **NO** | bypasses the search path entirely |
+| Generated (`fal_image`) | no | never wired in |
+
+### Why the bypass is wrong here specifically
+
+`override_shot_asset`'s docstring justifies itself with A24: *"Bypasses
+relevance and licence gates entirely - a human pointing at a specific
+shot has already made the judgement those gates exist to approximate."*
+
+**That reasoning is correct for relevance and does not transfer to
+focal.** Relevance asks *"does this picture show the subject?"* - a
+question the human already answered by choosing it. Focal asks *"WHERE in
+this picture is the subject?"* - a question choosing the file does not
+answer at all. Bypassing it does not honour the human's judgement; it
+discards the composition they chose and aims at the middle. Hand it a
+portrait with the face in the upper third and the punch-in drives into
+the chest.
+
+Note the asymmetry this creates: a GENERATED image aiming at centre is
+defensible, because the prompt asked for a centred subject. A
+human-uploaded image aiming at centre is a guess about a framing the
+engine never examined. **The one case with the least information is the
+only one that gathers none.**
+
+### The fix - two halves, the API carries both
+
+**A13a - vision focal on per-shot upload.** `override_shot_asset`
+already holds the image bytes. Call `locate_subject_focal` and
+`persist_vision_focal` - the same two calls `resolve_assets.py:1352-1370`
+already makes - so an upload behaves like a searched asset. One vision
+call per upload, at the moment the user most wants it. Failure must
+degrade to today's centred behaviour, never block the upload: a focal is
+an improvement to a shot, not a precondition for having one.
+
+**A13b - let the human state it.** The user's actual question is *"how am
+I supposed to tell it, look at THIS?"* Vision guessing is strictly better
+than centre, but it is still a guess about a framing they chose
+deliberately. Add OPTIONAL `focal_x` / `focal_y` to the endpoint:
+supplied means use them verbatim (`FOCAL_SOURCE_HUMAN`, and it must
+outrank a vision answer the way `asset_locked` outranks a re-plan);
+absent means fall back to A13a's vision call. Normalised 0-1 in image
+space, same convention `normalize_focal` already enforces.
+
+The UI half - clicking a point on the uploaded image to set it - is
+deliberately NOT in this slice. The API must exist first, and the
+capability is worth having even before anything can click.
+
+### Scope notes
+
+- Do NOT add focal to the generation path. Centre is defensible there,
+  and a second vision call to find a subject the prompt already named is
+  waste.
+- `upload_assets` (bulk) already works. Do not touch it.
+- Sidecars are keyed by content hash, so re-uploading identical bytes
+  must not re-pay for a vision call - check `read_focal_sidecar` before
+  calling out, the way the generation cache checks before generating.
+
+**Ends in:** a real per-shot upload on a real project acquiring a focal
+sidecar, and a human watching a punch-in on an off-centre portrait aim at
+the subject rather than the middle. Unit tests alone do not close it.
+
+---
+
+### A14 - Cue rate and repetition need a post-gather pass, not more prompt wording
+
+**Measured 2026-09-01 by probing the real Shot Planner on 3 real scenes
+of "The nuclear lake" - one LLM call, before spending anything on a full
+re-plan.**
+
+### The two data points
+
+**A8's original wording produced ZERO cues.** On "The old age dilemma"
+(`retention_fast`, 34 shots) every shot carried the `sfx_cue` key and
+every one was empty. Verified from the `llm_call` row that the request
+AND the response both contained `sfx_cue` - so the model saw the
+instruction, answered the field, and declined on all 34. The wording was
+the cause, not the plumbing:
+
+> for the **rare** beat that genuinely turns on one ... Leave it the
+> empty string on **almost every shot** ... it is for the **handful of
+> moments** across a whole video where the story is specifically **ABOUT
+> a sound**
+
+Four discouragements in one paragraph, with a bar ("specifically about a
+sound") that almost no documentary shot clears. **This is the glitch
+transition repeating** - the same failure the user opened this whole
+plan with, where §4.5's trigger was so narrow no video ever fired one.
+Restraint written as prohibition produces zero, not restraint.
+
+**Loosened wording (rate-based, mirroring how `archival_montage`
+successfully gets text cards) overshoots:**
+
+```
+CUE  act_01_sc_01_sh_01  [introduce]  faint wind across open water
+CUE  act_01_sc_02_sh_01  [introduce]  faint wind across open steppe
+CUE  act_01_sc_03_sh_03  [emphasize]  distant heavy explosion rumble
+CUE  act_01_sc_03_sh_05  [reveal]     faint wind across open steppe
+```
+
+**4 cues in 10 shots - one every 2.5, against a stated target of one
+every 6-10.** And three of the four are near-identical wind.
+
+### Why wording alone cannot fix it
+
+The Shot Planner runs **once per scene** and cannot see the other
+scenes. It has no way to know it already used wind two scenes ago. This
+is the identical structural blindness the codebase has already solved
+twice, both times with a post-gather corrective pass:
+
+- `_cap_glitch_transitions`, whose own comment says it outright: *"The
+  Shot Planner runs per-scene, so 'at most one per video' cannot be
+  enforced in the prompt."*
+- `_cap_text_cards`, for exactly the same reason at exactly the same
+  place in the pipeline.
+
+**So the cap decision is reopened, with new information.** The user
+chose "no cap, rely on prompt restraint" - but chose it when restraint
+was producing zero. It now produces ~3x the target with duplicates.
+That is not a reversal of their judgement; it is the first real evidence
+either way.
+
+### The fix - one pass, following the two that exist
+
+Add a `_cap_sfx_cues` post-gather pass in
+`app/planners/shot/planner.py`, alongside its two siblings and called
+from the same place:
+
+1. **A minimum shot gap between cues**, in the manner of
+   `settings.text_card_min_shot_gap = 4`. This enforces the rate
+   mechanically instead of hoping the prompt holds. Pick a gap that
+   lands the observed 1-in-2.5 near the target 1-in-6-to-10 and say how
+   you chose it.
+2. **Drop near-duplicate cues, keeping the first.** Three winds become
+   one. Exact-string matching is not enough - "faint wind across open
+   water" and "faint wind across open steppe" must collide. Use a
+   normalised comparison (lowercase, stopwords stripped, or a token
+   overlap threshold) and **justify where you set the bar**, because too
+   aggressive a match would collapse "machinery hum" and "crowd murmur"
+   into one.
+3. **Keep the "silently correct + log" contract** (`style_extensions.md`
+   §2.7, and see `_cap_glitch_transitions`' docstring): the model was
+   structurally denied the information needed to get this right, so a
+   hard failure would punish it for our architecture. Log which cues
+   were dropped and why - `_cap_text_cards`' inability to say WHICH kind
+   of card it dropped is precisely why A7's bug went unnoticed.
+
+Also tighten the prompt modestly: the current wording lists "weather"
+as a cue-worthy subject, which is what invites generic wind on every
+landscape. Name it as the thing to use sparingly.
+
+### Scope notes
+
+- This is planner-side only. Do NOT touch `derive_sfx_events`,
+  `mux_sfx`, the levels, the ducking, or `GenerateDiegeticSfxStep`.
+- No new fingerprint input: `sfx_cue` already reaches
+  `compute_render_fingerprint` (A8), and this pass only clears values.
+- A cleared cue must mean "no sound for this shot", never "regenerate" -
+  same invariant A12 established for the UI clear.
+
+**Ends in:** the same 3-scene probe re-run, showing a rate inside the
+target and no duplicate wind, plus unit tests over the gap and the
+dedupe. Then a real re-plan is worth its cost.
+
+---
+
+### A15 - A cue must end when its shot does, and the transition layer needs a level ✅ BUILT (P-LF-A15, 2026-09-02) — AWAITING A HUMAN LISTENING PASS
+
+**Both found by ear on the first finished long-form video
+(`the russian lake of death`, 77 shots, documentary_archival, 2026-09-02)
+and then measured. The user's words: "the sfx sounds duration is more
+than the scene, moves on and the sound still persists" and "the woosh, we
+need some control on them too".**
+
+### Problem 1 - a cue outlives its shot. Measured, 6 of 7.
+
+| Shot | Shot length | Cue plays for | Overrun |
+|---|---|---|---|
+| `act_04_sc_05_sh_02` | 3.20s | 8.00s | **+4.8s** |
+| `act_02_sc_03_sh_03` | 3.68s | 8.00s | **+4.3s** |
+| `act_05_sc_02_sh_02` | 3.88s | 8.00s | **+4.1s** |
+| `act_03_sc_01_sh_03` | 3.89s | 8.00s | **+4.1s** |
+| `act_01_sc_06_sh_02` | 4.75s | 8.00s | **+3.3s** |
+| `act_04_sc_02_sh_02` | 5.20s | 8.00s | **+2.8s** |
+| `act_03_sc_04_sh_02` | 7.82s | 8.00s | ok |
+
+`settings.sfx_diegetic_max_clip_s = 8.0` is used in **two** places and
+neither consults the shot:
+
+1. **Generation** - `GenerateDiegeticSfxStep` requests
+   `duration_seconds = sfx_diegetic_max_clip_s`, so every clip came back
+   at exactly 8.000s regardless of the shot it belongs to.
+2. **Mixing** - `_sfx_overlays` sets `SfxOverlay.max_clip_s` to the same
+   constant, so `mux_sfx` trims at 8s rather than at the shot's end.
+
+**Correction (P-LF-A15, found while building the fix): there is a THIRD
+site, not named above.** `render.py::_diegetic_duck_windows` (A11)
+computes its own `played_s = min(clip.duration_s,
+sfx_diegetic_max_clip_s)` independently, and its own docstring already
+promised this "mirrors `_sfx_overlays`' own ceiling math exactly" so the
+duck window and the audible clip agree on how long the cue plays. Fixing
+only the two sites above would have left the bed ducked for up to 8s
+even after the now-correctly-trimmed cue had already stopped - a new,
+smaller version of this same bug. Both call sites now share one
+function, `_diegetic_ceiling_s`, so they cannot drift apart again. See
+P-LF-A15's own log entry.
+
+So a Geiger counter on a 3.88s shot keeps clicking three shots after the
+edit has left the lake.
+
+**This is A11's fault, and specifically mine.** A11 gave DIEGETIC its own
+ceiling to escape the 1.5s structural trim - correctly - but made it a
+CONSTANT. A cue belongs to a shot; its length has to be bounded by that
+shot, not by a global.
+
+**Fix:** bound both sites by the shot's own `duration_s` - generate
+`min(sfx_diegetic_max_clip_s, shot.duration_s)` and trim at the shot's
+duration.
+
+Two judgement calls to make and JUSTIFY, not assume:
+
+- **Should a cue be allowed to bleed slightly past the cut?** A short
+  carry across a cut is a real editing device (a sound bridge). 4.8s over
+  a 3.2s shot is not a bridge; 0.2-0.3s might be desirable. Decide, and
+  say why.
+- **A short fade at the tail**, so a hard-trimmed ambience does not click
+  off. `mux_sfx` already applies `_FADE_OUT_S`; check whether it covers
+  this path before adding anything.
+
+**Cost note:** billing is per second of generated audio (40 credits/s),
+so shorter cues are also cheaper. Existing 8s clips stay cached and
+valid; the mix trim alone fixes the audible problem for THIS project
+without regenerating anything. Do the mix side first and say so.
+
+### Problem 2 - it is not the whoosh. It is 45 transition swooshes.
+
+Measured on the same project:
+
+| Kind | Fires on | Count |
+|---|---|---|
+| `transition` | every non-cut xfade | **45** |
+| `stinger` | every text card | 5 |
+| `whoosh` | punch-in snaps | **0** |
+
+**There are no punch-in shots at all** in this style's output (camera
+movements: slow_zoom 23, pull_back 18, pan 19, static 12, slow_push 3,
+split_frame 2). So no whoosh ever fires. What the user is hearing is the
+TRANSITION layer, on 45 of 77 shots, because `documentary_archival` uses
+`dissolve` heavily and every dissolve triggers one.
+
+And all three per-kind gains (`sfx_whoosh_gain_db`,
+`sfx_stinger_gain_db`, `sfx_transition_gain_db`) are `None`, so they fall
+back to the flat `sfx_gain_db = -8.0` - **10 dB louder than the diegetic
+cues at -18.** The loudest and most frequent sound layer in the video is
+the one nobody chose.
+
+**Fix - the shape is the user's call, so RENDER A LADDER, do not pick a
+number.** Two independent levers:
+
+- **Level:** a real `sfx_transition_gain_db` instead of the -8 fallback.
+- **Rate:** whether the layer should fire on EVERY non-cut transition, or
+  only on structural ones (`fadeblack`, `wipeleft`) - which is what
+  §4.5/the base prompt already treat as "a genuinely deliberate
+  structural beat". 45 of 77 is texture, not punctuation.
+
+Precedent worth following: `retention_fast` already sets
+`whoosh_enabled=False` because density buried it (analysis.md decisions
+5+5a - one clip played ~100 times per reel). This is the same failure in
+a different kind, and the existing answer was a per-style gate.
+
+### Scope
+
+Planner-side changes are NOT in scope: this is renderer level/duration
+work plus settings. Do not touch `sfx_cue` authoring, `_cap_sfx_cues`,
+the ducking from A11, or the diegetic LUFS normalisation.
+
+**Ends in:** the same project re-rendered with cues that stop at their
+shot, plus 2-3 transition-level variants in `tmp/sfx-a15/` for the user
+to pick by ear. Numbers in the log: per-cue played length vs shot length,
+and the transition count and level.
 
 ---
 
@@ -4349,6 +4725,876 @@ all explicitly left untouched, per this task's own "Do NOT" list.
 - The pre-existing `render` table fingerprint-uniqueness gap
   (`test_skeleton.py`, flagged in P-LF-A8) — unrelated to this diff,
   still unfixed, still out of scope.
+
+---
+
+### P-LF-A12 — The frontend surfaces the cue, and knows the new step (2026-09-01)
+
+**Scope executed:** §3 A12's three gaps in full (step label, `Shot.
+sfx_cue` on the frontend type, cue visibility + a working clear action at
+the review gate), plus the scoping decision the task required for the
+clear action. **Not started:** any other lettered task; the renderer,
+the planners, the workflow steps, and every level/duck setting were not
+touched, per this task's own "mostly frontend" framing. `SfxKind`'s
+frontend type (still `"whoosh" | "stinger" | "transition"`, missing
+`"diegetic"`) and `SfxClipSelection`'s frontend type (still missing
+`shot_id`/`loudness_lufs`, both real backend fields since A8/A11) were
+found but NOT touched — neither is one of A12's three named gaps, and
+this task's own brief says "nothing else."
+
+**Changes (file:line):**
+
+- `frontend/src/lib/steps.ts:16-28` — `generate_diegetic_sfx` added to
+  `STEP_ORDER` between `resolve_assets_generate` and `await_review`,
+  matching `DEFAULT_PIPELINE`'s real order (confirmed against
+  `backend/app/workflow/engine.py:146-159`: `GenerateDiegeticSfxStep()`
+  sits immediately after `resolve_assets_generate` and before
+  `AwaitReviewStep()`). Label `'Generating sound effects'` added to
+  `STEP_LABEL`, in the register of its neighbour
+  (`resolve_assets_generate: 'Generating images for the remaining
+  shots'`). `:1-15` — the module docstring's "matching ... exactly"
+  claim corrected: `RomanizeCaptionsStep` (`name = "romanize_captions"`,
+  between `select_sfx` and `narration` in the real pipeline) is ALSO
+  absent from `STEP_ORDER` — a separate, pre-existing gap, not one of
+  A12's three named gaps, left unfixed per this task's own "nothing
+  else" (§0.1 rule 3: finding recorded, plan text not silently left
+  claiming something false without a note).
+- `frontend/src/lib/types.ts:227-236` — `Shot.sfx_cue: string | null`
+  added, comment in `text_card`'s own style: empty on almost every shot,
+  what it means when set, and that it is a spend
+  (`sfx_diegetic_cost_cents_estimate`) the reviewer is approving
+  sight-unseen without this field surfaced.
+- `frontend/src/pages/AssetReviewGate.tsx` — `ShotCard` (:396+) now
+  computes `sfxCue` the same way it already computes `textCard`, and
+  renders it as its own row (a `Volume2` icon, the cue text, ~6¢-per-cue
+  note, and a `Clear` button wired to `onClearSfxCue`/`clearingSfxCue`)
+  whenever `plan?.sfx_cue` is non-blank — visible in both the flat
+  shot list (isBackstop and small-project paths) and the grouped
+  `SceneExpandedShots` path, since both render through the same
+  `ShotCard`. `SceneExpandedShots` (:353+) and the two `ShotCard`
+  call sites (flat list and grouped) thread `onClearSfxCue`/
+  `clearingSfxCue(ShotId)` through. `AssetReviewGate` (:500+) adds
+  `useClearShotSfxCue` and `handleClearSfxCue`, toasting success/failure
+  the same way every other correction on this page does.
+- `frontend/src/lib/api.ts` — `clearShotSfxCue(projectId, shotId)`, a
+  bare `POST` to the new backend endpoint, docstring naming why it is
+  NOT `overrideSfx`.
+- `frontend/src/lib/queries.ts` — `useClearShotSfxCue`, same trigger
+  shape as `useOverrideShot` (`onSettled: invalidateAfterTrigger`).
+- `backend/app/api/projects.py` (new endpoint, ~75 lines) —
+  `POST /{project_id}/shots/{shot_id}/sfx-cue/clear`, inserted
+  immediately after `override_shot_asset` (see the scoping decision
+  below for why this exists at all).
+
+**The scoping decision (required by the task):** added a narrow new
+endpoint, NOT the existing timeline-edit path — because no existing path
+covers "edit exactly one field on one shot" without bundling something
+else. `generate_shot_image`'s prompt edit is the nearest existing
+"correct one shot's own text" precedent, but it exists specifically to
+edit-then-generate in one call, always followed by a real (or
+cache-hit) image generation — reusing it to ALSO carry a bare `sfx_cue`
+clear would either force a pointless image regeneration alongside every
+cue-clear, or need a new parameter whose presence means "skip the image
+part," which is a worse shape than a dedicated endpoint. `POST /sfx/
+{kind}/override` was ruled out per the task's own instruction (400s for
+`diegetic` by design, and widening it was explicitly forbidden). The new
+endpoint is deliberately NOT built on `_resume_after_human_correction`
+(which always resumes) — it copies `override_shot_asset`'s OWN two-branch
+shape instead (re-approve-and-resume only if already approved; otherwise
+join the existing run without resuming), for the identical reason that
+docstring gives: a `produced_by=HUMAN` version resumed before approval
+would make `NarrationStep.is_satisfied` see a non-`NARRATION` version and
+re-run narration for real money. This is not a stylistic echo —
+`sfx_cue` clearing is expected to happen mostly AT the first gate,
+pre-approval, exactly where that failure mode bites hardest.
+
+**Why clearing needs no other change (the `is_satisfied`/render
+verification the task asked for):** read, not assumed, from
+`backend/app/workflow/steps/generate_diegetic_sfx.py:86-87` and
+`backend/app/renderer/sfx.py:119-120`. `_cue_bearing_shots` (what
+`GenerateDiegeticSfxStep.is_satisfied`/`.run` both iterate) is
+`[shot for shot in timeline.all_shots() if (shot.sfx_cue or "").strip()]`
+— a shot with a cleared `sfx_cue` drops out of this list entirely, so it
+is never counted as pending, never marked `failed`, and never retried;
+it simply stops being a cue-bearing shot. Independently,
+`derive_sfx_events`'s DIEGETIC branch is gated on the exact same
+`(shot.sfx_cue or "").strip()` check, so the renderer never schedules a
+mux event for a cleared shot regardless of whether a `SfxClipSelection`
+for it already exists in `sfx_plan.clips` from an earlier
+`GenerateDiegeticSfxStep` run (that entry is left in place, untouched,
+and is provably inert — nothing keys off it without a live event). One
+field, cleared once, is both gates satisfied correctly: "no sound for
+this shot," never "regenerate."
+
+**Measured:**
+
+- Frontend build: `npm run build` (`tsc -b && vite build`, the project's
+  own combined typecheck+build script per `frontend/package.json`) →
+  clean, `dist/assets/index-B3MEC_By.js` 429.63 kB, 10.05s, zero
+  TypeScript errors.
+- `npm run lint` (`oxlint`) → 3 pre-existing warnings, all in
+  `components/ui/{toast,button,badge}.tsx`, none touched by this task;
+  zero new warnings or errors.
+- Backend: `ruff check app/api/projects.py tests/unit/api/
+  test_clear_sfx_cue_api.py` → clean.
+- New backend test file `backend/tests/unit/api/
+  test_clear_sfx_cue_api.py` (6 tests, same fully-faked-DB idiom as
+  `test_sfx_override_api.py` — real FastAPI routing, `get_db`/`get_repo`/
+  `get_timeline_service` all overridden, `start_workflow_run` AND
+  `WorkflowRunRepository` monkeypatched at `app.api.projects`'s own
+  namespace): missing-timeline 400, unknown-shot 404, no-cue 400, the
+  DRAFT branch (asserts `started == []` — the engine is NOT resumed —
+  and the transformed document has `sfx_cue is None`), the
+  already-APPROVED branch (asserts `started == [project_id]` and
+  `approved_versions` was called), and that a second, cue-less shot is
+  untouched. `python -m pytest --noconftest tests/unit/api/
+  test_clear_sfx_cue_api.py -q` → 6 passed.
+- Regression: `python -m pytest --noconftest tests/unit/api -q` → 21
+  passed (the 6 new plus the 15 pre-existing `test_sfx_override_api.py`/
+  `test_override_panel.py`/`test_frame_aspect.py` tests, all still
+  green).
+- `python -c "import app.api.projects"` → imports cleanly, and the new
+  route (`/projects/{project_id}/shots/{shot_id}/sfx-cue/clear`) is
+  present on `router.routes`.
+
+**DB leak check (§4.6):** this task made **zero writes to the real
+Postgres** — every test above uses a fully faked `get_db`/`get_repo`/
+`get_timeline_service` (no `AsyncSession`, no engine, ever instantiated
+against the real database), verified by construction (read the test
+file: `get_db` is overridden to yield a bare in-memory `_FakeSession`
+whose `commit()` is a no-op counter). A read-only `SELECT count(*) FROM
+project` taken at the START of this task's DB check found **71** rows,
+not the documented baseline of 22/23 — a 49-row leak matching §4.6's
+EXACT name patterns (`shot-planner-test` x21, `scene-planner-test` x11,
+`asset-planner-test` x8, `director-planner-test` x4, `act-planner-test`
+x2, `constraint-check-test` x2, `depiction-check-test` x1; `other` = 22,
+consistent with baseline), timestamped `2026-09-01 09:23-09:24 UTC` —
+minutes before this check, not attributable to any command this task
+ran (this task's only `pytest` invocations targeted `tests/unit/api`,
+which contains no planner tests and touches no real DB dependency; the
+timestamps also precede this task's own test runs). Read-only,
+untouched, not purged here: this leak was not caused by A12, its origin
+is unverified (most likely a concurrent `--noconftest` planner-test run
+from another session against the same shared DB), and purging rows this
+task cannot attribute is exactly the risk §4.6 and the hard rules both
+warn against. **Flagged for whoever picks up next**, using §4.6's own
+recipe once its origin is confirmed and any in-flight run has finished.
+
+**Verification (exact commands):**
+
+- `cd frontend && npm run build` → clean (see Measured).
+- `cd frontend && npm run lint` → clean (see Measured).
+- `cd backend && ruff check app/api/projects.py tests/unit/api/
+  test_clear_sfx_cue_api.py` → clean.
+- `cd backend && python -m pytest --noconftest tests/unit/api -q` → 21
+  passed.
+- `cd backend && python -c "import app.api.projects as m; print([r.path
+  for r in m.router.routes if 'sfx-cue' in r.path])"` →
+  `['/projects/{project_id}/shots/{shot_id}/sfx-cue/clear']`.
+
+**Effects / notes for the reviewer:**
+
+- **A human still needs to click through this** (§0.1 rule 4): open a
+  project with at least one `Shot.sfx_cue` at the review gate, confirm
+  the cue row renders with the right text and cost note, click Clear,
+  confirm the row disappears and a toast confirms it, and confirm the
+  progress view shows "Generating sound effects" between image
+  generation and render on a real (or dry-run) pipeline run that carries
+  at least one cue. None of this was clicked through by this task — it
+  is unit-tested and typechecked, not eyeballed.
+- **Clearing is one-way in this UI slice.** There is no "restore this
+  cue" action anywhere (matching the backend endpoint's own framing:
+  "no corresponding restore call"). A reviewer who clears a cue by
+  mistake has no undo short of a full re-plan. Acceptable for a first
+  pass — the same "no way to veto short of editing the timeline"
+  tradeoff §4.8 already named as acceptable for now — but worth flagging
+  explicitly since this task is what makes clearing possible at all.
+- **The clear button has no confirmation dialog**, unlike scene-approve/
+  spend-confirm/video-generate elsewhere on this page. Deliberate: unlike
+  those, clearing a cue before `GenerateDiegeticSfxStep` has run costs
+  nothing to undo-by-inaction (the spend simply never happens), so it
+  follows the same "free, immediate action" precedent `POST /sfx/{kind}/
+  override`'s disable path already set, not the "irreversible spend"
+  dialog precedent.
+- **The A8 §4.8 "no per-cue opt-in" gap is only partially closed.** A12
+  gives a reviewer a way to VETO a cue the planner wrote; it does not
+  give a way to ADD one, or to select from alternatives — the planner's
+  own restraint is still the only thing controlling how many cues a
+  video gets. Out of A12's scope (not one of its three named gaps).
+
+**What is NOT done:**
+
+- The human viewing/clicking pass named above.
+- `RomanizeCaptionsStep` remains absent from `frontend/src/lib/steps.ts`
+  — a real, separate gap this task's own read of the file surfaced, left
+  unfixed as scope creep A12's own brief ruled out.
+- Frontend `SfxKind`/`SfxClipSelection` types still lag the backend
+  (`diegetic`, `shot_id`, `loudness_lufs` all missing) — found, not
+  fixed, not one of A12's three gaps.
+- No "add a cue" or "pick from alternatives" UI — veto only, per A12's
+  own scope.
+- The pre-existing 49-row DB leak named above — flagged, not purged,
+  not attributable to this task.
+
+---
+
+### P-LF-A13 — A human-uploaded asset gets no focal, so the camera aims at nothing (2026-09-01)
+
+**Scope executed:** both halves of §3 A13, exactly as scoped. **A13a** —
+`override_shot_asset` now calls `locate_subject_focal` then
+`persist_vision_focal` on a per-shot upload, mirroring
+`resolve_assets.py:1352-1370`, guarded by a `read_focal_sidecar` check so
+a repeat upload of identical bytes never re-pays for the call, and with
+every failure mode (refusal, provider error, or anything unexpected from
+this new call site) degrading silently to today's centred behaviour
+without ever blocking the upload. **A13b** — optional `focal_x`/`focal_y`
+Form fields; supplied means recorded verbatim under a new
+`FOCAL_SOURCE_HUMAN`, written last and unconditionally so it always
+outranks a vision answer for the same content hash; absent falls back to
+A13a. **Not started:** the UI half (clicking a point on the image) — out
+of scope per the task's own framing, the API had to exist first. Nothing
+else in the plan was touched — `fal_image`, `upload_assets` (bulk),
+`ken_burns.py`, the renderer, the planners, and SFX are all untouched.
+
+**Changes (file:line):**
+
+- `backend/app/assets/focal.py:25-31` — new `FOCAL_SOURCE_HUMAN = "human"`
+  constant, documented as outranking `FOCAL_SOURCE_VISION` the way
+  `asset_locked` outranks a re-plan.
+- `backend/app/api/projects.py:96-102` — imports `FOCAL_SOURCE_HUMAN`,
+  `normalize_focal`, `persist_vision_focal`, `read_focal_sidecar`,
+  `write_focal_sidecar` from `app.assets.focal`, and `locate_subject_focal`
+  from `app.assets.focal_check`. `:112` — `get_logger` import; `:174` —
+  module-level `logger = get_logger(__name__)` (this file had no logger at
+  all before this task).
+- `backend/app/api/projects.py:1463-1464` — `focal_x: float | None =
+  Form(None)`, `focal_y: float | None = Form(None)` added to
+  `override_shot_asset`'s signature.
+- `backend/app/api/projects.py:1507-1521` — docstring addition explaining
+  the A13 behaviour (outranking, degrade-on-failure, the half-answer 4xx).
+- `backend/app/api/projects.py:1543-1557` — A13b validation, run BEFORE
+  the file is even read: `human_focal = normalize_focal(focal_x, focal_y)`
+  when either coordinate was supplied; a supplied-but-invalid combination
+  (one coordinate missing, or non-finite) is a 400 naming both field
+  values, using `normalize_focal`'s own rules rather than a new bounds
+  check — an out-of-range-but-finite value (e.g. `1.5`) is clamped by
+  `normalize_focal` exactly as it already was for a vision answer, not
+  rejected.
+- `backend/app/api/projects.py:1568` — `assets_dir` is now computed
+  unconditionally (previously only inside `if asset is None:`), because
+  the focal block below needs it whether or not this content hash already
+  has an asset row.
+- `backend/app/api/projects.py:1587-1644` — the new focal block, placed
+  right after the existing asset lookup/insert: `if human_focal is not
+  None: write_focal_sidecar(..., source=FOCAL_SOURCE_HUMAN)` (always
+  overwrites); `elif read_focal_sidecar(assets_dir, content_hash) is
+  None:` guards the vision call (skipped entirely if a sidecar already
+  exists for this hash, from either a prior vision call or a prior human
+  answer); the vision call itself is wrapped in `try/except Exception`
+  (belt-and-braces beyond what `locate_subject_focal` already swallows
+  internally), logging `focal.override_vision_call_failed` and falling
+  through with `vision_focal = None` on any failure; `persist_vision_focal`
+  is called only when `vision_focal is not None`, exactly mirroring
+  `resolve_assets.py`'s own "only write on a usable answer" discipline.
+- `backend/tests/unit/api/test_focal_override_api.py` (new, 10 tests) —
+  the vision path, explicit-coords path (verbatim values, vision skipped),
+  vision failure degrading gracefully (both a `None` answer and a raised
+  exception), repeat upload not re-calling the provider, explicit coords
+  overwriting an existing vision sidecar, both half-answer 400s, and
+  out-of-range-but-finite coords clamping rather than rejecting.
+
+**Video-upload guard, read not assumed:** `override_shot_asset` validates
+uploads with `validate_and_identify_image` only — there is no video
+branch anywhere in this endpoint (unlike the search rung, which handles
+both and gates focal on `not is_video_candidate`). A video upload here
+always 400s at `validate_and_identify_image` before reaching any focal
+code, so the "skip video" guard is satisfied by construction, not by a
+new `if` — noted at `projects.py:1595-1598` for the next reader rather
+than left as a silent assumption.
+
+**Measured:**
+
+- Unit tests: `cd backend && python -m pytest --noconftest
+  tests/unit/api/test_focal_override_api.py -q` → **10 passed** (13.4s).
+  Full-suite regression: `python -m pytest --noconftest tests/unit/api -q`
+  → **31 passed** (the 10 new plus the 21 pre-existing
+  `test_sfx_override_api.py`/`test_clear_sfx_cue_api.py`/
+  `test_override_panel.py`/`test_frame_aspect.py` tests, all still green).
+  `ruff check app/api/projects.py app/assets/focal.py
+  tests/unit/api/test_focal_override_api.py` → clean.
+- **Real-data proof, against the real Postgres and a real OpenAI key**
+  (`.env`: `DRY_RUN=false`), on project `3d56cf87-1322-42a6-b29a-9ddb7cd05747`
+  ("Radar and worlwar2" — NOT "The old age dilemma", NOT
+  `c872ebbd-...`/"The nuclear lake", per the task's own exclusion; its
+  timeline was `DRAFT`/`awaiting_approval`, so every override below took
+  the join-existing-run branch — no resume, no render, no re-narration).
+  The shared dev server on :8000 was running code from before this
+  task's edits (started 09:45 UTC, no `--reload`), so the first probe
+  (a plain `curl` through it, shot `sc_01_sh_02`) proved nothing about
+  the new code — confirmed by finding no sidecar afterwards. Every
+  real-data claim below instead ran through a bare, non-pytest script
+  (`backend/tmp/a13-proof/run_real_override.py`,
+  `run_real_override_2.py`) using `TestClient(app)` in-process against
+  the *current* code and the *same real* Postgres/storage, same
+  discipline as `tests/e2e/test_upload_and_override_api.py` minus the
+  `dry_run=True` pin — never touching `conftest.py`.
+  - **A13a, vision path** (shot `sc_01_sh_03`, a real downloaded JPEG,
+    `content_hash=90bad7e1f9d1…`): one real call to
+    `https://api.openai.com/v1/chat/completions` (740 input / 41 output
+    tokens, `cost_cents=0` — rounds to zero at this size, confirmed via a
+    read-only `select … from llm_call where agent='subject_focal'`), and
+    `backend/storage/3d56cf87-…/assets/90bad7e1….focal.json` appeared:
+    `{"content_hash":"90bad7e1…","focal_source":"vision","focal_x":0.5,
+    "focal_y":0.78}`.
+  - **A13a, cache check** (shot `sc_02_sh_01`, identical bytes, same
+    hash): re-uploading with no coordinates produced **zero** new
+    `api.openai.com` requests in the log — the existing sidecar was
+    found and the provider was never called.
+  - **A13b, explicit coords outrank vision** (same shot, same hash,
+    immediately after): overriding again with `focal_x=0.12,
+    focal_y=0.88` produced **zero** new vision calls and overwrote the
+    sidecar: `{"content_hash":"90bad7e1…","focal_source":"human",
+    "focal_x":0.12,"focal_y":0.88}` — confirmed by reading the file
+    after each of the two calls.
+  - Net effect on that project: 3 shots (`sc_01_sh_02`, `sc_01_sh_03`,
+    `sc_02_sh_01`) are now `asset_locked` against a downloaded stock
+    photo, timeline bumped from version 49 to 53 — all pre-approval, so
+    nothing rendered or was billed beyond the one vision call above.
+    **Flagged for the user**, since this is a real, if low-stakes,
+    project and not a disposable fixture; the shots can be overridden
+    back (or the project abandoned, since it was `awaiting_approval`
+    with no completed render) if this content matters.
+- **§4.6 DB check:** read-only `select count(*) from project` → **23**,
+  not the plan's stated baseline of 22 — `SELECT … order by created_at
+  desc` shows "The old age dilemma" (`a4b82286-…`) itself was
+  re-created at `2026-09-01T09:46 UTC`, before this task started; a
+  second read-only query (`created_at > '2026-09-01T10:30:00+00:00'`)
+  found **zero** projects created during this task's own work. This
+  task performed **zero** `pytest` runs against the real database (every
+  unit test uses a fully faked `_FakeSession`/`_FakeAssetRepository`/
+  `_FakeShotBindingRepository`/`_FakeWorkflowRunRepository`, verified by
+  construction) and created **zero** new project rows — the only real-DB
+  writes were the three intentional shot overrides on `3d56cf87-…` named
+  above. **Nothing to purge.** The pre-existing 49-row leak A12 flagged
+  was not re-checked here (out of this task's own scope) and remains
+  whoever picks that up next's problem, not this task's.
+
+**Verification (exact commands):**
+
+- `cd backend && python -m pytest --noconftest
+  tests/unit/api/test_focal_override_api.py -q` → 10 passed.
+- `cd backend && python -m pytest --noconftest tests/unit/api -q` → 31
+  passed.
+- `cd backend && ruff check app/api/projects.py app/assets/focal.py
+  tests/unit/api/test_focal_override_api.py` → clean.
+- `cd backend && python -c "import app.api.projects"` → imports cleanly.
+- `cd backend && python tmp/a13-proof/run_real_override.py` →
+  `HTTP 202`, one `api.openai.com` call logged, sidecar file appeared
+  (contents above).
+- `cd backend && python tmp/a13-proof/run_real_override_2.py` →
+  two `HTTP 202`s, zero `api.openai.com` calls, sidecar overwritten to
+  `focal_source=human` (contents above).
+- Read-only Postgres checks via `async_session_factory()` (project count,
+  `created_at` filter, `llm_call` cost row) — no writes.
+
+**Effects / notes for the reviewer:**
+
+- **How human coords outrank vision, concretely:** both sources write to
+  the exact same file (`{content_hash}.focal.json`, content-hash keyed,
+  same as every other focal sidecar in the system). There is no
+  "priority" field or comparison at read time — outranking is achieved
+  entirely by *write order and unconditionality*: the human branch is
+  checked first and, when it applies, writes unconditionally and returns
+  without ever consulting `read_focal_sidecar`. A vision call only
+  happens in the `elif` — i.e. only when no human coordinates were given
+  on *this* request. A later request that supplies coordinates for an
+  already vision-focaled hash always overwrites it (proven for real
+  above); the reverse (vision overwriting an existing human answer) is
+  structurally impossible, because a request with no coordinates takes
+  the `elif` branch, which itself refuses to call vision when a sidecar
+  (of *any* source) already exists.
+- **Vision-failure behaviour:** three independent layers, from innermost
+  to outermost. (1) `locate_subject_focal` itself returns `None` on a
+  `TransientError`/`PermanentError`/refusal/malformed verdict — never
+  raises for those. (2) This task's new `try/except Exception` around
+  the call is belt-and-braces for anything (1) doesn't already catch,
+  since A13's own contract ("never block the upload") is stronger than
+  what the existing helper promises for a callsite it wasn't originally
+  written to serve. (3) `persist_vision_focal` is only called when
+  `vision_focal is not None` — on any failure, no sidecar is written at
+  all, and the existing render-time fallback (`resolve_shot_focals`,
+  `app/assets/focal.py`) logs `focal.fallback reason=no_sidecar` and aims
+  at centre, identically to every other never-focaled asset in the
+  system today. The upload's own HTTP response is unaffected either way
+  — the focal block never raises past the endpoint.
+- **Repeat-upload cache check:** keyed by content hash via
+  `read_focal_sidecar`, independent of the asset row — so it applies
+  whether the asset already existed (e.g. this exact photo was uploaded
+  to a *different* shot before) or is brand new, and independent of
+  which source (vision or human) produced the existing sidecar. Proven
+  for real against the live OpenAI API above (zero extra calls on
+  re-upload).
+- The docstring addition documents all of this for the next reader who
+  opens `override_shot_asset` cold, per this plan's own §0.1 pickup
+  discipline.
+
+**What is NOT done:**
+
+- **The UI half** — clicking a point on the uploaded image to set
+  `focal_x`/`focal_y` — explicitly out of scope for this task; the API
+  now exists for it to call.
+- **The human viewing pass** named in A13's own "Ends in": *"a human
+  watching a punch-in on an off-centre portrait aim at the subject
+  rather than the middle."* Not done — this task proved the sidecar
+  appears with the right numbers on real data, but nobody has watched a
+  render use it yet. **Marked "built, awaiting human pass."**
+- The pre-existing 49-row DB leak A12 flagged, and the baseline-vs-actual
+  project-count discrepancy noted above — flagged, neither investigated
+  nor purged, out of this task's own scope.
+
+---
+
+### P-LF-A14 — Cue rate and repetition need a post-gather pass, not more prompt wording (2026-09-01)
+
+**Scope executed:** exactly A14 from §3 — a new `_cap_sfx_cues` post-gather
+pass in `app/planners/shot/planner.py`, called from `ShotPlanner.plan()`
+right after `_cap_glitch_transitions`; a new `settings.sfx_cue_min_shot_gap`
+setting; and a small tightening of the `sfx_cue` bullet in
+`app/prompts/shot_planner/v1.md`. Nothing else. `derive_sfx_events`,
+`mux_sfx`, `sfx_levels.py`, any level/duck setting,
+`GenerateDiegeticSfxStep`, the renderer and the frontend were not touched
+(`git diff --stat` confirms only the three files above plus one new test
+file). No schema change, no new fingerprint input — `sfx_cue` already
+reaches `compute_render_fingerprint` (A8) and this pass only clears
+values.
+
+**Changes:**
+- `backend/app/core/config.py:437-458` — new `sfx_cue_min_shot_gap: int
+  = 6`, placed immediately after `text_card_min_shot_gap` with a comment
+  stating the arithmetic (below).
+- `backend/app/planners/shot/planner.py:274-312` — `_SFX_CUE_STOPWORDS`
+  (function words only; content words, including mood adjectives like
+  "faint"/"distant", are deliberately kept) and
+  `_SFX_CUE_DUPLICATE_THRESHOLD = 0.5`.
+- `backend/app/planners/shot/planner.py:317-322` — `_sfx_cue_tokens`:
+  lowercased, stopword-stripped token SET (not sequence) per cue.
+- `backend/app/planners/shot/planner.py:324-330` — `_sfx_cues_are_near_
+  duplicates`: Jaccard overlap on the two cues' token sets against the
+  threshold.
+- `backend/app/planners/shot/planner.py:334-441` — `_cap_sfx_cues`:
+  flattens every shot across scenes (same shape as `_cap_text_cards`),
+  applies the minimum-gap check first, then — only to cues that survive
+  the gap — the near-duplicate check against every previously-KEPT
+  cue's content; rebuilds `Scene`/`Shot` objects via `model_copy` only
+  where a value actually changed; logs `kept`/`cleared_gap`/
+  `cleared_duplicate`/`min_gap`/`duplicate_threshold` as one `WARNING`
+  when anything was cleared, never raises.
+- `backend/app/planners/shot/planner.py:861-867` (`ShotPlanner.plan`) —
+  `capped = _cap_sfx_cues(capped)` inserted between the existing
+  `_cap_glitch_transitions` call and the `chapter_shot_ids`/
+  `_cap_text_cards` block. Operates on a field (`sfx_cue`) independent
+  of the text-card pass, so its position relative to that pass doesn't
+  matter functionally — placed here to sit next to its two siblings, as
+  instructed.
+- `backend/app/prompts/shot_planner/v1.md:112-121` — the `sfx_cue`
+  bullet's "characteristic sound" list no longer includes "weather";
+  a new sentence names weather specifically as a cue to reach for
+  sparingly, since it is the easiest default on any outdoor shot and
+  repeated generic wind reads as noise.
+- `backend/tests/unit/planners/test_shot_planner_sfx_cue_cap.py` — new
+  file, 17 tests, in the `test_shot_planner_text_card_cap.py` idiom.
+
+**Measured:**
+- **Gap arithmetic** (`sfx_cue_min_shot_gap = 6`): the real 3-scene
+  pre-fix probe attempted cues at an average spacing of ~2.5 shots (4
+  cues / 10 shots). A hard floor of `g` shots between KEPT cues means
+  the next kept cue is the first ATTEMPT after the floor expires; on a
+  ~2.5-shot attempt spacing that lands the realised kept spacing at
+  roughly `g` + half of 2.5 (~1.25) shots. `g = 6` → ~7.25, inside the
+  prompt's own "six to ten" target, and — mirroring
+  `text_card_min_shot_gap`'s own justification — set at the *low* end of
+  that range so the pass only trims genuine excess.
+- **Dedupe threshold** (`_SFX_CUE_DUPLICATE_THRESHOLD = 0.5`),
+  calibrated directly against the plan's own two data points: "faint
+  wind across open water" vs "faint wind across open steppe" → tokens
+  `{faint,wind,open,water}` / `{faint,wind,open,steppe}`, intersection
+  3, union 5 → Jaccard **0.60** (must collide — it does, 0.60 ≥ 0.5).
+  "machinery hum" vs "crowd murmuring" → disjoint tokens → **0.0** (must
+  NOT collide — it doesn't, 0.0 < 0.5, the plan's own counter-example
+  for over-aggressive matching). Margin-checked against a harder case
+  sharing only a mood word: "faint dog barking" vs "faint chime
+  tinkling" → intersection 1, union 5 → 0.20, correctly kept distinct —
+  so a shared adjective alone never triggers a collapse.
+- **Real before/after probe**, same project (`c872ebbd-...`, "The
+  nuclear lake"), same first 3 scenes (`act_01_sc_01/02/03`), read
+  directly from the `llm_call` rows the two probe runs left behind
+  (see *Verification*):
+  - **BEFORE** (pre-fix wording, no cap; run recorded 2026-09-01
+    11:47:47 UTC, prior to this task): **4 cues / 10 shots = 1 every
+    2.5** — `faint wind across open water`, `faint wind across open
+    steppe`, `distant heavy explosion rumble`, `faint wind across open
+    steppe`. Exactly the plan's own quoted example.
+  - **AFTER** (tightened prompt + `_cap_sfx_cues`; run recorded
+    2026-09-01 12:00:27 UTC, this task): the model's RAW output (before
+    the cap) was already improved by the prompt change alone — no
+    literal "wind" repeats — but still **3 cues / 9 shots = 1 every
+    3.0**: `faint open-steppe ambience` (scene 2, shot 1), `muffled
+    distant blast rumble` (scene 2, shot 2, one shot later), `distant
+    low explosion rumble` (scene 3, shot 3, 4 shots after the last kept
+    cue). The CAPPED output: **1 cue / 9 shots = 1 every 9.0**, inside
+    the "six to ten" target. Reproduced deterministically offline (no
+    further LLM cost) by feeding the exact three real responses'
+    `sfx_cue`s into `_cap_sfx_cues` directly: log line
+    `shot_planner.sfx_cues_too_dense_trimmed` with `kept=1,
+    cleared_gap=2, cleared_duplicate=0, min_gap=6` — both drops this run
+    were gap-drops (the second and third cues each landed inside the
+    6-shot floor of the previously kept one); the dedupe path is
+    exercised and pinned separately by the unit tests, not by this
+    particular real run, since the tightened prompt happened not to
+    repeat literal wind this time.
+- Unit tests: `test_shot_planner_sfx_cue_cap.py` — 17 passed, 0 failed.
+- Full shot-planner regression set (same 5-file set A4/A6/A7 used, plus
+  the new file): 77 passed, 0 failed (60 pre-existing + 17 new).
+- Purge (see below): 44 → 23 real projects (exactly baseline); 21
+  leaked `shot-planner-test` rows deleted, all leaf-first, 0 orphans
+  afterward in all 10 named child tables and `workflow_step_attempt`.
+
+**Verification:**
+```
+cd backend
+python -m ruff check app/planners/shot/planner.py app/core/config.py tests/unit/planners/test_shot_planner_sfx_cue_cap.py
+# All checks passed!
+python -m pytest --noconftest tests/unit/planners/test_shot_planner_sfx_cue_cap.py -q
+# 17 passed in 2.18s
+python -m pytest --noconftest tests/unit/planners/test_shot_planner.py tests/unit/planners/test_shot_planner_context.py tests/unit/planners/test_shot_planner_glitch_cap.py tests/unit/planners/test_shot_planner_text_card_cap.py tests/unit/planners/test_shot_text_cards.py tests/unit/planners/test_shot_planner_sfx_cue_cap.py -q
+# 77 passed in 9.01s
+
+# Real probe re-run (one real LLM call, 3 real scenes, project untouched):
+PYTHONIOENCODING=utf-8 python <scratchpad>/cue_probe.py 3
+# CUE  act_01_sc_02_sh_01     [reveal    ] faint open-steppe ambience
+# 1 cues across 9 shots  -> 1 every 9.0 shots
+# target from the prompt: roughly 1 every 6-10 shots
+```
+`--noconftest` was used throughout per the plan's DB-safety rule; no
+bare `pytest` was ever run.
+
+**Effects / notes for the reviewer:**
+- **The probe DOES exercise the new pass.** `cue_probe.py` calls
+  `ShotPlanner.plan()` directly (not the individual per-scene method),
+  and `plan()` is where `_cap_sfx_cues` is wired in — confirmed both by
+  reading the call site and by the real run above, which emitted
+  `shot_planner.sfx_cues_too_dense_trimmed` (3 raw cues in, 1 survived).
+  The task's own instructions flagged this as needing confirmation
+  either way; it does.
+- **Two independent mechanisms, not one.** The real AFTER run happened
+  to be caught entirely by the GAP mechanism (both drops were
+  `cleared_gap`, `cleared_duplicate=0`) because the tightened prompt's
+  raw output didn't literally repeat "wind" this time — but that is a
+  property of this one real model response, not evidence the dedupe
+  path is dead code: `test_near_duplicate_wind_cues_collide_even_far_
+  apart_in_shot_count` and the parametrized threshold tests exercise it
+  directly and pin the exact plan-quoted collision/near-miss pair. Both
+  mechanisms are needed for the reason stated in the plan: a gap alone
+  cannot catch content repeated far enough apart in shot count, and a
+  dedupe alone cannot catch a rate that's simply too high with entirely
+  distinct content.
+- **Order of checks**: gap first, then duplicate — matches the plan's
+  own ordering (point 1, then point 2) and means a cue that fails BOTH
+  is logged as a gap-drop, not a duplicate-drop. This is a deliberate,
+  documented tie-break (see the docstring), not an accident of
+  implementation order.
+- **A cleared cue means "no sound for this shot," never "regenerate."**
+  Same invariant A12 established for the UI clear, restated in
+  `_cap_sfx_cues`' own docstring. No new fingerprint input: `sfx_cue`
+  already reaches `compute_render_fingerprint` via the Shot payload,
+  and this pass only clears existing values.
+- **Log split from the start**, unlike `_cap_text_cards`' original
+  single `cleared` count (which cost A7 an unnoticed bug per the task's
+  own framing): `cleared_gap` and `cleared_duplicate` are two separate
+  counters in the one `WARNING` line from this pass's first version.
+- **No plan-text contradiction found.** The two data points in §3 A14
+  (zero cues pre-fix wording; 4/10 with 3 near-identical wind post
+  loosened wording) were re-verified directly from the real `llm_call`
+  rows during this task (see *Measured*) and matched the plan's own
+  quoted numbers exactly — no correction needed under §0.1 rule 3.
+
+**What is NOT done:**
+- **No re-plan of a full project** — correct per A14's own "Ends in"
+  line ("Then a real re-plan is worth its cost" — a judgement call left
+  to a human, not part of this slice).
+- **No human listening pass** — not applicable to this slice; nothing
+  audible was generated (the probe's cues were never synthesized via
+  `GenerateDiegeticSfxStep`).
+- The dedupe path was pinned by unit tests but not exercised by the one
+  real LLM call this task spent — flagged above, not treated as a gap
+  in the slice itself.
+- §5/§6's open questions are unaffected and remain open.
+
+**Database purge (required cleanup, per this task's own instructions):**
+Project count at the start of this slice: 44 (baseline 23). A
+name-pattern sweep (`%-planner-test` / `%-check-test` / `%generation-test`
+/ `%-real-test`) found exactly 21 candidates, all named
+`shot-planner-test`, all created 2026-09-01 11:59 (this slice's own
+`test_shot_planner.py`/`test_shot_planner_context.py` DB-backed fixture
+runs, during the regression-set verification above). A same-session
+`ILIKE '%test%'` sweep found exactly one row OUTSIDE the guard —
+`Radar and WW2 (camera-vocab test)` (1 render, 31 assets) — left
+untouched, matching the memory note that it is real. All 21 candidates
+had 0 renders/assets/narrations/generated_clips; backed up as JSON
+(21 rows, `a14_purge_backup.json`, this session's scratchpad) before
+deleting. Deleted leaf-first: `workflow_step_attempt` first via the
+`workflow_run_id IN (SELECT id FROM workflow_run WHERE project_id =
+ANY(...))` subquery (0 rows — no workflow ever ran for these), then the
+10 named child tables (all 0 rows), then the 21 `project` rows.
+**Final state, verified directly: 23 projects (exactly baseline), zero
+orphaned rows** (`LEFT JOIN ... WHERE p.id IS NULL`) in all 10 child
+tables and `workflow_step_attempt`. Confirmed the pre-existing risk is
+real, not theoretical: the closing full-regression re-run (same two
+DB-backed files, run again as a final sanity check after this purge)
+leaked another 21 identically-named `shot-planner-test` rows (44 total),
+which were backed up (`a14_purge_backup_2.json`) and purged the same
+way, landing back on 23 with zero orphans a second time. Re-running
+`test_shot_planner.py`/`test_shot_planner_context.py` will leak the same
+`shot-planner-test`-named rows again — the same pre-existing
+shared-fixture-name risk P-LF-A6/A7/A8 already recorded.
+
+**"The nuclear lake" (c872ebbd-...) was not modified.** Verified
+directly: `timeline_version` still has exactly 8 rows, latest version 8
+dated 2026-08-31 18:54 UTC (before this task started) — the probe's
+`await s.commit()` only persisted `llm_call` rows (three per run, the
+approved cost of the one real probe call), never an `append_version`.
+
+---
+
+### P-LF-A15 — A cue must end when its shot does, and the transition layer needs a level (2026-09-02)
+
+**Scope executed:** §3 A15 in full - both problems. Problem 1: bound the
+diegetic ceiling by the shot (mix side first, then generation side), plus
+the same fix applied to a third site found along the way
+(`_diegetic_duck_windows`, not named in the plan's original "two places"
+- see the plan-text correction added above this entry). Problem 2: no
+level or rate was chosen; a 4-file ladder was rendered so the user can
+pick by ear, exercising the real `_sfx_overlays`/`mux_sfx` functions.
+**Not started:** `sfx_cue` authoring, `_cap_sfx_cues`, A11's duck DEPTH/
+combine-logic design, the diegetic LUFS normalisation basis, any planner
+change, any frontend change - all explicitly out of scope per §3 A15's
+own "Scope" section. No production settings/style toggle was shipped for
+Problem 2's RATE lever - see "What is NOT done".
+
+**Changes (file:line):**
+
+- `app/core/config.py:294-308` (approx) - new `sfx_diegetic_shot_carry_s:
+  float = 0.25` (judgement call 1, justified below), plus a rewritten
+  comment on `sfx_diegetic_model` correcting A8's now-superseded
+  "fixed duration maximises cache reuse" claim (A15 deliberately trades
+  that reuse for correctness - see Measured).
+- `app/workflow/steps/render.py` - new `_diegetic_ceiling_s(shot_duration_s)`
+  helper (shared by both call sites below, so they cannot drift apart
+  again); `_sfx_overlays` now resolves each DIEGETIC event's
+  `max_clip_s` via `_diegetic_ceiling_s(shot.duration_s)` instead of the
+  flat `settings.sfx_diegetic_max_clip_s` (mix-side fix, Problem 1, item
+  2); `_diegetic_duck_windows` now does the same for its own `played_s`
+  (the third site, see the plan-text correction).
+- `app/workflow/steps/generate_diegetic_sfx.py` - `duration_s` moved
+  inside the per-shot loop and computed as `min(settings.
+  sfx_diegetic_max_clip_s, shot.duration_s)` instead of the flat
+  constant (generation-side fix, Problem 1, item 1).
+- `app/renderer/fingerprint.py` / `app/workflow/steps/render.py`'s
+  `compute_render_fingerprint` call - new `sfx_diegetic_shot_carry_s`
+  parameter, hashed unconditionally (R2: it is a real mix input with
+  nowhere else to live, exactly the same shape `sfx_diegetic_max_clip_s`
+  already has). `shot.duration_s` itself needs no new fingerprint entry
+  - it already rides in via the timeline document dump.
+- No change to `mux_sfx`/`_FADE_OUT_S` (judgement call 2 - see Measured:
+  it already covers this path).
+- No change to `app/script/styles.py`, no new settings field for the
+  transition RATE gate, no fingerprint change for it - Problem 2's ladder
+  was produced by a verification-script-only wrapper around the real
+  `derive_sfx_events`, not shipped production code. See "What is NOT
+  done".
+
+**Measured:**
+
+- **Problem 1, before (verified directly against the real project via
+  `TimelineService.get_active`, not re-derived from the plan's own
+  table):**
+
+  | Shot | Shot length | Played | Overrun |
+  |---|---|---|---|
+  | `act_04_sc_05_sh_02` | 3.20s | 8.00s | +4.80s |
+  | `act_02_sc_03_sh_03` | 3.68s | 8.00s | +4.32s |
+  | `act_05_sc_02_sh_02` | 3.88s | 8.00s | +4.12s |
+  | `act_03_sc_01_sh_03` | 3.89s | 8.00s | +4.11s |
+  | `act_01_sc_06_sh_02` | 4.75s | 8.00s | +3.25s |
+  | `act_04_sc_02_sh_02` | 5.20s | 8.00s | +2.80s |
+  | `act_03_sc_04_sh_02` | 7.82s | 8.00s | +0.18s |
+
+  Matches the plan's own table (rounding only) - confirmed, not assumed.
+  Also found one ORPHANED 8th diegetic clip on `act_01_sc_01_sh_03` (no
+  `sfx_cue` on that shot any more, presumably cleared by an earlier
+  pass) - it never fires as an event (confirmed via
+  `derive_sfx_events`: exactly 7 DIEGETIC events, matching the 7
+  cue-bearing shots), so it is inert clutter, not a bug this task
+  touches.
+
+  **After** (measured directly from the real, fixed `_sfx_overlays`
+  output - `SfxOverlay.max_clip_s`/`trim_start_s`, not estimated):
+
+  | Shot | Shot length | Played | Overrun |
+  |---|---|---|---|
+  | `act_04_sc_05_sh_02` | 3.20s | 3.45s | +0.25s |
+  | `act_02_sc_03_sh_03` | 3.68s | 3.93s | +0.25s |
+  | `act_05_sc_02_sh_02` | 3.88s | 4.13s | +0.25s |
+  | `act_03_sc_01_sh_03` | 3.89s | 4.14s | +0.25s |
+  | `act_01_sc_06_sh_02` | 4.75s | 5.00s | +0.25s |
+  | `act_04_sc_02_sh_02` | 5.20s | 5.45s | +0.25s |
+  | `act_03_sc_04_sh_02` | 7.82s | 8.00s | +0.18s (unchanged - the clip itself is only 8.0s, already inside the new ceiling) |
+
+  Every real overrun (2.8-4.8s) is now the deliberate 0.25s carry, or
+  unchanged where the clip already fit.
+
+- **Problem 2, confirmed directly (not re-derived from the plan):** 45
+  TRANSITION events (every non-cut transition: 40 `dissolve` + 5
+  `fadeblack`), 0 WHOOSH (zero punch-in shots - camera movements are
+  slow_zoom 23/pull_back 18/pan 19/static 12/slow_push 3/split_frame 2),
+  5 STINGER. `sfx_transition_gain_db` is `None` (falls through to
+  `effective_gain_db`'s peak-normalization path, not literally the flat
+  `sfx_gain_db=-8.0` fallback the plan's prose describes - that fallback
+  only applies to an UNMEASURED clip, and this project's transition clip
+  has a measured peak of -9.3 dBFS, so the fallback is never actually
+  reached here. The plan's "10dB louder... at -18" framing is the
+  original author's own ear+measurement on the mixed audio, not
+  re-derived or disputed by this entry - only the CODE PATH claim is
+  corrected).
+- **Cache-density trade-off (a real consequence of the generation-side
+  fix, not previously named):** requesting `min(sfx_diegetic_max_clip_s,
+  shot.duration_s)` instead of a fixed 8.0s means two shots with the
+  IDENTICAL cue text but different shot lengths no longer land on the
+  same `compute_sfx_generation_hash` cache key - A8's own "maximises
+  reuse" design goal is deliberately traded for correctness (and, per
+  the plan's own cost note, for a cheaper bill: 40 credits/s times a
+  shorter request).
+- Judgement call 1 (bleed allowance): **0.25s**, a new
+  `sfx_diegetic_shot_carry_s` setting. Chosen because it sits inside the
+  plan's own named "0.2-0.3s might be desirable" range, is roughly a
+  frame-and-a-half at 24fps (imperceptible as a hard edit, audible as a
+  soft one), and is an order of magnitude below the 2.8-4.8s overruns it
+  replaces. Not ear-tuned - flagged as a starting point in `config.py`'s
+  own comment, same epistemic status A8/A11's own unmeasured constants
+  carry.
+- Judgement call 2 (fade at the trim): **no code change** -
+  `mux_sfx`'s `afade=t=out:st={fade_start}:d={fade_s}` is emitted
+  UNCONDITIONALLY for every overlay (read directly at
+  `app/renderer/sfx.py` inside the `for index, overlay in
+  enumerate(ordered, start=1)` loop - the `if overlay.trim_start_s > 0`
+  branch only picks which `atrim` string to use, never whether to fade),
+  with `fade_s = min(_FADE_OUT_S, clip_ceiling / 2)` computed from
+  whatever `clip_ceiling` is in effect. Since the new per-shot ceilings
+  (3.2-8.0s) are always far more than double `_FADE_OUT_S` (0.08s), every
+  trimmed cue already gets an 80ms fade at its new, shorter end. Verified
+  by reading the function, not assumed.
+
+**Verification (exact commands):**
+
+- **No pytest was run at any point in this task** - per the task's own
+  explicit instruction (the shared dev Postgres is mid a live-test
+  session per the standing memory note). All checks below are either
+  direct reads of the fixed code, a pure-function check via `python -c`,
+  or the real render.
+- Read-only DB inspection (`asyncpg`, one connection, SELECT only):
+  `python <scratchpad>/inspect_a15.py` and `<scratchpad>/dump_shots.py` -
+  confirmed the plan's Problem 1/2 numbers directly against
+  `6cb32bfe-2680-481f-b86c-548d1468c1f1`'s real, active Timeline (see
+  Measured).
+- Overlay-level fix check (no rendering, pure function call):
+  `python <scratchpad>/check_overlays.py` - calls the real, FIXED
+  `render.py::_sfx_overlays` directly and prints every DIEGETIC overlay's
+  `max_clip_s`/`trim_start_s` - this is the table in Measured "After".
+- Real render, full 77-shot project, 4 variants:
+  `python <scratchpad>/render_a15_variants.py` - for each variant, calls
+  the real `_sfx_overlays` (with `settings.sfx_transition_gain_db`
+  temporarily overridden for the level variants, and
+  `render.derive_sfx_events` temporarily wrapped - script-only, restored
+  in a `finally` - to filter TRANSITION events down to structural-only
+  for variant 04), then the real `mux_sfx` and `apply_loudness_target`,
+  against the project's own already-existing
+  `storage/<project>/work/pre_sfx_final.mp4` (the exact real intermediate
+  `render_video` itself produces immediately before its own `mux_sfx`
+  call - narration and music already mixed, nothing re-encoded). Output:
+  `tmp/sfx-a15/{01..04}_*.mp4`, all four ffprobe-verified at 278.1s /
+  1280x720 h264 / mono aac 44.1kHz (matching `pre_sfx_final.mp4` and the
+  project's own shipped `final.mp4` exactly), with four distinct SHA-256
+  hashes (confirming the variants really differ).
+- **No DB write occurred:** re-queried `timeline_version`/`render` for
+  this project after the render script ran - latest rows in both tables
+  are still dated 2026-09-01 (before this session), latest
+  `timeline_version` is version 103. `TimelineService.get_active` issues
+  a single read-only `SELECT`; nothing in the verification script ever
+  calls `append_version` or `RenderRepository.insert_completed`.
+- **`storage/<project>/renders/{draft,final}.mp4` untouched:** file sizes
+  and mtimes identical before and after (`ls -la`, both dated
+  2026-09-02 01:51 / 02:31, before this session started).
+
+**Effects / notes for the reviewer:**
+
+- **The mix side was fixed and verified first**, per the task's own
+  instruction, and stands on its own: the existing 8.0s-generated clips
+  stay cached and valid, and the "After" table above is entirely a mix-
+  time effect - no new generation call was made or needed to fix THIS
+  project's audible bug.
+- **The generation-side fix only affects FUTURE cues.** No existing
+  clip was regenerated by this task; the 7 real 8.0s clips on disk are
+  unchanged, and the mix-side ceiling is what actually shortens their
+  PLAYED length.
+- **Problem 2 shipped no production toggle, deliberately.** The task
+  said not to pick a level or a rate; there is currently nothing left to
+  build once one is chosen except plumbing `sfx_transition_gain_db` (real
+  setting, already exists, just currently unset) and, if the RATE lever
+  is the one chosen, a real per-style gate mirroring
+  `resolve_sfx_whoosh_enabled`/`StylePacingBand.whoosh_enabled` exactly
+  (`app/script/styles.py`) - the plan's own cited precedent - threaded
+  through `derive_sfx_events`/`_sfx_overlays`/`_diegetic_duck_windows`
+  and hashed into `compute_render_fingerprint` (R2), the same shape
+  `sfx_whoosh_enabled` already has. This was deliberately NOT built now:
+  building it before the human hears the ladder would be picking the
+  rate.
+- **The verification render reuses `pre_sfx_final.mp4` rather than
+  slicing the project down.** This means all four files in `tmp/sfx-a15/`
+  are the REAL, FULL 77-shot video, not a representative excerpt - a
+  stronger verification than the task's own fallback ("if impractical,
+  render a slice") required, made possible because the project's own
+  work directory already held every real intermediate this task needed
+  and none of them needed to be recomputed.
+- **`_diegetic_duck_windows`'s own fix is a consistency correction, not
+  a re-opening of A11's ducking design** - the DEPTH (`sfx_diegetic_
+  duck_depth_db`), the "deeper of the two overlapping windows wins"
+  combine rule, and everything else A11 built are byte-for-byte
+  untouched. Only the WINDOW LENGTH's ceiling now matches
+  `_sfx_overlays`' new one, which is exactly what that function's own
+  pre-existing docstring already promised before this task existed.
+
+**What is NOT done:**
+
+- **No human has listened to `tmp/sfx-a15/` yet** - per §0.1 rule 4, this
+  is reported as "built, awaiting human pass", not done.
+- **No production settings/style toggle for the transition RATE lever**
+  (see Effects above) - only a script-local demonstration wrapper.
+  Building the real one is a small, well-precedented follow-up once the
+  human picks a rate, not started here.
+- **No combined level+rate variant was pre-rendered** (e.g., structural-
+  only AND quieter) - the four files isolate each lever independently,
+  per the task's ladder request; a combined file is one settings change
+  away once both are chosen.
+- **The 8th, orphaned diegetic clip** on `act_01_sc_01_sh_03` (see
+  Measured) was not cleaned up - it is inert (never fires as an event)
+  and cleaning it up is not this task's scope (`sfx_cue` authoring/
+  `_cap_sfx_cues` are explicitly out of scope).
+- Per the task's own explicit instruction, **no pytest was run** - no
+  new/updated automated test exists for `_diegetic_ceiling_s`,
+  `generate_diegetic_sfx.py`'s per-shot duration, or the new fingerprint
+  parameter. This is a real gap for whoever picks this back up next: the
+  fix is verified by direct code reading, a pure-function script, and a
+  real render in this task, not by an automated regression test.
 
 ---
 
