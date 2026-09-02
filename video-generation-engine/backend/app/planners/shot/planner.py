@@ -28,6 +28,7 @@ resumability, not sub-call-level.
 """
 
 import asyncio
+import re
 import uuid
 
 from app.core.config import settings
@@ -258,6 +259,183 @@ def _cap_text_cards(
             new_card = decisions[idx]
             if new_card != original_cards[idx]:
                 shot = shot.model_copy(update={"text_card": new_card})
+            new_shots.append(shot)
+            idx += 1
+        out.append(scene.model_copy(update={"shots": new_shots}))
+    return out
+
+
+# A14 (long_form_direction.md, 2026-09-01): stopwords stripped before
+# comparing two `sfx_cue` phrases for near-duplication. Function words
+# only - content words (including generic-sounding descriptors like
+# "faint"/"distant") are deliberately KEPT, since it is exactly the
+# repeated CONTENT words ("wind", "open") that identify a real
+# duplicate; stripping them too would make everything collide.
+_SFX_CUE_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "of",
+        "in",
+        "on",
+        "at",
+        "over",
+        "under",
+        "across",
+        "through",
+        "into",
+        "with",
+        "from",
+        "and",
+        "its",
+        "this",
+        "that",
+        "to",
+        "for",
+    }
+)
+
+# A14: Jaccard overlap (on stopword-stripped token SETS, not sequences -
+# two cues describing the same sound rarely share word order) at or
+# above this counts as a near-duplicate. Calibrated directly against the
+# real probe's own collision and the plan's own counter-example for
+# over-aggressive matching:
+#   "faint wind across open water" vs "faint wind across open steppe"
+#     tokens {faint,wind,open,water} / {faint,wind,open,steppe}
+#     intersection 3, union 5 -> 0.60  (MUST collide)
+#   "machinery hum" vs "crowd murmur"
+#     disjoint tokens -> 0.0            (MUST NOT collide)
+# 0.5 sits with a comfortable margin below the real collision (0.60) and
+# above lighter, non-duplicate overlaps that share only one generic
+# descriptor - e.g. "faint dog barking" vs "faint chime tinkling"
+# (intersection 1, union 5 -> 0.20) - so a shared mood word alone is
+# never enough to collapse two different sounds.
+_SFX_CUE_DUPLICATE_THRESHOLD = 0.5
+
+
+def _sfx_cue_tokens(cue: str) -> frozenset[str]:
+    """Lowercased, stopword-stripped token set for near-duplicate
+    detection."""
+    words = re.findall(r"[a-z']+", cue.lower())
+    return frozenset(w for w in words if w not in _SFX_CUE_STOPWORDS)
+
+
+def _sfx_cues_are_near_duplicates(a: str, b: str) -> bool:
+    tokens_a, tokens_b = _sfx_cue_tokens(a), _sfx_cue_tokens(b)
+    union = tokens_a | tokens_b
+    if not union:
+        # Both cues reduced to nothing but stopwords/punctuation - too
+        # little signal to call them duplicates either way.
+        return False
+    return len(tokens_a & tokens_b) / len(union) >= _SFX_CUE_DUPLICATE_THRESHOLD
+
+
+def _cap_sfx_cues(planned_scenes: list[Scene]) -> list[Scene]:
+    """Enforce a project-wide minimum shot gap between `sfx_cue`s, and
+    drop near-duplicate cues, keeping the first.
+
+    long_form_direction.md A14, third instance of the same structural
+    blindness as `_cap_glitch_transitions`/`_cap_text_cards`: the prompt
+    asks for "roughly one cue every six to ten shots", but the Shot
+    Planner is called ONCE PER SCENE and cannot see cues emitted by
+    other scenes. A real 3-scene probe of "The nuclear lake" measured 4
+    cues across 10 shots (one every 2.5) against that target, and three
+    of the four were near-identical wind ("faint wind across open
+    water" / "... open steppe" / "... open steppe" again, sandwiching
+    one real event). Loosening the prompt further cannot fix either
+    problem: no per-scene call can know it already used wind two scenes
+    ago.
+
+    Two independent mechanisms, because neither alone covers the real
+    failure:
+    - A minimum shot gap (`settings.sfx_cue_min_shot_gap`) bounds RATE
+      mechanically, the same device as `_cap_text_cards`.
+    - A near-duplicate check (`_sfx_cues_are_near_duplicates`) bounds
+      REPETITION - two cues can be far enough apart in shot count to
+      both clear the gap and still both be "wind", which a gap alone
+      would never catch.
+
+    Order: the gap is checked FIRST (mirrors the plan's own ordering,
+    and the gap is the cheaper, content-blind rate limiter); only a cue
+    that survives the gap is then checked against every PREVIOUSLY KEPT
+    cue's content. A cue cleared for either reason counts as "no cue"
+    for the next shot's gap arithmetic - it does not reset the counter,
+    the same convention `_cap_text_cards` uses for a spacing-cleared
+    ordinary card.
+
+    Silently correct + log, per style_extensions.md §2.7 (same
+    reasoning as `_cap_glitch_transitions`/`_cap_text_cards`): the model
+    was structurally denied the information needed to get this right,
+    so a hard failure would punish it for our architecture. A cleared
+    cue means "no sound for this shot", never "regenerate" - it is not
+    a new fingerprint input (`sfx_cue` already reaches
+    `compute_render_fingerprint` via the Shot payload), it only clears
+    an existing one.
+
+    The two drop reasons are logged separately
+    (`cleared_gap`/`cleared_duplicate`) - `_cap_text_cards`' original
+    single `cleared` count (before A7 split it) is exactly why that
+    bug went unnoticed for so long; this pass starts split.
+    """
+    min_gap = settings.sfx_cue_min_shot_gap
+    flat: list[Shot] = [shot for scene in planned_scenes for shot in scene.shots]
+    original_cues: list[str | None] = [(s.sfx_cue or "").strip() or None for s in flat]
+    decisions: list[str | None] = list(original_cues)
+
+    kept_cues: list[str] = []  # content of every SURVIVING cue, in kept order
+    shots_since_kept: int | None = None  # None = no cue kept yet
+    kept = 0
+    cleared_gap = 0
+    cleared_duplicate = 0
+
+    for i, cue in enumerate(original_cues):
+        if cue is None:
+            if shots_since_kept is not None:
+                shots_since_kept += 1
+            continue
+
+        if shots_since_kept is not None and shots_since_kept < min_gap:
+            decisions[i] = None
+            cleared_gap += 1
+            shots_since_kept += 1
+            continue
+
+        if any(_sfx_cues_are_near_duplicates(cue, prior) for prior in kept_cues):
+            decisions[i] = None
+            cleared_duplicate += 1
+            if shots_since_kept is not None:
+                shots_since_kept += 1
+            continue
+
+        kept += 1
+        kept_cues.append(cue)
+        shots_since_kept = 0
+
+    total_cleared = cleared_gap + cleared_duplicate
+    if total_cleared:
+        # stdlib logger - extra={}, never bare kwargs (TypeError). Split
+        # by reason (mirrors A7's split of `_cap_text_cards`' log line)
+        # so this line can say WHICH kind of cue was dropped and why.
+        logger.warning(
+            "shot_planner.sfx_cues_too_dense_trimmed",
+            extra={
+                "kept": kept,
+                "cleared_gap": cleared_gap,
+                "cleared_duplicate": cleared_duplicate,
+                "min_gap": min_gap,
+                "duplicate_threshold": _SFX_CUE_DUPLICATE_THRESHOLD,
+            },
+        )
+
+    out: list[Scene] = []
+    idx = 0
+    for scene in planned_scenes:
+        new_shots: list[Shot] = []
+        for shot in scene.shots:
+            new_cue = decisions[idx]
+            if new_cue != original_cues[idx]:
+                shot = shot.model_copy(update={"sfx_cue": new_cue})
             new_shots.append(shot)
             idx += 1
         out.append(scene.model_copy(update={"shots": new_shots}))
@@ -680,6 +858,12 @@ class ShotPlanner:
         # Both post-gather corrective passes for whole-project rates no
         # single per-scene call can see (prompt_fixes.md §2.1).
         capped = _cap_glitch_transitions(planned_scenes)
+        # A14 (long_form_direction.md §3): same class of pass, over
+        # `sfx_cue` rate/repetition rather than transitions or cards.
+        # Independent field from the text-card cap below, so the two
+        # can run in either order; here purely to sit next to its two
+        # siblings and the glitch cap it directly follows.
+        capped = _cap_sfx_cues(capped)
         # A7 (long_form_direction.md §3): a chapter card is A4's fragment
         # instructing the model to put it on an act-opening scene's FIRST
         # shot - so identify one by shot id, not a new Shot field. Reuse
