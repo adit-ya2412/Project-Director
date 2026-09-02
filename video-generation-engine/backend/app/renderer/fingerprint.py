@@ -181,7 +181,9 @@ def compute_render_fingerprint(
     sfx_gain_db: float,
     sfx_max_clip_s: float,
     sfx_diegetic_max_clip_s: float,
+    sfx_diegetic_shot_carry_s: float,
     sfx_whoosh_enabled: bool,
+    sfx_transition_structural_only: bool = False,
     sfx_normalize_target_db: float,
     sfx_kind_gain_overrides_db: dict[str, float | None],
     sfx_diegetic_normalize_target_lufs: float,
@@ -331,6 +333,13 @@ def compute_render_fingerprint(
         # shorter (or longer) diegetic mix, even on a project with no
         # diegetic clips yet.
         "sfx_diegetic_max_clip_s": sfx_diegetic_max_clip_s,
+        # A15 (long_form_direction.md, 2026-09-01): the per-shot ceiling
+        # is now `min(sfx_diegetic_max_clip_s, shot.duration_s + this)`
+        # (`_diegetic_ceiling_s`) - `shot.duration_s` itself already rides
+        # in via the timeline document dump above, but this carry
+        # allowance does not live anywhere else, same R2 shape as
+        # `sfx_diegetic_max_clip_s` immediately above.
+        "sfx_diegetic_shot_carry_s": sfx_diegetic_shot_carry_s,
         # Decisions 5 + 5a (analysis.md, 2026-08-24): the per-style WHOOSH
         # gate decides which overlay events get mixed at all, so flipping
         # it changes output bytes. Style-derived (render_style in the
@@ -338,6 +347,9 @@ def compute_render_fingerprint(
         # explicitly anyway per this module's own R2 rule: one obvious
         # line per real mux input, present unconditionally.
         "sfx_whoosh_enabled": sfx_whoosh_enabled,
+        # A15: a per-style gate that silences the swoosh on plain
+        # dissolves. Changes real output bytes, so R2 requires it here.
+        "sfx_transition_structural_only": sfx_transition_structural_only,
         # C3c (analysis.md, decision 5b): the normalization target and the
         # per-kind dB offsets are real mix inputs - changing either
         # changes output samples even with byte-identical clips.

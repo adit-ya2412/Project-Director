@@ -292,12 +292,34 @@ class Settings(BaseSettings):
     # on `max_shot_duration_s` (the per-shot ceiling everywhere else in
     # this codebase) as a starting point, not a measured constant.
     sfx_diegetic_max_clip_s: float = 8.0
-    # A fixed generation duration is requested for every cue (not a
-    # per-shot-varying one) so the mandatory prompt-hash cache
-    # (`compute_sfx_generation_hash`) maximises reuse: two shots writing
-    # the identical cue text always land on the same cache key regardless
-    # of their own `duration_s`, rather than fragmenting the cache by
-    # shot length.
+    # A15 (long_form_direction.md, 2026-09-01): a GLOBAL ceiling is not
+    # enough - a real long-form render measured 6 of 7 cues overrunning
+    # their own shot by 2.8-4.8s (every clip generated at exactly 8.000s
+    # regardless of the 3.2-5.2s shot it belonged to). The fix bounds
+    # BOTH the generation request and the mux trim by `shot.duration_s`
+    # (see `generate_diegetic_sfx.py` and `render.py::_sfx_overlays`/
+    # `_diegetic_duck_windows`). This constant is the one deliberate
+    # exception: a short bleed past the cut is a real editing device (a
+    # sound bridge), so the per-shot ceiling is `shot.duration_s + this`,
+    # never a bare `shot.duration_s`. 0.25s - roughly a frame-and-a-half
+    # at 24fps, an order of magnitude below the measured 2.8-4.8s
+    # overruns it replaces, and within the 0.2-0.3s range this section
+    # itself named as plausible - not a rewatched/ear-tuned number.
+    sfx_diegetic_shot_carry_s: float = 0.25
+    # A8 originally requested a FIXED generation duration for every cue
+    # (`sfx_diegetic_max_clip_s` itself, not a per-shot-varying one) so
+    # the mandatory prompt-hash cache (`compute_sfx_generation_hash`)
+    # maximised reuse: two shots writing the identical cue text always
+    # landed on the same cache key regardless of their own `duration_s`.
+    # A15 (long_form_direction.md, 2026-09-01) supersedes this: every
+    # clip generated at that flat 8.0s regardless of shot length is
+    # exactly why 6 of 7 real cues overran their shot by 2.8-4.8s.
+    # `GenerateDiegeticSfxStep` now requests
+    # `min(sfx_diegetic_max_clip_s, shot.duration_s)` per shot, so two
+    # shots with the identical cue text but different durations no
+    # longer share a cache row - a deliberate correctness-over-cache-
+    # density trade (and, per that section's own cost note, a cheaper
+    # one: billing is per second of generated audio).
     sfx_diegetic_model: str = "eleven_text_to_sound_v2"
     # Cost estimate in cents, folded into `check_budget` the same way
     # `fal_image_cost_cents_estimate` is (§3 A8 build item 7). Documented
@@ -434,6 +456,29 @@ class Settings(BaseSettings):
     # a rate no single per-scene call can see. 4 = the low end of the
     # prompt's own range, so this only ever trims genuine excess.
     text_card_min_shot_gap: int = 4
+    # Minimum number of shots between two `sfx_cue` cues, enforced
+    # PROJECT-WIDE after the per-scene gather (`_cap_sfx_cues`,
+    # planners/shot/planner.py). long_form_direction.md A14, 2026-09-01,
+    # measured.
+    #
+    # Same structural blindness as `text_card_min_shot_gap` above: the
+    # prompt asks for "roughly one cue every six to ten shots", but the
+    # Shot Planner sees ONE SCENE per call and cannot see cues emitted by
+    # other scenes. A real 3-scene probe of "The nuclear lake" produced 4
+    # cues across 10 shots (one every 2.5) - roughly 2.5x the target's
+    # own low end.
+    #
+    # Arithmetic: cues were attempted at an average spacing of ~2.5
+    # shots. A hard floor of `g` shots between KEPT cues means a cue
+    # arriving before `g` shots have elapsed is dropped, and the next one
+    # kept is the first attempt AFTER the floor expires - on an average
+    # 2.5-shot attempt spacing that lands the kept spacing at roughly
+    # `g` + half of 2.5 (~1.25) shots. Solving for a result inside
+    # "six to ten": g=6 gives ~7.25, comfortably inside the target and,
+    # like `text_card_min_shot_gap`, set at the low end of the prompt's
+    # own range so this only ever trims genuine excess rather than
+    # fighting the style's intent.
+    sfx_cue_min_shot_gap: int = 6
     default_language: str = "en"
     # Track C C1: scripts with more than this many fragments take Path B
     # (act pass, then per-act scene planning). Deliberate guess, safe

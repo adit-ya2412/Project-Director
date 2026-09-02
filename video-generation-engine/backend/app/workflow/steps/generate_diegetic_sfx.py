@@ -67,7 +67,7 @@ from app.renderer.audio import measure_integrated_lufs
 from app.renderer.slideshow import probe_duration_seconds
 from app.repositories.generated_clip_repository import GeneratedClipRepository
 from app.repositories.narration_repository import NarrationRepository
-from app.schemas.timeline import ProducedBy, Shot, SfxClipSelection, SfxKind, SfxPlan, Timeline
+from app.schemas.timeline import ProducedBy, SfxClipSelection, SfxKind, SfxPlan, Shot, Timeline
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
 
@@ -141,13 +141,20 @@ class GenerateDiegeticSfxStep:
         narration_repo = NarrationRepository(ctx.session)
         cap_cents = budget_cap_cents_for(timeline)
         provider = _sfx_provider()
-        duration_s = settings.sfx_diegetic_max_clip_s
 
         new_clips: list[SfxClipSelection] = []
         newly_failed: list[str] = []
 
         for shot in pending:
             cue = (shot.sfx_cue or "").strip()
+            # A15 (long_form_direction.md, 2026-09-01): request only as
+            # much audio as the shot can ever play - Problem 1 measured
+            # every clip generated at a flat `sfx_diegetic_max_clip_s`
+            # (8.0s) regardless of the 3.2-5.2s shot it belonged to, so 6
+            # of 7 real cues overran their own shot by 2.8-4.8s. Bounding
+            # the REQUEST (not just the mux trim) is also cheaper: billing
+            # is per second of generated audio (40 credits/s).
+            duration_s = min(settings.sfx_diegetic_max_clip_s, shot.duration_s)
             try:
                 selection = await self._generate_one(
                     shot=shot,

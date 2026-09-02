@@ -62,7 +62,11 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.assets.focal import format_focal_fingerprint, resolve_shot_focals
-from app.assets.sfx_levels import diegetic_effective_gain_db, effective_gain_db, end_aligned_trim_start
+from app.assets.sfx_levels import (
+    diegetic_effective_gain_db,
+    effective_gain_db,
+    end_aligned_trim_start,
+)
 from app.core.config import settings
 from app.core.errors import EngineError, PermanentError, TransientError
 from app.models.asset import AssetModel
@@ -117,6 +121,7 @@ from app.script.styles import (
     resolve_narration_speed,
     resolve_render_format,
     resolve_sfx_whoosh_enabled,
+    resolve_transition_sfx_structural_only,
 )
 from app.timeline.acts import act_time_ranges, music_content_hash_for
 from app.workflow.context import RunContext
@@ -336,6 +341,13 @@ async def render_video(
     # impossible, the same pattern as `music_gains` (review of P2,
     # analysis.md RV2; leftover item 5 / R2's own lesson).
     sfx_whoosh_enabled = resolve_sfx_whoosh_enabled(timeline.metadata.render_style)
+    # A15: resolved ONCE here, same RV2 discipline as the whoosh gate -
+    # this single value must reach both `compute_render_fingerprint` and
+    # `derive_sfx_events`, or the cache serves a mix the derivation would
+    # not produce.
+    sfx_transition_structural_only = resolve_transition_sfx_structural_only(
+        timeline.metadata.render_style
+    )
     # Decision 7 (analysis.md, 2026-08-24): the uploaded track's dB offset
     # (0.0 for every provider-selected track). Resolved once beside the
     # style gains so the fingerprint below and the mux_music call share
@@ -387,7 +399,9 @@ async def render_video(
         sfx_gain_db=settings.sfx_gain_db,
         sfx_max_clip_s=settings.sfx_max_clip_s,
         sfx_diegetic_max_clip_s=settings.sfx_diegetic_max_clip_s,
+        sfx_diegetic_shot_carry_s=settings.sfx_diegetic_shot_carry_s,
         sfx_whoosh_enabled=sfx_whoosh_enabled,
+        sfx_transition_structural_only=sfx_transition_structural_only,
         # C3c (analysis.md, decision 5b): normalization target + per-kind
         # offsets are real mix inputs - changing either changes output
         # samples even with byte-identical clips. Unconditional presence
@@ -563,6 +577,7 @@ async def render_video(
             ctx.project_id,
             fps=render_settings.fps,
             whoosh_enabled=sfx_whoosh_enabled,
+            transition_structural_only=sfx_transition_structural_only,
         )
         # A11 (long_form_direction.md, 2026-09-01): computed from the
         # TIMELINE (never the SFX audio - it does not exist at this point
@@ -570,7 +585,10 @@ async def render_video(
         # resolve before `mux_music` runs even though `mux_sfx` itself is
         # still several lines below.
         diegetic_duck_windows = _diegetic_duck_windows(
-            timeline, fps=render_settings.fps, whoosh_enabled=sfx_whoosh_enabled
+            timeline,
+            fps=render_settings.fps,
+            whoosh_enabled=sfx_whoosh_enabled,
+            transition_structural_only=sfx_transition_structural_only,
         )
         # When loudness runs, music/SFX land in work_dir so a failed
         # loudnorm never leaves a half-normalized file in renders/.
@@ -854,24 +872,50 @@ def _sfx_content_hashes(timeline: Timeline) -> list[str]:
     return [clip.content_hash for clip in timeline.sfx_plan.clips]
 
 
+def _diegetic_ceiling_s(shot_duration_s: float | None) -> float:
+    """A15 (long_form_direction.md, 2026-09-01): a diegetic cue's played
+    length is bounded by the SHOT it belongs to, not only by the flat
+    `sfx_diegetic_max_clip_s` (Problem 1 - 6 of 7 real cues overran their
+    shot by 2.8-4.8s because the global 8.0s ceiling never consulted the
+    shot). `sfx_diegetic_shot_carry_s` allows a short, deliberate bleed
+    past the cut (a sound bridge is a real editing device), never the
+    multi-second overrun this replaces - see that setting's own comment.
+    `shot_duration_s=None` (a caller that could not resolve the shot) is
+    the pre-A15 behaviour: the flat ceiling alone. Shared by
+    `_diegetic_duck_windows` (the bed-ducking window) and `_sfx_overlays`
+    (the audible trim) so the two never drift apart - the former's own
+    docstring already promises this."""
+    ceiling = settings.sfx_diegetic_max_clip_s
+    if shot_duration_s is not None:
+        ceiling = min(ceiling, shot_duration_s + settings.sfx_diegetic_shot_carry_s)
+    return ceiling
+
+
 def _diegetic_duck_windows(
-    timeline: Timeline, *, fps: int, whoosh_enabled: bool
+    timeline: Timeline,
+    *,
+    fps: int,
+    whoosh_enabled: bool,
+    transition_structural_only: bool = False,
 ) -> list[tuple[float, float]]:
     """A11 (long_form_direction.md, 2026-09-01): a duck window per
     DIEGETIC cue, computed from the TIMELINE alone (shot start times via
-    `derive_sfx_events`, plus the clip's own persisted `duration_s`/the
-    `sfx_diegetic_max_clip_s` ceiling) - never from the SFX audio file.
-    `render_video`'s own pipeline order is narration -> music -> sfx, so
-    at the point `mux_music` runs, no SFX audio has been mixed (or even
-    necessarily downloaded/copied into this project's `sfx/` dir) yet;
-    `_sfx_overlays` (the function that DOES read those files) only runs
-    afterward. The window length mirrors `_sfx_overlays`' own ceiling
-    math exactly (`min(clip.duration_s, sfx_diegetic_max_clip_s)`,
-    `sfx_diegetic_max_clip_s` when duration is unmeasured) so the duck
-    window and the audible clip agree on how long the cue actually plays.
-    Every input here already rides inside the hashed timeline document or
-    an already-fingerprinted config value (R2) - no new fingerprint entry
-    is needed for the windows themselves."""
+    `derive_sfx_events`, plus the clip's own persisted `duration_s` and
+    the shot-bounded ceiling from `_diegetic_ceiling_s`, A15) - never from
+    the SFX audio file. `render_video`'s own pipeline order is narration
+    -> music -> sfx, so at the point `mux_music` runs, no SFX audio has
+    been mixed (or even necessarily downloaded/copied into this project's
+    `sfx/` dir) yet; `_sfx_overlays` (the function that DOES read those
+    files) only runs afterward. The window length mirrors `_sfx_overlays`'
+    own ceiling math exactly (`_diegetic_ceiling_s`, shared) so the duck
+    window and the audible clip agree on how long the cue actually plays -
+    A15 found this function was the SECOND place the flat ceiling leaked
+    in (Problem 1 named only generation and the mux trim), and fixed it
+    here too rather than leave the duck window over-ducking the bed past
+    the point the now-shorter cue actually stops. Every input here
+    already rides inside the hashed timeline document or an
+    already-fingerprinted config value (R2) - no new fingerprint entry is
+    needed for the windows themselves."""
     if timeline.sfx_plan is None or not timeline.sfx_plan.clips:
         return []
     diegetic_by_shot = {
@@ -881,6 +925,7 @@ def _diegetic_duck_windows(
     }
     if not diegetic_by_shot:
         return []
+    shots_by_id = {shot.id: shot for shot in timeline.all_shots()}
     windows: list[tuple[float, float]] = []
     for event in derive_sfx_events(timeline, fps=fps, whoosh_enabled=whoosh_enabled):
         if event.kind != SfxKind.DIEGETIC:
@@ -888,7 +933,8 @@ def _diegetic_duck_windows(
         clip = diegetic_by_shot.get(event.shot_id)
         if clip is None:
             continue
-        ceiling = settings.sfx_diegetic_max_clip_s
+        shot = shots_by_id.get(event.shot_id)
+        ceiling = _diegetic_ceiling_s(shot.duration_s if shot is not None else None)
         played_s = min(clip.duration_s, ceiling) if clip.duration_s is not None else ceiling
         if played_s <= 0:
             continue
@@ -913,7 +959,10 @@ def _sfx_overlays(
     looked up through `diegetic_by_shot` instead, since `SfxPlan.clips`
     can hold several different DIEGETIC clips (one per distinct cue) and
     `SfxEvent.shot_id` says which one this event answers. Its own,
-    longer ceiling (`sfx_diegetic_max_clip_s`) rides on the overlay
+    longer ceiling now comes from `_diegetic_ceiling_s` (A15,
+    long_form_direction.md 2026-09-01: bounded by the shot's own
+    `duration_s`, not the flat `sfx_diegetic_max_clip_s` alone - Problem
+    1, "a cue must end when its shot does") and rides on the overlay
     itself (`SfxOverlay.max_clip_s`), never on the shared `mux_sfx`
     call-level ceiling - see that field's own docstring."""
     if settings.dry_run:
@@ -928,6 +977,7 @@ def _sfx_overlays(
         for clip in timeline.sfx_plan.clips
         if clip.kind == SfxKind.DIEGETIC and clip.shot_id
     }
+    shots_by_id = {shot.id: shot for shot in timeline.all_shots()}
     kind_offsets = {
         SfxKind.WHOOSH: settings.sfx_whoosh_gain_db,
         SfxKind.STINGER: settings.sfx_stinger_gain_db,
@@ -976,9 +1026,11 @@ def _sfx_overlays(
                 fallback_db=settings.sfx_gain_db,
                 kind_offset_db=kind_offsets.get(event.kind),
             )
-        max_clip_s = (
-            settings.sfx_diegetic_max_clip_s if event.kind == SfxKind.DIEGETIC else None
-        )
+        if event.kind == SfxKind.DIEGETIC:
+            shot = shots_by_id.get(event.shot_id)
+            max_clip_s = _diegetic_ceiling_s(shot.duration_s if shot is not None else None)
+        else:
+            max_clip_s = None
         ceiling = max_clip_s if max_clip_s is not None else settings.sfx_max_clip_s
         overlays.append(
             SfxOverlay(

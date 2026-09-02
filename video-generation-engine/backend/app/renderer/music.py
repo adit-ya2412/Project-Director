@@ -195,6 +195,23 @@ async def assemble_act_bed(
         "".join(f"file '{p.name}'\n" for p in trimmed),
         encoding="utf-8",
     )
+    # `cwd=work_dir` below is what makes the BARE names inside concat.txt
+    # (`act_000.m4a`, ...) resolve - the concat demuxer looks them up
+    # relative to the process cwd, not to the list file. But that same cwd
+    # change breaks every OTHER path in this argv if it is relative, and
+    # `settings.storage_root` is relative (`'storage'`), so `list_path` and
+    # `output_path` both are. ffmpeg then looked for
+    # `work_dir/storage/<project>/work/_act_bed_.../concat.txt` and failed
+    # with "No such file or directory" about a file sitting right there.
+    #
+    # Fixed 2026-09-02, on the first long-form project ever to reach a
+    # render. Latent since per-act beds were built: `assemble_act_bed` only
+    # runs on Path B (>70 narration fragments), and no Path B project had
+    # got this far before - the picture rendered fine, then the whole draft
+    # 400'd at the very last stage.
+    #
+    # `list_path.name` because the cwd IS `work_dir`; `output_path`
+    # absolute because it is NOT under `work_dir`.
     args = [
         settings.ffmpeg_binary,
         "-y",
@@ -203,12 +220,12 @@ async def assemble_act_bed(
         "-safe",
         "0",
         "-i",
-        str(list_path),
+        list_path.name,
         "-c",
         "copy",
         "-fflags",
         "+bitexact",
-        str(output_path),
+        str(output_path.resolve()),
     ]
     await run_ffmpeg(args, cwd=work_dir)
     return output_path
@@ -508,7 +525,11 @@ def combine_duck_windows(
 
     points = sorted({p for start, end, _ in tagged for p in (start, end)})
     segments: list[tuple[float, float, float]] = []
-    for a, b in zip(points, points[1:]):
+    # `strict=False` is deliberate, not laziness: `points[1:]` is one
+    # shorter than `points` by construction - this is a pairwise walk over
+    # consecutive boundaries, so the final unpaired point has nothing to
+    # pair with and must be dropped.
+    for a, b in zip(points, points[1:], strict=False):
         if b <= a:
             continue
         mid = (a + b) / 2

@@ -102,6 +102,25 @@ class StylePacingBand:
     # See the class docstring paragraph above for why this is a plain
     # bool rather than the Optional shape the numeric fields use.
     whoosh_enabled: bool = True
+    # A15 (long_form_direction.md, 2026-09-02): the sibling gate for the
+    # TRANSITION layer. `False` (today's behaviour) fires a swoosh on
+    # every non-cut transition; `True` restricts it to the transitions the
+    # base prompt itself calls "a genuinely deliberate structural beat" -
+    # `fadeblack`, `wipeleft` and the three `glitch_*` - and leaves plain
+    # `dissolve` silent.
+    #
+    # Measured on the first finished long-form video (77 shots,
+    # documentary_archival): 45 of 77 shots fired a transition swoosh,
+    # because that style dissolves heavily, all at the flat
+    # `sfx_gain_db = -8.0` - 10 dB LOUDER than its diegetic cues. The user
+    # heard it as "the woosh" and asked for control. 45-of-77 is texture,
+    # not punctuation. Ear-signed 2026-09-02 against a rendered A/B
+    # (`tmp/sfx-a15/`, 45 transitions vs 5).
+    #
+    # A plain bool for the same reason `whoosh_enabled` is: this is a
+    # behaviour switch, not a level with a settings-level default behind
+    # it. Read through `resolve_transition_sfx_structural_only`.
+    transition_sfx_structural_only: bool = False
     # None -> settings.render_width/height. `is not None`, never `or`
     # (same rule as music gains). Format rides render_style, frozen at
     # planning start — never grade_style (§19).
@@ -125,6 +144,8 @@ class StylePacingBand:
 STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
     "documentary_archival": StylePacingBand(
         name="documentary_archival",
+        # A15: long-form dissolves heavily; see the field comment.
+        transition_sfx_structural_only=True,
         target_shot_duration_s=None,
         max_shots_override=None,
         # §19.7: 1280×720, the transpose of today's pixel count.
@@ -247,6 +268,8 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
     ),
     "stillness": StylePacingBand(
         name="stillness",
+        # A15: long-form dissolves heavily; see the field comment.
+        transition_sfx_structural_only=True,
         target_shot_duration_s=None,
         max_shots_override=None,
         # §5.2: near-absent. 8 dB quieter bed than the measured mix.
@@ -287,6 +310,24 @@ def resolve_sfx_whoosh_enabled(style: str | None) -> bool:
     if band is None:
         return True
     return band.whoosh_enabled
+
+
+def resolve_transition_sfx_structural_only(style: str | None) -> bool:
+    """Style-owned TRANSITION SFX gate (A15, long_form_direction.md).
+
+    `True` means only structural transitions (`fadeblack`, `wipeleft`,
+    `glitch_*`) fire a swoosh; a plain `dissolve` stays silent.
+
+    Unknown style names resolve to False - today's behaviour, so an
+    unrecognised name never silently loses a layer. An UNSET style
+    resolves through `settings.default_render_style`'s band, exactly like
+    `resolve_sfx_whoosh_enabled`, so it inherits the default style's
+    answer rather than being pinned here.
+    """
+    band = STYLE_PACING_BANDS.get(style or settings.default_render_style)
+    if band is None:
+        return False
+    return band.transition_sfx_structural_only
 
 
 @dataclass(frozen=True)

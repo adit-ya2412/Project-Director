@@ -22,6 +22,22 @@ from app.renderer.slideshow import RenderSettings, probe_duration_seconds, run_f
 from app.schemas.timeline import CameraMovement, SfxKind, Timeline, TransitionType
 from app.timeline.duration import compute_shot_start_times
 
+# A15: the transitions that read as a deliberate beat rather than
+# everyday continuity. `DISSOLVE`/`FADE` are excluded on purpose - they are
+# the connective tissue a documentary uses constantly, and a swoosh on each
+# one is texture, not punctuation. The three `glitch_*` ARE included: the
+# base prompt reserves them for "a moment of digital corruption", which is
+# by definition a beat.
+_STRUCTURAL_TRANSITIONS = frozenset(
+    {
+        TransitionType.WIPE_LEFT,
+        TransitionType.DIP_TO_BLACK,
+        TransitionType.GLITCH_SHIFT,
+        TransitionType.GLITCH_TEAR,
+        TransitionType.GLITCH_JITTER,
+    }
+)
+
 _DEFAULT_MAX_CLIP_S = 1.5
 _FADE_OUT_S = 0.08
 
@@ -81,7 +97,13 @@ class SfxEvent:
     shot_id: str | None = None
 
 
-def derive_sfx_events(timeline: Timeline, *, fps: int, whoosh_enabled: bool) -> list[SfxEvent]:
+def derive_sfx_events(
+    timeline: Timeline,
+    *,
+    fps: int,
+    whoosh_enabled: bool,
+    transition_structural_only: bool = False,
+) -> list[SfxEvent]:
     """Whoosh at each punch-in snap, stinger at each text-card start,
     transition SFX at each non-cut overlap. Sorted for I5.
 
@@ -106,7 +128,20 @@ def derive_sfx_events(timeline: Timeline, *, fps: int, whoosh_enabled: bool) -> 
         if (shot.text_card or "").strip():
             events.append(SfxEvent(kind=SfxKind.STINGER, offset_s=start_s))
         transition = shot.transition_out
-        if transition.type != TransitionType.CUT and transition.duration_s > 0:
+        # A15 (long_form_direction.md, 2026-09-02): `transition_structural_
+        # only` restricts this layer to the transitions the base prompt
+        # itself calls "a genuinely deliberate structural beat", leaving a
+        # plain `dissolve` silent. On the first finished long-form video 45
+        # of 77 shots fired a swoosh - `documentary_archival` dissolves
+        # heavily - at 10 dB LOUDER than that video's diegetic cues. Same
+        # shape of density failure `whoosh_enabled` already exists for, and
+        # the same fix: a per-style gate, resolved ONCE by the caller (RV2)
+        # so this derivation and `compute_render_fingerprint` cannot drift.
+        if (
+            transition.type != TransitionType.CUT
+            and transition.duration_s > 0
+            and (not transition_structural_only or transition.type in _STRUCTURAL_TRANSITIONS)
+        ):
             overlap_start = start_s + shot.duration_s - transition.duration_s
             events.append(SfxEvent(kind=SfxKind.TRANSITION, offset_s=max(overlap_start, 0.0)))
         # long_form_direction.md A8: v1 places a diegetic cue at the
