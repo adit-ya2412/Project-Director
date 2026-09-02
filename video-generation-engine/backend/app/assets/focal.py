@@ -25,6 +25,12 @@ logger = get_logger(__name__)
 DEFAULT_FOCAL: tuple[float, float] = (0.5, 0.5)
 FOCAL_SOURCE_VISION = "vision"
 FOCAL_SOURCE_FALLBACK = "fallback"
+# long_form_direction.md A13b: a human stating the focal point directly
+# (per-shot override upload). Outranks a vision answer for the same
+# content hash - the same "human decision wins" precedent `asset_locked`
+# already sets for a re-plan - by being written last and unconditionally
+# whenever coordinates are supplied, overwriting any existing sidecar.
+FOCAL_SOURCE_HUMAN = "human"
 
 
 def sidecar_path(assets_dir: Path, content_hash: str) -> Path:

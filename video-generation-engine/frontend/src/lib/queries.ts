@@ -259,6 +259,15 @@ export function useRetrySfx(projectId: string) {
   });
 }
 
+/** A12: veto one shot's diegetic SFX cue before it's generated. */
+export function useClearShotSfxCue(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (shotId: string) => api.clearShotSfxCue(projectId, shotId),
+    onSettled: () => invalidateAfterTrigger(qc, projectId),
+  });
+}
+
 export function useGenerateShotVideo(projectId: string) {
   const qc = useQueryClient();
   return useMutation({

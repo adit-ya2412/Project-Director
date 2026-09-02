@@ -374,6 +374,22 @@ export function retrySfx(projectId: string): Promise<WorkflowTriggerResult> {
   return request(`/projects/${projectId}/sfx/retry`, { method: "POST" });
 }
 
+/** long_form_direction.md A12: veto one shot's planner-authored diegetic
+ * SFX cue (`Shot.sfx_cue`) before the paid `generate_diegetic_sfx` step
+ * spends on it. NOT `overrideSfx` — that endpoint 400s for
+ * `kind=diegetic` by design (its one-clip-per-kind model does not apply
+ * per-shot); this hits the narrow per-shot endpoint A12 added instead.
+ * Means "no sound for this shot", never "regenerate" — there is no
+ * corresponding "restore" call, matching the backend's own framing. */
+export function clearShotSfxCue(
+  projectId: string,
+  shotId: string,
+): Promise<WorkflowTriggerResult> {
+  return request(`/projects/${projectId}/shots/${shotId}/sfx-cue/clear`, {
+    method: "POST",
+  });
+}
+
 /**
  * The one-gate redesign's Task 4: generate (or regenerate) one shot's
  * image on demand, at the single asset-review gate, before approval.

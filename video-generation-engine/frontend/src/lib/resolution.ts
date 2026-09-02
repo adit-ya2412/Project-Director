@@ -168,3 +168,34 @@ export function readImageDimensions(file: File): Promise<{ width: number; height
     img.src = url
   })
 }
+
+/** Same, for a video file - `<video>` exposes its intrinsic size on
+ * `loadedmetadata`, which fires without downloading the whole clip.
+ * Split out rather than folded into the function above so an image never
+ * pays for a video element and vice versa. */
+export function readVideoDimensions(file: File): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file)
+    const video = document.createElement('video')
+    video.preload = 'metadata'
+    video.onloadedmetadata = () => {
+      resolve({ width: video.videoWidth, height: video.videoHeight })
+      URL.revokeObjectURL(url)
+    }
+    video.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error('could not read video dimensions'))
+    }
+    video.src = url
+  })
+}
+
+/** Dimensions for whichever kind of media the user picked. The override
+ * endpoint accepts an image OR a video (2026-09-02), and the resolution
+ * warning is worth showing for both - a 480p clip on a 1280-wide canvas
+ * upscales exactly as badly as a 480px photo would. */
+export function readMediaDimensions(file: File): Promise<{ width: number; height: number }> {
+  return file.type.startsWith('video/') || /\.(mp4|mov|webm|mkv)$/i.test(file.name)
+    ? readVideoDimensions(file)
+    : readImageDimensions(file)
+}

@@ -10,6 +10,8 @@ import {
   Play,
   RefreshCw,
   Sparkles,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import {
   useProgress,
@@ -22,6 +24,7 @@ import {
   useRenderDraft,
   useRegenerateFailedInScene,
   useSceneShots,
+  useClearShotSfxCue,
 } from "@/lib/queries";
 import {
   shotAssetUrl,
@@ -359,6 +362,8 @@ function SceneExpandedShots({
   onOverride,
   onGenerate,
   onGenerateVideo,
+  onClearSfxCue,
+  clearingSfxCueShotId,
 }: {
   projectId: string;
   sceneId: string;
@@ -368,6 +373,8 @@ function SceneExpandedShots({
   onOverride: (shot: ShotProgress) => void;
   onGenerate: (shot: ShotProgress) => void;
   onGenerateVideo: (shot: ShotProgress) => void;
+  onClearSfxCue: (shot: ShotProgress) => void;
+  clearingSfxCueShotId: string | null;
 }) {
   const { data, isLoading } = useSceneShots(projectId, sceneId);
   if (isLoading || !data) {
@@ -386,6 +393,8 @@ function SceneExpandedShots({
             onOverride={() => onOverride(shot)}
             onGenerate={() => onGenerate(shot)}
             onGenerateVideo={() => onGenerateVideo(shot)}
+            onClearSfxCue={() => onClearSfxCue(shot)}
+            clearingSfxCue={clearingSfxCueShotId === shot.shot_id}
           />
         </li>
       ))}
@@ -402,6 +411,8 @@ function ShotCard({
   onOverride,
   onGenerate,
   onGenerateVideo,
+  onClearSfxCue,
+  clearingSfxCue,
 }: {
   projectId: string;
   shot: ShotProgress;
@@ -411,6 +422,8 @@ function ShotCard({
   onOverride: () => void;
   onGenerate: () => void;
   onGenerateVideo: () => void;
+  onClearSfxCue: () => void;
+  clearingSfxCue: boolean;
 }) {
   const source = shotAssetSource(shot);
   const flag = translateError(shot.last_error);
@@ -418,6 +431,7 @@ function ShotCard({
   const camera = plan?.camera;
   const transition = plan?.transition_out;
   const textCard = plan?.text_card?.trim() || null;
+  const sfxCue = plan?.sfx_cue?.trim() || null;
   const planBits = [
     camera ? (CAMERA_LABEL[camera.movement] ?? camera.movement) : null,
     transition
@@ -460,6 +474,24 @@ function ShotCard({
         </p>
         {planBits.length > 0 && (
           <p className="text-xs text-muted-foreground">{planBits.join(" · ")}</p>
+        )}
+        {sfxCue && (
+          <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2 py-1.5 text-xs">
+            <Volume2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 text-muted-foreground">
+              Sound effect (~6¢ when approved): “{sfxCue}”
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 shrink-0 px-2 text-xs"
+              onClick={onClearSfxCue}
+              disabled={clearingSfxCue}
+            >
+              <VolumeX className="h-3.5 w-3.5" />
+              {clearingSfxCue ? "Clearing…" : "Clear"}
+            </Button>
+          </div>
         )}
 
         {flag && (
@@ -523,6 +555,7 @@ export function AssetReviewGate() {
   const generateShot = useGenerateShotImage(projectId ?? "");
   const generateVideo = useGenerateShotVideo(projectId ?? "");
   const regenerateFailed = useRegenerateFailedInScene(projectId ?? "");
+  const clearSfxCue = useClearShotSfxCue(projectId ?? "");
   const [overrideTarget, setOverrideTarget] = useState<ShotProgress | null>(
     null,
   );
@@ -800,6 +833,24 @@ export function AssetReviewGate() {
     );
   }
 
+  function handleClearSfxCue(shot: ShotProgress) {
+    clearSfxCue.mutate(shot.shot_id, {
+      onSuccess: () =>
+        toast({
+          title: "Sound effect cleared",
+          description: "This shot will get no diegetic sound.",
+          variant: "success",
+        }),
+      onError: (err) =>
+        toast({
+          title: "Could not clear the sound effect",
+          description:
+            err instanceof ApiError ? String(err.detail) : "Try again.",
+          variant: "destructive",
+        }),
+    });
+  }
+
   function handleGenerateVideoConfirm() {
     if (!videoTarget) return;
     const shotId = videoTarget.shot_id;
@@ -1043,6 +1094,12 @@ export function AssetReviewGate() {
                       onOverride={setOverrideTarget}
                       onGenerate={setGenerateTarget}
                       onGenerateVideo={setVideoTarget}
+                      onClearSfxCue={handleClearSfxCue}
+                      clearingSfxCueShotId={
+                        clearSfxCue.isPending
+                          ? (clearSfxCue.variables ?? null)
+                          : null
+                      }
                     />
                   )}
                 </Card>
@@ -1063,6 +1120,11 @@ export function AssetReviewGate() {
                 onOverride={() => setOverrideTarget(shot)}
                 onGenerate={() => setGenerateTarget(shot)}
                 onGenerateVideo={() => setVideoTarget(shot)}
+                onClearSfxCue={() => handleClearSfxCue(shot)}
+                clearingSfxCue={
+                  clearSfxCue.isPending &&
+                  clearSfxCue.variables === shot.shot_id
+                }
               />
             </li>
           ))}

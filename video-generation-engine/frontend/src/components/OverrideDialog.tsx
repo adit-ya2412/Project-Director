@@ -12,7 +12,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
 import { ResolutionWarningBadge } from '@/components/ResolutionWarning'
-import { computeResolutionWarning, readImageDimensions, type ResolutionWarning } from '@/lib/resolution'
+import { computeResolutionWarning, readMediaDimensions, type ResolutionWarning } from '@/lib/resolution'
 import type { Camera } from '@/lib/types'
 
 /** Shared by Gate 1 (override/insert a missing or found image) and Gate 2
@@ -47,7 +47,7 @@ export function OverrideDialog({
       return
     }
     try {
-      const { width, height } = await readImageDimensions(f)
+      const { width, height } = await readMediaDimensions(f)
       setWarning(computeResolutionWarning(width, height, camera))
     } catch {
       setWarning(null)
@@ -74,12 +74,12 @@ export function OverrideDialog({
         <div className="space-y-3">
           <div>
             <Label htmlFor="override-file" className="mb-2 block">
-              Image
+              Image or video
             </Label>
             <Input
               id="override-file"
               type="file"
-              accept="image/*"
+              accept="image/*,video/mp4,video/quicktime,video/webm"
               onChange={(e) => void handleFile(e.target.files?.[0] ?? null)}
             />
           </div>
@@ -92,7 +92,7 @@ export function OverrideDialog({
               id="override-description"
               value={fileDescription}
               onChange={(e) => setFileDescription(e.target.value)}
-              placeholder="What this image shows"
+              placeholder="What this image or clip shows"
               className="min-h-[60px]"
             />
           </div>

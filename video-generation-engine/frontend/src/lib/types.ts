@@ -225,6 +225,15 @@ export interface Shot {
   // every shot — only `archival_montage`'s own prompt fragment asks for
   // these with any frequency (roughly one every 4-6 shots).
   text_card: string | null;
+  // long_form_direction.md A8/A12: a planner-authored phrase naming a
+  // diegetic sound this shot's beat genuinely turns on (e.g. "a distant
+  // church bell tolling"), generated into a real clip by the paid,
+  // post-approval `generate_diegetic_sfx` step. Empty/`null` on almost
+  // every shot — the planner's own restraint (`app/prompts/shot_planner/
+  // v1.md`) is the only thing limiting how many a video gets. When set,
+  // it is a spend the reviewer is approving (~6c, `sfx_diegetic_cost_
+  // cents_estimate`) sight-unseen unless the gate shows it.
+  sfx_cue: string | null;
   asset_locked: boolean;
 }
 

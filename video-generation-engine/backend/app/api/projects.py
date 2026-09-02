@@ -93,6 +93,14 @@ from app.assets.cost import (
     estimate_project_cost_cents,
     total_project_spend_cents,
 )
+from app.assets.focal import (
+    FOCAL_SOURCE_HUMAN,
+    normalize_focal,
+    persist_vision_focal,
+    read_focal_sidecar,
+    write_focal_sidecar,
+)
+from app.assets.focal_check import locate_subject_focal
 from app.assets.music_upload import music_upload_warnings
 from app.assets.sfx_levels import measure_peak_dbfs
 from app.assets.sfx_override import apply_sfx_clip_override
@@ -106,9 +114,11 @@ from app.assets.validation import (
     mime_type_for_extension,
     validate_and_identify_audio,
     validate_and_identify_image,
+    validate_and_identify_video,
 )
 from app.core.config import settings
 from app.core.errors import PermanentError
+from app.core.logging import get_logger
 from app.db.session import get_db
 from app.models.asset import AssetModel
 from app.models.generated_clip import GeneratedClipModel
@@ -161,6 +171,8 @@ from app.workflow.steps.resolve_assets import (
     submit_video_generation,
 )
 from app.workflow.trigger import WorkflowTriggerResult, start_workflow_run
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -258,6 +270,13 @@ async def _shot_progress_entry(
         "intent": shot.intent,
         "duration_s": shot.duration_s,
         "starts_at_s": start_times.get(shot.id),
+        # A12 added the cue to the frontend `Shot` type and rendered a row
+        # for it at the review gate, but never here - so `shot.sfx_cue` was
+        # always `undefined` in the browser and the row silently never
+        # appeared. TypeScript types describe the API; they do not verify
+        # it, so the build passed and the omission was invisible until a
+        # human looked for the cue and found nothing (2026-09-02).
+        "sfx_cue": shot.sfx_cue,
     }
 
 
@@ -1449,6 +1468,8 @@ async def override_shot_asset(
     file: UploadFile = File(...),
     description: str = Form(""),
     panel: str = Query("primary"),
+    focal_x: float | None = Form(None),
+    focal_y: float | None = Form(None),
     repo: ProjectRepository = Depends(get_repo),
     timeline_service: TimelineService = Depends(get_timeline_service),
     session: AsyncSession = Depends(get_db),
@@ -1490,6 +1511,22 @@ async def override_shot_asset(
     "narration is stale" and bounce the review UI to /progress. Approve
     is what should start the next steps. Voice retry is a different
     endpoint and still resumes.
+
+    long_form_direction.md A13: an upload used to get no focal sidecar at
+    all, so the Ken Burns aim fell back to the geometric centre of a
+    photograph the vision pipeline never looked at. Now, per content
+    hash: `focal_x`/`focal_y` supplied (0..1, image space) are recorded
+    verbatim under `FOCAL_SOURCE_HUMAN` and always win, overwriting any
+    existing sidecar - the same "human decision outranks everything
+    computed" precedent `asset_locked` already sets. Absent, and only
+    when no sidecar exists yet for this hash, one `locate_subject_focal`
+    vision call is made and persisted exactly as `resolve_assets.py`
+    already does for a searched asset. A vision failure, refusal, or
+    `None` answer degrades silently to today's centred behaviour and
+    never blocks the upload - a focal is an improvement, not a
+    precondition. Providing only one of the two coordinates, or a
+    non-finite value, is a 400 (`normalize_focal` cannot validate a
+    half-answer into something usable).
     """
     await _get_project_or_404(project_id, repo)
     active = await timeline_service.get_active(project_id)
@@ -1511,18 +1548,62 @@ async def override_shot_asset(
             detail=f"shot {shot_id} is not split_frame; cannot override the bottom panel",
         )
 
+    # A13b: a human stating the focal directly outranks a vision guess -
+    # validated with `normalize_focal`'s own rules (finite, both-or-
+    # neither), not a new bounds check. A half-answer (one coordinate
+    # supplied, or a non-finite value) is a clear 4xx here rather than a
+    # silent fall-through to A13a's vision call or to a centre.
+    focal_coords_supplied = focal_x is not None or focal_y is not None
+    human_focal = normalize_focal(focal_x, focal_y) if focal_coords_supplied else None
+    if focal_coords_supplied and human_focal is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "focal_x and focal_y must both be supplied as finite numbers "
+                f"in 0..1, got focal_x={focal_x!r} focal_y={focal_y!r}"
+            ),
+        )
+
     content = await file.read()
+    # A human may hand over a MOTION clip, not only a still (2026-09-02,
+    # at the user's request while mid-edit: they had a generated clip and
+    # no way to put it in a shot). Try the image validator first - it is
+    # the overwhelmingly common case and needs no subprocess - then fall
+    # back to the video one. Both already exist and apply the same
+    # "positively confirm real media" discipline; nothing new is being
+    # trusted here.
+    #
+    # `max_video_shots_per_project` deliberately does NOT apply to a
+    # hand-supplied clip, and nothing here needs to enforce that: the cap
+    # lives in the Asset Planner (`planners/asset/planner.py`), which
+    # downgrades excess VIDEO shots to image before generation is ever
+    # attempted. Its whole purpose is to bound what the planner SPENDS on
+    # `generate_video`. A file the user already owns costs nothing, so the
+    # cap has no claim on it - decided by the user, 2026-09-02.
+    media_type = "image"
     try:
         ext, _width, _height = validate_and_identify_image(content)
-    except PermanentError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PermanentError as image_exc:
+        try:
+            ext, _width, _height = await validate_and_identify_video(content)
+        except PermanentError as video_exc:
+            # Report BOTH failures: "not a valid video" alone is baffling
+            # when the user uploaded a corrupt JPEG, and vice versa.
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"file is neither a valid image ({image_exc}) "
+                    f"nor a valid video ({video_exc})"
+                ),
+            ) from video_exc
+        media_type = "video"
 
     project_uuid = uuid.UUID(project_id)
     asset_repo = AssetRepository(session)
     content_hash = hashlib.sha256(content).hexdigest()
+    assets_dir = settings.storage_root / project_id / "assets"
     asset = await asset_repo.get_by_content_hash(project_uuid, content_hash)
     if asset is None:
-        assets_dir = settings.storage_root / project_id / "assets"
         assets_dir.mkdir(parents=True, exist_ok=True)
         path = assets_dir / f"{content_hash}.{ext}"
         path.write_bytes(content)
@@ -1530,7 +1611,7 @@ async def override_shot_asset(
             project_id=project_uuid,
             provider="project_assets",
             source_url=None,
-            type="image",
+            type=media_type,
             local_path=str(path),
             licence="human_override",
             attribution=None,
@@ -1538,6 +1619,69 @@ async def override_shot_asset(
             confidence=1.0,
             description=description.strip() or None,
         )
+
+    # long_form_direction.md A13: this endpoint used to bypass focal
+    # entirely - a human-uploaded photo aimed its Ken Burns move at the
+    # geometric centre, a framing the engine never examined (unlike a
+    # searched asset, which always runs `locate_subject_focal`). Keyed by
+    # `content_hash` exactly like `resolve_assets.py`'s own sidecar, so a
+    # repeat upload of identical bytes (or a second override of the same
+    # photo) never re-pays for a vision call.
+    #
+    # A focal point is meaningless for a MOTION clip - it aims a Ken Burns
+    # crop over a fixed image, and the renderer never runs Ken Burns on a
+    # clip (`motion.py` sends it down the duration-fit branch instead). The
+    # search rung applies exactly this guard as `not is_video_candidate`;
+    # since 2026-09-02 this endpoint accepts video too, so the guard has to
+    # be real here rather than satisfied by construction.
+    if media_type == "video":
+        human_focal = None
+    elif human_focal is not None:
+        # A13b: a human answer always wins - written last, unconditionally,
+        # overwriting any prior vision (or earlier human) sidecar for this
+        # hash. Same "human decision outranks everything computed"
+        # precedent `asset_locked` sets for a re-plan.
+        write_focal_sidecar(
+            assets_dir,
+            content_hash,
+            focal_x=human_focal[0],
+            focal_y=human_focal[1],
+            source=FOCAL_SOURCE_HUMAN,
+        )
+    elif read_focal_sidecar(assets_dir, content_hash) is None:
+        # A13a: the same two calls `resolve_assets.py:1352-1370` already
+        # makes for a searched asset's top candidate. A focal is an
+        # improvement to a shot, not a precondition for having one - any
+        # failure here (a refusal, a provider error already swallowed
+        # inside `locate_subject_focal`, or anything unexpected from this
+        # new call site) degrades silently to today's centred behaviour
+        # and must never fail the upload itself.
+        vision_focal: tuple[float, float] | None = None
+        try:
+            vision_provider = None if settings.dry_run else OpenAIPlanningProvider()
+            vision_focal = await locate_subject_focal(
+                provider=vision_provider,
+                llm_call_repo=LlmCallRepository(session),
+                project_id=project_uuid,
+                image=content,
+                image_content_type=mime_type_for_extension(ext),
+                shot_id=shot_id,
+            )
+        except Exception:
+            logger.warning(
+                "focal.override_vision_call_failed",
+                extra={"shot_id": shot_id, "content_hash": content_hash},
+                exc_info=True,
+            )
+            vision_focal = None
+        if vision_focal is not None:
+            persist_vision_focal(
+                assets_dir,
+                content_hash,
+                focal_x=vision_focal[0],
+                focal_y=vision_focal[1],
+                shot_id=shot_id,
+            )
 
     # See the identical comment in `_resume_after_human_correction` above
     # for why `produced_by == ProducedBy.NARRATION` is no longer treated
@@ -1589,6 +1733,110 @@ async def override_shot_asset(
         raise HTTPException(
             status_code=400,
             detail="no workflow run to attach this override to",
+        )
+    return WorkflowTriggerResult(
+        project_id=project_id,
+        workflow_run_id=str(run_row.id),
+        state=run_row.state,
+        joined_existing_run=True,
+    )
+
+
+@router.post(
+    "/{project_id}/shots/{shot_id}/sfx-cue/clear",
+    status_code=202,
+    response_model=WorkflowTriggerResult,
+)
+async def clear_shot_sfx_cue(
+    project_id: str,
+    shot_id: str,
+    background_tasks: BackgroundTasks,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    session: AsyncSession = Depends(get_db),
+) -> WorkflowTriggerResult:
+    """long_form_direction.md A12: a human vetoes one shot's planner-
+    authored diegetic SFX cue before `GenerateDiegeticSfxStep` spends on
+    it (`~sfx_diegetic_cost_cents_estimate` cents each, post-approval).
+
+    **Why this narrow endpoint, not `POST /sfx/{kind}/override`:** that
+    endpoint 400s for `kind=diegetic` on purpose (see its own docstring)
+    - its one-clip-per-kind model would wipe every shot's cue and replace
+    them all with one ungrounded clip. A12 also considered clearing
+    through an existing generic timeline-edit path instead of a new
+    endpoint; none exists - the closest thing, `generate_shot_image`'s
+    prompt edit, is bundled with a paid generation call, not a bare field
+    change - so this is the "add a narrow per-shot endpoint" branch of
+    that task's own choice, kept minimal and shaped exactly like
+    `override_shot_asset` just above (same pre-check order, same
+    was-already-approved branch, same `append_version`/`owns` shape).
+
+    **Clearing means "no sound for this shot", never "regenerate".** Both
+    gates that matter read `Shot.sfx_cue` directly, not a separate flag:
+    `generate_diegetic_sfx.py::_cue_bearing_shots` (what
+    `GenerateDiegeticSfxStep.run`/`is_satisfied` iterate) and
+    `renderer/sfx.py::derive_sfx_events` (what schedules the actual mux
+    event) both skip a shot whose `sfx_cue` is blank. So a shot cleared
+    here drops out of the generation step entirely - it is never marked
+    `failed`, never retried - and the renderer never schedules an event
+    for it. A `SfxClipSelection` already recorded for this shot from an
+    earlier run of `GenerateDiegeticSfxStep` (if the cue was cleared only
+    after generation already happened) is left in `sfx_plan.clips`
+    untouched; it is inert rather than a leak, since `derive_sfx_events`
+    is what decides whether a shot gets a DIEGETIC event at all, and it
+    never consults `sfx_plan.clips`.
+
+    Same first-gate/already-approved branch as `override_shot_asset`:
+    if the timeline was already approved (the review backstop, or a cue
+    cleared after `GenerateDiegeticSfxStep` already ran once), the new
+    version is re-approved and the workflow resumed; still at the first
+    gate (DRAFT), it is left there for Approve to advance, for the same
+    reason given there (resuming here would look like "narration is
+    stale" to `NarrationStep.is_satisfied`, which this is not).
+    """
+    await _get_project_or_404(project_id, repo)
+    active = await timeline_service.get_active(project_id)
+    if active is None:
+        raise HTTPException(status_code=400, detail="no timeline to clear a cue on yet")
+    shot = next((s for s in active.all_shots() if s.id == shot_id), None)
+    if shot is None:
+        raise HTTPException(
+            status_code=404, detail=f"shot {shot_id} not found in the active timeline"
+        )
+    if not (shot.sfx_cue or "").strip():
+        raise HTTPException(status_code=400, detail=f"shot {shot_id} has no sfx cue to clear")
+
+    was_already_approved = active.status == TimelineStatus.APPROVED
+
+    def _clear_cue(base: Timeline) -> Timeline:
+        for scene in base.scenes:
+            for sh in scene.shots:
+                if sh.id == shot_id:
+                    sh.sfx_cue = None
+        return base
+
+    new_timeline = await timeline_service.append_version(
+        project_id,
+        produced_by=ProducedBy.HUMAN,
+        transform=_clear_cue,
+        owns=frozenset({"scenes"}),
+    )
+
+    if was_already_approved:
+        await timeline_service.approve(project_id, new_timeline.version)
+        await session.commit()
+        # Post-approval: resume so generation/render can continue, exactly
+        # like `override_shot_asset`'s equivalent branch.
+        return await start_workflow_run(project_id, session, background_tasks)
+
+    await session.commit()
+    # Still at the first approval gate (DRAFT) - see `override_shot_asset`
+    # just above for why resuming here would be wrong.
+    run_row = await WorkflowRunRepository(session).get_latest(uuid.UUID(project_id))
+    if run_row is None:
+        raise HTTPException(
+            status_code=400,
+            detail="no workflow run to attach this correction to",
         )
     return WorkflowTriggerResult(
         project_id=project_id,

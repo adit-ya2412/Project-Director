@@ -2,6 +2,16 @@
  * Human labels for `current_step` (`GET /progress`), matching
  * backend/app/workflow/engine.py's `DEFAULT_PIPELINE` order exactly —
  * see each step's own `name` class attribute under app/workflow/steps/.
+ *
+ * NOT actually exact as of long_form_direction.md A12 (2026-09-01):
+ * `RomanizeCaptionsStep` (`name = "romanize_captions"`, between
+ * `select_sfx` and `narration` in `DEFAULT_PIPELINE`) is ALSO absent here
+ * — a separate, pre-existing gap this docstring's own claim already
+ * missed before A12 touched this file. Out of A12's three named gaps
+ * (long_form_direction.md §3 A12); left unfixed here as scope creep this
+ * task's own brief explicitly ruled out ("nothing else"). `stepLabel`'s
+ * `?? step` fallback means it still renders (the raw step name, not a
+ * blank), so this is a missing label, not a crash.
  */
 export const STEP_ORDER = [
   'generate_timeline',
@@ -11,6 +21,7 @@ export const STEP_ORDER = [
   'narration',
   'await_approval',
   'resolve_assets_generate',
+  'generate_diegetic_sfx',
   'await_review',
   'render',
   'complete',
@@ -26,6 +37,12 @@ export const STEP_LABEL: Record<StepName, string> = {
   narration: 'Recording narration',
   await_approval: 'Waiting for your approval',
   resolve_assets_generate: 'Generating images for the remaining shots',
+  // long_form_direction.md A8/A12: `GenerateDiegeticSfxStep`, inserted
+  // into `DEFAULT_PIPELINE` immediately after `resolve_assets_generate`
+  // and before `AwaitReviewStep` (paid, post-approval - see that step's
+  // own docstring). Runs on every project carrying at least one
+  // `Shot.sfx_cue`; a no-op elsewhere.
+  generate_diegetic_sfx: 'Generating sound effects',
   await_review: 'Waiting for a fix to a failed shot',
   render: 'Rendering the video',
   complete: 'Done',
