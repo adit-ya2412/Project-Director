@@ -21,28 +21,75 @@ import type { Camera } from './types'
 export const RENDER_WIDTH = 720
 export const RENDER_HEIGHT = 1280
 
-/** Mirrors `resolve_render_format` (backend/app/script/styles.py).
- * Hardcoded because there is no settings endpoint; archival/stillness
- * default 16:9, stillness + `9:16` is a vertical Ken Burns reel,
- * retention_fast and archival_montage stay 9:16.
+/** Mirrors `resolve_render_format` / `STYLE_PACING_BANDS` (backend/app/
+ * script/styles.py). Hardcoded because there is no settings endpoint.
  *
- * `archival_montage` was MISSING from this switch until 2026-08-26
+ * `archival_montage` was MISSING from this table until 2026-08-26
  * (ui_style_feature_coverage.md §3.1.1) — it silently fell through to
- * the 16:9 default, which is wrong (backend `STYLE_PACING_BANDS
+ * the 16:9 default, which was wrong (backend `STYLE_PACING_BANDS
  * ["archival_montage"]` is 720x1280, verified live against
- * backend/app/script/styles.py before adding this line, not copied from
- * a plan doc). A real, if narrow, client-only bug: the actual render was
- * always correct (server-side), only this file's own Ken Burns/
- * resolution-warning math was wrong for that one style. */
+ * backend/app/script/styles.py before adding it, not copied from a plan
+ * doc). A real, if narrow, client-only bug: the actual render was always
+ * correct (server-side), only this file's own Ken Burns/resolution-
+ * warning math was wrong for that one style.
+ *
+ * SECOND OCCURRENCE, 2026-09-04: `illustrated_risograph` shipped
+ * defaulting 9:16 (the opposite direction from `stillness`, which
+ * defaults 16:9), and the old implementation was an if/else chain of
+ * literal style-name comparisons — exactly the shape that let
+ * `archival_montage` go missing the first time, and it would have fallen
+ * through to the same wrong 16:9 default again. Replaced with the table
+ * below (`STYLE_DEFAULT_CANVAS`, one row per style, mirroring each
+ * band's own `render_width`/`render_height`) plus a small frozen set of
+ * which styles accept a `frame_aspect` override at all
+ * (`FRAME_ASPECT_OVERRIDE_STYLES`, mirroring backend's
+ * `_FRAME_ASPECT_OVERRIDE_STYLES`/`style_accepts_frame_aspect`) — a
+ * style missing from `STYLE_DEFAULT_CANVAS` now falls back to
+ * documentary_archival's 1280x720 explicitly, in one place, rather than
+ * being silently absent from a chain of `if`s; and no call site
+ * anywhere in the frontend should compare a style id to a literal for
+ * this purpose again — read through `styleAcceptsFrameAspect` /
+ * `canvasForStyle` instead. */
+const STYLE_DEFAULT_CANVAS: Record<string, { width: number; height: number }> = {
+  documentary_archival: { width: 1280, height: 720 },
+  retention_fast: { width: 720, height: 1280 },
+  archival_montage: { width: 720, height: 1280 },
+  stillness: { width: 1280, height: 720 },
+  illustrated_risograph: { width: 720, height: 1280 },
+}
+
+/** Styles that accept a `frame_aspect` override to swap to the OTHER
+ * canvas from their own default above — mirrors backend's
+ * `_FRAME_ASPECT_OVERRIDE_STYLES` (app/script/styles.py) exactly.
+ * `stillness` defaults 16:9 and opts into 9:16; `illustrated_risograph`
+ * defaults 9:16 and opts into 16:9 — opposite directions, which is why
+ * `canvasForStyle` below compares `frameAspect` against each style's
+ * OWN default aspect rather than assuming "override always means
+ * 9:16". */
+const FRAME_ASPECT_OVERRIDE_STYLES = new Set(["stillness", "illustrated_risograph"])
+
+export function styleAcceptsFrameAspect(style: string): boolean {
+  return FRAME_ASPECT_OVERRIDE_STYLES.has(style)
+}
+
+/** The aspect ratio this style renders at with no override — derived
+ * from `STYLE_DEFAULT_CANVAS`, never a second hardcoded literal. */
+export function styleDefaultFrameAspect(style: string): "16:9" | "9:16" {
+  const canvas = STYLE_DEFAULT_CANVAS[style] ?? STYLE_DEFAULT_CANVAS.documentary_archival
+  return canvas.width > canvas.height ? "16:9" : "9:16"
+}
+
 export function canvasForStyle(
   style: string,
   frameAspect?: string | null,
 ): { width: number; height: number } {
-  if (style === "retention_fast" || style === "archival_montage") {
-    return { width: 720, height: 1280 }
-  }
-  if (style === "stillness" && frameAspect === "9:16") return { width: 720, height: 1280 }
-  return { width: 1280, height: 720 }
+  const canvas = STYLE_DEFAULT_CANVAS[style] ?? STYLE_DEFAULT_CANVAS.documentary_archival
+  if (!frameAspect || !styleAcceptsFrameAspect(style)) return canvas
+  if (frameAspect === styleDefaultFrameAspect(style)) return canvas
+  // Opting into the other aspect is exactly the transpose of this
+  // style's own default canvas — same shape as backend's
+  // `resolve_render_format`.
+  return { width: canvas.height, height: canvas.width }
 }
 
 export function renderAspect(width = RENDER_WIDTH, height = RENDER_HEIGHT): number {

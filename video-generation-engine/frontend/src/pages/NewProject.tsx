@@ -15,6 +15,8 @@ import {
   canvasForStyle,
   computeResolutionWarning,
   readImageDimensions,
+  styleAcceptsFrameAspect,
+  styleDefaultFrameAspect,
   type ResolutionWarning,
 } from '@/lib/resolution'
 import { useToast } from '@/components/ui/toast'
@@ -75,7 +77,7 @@ export function NewProject() {
   const [assets, setAssets] = useState<AssetRow[]>([])
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
-  const canvas = canvasForStyle(style, style === 'stillness' ? frameAspect : null)
+  const canvas = canvasForStyle(style, styleAcceptsFrameAspect(style) ? frameAspect : null)
 
   const queryClient = useQueryClient()
   const selectedStyle = STYLES.find((s) => s.id === style) ?? STYLES[0]
@@ -83,7 +85,7 @@ export function NewProject() {
     name,
     script,
     style,
-    frameAspect: style === 'stillness' ? frameAspect : null,
+    frameAspect: styleAcceptsFrameAspect(style) ? frameAspect : null,
     languageCode,
   })
   const infeasible = Boolean(preflight.result && !preflight.result.passed && !preflight.stale)
@@ -244,13 +246,23 @@ export function NewProject() {
                 <OptionCard
                   key={s.id}
                   selected={style === s.id}
-                  onSelect={() => setStyle(s.id)}
+                  onSelect={() => {
+                    setStyle(s.id)
+                    // Reset to the newly selected style's own default
+                    // aspect — `frameAspect` is only meaningful for
+                    // styles that opt in (styleAcceptsFrameAspect), and
+                    // the two opt-in styles default in OPPOSITE
+                    // directions (stillness 16:9, illustrated_risograph
+                    // 9:16), so a value picked for one style must not be
+                    // silently carried over as an "override" for another.
+                    setFrameAspect(styleDefaultFrameAspect(s.id))
+                  }}
                   label={s.label}
                   hint={s.hint}
                 />
               ))}
             </div>
-            {style === 'stillness' && (
+            {styleAcceptsFrameAspect(style) && (
               <div className="space-y-2">
                 <Label>Frame</Label>
                 <div className="grid gap-2 sm:grid-cols-2">
@@ -258,13 +270,21 @@ export function NewProject() {
                     selected={frameAspect === '16:9'}
                     onSelect={() => setFrameAspect('16:9')}
                     label="16:9 landscape"
-                    hint="Long-form, YouTube. Default for stillness."
+                    hint={
+                      style === 'stillness'
+                        ? 'Long-form, YouTube. Default for stillness.'
+                        : `Opt-in for ${selectedStyle.label} — swaps the canvas to landscape.`
+                    }
                   />
                   <OptionCard
                     selected={frameAspect === '9:16'}
                     onSelect={() => setFrameAspect('9:16')}
                     label="9:16 portrait"
-                    hint="Short reel with Ken Burns camera — not a fast-cut style."
+                    hint={
+                      style === 'stillness'
+                        ? 'Short reel with Ken Burns camera — not a fast-cut style.'
+                        : `Default for ${selectedStyle.label}.`
+                    }
                   />
                 </div>
               </div>

@@ -1,12 +1,17 @@
 /**
- * Human-facing labels for the four `render_style` presets.
+ * Human-facing labels for the five `render_style` presets.
  *
  * IDs and `targetShotDurationS` are mirrored from
- * `backend/app/script/styles.py::STYLE_PACING_BANDS` (verified 2026-08-26):
+ * `backend/app/script/styles.py::STYLE_PACING_BANDS` (verified 2026-09-04):
  *   documentary_archival  target=None   1280×720
  *   retention_fast        target=1.75   720×1280
  *   archival_montage      target=2.25   720×1280  (reasoned starting point)
  *   stillness             target=None   1280×720 (9:16 opt-in)
+ *   illustrated_risograph target=None   720×1280 (16:9 opt-in — the
+ *     opposite direction from stillness; both opt-ins are read through
+ *     `styleAcceptsFrameAspect`/`canvasForStyle` in ./resolution, which
+ *     mirror the backend's `style_accepts_frame_aspect` single source of
+ *     truth rather than comparing a style id to a literal per call site)
  *
  * Grade copy is from `backend/app/renderer/grading.py::STYLE_GRADES`.
  *
@@ -54,6 +59,13 @@ export const RENDER_STYLES = [
     hint: '9:16 · harder cuts, frequent text cards',
     targetShotDurationS: 2.25,
     gradeHint: 'Punchier than archival, short of social-pop',
+  },
+  {
+    id: 'illustrated_risograph',
+    label: 'Illustrated risograph',
+    hint: '9:16 · fully AI-illustrated, faceless characters — pick a frame below',
+    targetShotDurationS: null,
+    gradeHint: 'Neutral — the look is baked into the generation prompt, not a grade',
   },
 ] as const
 
