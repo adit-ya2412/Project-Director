@@ -15,6 +15,7 @@ resumability (M4), one level deeper.
 
 from app.core.config import settings
 from app.core.errors import TransientError
+from app.core.logging import get_logger
 from app.planners.asset.planner import AssetPlanner
 from app.planners.director.planner import DirectorPlanner
 from app.planners.fragments import split_narration_fragments
@@ -23,16 +24,85 @@ from app.planners.shot.planner import ShotPlanner
 from app.providers.fakes.llm import FakeTimelinePlanner
 from app.providers.openai_provider import OpenAIPlanningProvider
 from app.repositories.llm_call_repository import LlmCallRepository
-from app.schemas.timeline import ProducedBy, Timeline
-from app.script.styles import ConstraintBundle, resolve_constraint_bundle
+from app.schemas.timeline import (
+    AssetPlan,
+    AssetStrategy,
+    PreferredMediaType,
+    ProducedBy,
+    Scene,
+    Timeline,
+)
+from app.script.styles import (
+    ConstraintBundle,
+    PicturePath,
+    resolve_constraint_bundle,
+    resolve_picture_path,
+)
 from app.timeline.duration import compute_timeline_duration
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
 from app.workflow.steps.select_sfx import default_sfx_plan
 
-_FAKE_PLANNER_OWNS = frozenset(
-    {"metadata", "creative_context", "music_plan", "sfx_plan", "scenes"}
-)
+logger = get_logger(__name__)
+
+_FAKE_PLANNER_OWNS = frozenset({"metadata", "creative_context", "music_plan", "sfx_plan", "scenes"})
+
+
+def _force_generation_only_picture_path(scenes: list[Scene]) -> list[Scene]:
+    """illustrated_faceless.md §3.2 (F1): the enforcement point for
+    `resolve_picture_path(style) is PicturePath.GENERATION_ONLY`.
+
+    Runs AFTER `AssetPlanner.plan` returns, never before and never by
+    prompting it - `_build_user_content` in `app/planners/asset/
+    planner.py` never sends `render_style` to the Asset Planner at all
+    (verified 2026-09-04), so it has no way to know this project is
+    generation-only, and telling it in its own prompt anyway would only
+    usually work - see `resolve_picture_path`'s own docstring for why
+    "usually" is the defect this function exists to remove.
+
+    Overrides only the PRIMARY `asset_plan` on every shot - `strategy`
+    and `fallback_chain` collapse to the single legal generation-only
+    chain `[generate_image]` (a valid ascending subsequence of
+    `ASSET_LADDER` by construction: one element trivially satisfies
+    "ascending"), and `preferred_type` is forced to `image` so this
+    stays STILLS ONLY regardless of what the Asset Planner guessed from
+    the shot's camera movement - F1 has no layers, no parallax, no
+    per-shot motion cost yet (that is F2+). `entity`/`search_queries`/
+    `licence_requirements` are left as the Asset Planner produced them -
+    harmless, since a chain of only `generate_image` never reaches the
+    search/entity rungs those fields would otherwise drive (see
+    `app/workflow/steps/resolve_assets.py`: a shot's fallback chain is
+    walked restricted to each pass's permitted rungs, and `generate_
+    image` is the only rung 5-6 pass ever reaches).
+
+    `secondary_asset_plan` (the `split_frame` bottom panel) is
+    deliberately left untouched - out of F1's scope entirely
+    (illustrated_faceless.md's own DO-NOT list). The style fragment asks
+    the Shot Planner not to use `split_frame` for this style at all, so
+    in practice this rarely matters; if a split_frame shot slips through
+    anyway, its secondary panel keeps the Asset Planner's own (possibly
+    retrieval-first) plan rather than being forced generation-only.
+    """
+
+    def _generation_only(plan: AssetPlan | None) -> AssetPlan | None:
+        if plan is None:
+            return None
+        return plan.model_copy(
+            update={
+                "strategy": AssetStrategy.GENERATE_IMAGE,
+                "fallback_chain": [AssetStrategy.GENERATE_IMAGE],
+                "preferred_type": PreferredMediaType.IMAGE,
+            }
+        )
+
+    new_scenes = []
+    for scene in scenes:
+        new_shots = [
+            shot.model_copy(update={"asset_plan": _generation_only(shot.asset_plan)})
+            for shot in scene.shots
+        ]
+        new_scenes.append(scene.model_copy(update={"shots": new_shots}))
+    return new_scenes
 
 
 def _validate_against_style(timeline: Timeline) -> list[str]:
@@ -187,7 +257,13 @@ class GenerateTimelineStep:
 
         if not timeline.creative_context.tone or timeline.music_plan is None:
             creative_context, music_plan = await DirectorPlanner(provider, llm_call_repo).plan(
-                project_id=ctx.project_id, script=script
+                project_id=ctx.project_id,
+                script=script,
+                # RV2 "resolve once, thread explicitly" (illustrated_faceless.md
+                # P-IF-F1-review3): `timeline` (loaded above at line 255-256)
+                # already carries `metadata.render_style` for this project - the
+                # planner must not reach into settings or the DB for it itself.
+                render_style=timeline.metadata.render_style,
             )
 
             def _apply_director(base: Timeline) -> Timeline:
@@ -273,6 +349,15 @@ class GenerateTimelineStep:
                 scenes=timeline.scenes,
                 max_video_shots_per_project=bundle.max_video_shots_per_project,
             )
+            if resolve_picture_path(timeline.metadata.render_style) is PicturePath.GENERATION_ONLY:
+                logger.info(
+                    "generate_timeline.picture_path_forced_generation_only",
+                    extra={
+                        "project_id": ctx.project_id,
+                        "render_style": timeline.metadata.render_style,
+                    },
+                )
+                planned_scenes = _force_generation_only_picture_path(planned_scenes)
 
             def _apply_assets(base: Timeline) -> Timeline:
                 base.scenes = planned_scenes

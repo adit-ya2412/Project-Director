@@ -63,6 +63,33 @@ _STYLE_DESCRIPTIONS = {
         "rhythm than long-form documentary; a poor fit for solemn memorial, "
         "or for purely promotional content with no archival character."
     ),
+    # F1 (docs/plans/illustrated_faceless.md §2.1), 2026-09-04 - style
+    # #5, and `_description_for`'s own docstring predicted this exact
+    # review: it raises rather than falling back to the style name so
+    # that a new style FAILS here instead of shipping a fabricated
+    # verdict. `test_suitability.py` asserts this dict and
+    # STYLE_PACING_BANDS stay in lockstep; it caught the omission.
+    #
+    # ⚠ Note what this description deliberately says about MATERIAL:
+    # every picture in this style is generated, so unlike the four
+    # archival styles above there is no retrieval and no question of
+    # whether a photograph exists. See `script_suitability/v1.md`'s
+    # question 3, which had to be amended for the same reason - a
+    # generation-only style must never be marked unsuitable for lacking
+    # an archival visual record.
+    "illustrated_risograph": (
+        "every picture is a generated bold risograph-print illustration in one "
+        "locked world - three spot colours, heavy ink grain, halftone texture - "
+        "with every human figure deliberately faceless (seen from behind, in "
+        "silhouette, blank-faced, or cropped above the chin). Nothing is "
+        "photographed or archival, so no real visual record needs to exist: it "
+        "suits subjects that cannot be photographed at all - systems, statistics, "
+        "abstractions, composite or archetypal characters, and stories set "
+        "somewhere no camera went. Its register is graphic and urgent rather "
+        "than quiet, so it is a poor fit for material that needs the authority "
+        "of real footage, or for a story that depends on a specific real "
+        "person's face."
+    ),
 }
 
 

@@ -65,6 +65,29 @@ STYLE_GRADES: dict[str, StyleGrade] = {
     # in character. Starting point, not measured - revisit after a real
     # viewing pass, exactly like the pacing numbers in styles.py.
     "archival_montage": StyleGrade(contrast=1.10, saturation=1.05, brightness=0.01),
+    # F1 (docs/plans/illustrated_faceless.md §2.1), 2026-09-04: the
+    # illustrated-format opt-in. Deliberately AT the identity grade
+    # (1.0/1.0/0.0), not merely close to it - the risograph palette
+    # (three fixed spot colours, ink grain, halftone) is baked into the
+    # GENERATION PROMPT itself (see `shot_planner_styles/illustrated_
+    # risograph.md`), so an `eq` grade on top would double-grade
+    # already-graded pixels rather than grade a neutral photograph the
+    # way the other four styles' grades do. `grade_filter_fragment`'s
+    # own docstring treats an exact-identity grade as "no grade" and
+    # skips the filter entirely, so this costs nothing in the chain -
+    # that is the point of registering it here rather than leaving this
+    # style out of `STYLE_GRADES` (which would silently fall back to
+    # `settings.default_render_style`'s real, non-identity grade instead
+    # of no grade at all - see `grade_filter_fragment`'s R6 fix above for
+    # why that fallback exists and why it is the wrong one here).
+    #
+    # One entry, not two (follow-up to F1's review, 2026-09-04): collapsed
+    # from `illustrated_risograph_vertical` / `_horizontal` alongside the
+    # same collapse in `app/script/styles.py::STYLE_PACING_BANDS` - see
+    # that registry's own comment for the full reasoning. The identity
+    # value is exact identity regardless of canvas, so collapsing the two
+    # rows changes nothing about what either canvas actually renders.
+    "illustrated_risograph": StyleGrade(contrast=1.0, saturation=1.0, brightness=0.0),
 }
 
 

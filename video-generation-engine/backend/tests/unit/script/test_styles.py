@@ -10,14 +10,17 @@ import pytest
 from app.core.config import settings
 from app.script.styles import (
     STYLE_PACING_BANDS,
+    PicturePath,
     StylePacingBand,
     frame_aspect_error,
     resolve_constraint_bundle,
     resolve_draft_format,
     resolve_music_gains,
     resolve_narration_speed,
+    resolve_picture_path,
     resolve_render_format,
     resolve_sfx_whoosh_enabled,
+    style_accepts_frame_aspect,
 )
 
 
@@ -469,9 +472,7 @@ def test_archival_montage_narration_speed_music_and_whoosh():
     # fragment script. Still under retention_fast's 1.4x and at the top
     # of the documented ~1.15-1.25x quality ceiling.
     assert resolve_narration_speed("archival_montage") == 1.25
-    assert resolve_narration_speed("archival_montage") < resolve_narration_speed(
-        "retention_fast"
-    )
+    assert resolve_narration_speed("archival_montage") < resolve_narration_speed("retention_fast")
 
     gains = resolve_music_gains("archival_montage")
     assert gains.bed_gain_db == -11.0
@@ -504,3 +505,204 @@ def test_archival_montage_dead_stop_ceiling_agrees_with_but_is_independent_of_th
     band = STYLE_PACING_BANDS["archival_montage"]
     assert band.max_fragment_duration_s == 4.5
     assert band.max_shot_duration_s_override == 4.5
+
+
+# ---------------------------------------------------------------------------
+# F1: illustrated_risograph (docs/plans/illustrated_faceless.md §2.1/§3.2).
+# Collapsed from two rows (`illustrated_risograph_vertical` / `_horizontal`)
+# to one plus `frame_aspect`, follow-up to F1's review (2026-09-04) - see
+# `STYLE_PACING_BANDS["illustrated_risograph"]`'s own comment in
+# `app/script/styles.py` for the full reasoning.
+# ---------------------------------------------------------------------------
+
+
+def test_existing_four_style_bands_are_byte_for_byte_unchanged():
+    """F1 added a new registry entry (`illustrated_risograph`, one row
+    since the 2026-09-04 collapse) and one new field (`picture_path`) to
+    `StylePacingBand`. This pins the FULL, exact dataclass value of
+    each of the four pre-F1 styles (constructed with every field at its
+    literal shipped value, `picture_path` included only implicitly via
+    its default) so any accidental drift in ANY field - not just the new
+    one - fails loudly here, not just in the narrower per-field tests
+    above."""
+    assert STYLE_PACING_BANDS["documentary_archival"] == StylePacingBand(
+        name="documentary_archival",
+        transition_sfx_structural_only=True,
+        target_shot_duration_s=None,
+        max_shots_override=None,
+        render_width=1280,
+        render_height=720,
+    )
+    assert STYLE_PACING_BANDS["retention_fast"] == StylePacingBand(
+        name="retention_fast",
+        target_shot_duration_s=1.75,
+        max_shots_override=58,
+        min_shot_duration_s_override=0.8,
+        max_shot_duration_s_override=3.5,
+        narration_speed=1.4,
+        music_bed_gain_db=-10.0,
+        music_duck_gain_db=-18.0,
+        whoosh_enabled=False,
+        render_width=720,
+        render_height=1280,
+    )
+    assert STYLE_PACING_BANDS["archival_montage"] == StylePacingBand(
+        name="archival_montage",
+        target_shot_duration_s=2.25,
+        max_shots_override=46,
+        min_shot_duration_s_override=1.2,
+        max_shot_duration_s_override=4.5,
+        narration_speed=1.25,
+        music_bed_gain_db=-11.0,
+        music_duck_gain_db=-15.0,
+        whoosh_enabled=False,
+        render_width=720,
+        render_height=1280,
+    )
+    assert STYLE_PACING_BANDS["stillness"] == StylePacingBand(
+        name="stillness",
+        transition_sfx_structural_only=True,
+        target_shot_duration_s=None,
+        max_shots_override=None,
+        music_bed_gain_db=-22.0,
+        music_duck_gain_db=-28.0,
+        render_width=1280,
+        render_height=720,
+    )
+    # Every pre-F1 style is the additive default - the whole point of
+    # §3.1's "new fields default to today's behaviour".
+    for style in ("documentary_archival", "retention_fast", "archival_montage", "stillness"):
+        assert STYLE_PACING_BANDS[style].picture_path is PicturePath.RETRIEVAL_LADDER
+
+
+def test_illustrated_risograph_defaults_to_documentary_archivals_inert_pacing_except_speed():
+    """F1 deliberately supplied no pacing/narration-speed/music/whoosh
+    override for this style - none of §1's four probes measured a
+    difference for any of those, so resolving it was identical to
+    documentary_archival's inert baseline, same shape as
+    `test_documentary_archival_resolves_identical_to_none` above. True at
+    BOTH canvases - `frame_aspect` only changes `resolve_render_format`'s
+    output, never pacing/speed/music/whoosh.
+
+    P-IF-F1-fixes (2026-09-04), fix 3: a real render of this style was
+    measured too slow at narration_speed's 1.0 default, so this style now
+    overrides `narration_speed` to 1.15 - the conservative end of
+    `archival_montage`'s own documented 1.15-1.25 Hinglish band (this
+    project's `language_code=hi`), not the 1.0 inert default anymore.
+    Everything else this style does not override (pacing bounds, music
+    gain, whoosh) is unaffected and still matches documentary_archival's
+    baseline exactly."""
+    assert resolve_constraint_bundle("illustrated_risograph") == resolve_constraint_bundle(None)
+    assert resolve_narration_speed("illustrated_risograph") == 1.15
+    assert resolve_sfx_whoosh_enabled("illustrated_risograph") is True
+    gains = resolve_music_gains("illustrated_risograph")
+    assert gains == resolve_music_gains(None)
+
+
+def test_illustrated_risograph_narration_speed_is_the_conservative_hinglish_value():
+    """Fix 3's exact chosen value and its band, pinned so a future editor
+    who bumps it toward `archival_montage`'s 1.25 ceiling (or
+    `retention_fast`'s unrelated 1.4) does so deliberately, not by
+    accident. 1.15 is UN-EARED (chosen from the documented band, not
+    confirmed by listening) - see the field's own comment in styles.py."""
+    assert STYLE_PACING_BANDS["illustrated_risograph"].narration_speed == 1.15
+    # Within archival_montage's own documented Hinglish-safe band.
+    assert 1.15 <= STYLE_PACING_BANDS["illustrated_risograph"].narration_speed <= 1.25
+
+
+def test_the_other_four_styles_narration_speed_is_unchanged_by_the_illustrated_risograph_fix():
+    """Regression: fix 3 touches only `illustrated_risograph`'s own band
+    row. The pre-existing styles' narration_speed values (three at the
+    1.0 default, retention_fast at its own 1.4) must be byte-identical to
+    before this change."""
+    assert resolve_narration_speed(None) == 1.0
+    assert resolve_narration_speed("documentary_archival") == 1.0
+    assert resolve_narration_speed("stillness") == 1.0
+    assert resolve_narration_speed("retention_fast") == 1.4
+    assert resolve_narration_speed("archival_montage") == 1.25
+
+
+def test_illustrated_risograph_canvas_defaults_9_16_and_frame_aspect_opts_into_16_9():
+    """§2.1/§4.2/§6 Q5, as amended by the 2026-09-04 collapse: one style
+    row, default 9:16 (portrait - the primary edit), `frame_aspect="16:9"`
+    opts into the landscape canvas - the same mechanism `stillness` already
+    uses for its own other canvas. §6 Q5's "9:16 and 16:9 are different
+    EDITS, planned as separate projects" still holds: format rides
+    `render_style`, frozen at planning start, so any one project still
+    ends up at exactly one canvas - the collapse changed how many registry
+    rows express that, not the one-project-one-canvas rule itself."""
+    portrait = resolve_render_format("illustrated_risograph")
+    assert (portrait.width, portrait.height) == (720, 1280)
+    assert not portrait.is_landscape
+    assert resolve_render_format("illustrated_risograph", frame_aspect="9:16") == portrait
+    assert resolve_render_format("illustrated_risograph", frame_aspect=None) == portrait
+
+    landscape = resolve_render_format("illustrated_risograph", frame_aspect="16:9")
+    assert (landscape.width, landscape.height) == (1280, 720)
+    assert landscape.is_landscape
+
+    # `resolve_draft_format` derives from `resolve_render_format`, so the
+    # opt-in must follow automatically with no separate branch.
+    draft_portrait = resolve_draft_format("illustrated_risograph")
+    assert not draft_portrait.is_landscape
+    draft_landscape = resolve_draft_format("illustrated_risograph", frame_aspect="16:9")
+    assert draft_landscape.is_landscape
+
+    assert style_accepts_frame_aspect("illustrated_risograph") is True
+    assert frame_aspect_error("illustrated_risograph", None) is None
+    assert frame_aspect_error("illustrated_risograph", "9:16") is None
+    assert frame_aspect_error("illustrated_risograph", "16:9") is None
+    assert "unknown" in (frame_aspect_error("illustrated_risograph", "4:3") or "")
+
+
+def test_resolve_picture_path_is_generation_only_for_the_new_style_only():
+    assert resolve_picture_path("illustrated_risograph") is PicturePath.GENERATION_ONLY
+    for style in ("documentary_archival", "retention_fast", "archival_montage", "stillness"):
+        assert resolve_picture_path(style) is PicturePath.RETRIEVAL_LADDER
+    # Unset resolves through the default style's band (documentary_archival
+    # today), same fallback shape as resolve_sfx_whoosh_enabled.
+    assert resolve_picture_path(None) is PicturePath.RETRIEVAL_LADDER
+    # Unknown style names resolve to the SAFE direction here: never
+    # silently start generating (and billing for) every picture - the
+    # opposite of resolve_sfx_whoosh_enabled's True-for-unknown default,
+    # because getting this wrong is a cost/behaviour regression, not a
+    # missing SFX layer.
+    assert resolve_picture_path("not_a_real_style") is PicturePath.RETRIEVAL_LADDER
+
+
+def test_a_hypothetical_generation_only_band_resolves_through_the_field_not_a_name_list():
+    """Proves the resolver reads `band.picture_path`, not a hardcoded set
+    of the two F1 style names."""
+    STYLE_PACING_BANDS["hypothetical_generation_only"] = StylePacingBand(
+        name="hypothetical_generation_only",
+        target_shot_duration_s=None,
+        max_shots_override=None,
+        picture_path=PicturePath.GENERATION_ONLY,
+    )
+    try:
+        assert resolve_picture_path("hypothetical_generation_only") is PicturePath.GENERATION_ONLY
+    finally:
+        del STYLE_PACING_BANDS["hypothetical_generation_only"]
+
+
+def test_every_registered_style_is_reachable_including_the_new_one():
+    for style in STYLE_PACING_BANDS:
+        resolve_constraint_bundle(style)  # must not raise
+        resolve_picture_path(style)  # must not raise
+    assert "illustrated_risograph" in STYLE_PACING_BANDS
+    assert "illustrated_risograph_vertical" not in STYLE_PACING_BANDS
+    assert "illustrated_risograph_horizontal" not in STYLE_PACING_BANDS
+
+
+def test_style_accepts_frame_aspect_is_the_single_source_of_truth():
+    """`stillness` and `illustrated_risograph` opt in; every other
+    registered style, `None`, and an unrecognised name do not. This is
+    the one function `frame_aspect_error`, `resolve_render_format`, and
+    both `app/api/projects.py` write paths read through - no call site
+    should compare a style name to a literal."""
+    assert style_accepts_frame_aspect("stillness") is True
+    assert style_accepts_frame_aspect("illustrated_risograph") is True
+    for style in ("documentary_archival", "retention_fast", "archival_montage"):
+        assert style_accepts_frame_aspect(style) is False
+    assert style_accepts_frame_aspect(None) is False
+    assert style_accepts_frame_aspect("not_a_real_style") is False

@@ -157,7 +157,12 @@ from app.schemas.timeline import (
 )
 from app.script.preflight import check_feasibility
 from app.script.rewrite import rewrite_script
-from app.script.styles import STYLE_PACING_BANDS, frame_aspect_error, resolve_draft_format
+from app.script.styles import (
+    STYLE_PACING_BANDS,
+    frame_aspect_error,
+    resolve_draft_format,
+    style_accepts_frame_aspect,
+)
 from app.script.suggestions import suggest_breaks
 from app.script.suitability import check_suitability
 from app.timeline.duration import compute_shot_start_times
@@ -286,9 +291,12 @@ class CreateProjectRequest(BaseModel):
     # - validated against `STYLE_PACING_BANDS` in `create_project` below,
     # same as `set_render_style`'s own check.
     render_style: str | None = None
-    # Stillness-only. `9:16` is a vertical Ken Burns reel; `16:9` / None
-    # is the default landscape contemplative frame. Rejected for any
-    # other style (`frame_aspect_error`).
+    # Only settable for a style that opts in (`style_accepts_frame_aspect`
+    # - today, `stillness` and `illustrated_risograph`); rejected for any
+    # other style (`frame_aspect_error`). For `stillness`: `9:16` is a
+    # vertical Ken Burns reel, `16:9` / None is the default landscape
+    # contemplative frame. For `illustrated_risograph`: `16:9` opts into
+    # the landscape edit, `9:16` / None is the default portrait canvas.
     frame_aspect: str | None = None
     # ISO 639-1 hint for ElevenLabs' `language_code` param (2026-08-24).
     # Set here so a code-switched (Hindi/Hinglish, Spanish/Spanglish,
@@ -568,7 +576,10 @@ async def set_render_style(
     invalidating anything, but refusing is still the honest answer
     (a user who thinks they just changed the style deserves to be told
     it is too late, not to have the request quietly no-op).
-    `frame_aspect` is stillness-only (`9:16` = vertical Ken Burns reel).
+    `frame_aspect` is only settable for a style that opts in - see
+    `style_accepts_frame_aspect` (today, `stillness` and
+    `illustrated_risograph`; `9:16` = vertical Ken Burns reel for the
+    former, `16:9` = the landscape edit for the latter).
     """
     project = await _get_project_or_404(project_id, repo)
     if body.render_style not in STYLE_PACING_BANDS:
@@ -592,10 +603,23 @@ async def set_render_style(
             ),
         )
     project.render_style = body.render_style
-    # Non-stillness styles cannot carry an override; stillness without
-    # a value is the 16:9 default. Always write, never keep a stale reel
-    # flag from a previous stillness choice.
-    project.frame_aspect = body.frame_aspect if body.render_style == "stillness" else None
+    # A style that does not opt in (`style_accepts_frame_aspect`) cannot
+    # carry an override; a style that does, without a value, gets its own
+    # default canvas. Always write, never keep a stale override from a
+    # previous style choice - this used to hardcode `== "stillness"`,
+    # which meant `create_project` (validates via `frame_aspect_error`
+    # and persists `body.frame_aspect` as-is) and this endpoint agreed
+    # for `stillness` but silently DISAGREED for any later style that
+    # opted in: `create_project` would honour `frame_aspect="16:9"` for
+    # `illustrated_risograph` while this line discarded it back to
+    # `None`, so switching an EXISTING project to that style at 16:9
+    # passed validation above and then silently persisted the wrong
+    # canvas with no error anywhere - an R1 violation caught before ship,
+    # not after. Fixed by reading through the same resolver
+    # `frame_aspect_error` itself already reads.
+    project.frame_aspect = (
+        body.frame_aspect if style_accepts_frame_aspect(body.render_style) else None
+    )
     return await repo.update(project)
 
 

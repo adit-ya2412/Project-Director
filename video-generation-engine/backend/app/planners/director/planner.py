@@ -11,9 +11,36 @@ from app.prompts.loader import load_prompt
 from app.providers.base import PlanningLLMProvider
 from app.repositories.llm_call_repository import LlmCallRepository
 from app.schemas.timeline import CreativeContext, MusicPlan
+from app.script.styles import PicturePath, resolve_picture_path
 
 AGENT = "director"
 PROMPT_VERSION = "v1"
+# illustrated_faceless.md P-IF-F1-review3: NOT a style-name fragment (that
+# would need duplicating for every future generation-only world, exactly
+# the duplication P-IF-F1-review removed one level down). Keyed on
+# `resolve_picture_path` - the same one resolver every other call site
+# reads through (§3.2) - so one block covers `illustrated_risograph`
+# today and any later generation-only style for free.
+_GENERATION_ONLY_PROMPT_VERSION = "generation_only"
+
+
+def _system_prompt_for(render_style: str | None) -> str:
+    """The base Director prompt, plus the generation-only override block
+    when (and only when) `render_style` resolves to `PicturePath.
+    GENERATION_ONLY` (illustrated_faceless.md P-IF-F1-review3). Pulled out
+    as its own pure function - no provider, no DB, no repair loop - so the
+    composition itself is directly testable, the same way `load_style_
+    fragment` is tested at the loader level for the Shot Planner (`tests/
+    unit/planners/test_illustrated_risograph_fragment.py`).
+
+    `render_style=None` (every caller before this fix, and the four
+    retrieval styles) must return `load_prompt(AGENT, PROMPT_VERSION)`
+    completely unchanged - that byte-identity is the regression this fix
+    must not risk."""
+    system_prompt = load_prompt(AGENT, PROMPT_VERSION)
+    if resolve_picture_path(render_style) is PicturePath.GENERATION_ONLY:
+        system_prompt = f"{system_prompt}\n\n{load_prompt(AGENT, _GENERATION_ONLY_PROMPT_VERSION)}"
+    return system_prompt
 
 
 def _validate(output: DirectorOutput) -> list[str]:
@@ -43,8 +70,20 @@ class DirectorPlanner:
         self._provider = provider
         self._llm_call_repo = llm_call_repo
 
-    async def plan(self, *, project_id: str, script: str) -> tuple[CreativeContext, MusicPlan]:
-        system_prompt = load_prompt(AGENT, PROMPT_VERSION)
+    async def plan(
+        self, *, project_id: str, script: str, render_style: str | None = None
+    ) -> tuple[CreativeContext, MusicPlan]:
+        # illustrated_faceless.md P-IF-F1-review3, the same defect
+        # P-IF-F1-review2 fixed in script_suitability: the base prompt's
+        # "Documentary default" and its provenance-flavoured constraints
+        # ("licensed footage", "consent is documented") are wrong for a
+        # style that never retrieves anything - and those constraints do
+        # not stop at planning, they are later checked by a vision model
+        # against every generated image (`check_generated_image_
+        # constraints`), where they are inapplicable at best and inverted
+        # at worst, and a rejection is still billed regardless. See
+        # `_system_prompt_for` for the composition itself.
+        system_prompt = _system_prompt_for(render_style)
         output = await run_structured_with_repair(
             provider=self._provider,
             llm_call_repo=self._llm_call_repo,
