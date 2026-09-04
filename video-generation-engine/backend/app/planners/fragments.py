@@ -214,6 +214,30 @@ def find_split_points(text: str, *, split_chars: frozenset[str]) -> list[int]:
     n = len(text)
     while i < n:
         ch = text[i]
+        # A period BETWEEN DIGITS is a decimal point, not a sentence end
+        # (2026-09-02, from a real project: "6.5 percent growth" split into
+        # "6." and "5 percent growth", and because a shot owns a CONTIGUOUS
+        # FRAGMENT RANGE, the Shot Planner then gave "6." its own 0.51s shot
+        # - the video cut to a fresh picture for half a second to say "six
+        # point". Three of that scene's eleven shots were decimal points,
+        # one as short as 0.34s.)
+        #
+        # Deliberately narrow: only `.` and only with a digit on BOTH sides.
+        # It does not try to solve abbreviations ("Dr. Bose", "U.S.") - those
+        # need a lexicon and would start guessing, whereas a digit-dot-digit
+        # is unambiguous. `!?…।` are never decimal separators and are left
+        # alone. Thousands separators ("1,50,000") are a COMMA and so only
+        # ever reach the secondary clause split, which runs on fragments
+        # already over the long-fragment threshold - a different, narrower
+        # blast radius, left for a real case rather than a hypothetical one.
+        if (
+            ch == "."
+            and 0 < i < n - 1
+            and text[i - 1].isdigit()
+            and text[i + 1].isdigit()
+        ):
+            i += 1
+            continue
         if ch == "\n" or ch in split_chars:
             j = i + 1
             while j < n and text[j].isspace():

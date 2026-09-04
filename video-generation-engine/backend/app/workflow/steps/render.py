@@ -927,7 +927,12 @@ def _diegetic_duck_windows(
         return []
     shots_by_id = {shot.id: shot for shot in timeline.all_shots()}
     windows: list[tuple[float, float]] = []
-    for event in derive_sfx_events(timeline, fps=fps, whoosh_enabled=whoosh_enabled):
+    for event in derive_sfx_events(
+        timeline,
+        fps=fps,
+        whoosh_enabled=whoosh_enabled,
+        transition_structural_only=transition_structural_only,
+    ):
         if event.kind != SfxKind.DIEGETIC:
             continue
         clip = diegetic_by_shot.get(event.shot_id)
@@ -943,7 +948,12 @@ def _diegetic_duck_windows(
 
 
 def _sfx_overlays(
-    timeline: Timeline, project_id: str, *, fps: int, whoosh_enabled: bool
+    timeline: Timeline,
+    project_id: str,
+    *,
+    fps: int,
+    whoosh_enabled: bool,
+    transition_structural_only: bool = False,
 ) -> list[SfxOverlay]:
     """Full mix inputs per scheduled SFX event, or empty when DRY_RUN /
     no clips. Per clip (C3c): its stored peak measurement - or the flat
@@ -985,7 +995,12 @@ def _sfx_overlays(
         SfxKind.DIEGETIC: settings.sfx_diegetic_gain_db,
     }
     overlays: list[SfxOverlay] = []
-    for event in derive_sfx_events(timeline, fps=fps, whoosh_enabled=whoosh_enabled):
+    for event in derive_sfx_events(
+        timeline,
+        fps=fps,
+        whoosh_enabled=whoosh_enabled,
+        transition_structural_only=transition_structural_only,
+    ):
         clip = (
             diegetic_by_shot.get(event.shot_id)
             if event.kind == SfxKind.DIEGETIC
