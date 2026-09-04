@@ -73,6 +73,20 @@ logo must invalidate the cache); `watermark_params_hash` folds
 position/margin/width/opacity into one value. Both `None` when
 `watermark_enabled` is `False`.
 
+**Parallax layers (illustrated_faceless.md F2, 2026-09-04), R2 named as
+the likeliest way this ships broken.** `Shot.layers` is a new field on
+`Shot`, so its creative half (role, prompt, asset_plan, drift_x, drift_y,
+scale - "layer count, roles, drift rates, scale") rides into
+`compute_render_fingerprint`/`compute_run_fingerprint` for FREE via the
+existing full `timeline`/`shot` dumps below - the same way
+`secondary_prompt`/`secondary_asset_plan` already do. What the dump
+cannot see is a layer's resolved image BYTES (I2 - the Timeline carries
+no media): `layer_content_hashes`/`layer_asset_hashes` are that hook,
+same shape as `secondary_content_hashes`/`secondary_asset_hash` above.
+`compute_shot_stream_fingerprint` is the one function in this module that
+does NOT dump the whole `Shot` (it hand-picks fields), so `layers` is
+added there explicitly - see that function's own docstring.
+
 Bookkeeping fields (`version`, `parent_version`, `produced_by`, `status`,
 `created_at`, `timeline_id`, `project_id`, `schema_version`) are
 EXCLUDED from the hashed Timeline content - the same set
@@ -192,6 +206,7 @@ def compute_render_fingerprint(
     ffmpeg_version: str,
     secondary_content_hashes: dict[str, str] | None = None,
     shot_focal: dict[str, str] | None = None,
+    layer_content_hashes: dict[str, list[str]] | None = None,
 ) -> str:
     timeline_document = timeline.model_dump(mode="json")
     content_only = {
@@ -229,6 +244,28 @@ def compute_render_fingerprint(
             {
                 "shot_id": shot.id,
                 "focal": (shot_focal or {}).get(shot.id, ""),
+            }
+            for shot in timeline.all_shots()
+        ],
+        # illustrated_faceless.md F2 (2026-09-04), R2: a layer's own
+        # creative fields (role, prompt, asset_plan, drift_x, drift_y,
+        # scale - so "layer count, roles, drift rates, scale" the plan
+        # names) already ride into `content_only["timeline"]` above for
+        # free, via the same full `timeline.model_dump` every other
+        # `Shot` field (prompt, camera, secondary_prompt, ...) already
+        # gets - no separate entry needed for those, exactly as
+        # `secondary_prompt`/`secondary_asset_plan` need none today. What
+        # the timeline dump CANNOT see is the layer's resolved image
+        # BYTES (I2 - Timeline carries no media): this entry is the
+        # `shot_media`-shaped hook for that, keyed by shot_id, ordered to
+        # match `Shot.layers`. Empty list when a shot has no layers or
+        # when a caller has not wired layer resolution yet (every caller
+        # today - this fingerprint function ships ahead of the render.py
+        # wiring that would populate `layer_content_hashes` for real).
+        "shot_layers": [
+            {
+                "shot_id": shot.id,
+                "hashes": (layer_content_hashes or {}).get(shot.id, []),
             }
             for shot in timeline.all_shots()
         ],
@@ -384,6 +421,7 @@ def compute_run_fingerprint(
     ffmpeg_version: str,
     secondary_content_hashes: dict[str, str] | None = None,
     shot_focal: dict[str, str] | None = None,
+    layer_content_hashes: dict[str, list[str]] | None = None,
 ) -> str:
     """Fingerprint of one `group_into_runs` run (Track C C3 remainder).
 
@@ -410,6 +448,12 @@ def compute_run_fingerprint(
                 "secondary_hash": (secondary_content_hashes or {}).get(shot.id, ""),
                 # OQ-2: focal is not in the shot dump (not on Camera).
                 "focal": (shot_focal or {}).get(shot.id, ""),
+                # illustrated_faceless.md F2, R2: layer image bytes, same
+                # shape as secondary_hash immediately above - `layers`'
+                # own creative fields (role/prompt/asset_plan/drift/
+                # scale) already ride in via the full `shot.model_dump`
+                # below, but the resolved image bytes never do (I2).
+                "layer_hashes": (layer_content_hashes or {}).get(shot.id, []),
             }
             for shot in shots
         ],
@@ -433,6 +477,7 @@ def compute_shot_stream_fingerprint(
     ffmpeg_version: str,
     secondary_asset_hash: str = "",
     focal: str = "",
+    layer_asset_hashes: list[str] | None = None,
 ) -> str:
     """Fingerprint of one shot's normalised/zoompanned stream (C3 (d)).
 
@@ -440,6 +485,19 @@ def compute_shot_stream_fingerprint(
     dissolve-duration edit must reuse this file. Camera and duration
     stay in — they change the pixels. `focal` (OQ-2) is hashed too:
     the asset content hash does not cover a model-derived aim point.
+
+    illustrated_faceless.md F2, R2: unlike `compute_render_fingerprint`/
+    `compute_run_fingerprint` above, this function does NOT dump the
+    whole `Shot` - it hand-picks the fields that affect this ONE shot's
+    own stream (deliberately excluding `transition_out`, per the
+    docstring above). That means `Shot.layers` needs an EXPLICIT entry
+    here or a layer-only edit would silently miss this cache (the R2 gap
+    this whole fingerprint module exists to close) - `layers`' own
+    creative fields (role/prompt/asset_plan/drift_x/drift_y/scale, i.e.
+    "layer count, roles, drift rates, scale") are dumped directly since
+    they are already on `shot`; `layer_asset_hashes` is the resolved-
+    image-bytes half (I2 - not on the Timeline), same shape as
+    `secondary_asset_hash` immediately above.
     """
     payload = {
         "kind": "shot_stream_v1",
@@ -449,6 +507,8 @@ def compute_shot_stream_fingerprint(
         "asset_hash": asset_hash,
         "secondary_asset_hash": secondary_asset_hash,
         "focal": focal,
+        "layers": [layer.model_dump(mode="json") for layer in shot.layers],
+        "layer_asset_hashes": list(layer_asset_hashes or []),
         "render_settings": {
             "width": render_settings.width,
             "height": render_settings.height,

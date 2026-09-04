@@ -88,6 +88,25 @@ class CameraMovement(StrEnum):
     # (canon 3.1/§2.2 - camera decisions are written into the Timeline
     # by the planner, never applied by the renderer from a style alone).
     PUNCH_IN = "punch_in"
+    # illustrated_faceless.md F2 (2026-09-04): the planner's request for
+    # two-layer parallax (§1.4's measured finding - background and
+    # subject drifting at different rates, "the register Ken Burns
+    # structurally cannot reach"). Canon 3.1/§2.2: this is a value the
+    # PLANNER writes into the Timeline, never something the renderer
+    # invents from a style alone - the renderer (`app/renderer/
+    # parallax.py`) only executes the drift/scale numbers a shot's own
+    # `Shot.layers` (`ShotLayer`) already carry. `camera.direction` and
+    # `camera.intensity` are NOT consulted for this movement, the same
+    # way `PUNCH_IN` above does not consult `direction` - each layer's
+    # own `drift_x`/`drift_y`/`scale` carries the motion instead. F2
+    # ships the schema and the renderer module only; nothing in this
+    # slice wires a Shot Planner prompt to author `layers` alongside
+    # this value (see `Shot.layers`'s own docstring), so a shot carrying
+    # this movement with empty `layers` is a legitimate, if useless,
+    # state for now - not guarded against here, matching how a
+    # `SPLIT_FRAME` shot with an empty `secondary_prompt` already
+    # degrades to the plain static path rather than erroring.
+    PARALLAX = "parallax"
 
 
 class CameraDirection(StrEnum):
@@ -217,6 +236,60 @@ class AssetPlan(BaseModel):
         return chain
 
 
+class LayerRole(StrEnum):
+    """One plane's depth role in a parallax composite (illustrated_
+    faceless.md §2.2/F2). F2 uses exactly two, in this order -
+    BACKGROUND then SUBJECT (`app/renderer/parallax.py`'s F2 builder
+    rejects anything else); FOREGROUND is carried here now because §2.2
+    names all three as the eventual shape, but is not yet legal in a
+    two-layer F2 shot - F3 is what adds it."""
+
+    BACKGROUND = "background"
+    SUBJECT = "subject"
+    FOREGROUND = "foreground"
+
+
+class ShotLayer(BaseModel):
+    """One plane of a parallax composite (illustrated_faceless.md
+    §2.2/F2) - a role, a generation prompt, its own asset plan, and its
+    own drift/scale. Mirrors `Shot.prompt`/`Shot.asset_plan`'s own
+    creative-decision-only shape (I2 - no media, no paths, no URLs):
+    this describes what to generate, never the resulting image bytes,
+    which are resolved and hashed elsewhere exactly like a shot's
+    primary/secondary asset already is.
+
+    **Deliberately NOT unified with `secondary_prompt`/
+    `secondary_asset_plan`** (§6 Q1, decided 2026-09-04): those composite
+    two PANELS, each occupying part of the frame, for `split_frame`. A
+    layer composites a PLANE that fills the WHOLE frame, generated on a
+    key colour and chroma-keyed so the planes stack with transparency
+    (`app/renderer/parallax.py`). Both pairs share a "prompt + asset_plan
+    describes one more picture for this shot" shape because that shape
+    already exists in the schema, not because the two operations are the
+    same one - Q1's verdict is that they sit BESIDE each other, and
+    `Shot`'s own mutual-exclusion validator below is what keeps a shot
+    from ever being half in each system.
+
+    `drift_x`/`drift_y` (px) are this layer's own linear travel over the
+    shot's full `duration_s`, ported from `parallax_probe.py::_drift`.
+    `scale` is how much larger than the render canvas this layer is
+    generated/scaled to, so there is real picture to drift across
+    without exposing an edge - `parallax_probe.py`'s own measured "scale
+    must COVER the output" rule (`_OVER = 1.2`), the same reasoning
+    `long_form_direction.md` §4.7 already states for PAN applied to a
+    new axis. Every field here is a planner-authored creative decision
+    (canon 3.1) the renderer only executes, never invents."""
+
+    role: LayerRole
+    prompt: str = ""
+    asset_plan: AssetPlan | None = None
+    drift_x: float = 0.0
+    drift_y: float = 0.0
+    # Must exceed 1.0 - see the class docstring's "scale must COVER the
+    # output" note. 1.2 matches parallax_probe.py's own measured default.
+    scale: float = Field(default=1.2, gt=1.0)
+
+
 class Shot(BaseModel):
     id: str
     order: int
@@ -283,6 +356,35 @@ class Shot(BaseModel):
     # the shot's start in v1 - word-relative placement via
     # `narration_span` is a later slice (open question 1, §3 A8).
     sfx_cue: str | None = None
+    # illustrated_faceless.md F2 (2026-09-04): parallax planes for this
+    # shot (`ShotLayer` - see its own docstring for the role/drift/scale
+    # shape and why this sits BESIDE `secondary_prompt`/
+    # `secondary_asset_plan` rather than reusing them, §6 Q1). Empty on
+    # EVERY shot before this field and on every non-parallax shot after
+    # it - this is the isolation mechanism (§3.1): empty means today's
+    # rendering behaviour exactly, on every existing style, not a
+    # convention a caller must remember to honour. See
+    # `_layers_and_split_screen_are_mutually_exclusive` below for the
+    # one thing that IS enforced.
+    layers: list[ShotLayer] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _layers_and_split_screen_are_mutually_exclusive(self) -> Shot:
+        """§6 Q1, binding: `layers` and split-screen's `secondary_prompt`/
+        `secondary_asset_plan` are two different compositing operations
+        (planes vs. panels) that happen to share a data shape - they may
+        legitimately never converge, but no shot may ever be half in
+        each system. Checked both directions, matching the shape of
+        every other cross-field Timeline invariant in this module."""
+        if self.layers and (self.secondary_prompt or self.secondary_asset_plan is not None):
+            raise ValueError(
+                "Shot.layers and secondary_prompt/secondary_asset_plan are "
+                "mutually exclusive (illustrated_faceless.md §6 Q1): layers "
+                "composite PLANES (each fills the frame, keyed) and "
+                "split-screen composites PANELS (each occupies part of the "
+                "frame) - a shot may use one system or the other, never both."
+            )
+        return self
 
 
 class Scene(BaseModel):
