@@ -80,9 +80,11 @@ _WORLD = (
 # full setting described exactly as any shot would be; subject is the figure
 # alone on an even magenta field.
 _BACKGROUND = (
-    f"{_WORLD} A private cram-school classroom at 2am: rows of narrow desks under hard "
-    "fluorescent ceiling light, stacks of workbooks, a dark window showing distant city "
-    "lights. No people. No text, no lettering, no numbers, no watermark."
+    f"{_WORLD} A private cram-school classroom at 2am, shown as an empty space: rows of "
+    "narrow desks standing unused under hard fluorescent ceiling light, stacks of "
+    "workbooks left closed on them, every chair vacant, a dark window showing distant "
+    "city lights. A still study of the room and its objects alone, the whole frame given "
+    "over to the empty place itself. No text, no lettering, no numbers, no watermark."
 )
 _SUBJECT = (
     f"{_WORLD} A single school-age Korean boy with straight black hair in a neat short "

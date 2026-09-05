@@ -106,6 +106,32 @@ _BASE_COLOR = "0x101418"
 # so a test can compare with/without it directly).
 _ALPHA_CLEANUP_RADIUS = 2
 
+# One `erosion` pass on the cleaned alpha, pulling the silhouette edge in by
+# roughly a pixel. Measured 2026-09-05 on the microtest's own composited
+# frames, which showed a distinct magenta rim tracing the subject's hair and
+# shoulders: pixels at the boundary are a BLEND of subject and key field, so
+# they sit too far from the key colour for `colorkey` to remove and still
+# carry enough of it to read as a coloured halo. Neither a tighter
+# `_KEY_SIMILARITY` nor the median pass touches them - the median preserves a
+# real edge by design, which is exactly what this rim is part of.
+#
+# Sweep over the same pair, counting pixels in the finished composite still
+# close to the sampled key colour:
+#
+#   erosion passes   magenta residue   frame area changed vs 0
+#   0                0.019%            -
+#   1                0.000%            0.297%
+#   2                0.000%            0.523%
+#   3                0.000%            0.747%
+#
+# One pass removes all of it; further passes remove nothing more and only eat
+# further into the figure. 0.297% of frame area is a sub-pixel band around
+# the silhouette, invisible at this scale - and losing a hair's width of
+# subject is the right trade against a coloured outline around every figure.
+# ffmpeg's `erosion` shrinks the bright region of a single plane, which on an
+# extracted alpha mask means the opaque (subject) region. Set to 0 to disable.
+_ALPHA_ERODE_PASSES = 1
+
 # §4.5's guard band. Zero (matched nothing) and anything above the max
 # (ate the subject) are both failures `check_keyed_fraction` raises on;
 # so is anything below the min that isn't exactly zero (matched too
@@ -269,6 +295,7 @@ def layer_input_chain(
     similarity: float = _KEY_SIMILARITY,
     blend: float = _KEY_BLEND,
     alpha_cleanup_radius: int = _ALPHA_CLEANUP_RADIUS,
+    alpha_erode_passes: int = _ALPHA_ERODE_PASSES,
 ) -> str:
     """Scale one ffmpeg input to its oversized working size, then
     chroma-key it if it is a cut-out plane. Ported from
@@ -294,9 +321,11 @@ def layer_input_chain(
     chain += f",colorkey={key}:{similarity}:{blend},format=rgba"
     if alpha_cleanup_radius <= 0:
         return f"{chain}[{name}]"
+    erode = ",".join("erosion" for _ in range(max(0, alpha_erode_passes)))
+    erode = f",{erode}" if erode else ""
     return (
         f"{chain},split[{name}_rgba1][{name}_rgba2];"
-        f"[{name}_rgba1]alphaextract,median=radius={alpha_cleanup_radius}[{name}_a];"
+        f"[{name}_rgba1]alphaextract,median=radius={alpha_cleanup_radius}{erode}[{name}_a];"
         f"[{name}_rgba2][{name}_a]alphamerge,format=rgba[{name}]"
     )
 

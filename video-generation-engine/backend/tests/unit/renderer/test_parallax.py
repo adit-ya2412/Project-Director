@@ -12,6 +12,8 @@ import pytest
 from PIL import Image
 
 from app.renderer.parallax import (
+    _ALPHA_CLEANUP_RADIUS,
+    _ALPHA_ERODE_PASSES,
     _KEYED_FRACTION_MAX,
     _KEYED_FRACTION_MIN,
     ParallaxKeyGuardError,
@@ -90,6 +92,21 @@ def test_layer_input_chain_keyed_includes_similarity_and_blend():
     assert fragment == "[1:v]scale=864:1536,setsar=1,colorkey=0xB43E7E:0.06:0.05,format=rgba[sub]"
 
 
+
+def _expected_alpha_chain(prefix: str) -> str:
+    """Built from the module's own constants, never a literal.
+
+    The alpha chain has now changed twice under tests that spelled it out
+    in full - `median` was added by P-IF-F2c, then `erosion` when a magenta
+    rim showed up in a real composite - and both times the test failed on
+    the tuning rather than on a regression. Same lesson as the 749x1332 and
+    0.85 literals earlier the same day: a test that restates production
+    arithmetic pins today's value instead of verifying the behaviour.
+    """
+    erode = "".join(",erosion" for _ in range(_ALPHA_ERODE_PASSES))
+    return f"[{prefix}_rgba1]alphaextract,median=radius={_ALPHA_CLEANUP_RADIUS}{erode}[{prefix}_a]"
+
+
 def test_layer_input_chain_keyed_default_applies_alpha_cleanup():
     """P-IF-F2c, DEFECT 1's cleanup pass: the DEFAULT keyed chain (radius
     not overridden) extracts the alpha channel, despeckles it with `median`,
@@ -103,7 +120,7 @@ def test_layer_input_chain_keyed_default_applies_alpha_cleanup():
         "[1:v]scale=864:1536,setsar=1,colorkey=0xB43E7E:0.06:0.05,format=rgba,"
         "split[sub_rgba1][sub_rgba2]"
     )
-    assert parts[1] == "[sub_rgba1]alphaextract,median=radius=2[sub_a]"
+    assert parts[1] == _expected_alpha_chain("sub")
     assert parts[2] == "[sub_rgba2][sub_a]alphamerge,format=rgba[sub]"
     assert fragment.endswith("[sub]")
     # The unkeyed (background) chain never gains this - it has no alpha
@@ -161,7 +178,7 @@ def test_two_layer_filter_complex_matches_the_probes_clip_a_shape():
         "[1:v]scale=864:1536,setsar=1,colorkey=0xB43E7E:0.06:0.05,format=rgba,"
         "split[pxsub_rgba1][pxsub_rgba2]"
     )
-    assert parts[3] == "[pxsub_rgba1]alphaextract,median=radius=2[pxsub_a]"
+    assert parts[3] == _expected_alpha_chain("pxsub")
     assert parts[4] == "[pxsub_rgba2][pxsub_a]alphamerge,format=rgba[pxsub]"
     assert (
         parts[5] == "[base][pxbg]overlay=x='-72-(24.0*t/5.0)':y='-128-(0.0*t/5.0)':shortest=1[pxb1]"
