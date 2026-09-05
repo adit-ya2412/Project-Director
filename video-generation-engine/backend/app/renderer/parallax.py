@@ -28,6 +28,41 @@ guard that failure mode earns - it measures what share of a layer's frame
 the sampled key would remove and raises if that share is not inside a
 sane band (~15-85%). Zero means the key matched nothing (§1.5's own bug);
 near-100% means the key ate the subject along with its background.
+
+## P-IF-F2c (2026-09-05) - tolerance, alpha cleanup, and a distribution guard
+
+The first real layered render (project `93c6cbde-a3c6-41d4-a2f0-8459b677a938`,
+frame `tmp/jiho-parallax/p_2.1.jpg`) surfaced three defects the probe's own
+clean test art never exercised:
+
+1. **The chroma key was eating the subject in small pieces.** `_KEY_SIMILARITY`
+   at its old value of 0.16 was tuned on the probe's smoother art; measured
+   against this project's own real layer images (`backend/storage/93c6cbde-.../
+   work/run_000_s000_sub.jpg`), it let through hundreds to thousands of
+   isolated false-positive pixels inside the subject's own silhouette - see
+   `keyed_scatter_fraction` below for the measurement. Lowered to 0.06 (still
+   0% background leak on that same image; see the P-IF-F2c log entry in
+   illustrated_faceless.md §7 for the full sweep across both a photoreal and a
+   true-risograph-grain subject plate).
+2. **A cleanup pass on the extracted alpha channel.** `layer_input_chain`'s
+   keyed branch now runs the scaled+keyed RGBA through `split` +
+   `alphaextract` + `median` (radius 2) + `alphamerge` before handing the
+   frame back - a median filter on a mask is exactly a despeckle: an isolated
+   transparent pixel surrounded by opaque neighbours (a hole eaten out of the
+   subject) or an isolated opaque speck surrounded by transparent neighbours
+   (background grain the key missed) both get overwritten by their
+   neighbourhood's majority value, while a real, many-pixel-wide silhouette
+   edge is untouched. Verified pixel-identical RGB channels before/after (the
+   filter touches only alpha).
+3. **`check_keyed_fraction` cannot tell WHERE the keyed pixels are.**
+   `keyed_scatter_fraction`/`check_keyed_distribution` below are the
+   distribution-aware companion §4.5 itself calls for: a real cut-out is one
+   or two large contiguous keyed regions (the background, split by the
+   subject's own silhouette); grain being eaten out of the subject is dozens
+   of small, isolated ones. Same shape as the existing guard - measure, then
+   raise `ParallaxKeyGuardError` (already caught and degraded by
+   `slideshow.py`'s existing per-shot handler, so this needed no new wiring
+   there beyond one more call).
 """
 
 from __future__ import annotations
@@ -40,17 +75,84 @@ from PIL import Image
 
 from app.schemas.timeline import LayerRole, ShotLayer
 
-# Matches parallax_probe.py's own measured constants exactly (§1.4/§1.5).
-_KEY_SIMILARITY = 0.16  # covers the +-10/channel grain spread §1.5 measured
+# _KEY_SIMILARITY was 0.16 (parallax_probe.py's own measured value, tuned on
+# its smoother test art - §1.4/§1.5). P-IF-F2c re-measured it against a real
+# generated layer image (project 93c6cbde-a3c6-41d4-a2f0-8459b677a938's own
+# `run_000_s000_sub.jpg`) using the connected-component method
+# `keyed_scatter_fraction` below implements: at 0.16, 4.73% of the subject's
+# own (ground-truth, cleanly-keyed) silhouette area fell inside the key
+# tolerance and was wrongly cut out - the "riddled with pinholes" defect.
+# Lowered to 0.06: 0.12% of the same silhouette (a ~38x reduction), while a
+# true risograph-grain subject plate (`tmp/f1a-f2b-microtest/subject.png`)
+# still has its background fully keyed at 0.06 (0% leak sampled at the same
+# stride). Going lower still trades one failure for the other - at 0.04 that
+# same risograph plate starts leaving visible unkeyed grain flecks in the
+# background (0.37% leak, up from 0.04% at 0.06) - so 0.06 is a measured
+# balance point between the two failure directions, not a floor.
+_KEY_SIMILARITY = 0.06
 _KEY_BLEND = 0.05  # flat art has hard edges; a narrow blend keeps them crisp
 _BASE_COLOR = "0x101418"
+
+# P-IF-F2c: a median filter over the keyed layer's extracted alpha channel,
+# radius in pixels at the layer's OVERSIZED working resolution (not the final
+# canvas). Despeckles small isolated errors in EITHER direction - a hole eaten
+# into the subject, or a fleck of background grain the key missed - without
+# touching a real, many-pixel-wide silhouette edge. Measured on the same two
+# real images above: radius 2 fully removed the residual background-grain
+# leak the risograph plate still showed at 0.06 (0.04% -> 0%), and left the
+# photoreal subject's own silhouette edge (checked at its backpack-strap
+# detail, the plate's finest feature) pixel-identical in shape at this scale.
+# Set to 0 to disable (kept in the signature, not just the module constant,
+# so a test can compare with/without it directly).
+_ALPHA_CLEANUP_RADIUS = 2
 
 # §4.5's guard band. Zero (matched nothing) and anything above the max
 # (ate the subject) are both failures `check_keyed_fraction` raises on;
 # so is anything below the min that isn't exactly zero (matched too
 # little to be a real cut-out).
 _KEYED_FRACTION_MIN = 0.15
-_KEYED_FRACTION_MAX = 0.85
+# Raised 0.85 -> 0.95 with P-IF-F2c's subject-scale fix, because the two
+# changes are in direct tension and the old number would now reject good
+# frames. 0.85 was set when a subject layer was a FULL-FRAME portrait, so
+# anything keying more than ~85% really did mean the subject itself had
+# been eaten. F2c then told the subject layer to draw the figure small -
+# "roughly the lower third to half of the frame's height, with generous
+# solid magenta surrounding it on every side" - which makes a CORRECT
+# plate key 80%+ by design. Measured immediately after that change, on a
+# real regenerated plate that composites correctly: 0.818, i.e. inside
+# the old band by 0.03 and one slightly smaller figure away from tripping
+# a guard meant to catch the opposite failure.
+#
+# A genuine "ate the subject" is not 86%, it is near-total: the key
+# matched the figure as well as the field and essentially nothing is
+# left. 0.95 keeps that catchable while giving a deliberately small
+# subject the room the prompt now asks it to take. The scatter guard
+# (`check_keyed_distribution`) is the one that catches a subject being
+# eaten a pinhole at a time, which is the failure this ceiling was
+# reaching for and never actually measured.
+_KEYED_FRACTION_MAX = 0.95
+
+# P-IF-F2c's DEFECT 3: `check_keyed_fraction` above measures how MUCH of the
+# frame keys away, not WHERE - a subject riddled with hundreds of small holes
+# and a real, single-region cut-out can report the same healthy-looking
+# fraction. `_SCATTER_FRACTION_MAX` bounds what share of the (strided) frame
+# grid may belong to SMALL keyed connected components
+# (`_SCATTER_MAX_COMPONENT_CELLS` grid cells or fewer - grain being eaten,
+# never a real cut-out region) rather than the few large ones a real cut-out
+# produces. Measured on the same
+# two real images `_KEY_SIMILARITY` above was calibrated against, using
+# `keyed_scatter_fraction`'s own stride-4 grid: the shipped defect (project
+# 93c6cbde's `run_000_s000_sub.jpg` at the OLD similarity 0.16) scored 0.00118;
+# the same image at the NEW similarity 0.06 scores 0.00050; a true
+# risograph-grain subject plate (`tmp/f1a-f2b-microtest/subject.png`, always a
+# clean cut-out at either similarity) scores 0.00021 (sim 0.16) / 0.00012 (sim
+# 0.06). 0.0007 sits between the shipped defect and every measured clean case,
+# so it catches the regression this guard exists for while passing both real
+# subject plates at the new default tolerance. Calibrated on two real images
+# only (four data points) - honestly flagged as a small sample, same epistemic
+# status as `_DEAD_STOP_CEILING_MULTIPLIER`, not a large-scale statistical fit.
+_SCATTER_MAX_COMPONENT_CELLS = 4
+_SCATTER_FRACTION_MAX = 0.0007
 
 
 # ---------------------------------------------------------------------------
@@ -166,16 +268,37 @@ def layer_input_chain(
     key: str | None = None,
     similarity: float = _KEY_SIMILARITY,
     blend: float = _KEY_BLEND,
+    alpha_cleanup_radius: int = _ALPHA_CLEANUP_RADIUS,
 ) -> str:
     """Scale one ffmpeg input to its oversized working size, then
     chroma-key it if it is a cut-out plane. Ported from
-    `parallax_probe.py::_layer_in`."""
+    `parallax_probe.py::_layer_in`.
+
+    P-IF-F2c: a keyed layer also gets an alpha-channel cleanup pass
+    (`alpha_cleanup_radius` > 0, the default) - `median` on the extracted
+    alpha, isolated from colour, then merged back via `alphamerge`. This
+    despeckles the small isolated errors §4.5's own guard cannot see the
+    SHAPE of (a hole eaten into the subject, or a fleck of background grain
+    the key missed), without touching a real silhouette edge. `ffmpeg
+    -filters` (this project's installed 9.0 build) was checked before
+    reaching for this shape: no purpose-built "fill small alpha holes"
+    filter exists, but `median`/`alphaextract`/`alphamerge` all do, and
+    together are exactly a despeckle. The unkeyed background layer never
+    needs this - it was never selectively made transparent, so it has no
+    alpha-channel holes to clean."""
     chain = f"[{index}:v]scale={width}:{height},setsar=1"
-    if keyed:
-        if key is None:
-            raise ValueError("keyed=True requires a sampled key colour")
-        chain += f",colorkey={key}:{similarity}:{blend}"
-    return f"{chain},format=rgba[{name}]"
+    if not keyed:
+        return f"{chain},format=rgba[{name}]"
+    if key is None:
+        raise ValueError("keyed=True requires a sampled key colour")
+    chain += f",colorkey={key}:{similarity}:{blend},format=rgba"
+    if alpha_cleanup_radius <= 0:
+        return f"{chain}[{name}]"
+    return (
+        f"{chain},split[{name}_rgba1][{name}_rgba2];"
+        f"[{name}_rgba1]alphaextract,median=radius={alpha_cleanup_radius}[{name}_a];"
+        f"[{name}_rgba2][{name}_a]alphamerge,format=rgba[{name}]"
+    )
 
 
 @dataclass(frozen=True)
@@ -354,6 +477,111 @@ def check_keyed_fraction(
             f"keyed fraction {fraction:.3f}{label} is below {min_fraction} "
             "(illustrated_faceless.md §4.5): the key matched too little of "
             "the frame to be a real cut-out."
+        )
+
+
+# ---------------------------------------------------------------------------
+# The distribution guard (P-IF-F2c, DEFECT 3). `check_keyed_fraction` above
+# measures how MUCH of the frame keys away and passed comfortably on the real
+# defect this module was built to catch - thousands of tiny holes sum to a
+# perfectly normal-looking fraction. `keyed_scatter_fraction` measures WHERE
+# the keyed pixels are: a real cut-out is one or two large contiguous regions
+# (the background, split by the subject's own silhouette); grain being eaten
+# out of the subject is dozens of small, isolated ones.
+# ---------------------------------------------------------------------------
+
+
+def keyed_scatter_fraction(
+    image_bytes: bytes,
+    key: str,
+    *,
+    similarity: float = _KEY_SIMILARITY,
+    stride: int = 4,
+    max_component_cells: int = _SCATTER_MAX_COMPONENT_CELLS,
+) -> float:
+    """Share (0..1) of the sampled frame grid occupied by SMALL keyed
+    connected components (`max_component_cells` grid cells or fewer) -
+    distribution-aware companion to `keyed_fraction` above, cheap and
+    deterministic (I5): one strided pass to build a boolean grid (the same
+    sampling discipline `keyed_fraction`/`sample_key_colour` already use),
+    then a plain 4-connected flood fill over that grid - no external
+    dependency, no image library beyond the `Image.getpixel` calls already
+    used elsewhere in this module.
+
+    A real cut-out's background is one connected region (occasionally two
+    or three, where the subject's silhouette splits it at the frame edges);
+    grain being eaten out of the subject shows up as many components at or
+    below `max_component_cells`. This function returns only the aggregate
+    SIZE those small components occupy, as a fraction of the whole sampled
+    grid - resolution-independent, so it means the same thing on a 9:16 and
+    a 16:9 canvas (§4.2). `check_keyed_distribution` below is the guard that
+    reads this value."""
+    key_rgb = _key_to_rgb(key)
+    with Image.open(io.BytesIO(image_bytes)) as image:
+        rgb = image.convert("RGB")
+        width, height = rgb.size
+        cols = list(range(0, width, stride))
+        rows = list(range(0, height, stride))
+        grid = [
+            [_pixel_distance(rgb.getpixel((x, y)), key_rgb) <= similarity for x in cols]
+            for y in rows
+        ]
+    n_rows, n_cols = len(grid), len(grid[0]) if grid else 0
+    total_cells = n_rows * n_cols
+    if total_cells == 0:
+        return 0.0
+    visited = [[False] * n_cols for _ in range(n_rows)]
+    small_component_cells = 0
+    for start_j in range(n_rows):
+        for start_i in range(n_cols):
+            if not grid[start_j][start_i] or visited[start_j][start_i]:
+                continue
+            stack = [(start_j, start_i)]
+            visited[start_j][start_i] = True
+            size = 0
+            while stack:
+                cj, ci = stack.pop()
+                size += 1
+                for dj, di in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    nj, ni = cj + dj, ci + di
+                    if (
+                        0 <= nj < n_rows
+                        and 0 <= ni < n_cols
+                        and grid[nj][ni]
+                        and not visited[nj][ni]
+                    ):
+                        visited[nj][ni] = True
+                        stack.append((nj, ni))
+            if size <= max_component_cells:
+                small_component_cells += size
+    return small_component_cells / total_cells
+
+
+def check_keyed_distribution(
+    scatter_fraction: float,
+    *,
+    max_scatter_fraction: float = _SCATTER_FRACTION_MAX,
+    shot_id: str = "",
+    layer_role: str = "",
+) -> None:
+    """P-IF-F2c's guard: raise `ParallaxKeyGuardError` (the SAME exception
+    `check_keyed_fraction` raises, so `slideshow.py`'s existing per-shot
+    degrade handler catches this with no new wiring) when `scatter_fraction`
+    (from `keyed_scatter_fraction` above) exceeds `max_scatter_fraction`.
+    Distinct message from `check_keyed_fraction`'s three, because it is a
+    different bug with a different fix: not "too much or too little got
+    keyed" but "the keyed pixels are scattered rather than forming a real
+    cut-out" - illustrated_faceless.md §7's P-IF-F2c log entry has the
+    measurement `_SCATTER_FRACTION_MAX` was calibrated against."""
+    label = f" ({shot_id}/{layer_role})" if shot_id or layer_role else ""
+    if scatter_fraction > max_scatter_fraction:
+        raise ParallaxKeyGuardError(
+            f"keyed scatter fraction {scatter_fraction:.5f}{label} exceeds "
+            f"{max_scatter_fraction} (illustrated_faceless.md §7 P-IF-F2c): "
+            "the keyed pixels are scattered across many small isolated "
+            "regions rather than forming a real cut-out - grain or detail is "
+            "being eaten out of the subject rather than the background being "
+            "removed."
         )
 
 

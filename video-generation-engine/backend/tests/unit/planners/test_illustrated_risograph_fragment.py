@@ -166,6 +166,22 @@ def test_split_frame_is_discouraged_for_this_style():
     assert "split_frame" in fragment
 
 
+def test_subject_layer_prompt_asks_for_matching_scale():
+    """P-IF-F2c, DEFECT 2 (prompt-side, option (b) - illustrated_faceless.md
+    §7's P-IF-F2c log entry has the reasoning): the subject layer used to be
+    generated as its own frame-filling portrait with nothing to say
+    otherwise, so a full-frame figure landed on top of a full-frame room and
+    read as a collage. The fragment must now tell the planner to describe
+    the figure at the scale it would actually read at inside the setting
+    the background layer describes, expressed positively (§4.10 - no
+    negation) and naming no artefact noun."""
+    fragment = load_style_fragment("shot_planner", _STYLE_NAME)
+    assert fragment is not None
+    lower = fragment.lower()
+    assert "same scale and distance" in lower
+    assert "lower third to half of the frame" in lower
+
+
 def test_framing_bullet_is_canvas_conditional_not_two_files():
     """§6 Q5: vertical wants tighter framing, one subject/graphic at a
     time; horizontal wants room to establish, more than one element per
@@ -215,8 +231,10 @@ def test_the_ken_burns_masking_finding_is_recorded_in_the_plan_not_the_prompt():
     PLAN, not in the prompt file, for the reason
     test_the_comment_cites_the_plan_and_names_no_artefact gives."""
     plan = (
-        Path(__file__).resolve().parents[4] / "docs" / "plans" / "illustrated_faceless.md"
-    ).read_text(encoding="utf-8").lower()
+        (Path(__file__).resolve().parents[4] / "docs" / "plans" / "illustrated_faceless.md")
+        .read_text(encoding="utf-8")
+        .lower()
+    )
     assert "ken burns" in plan
     assert "source still" in plan
     fragment = load_style_fragment("shot_planner", _STYLE_NAME)

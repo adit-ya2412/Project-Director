@@ -12,14 +12,18 @@ import pytest
 from PIL import Image
 
 from app.renderer.parallax import (
+    _KEYED_FRACTION_MAX,
+    _KEYED_FRACTION_MIN,
     ParallaxKeyGuardError,
     ParallaxLayerInput,
     base_canvas_filter,
     base_offset,
     build_two_layer_parallax_filter_complex,
+    check_keyed_distribution,
     check_keyed_fraction,
     drift_expressions,
     keyed_fraction,
+    keyed_scatter_fraction,
     layer_input_chain,
     oversized_size,
     sample_key_colour,
@@ -76,8 +80,45 @@ def test_layer_input_chain_unkeyed():
 
 
 def test_layer_input_chain_keyed_includes_similarity_and_blend():
+    """P-IF-F2c: `_KEY_SIMILARITY` moved from 0.16 to 0.06 (measured against
+    a real generated layer image - illustrated_faceless.md §7's P-IF-F2c log
+    entry has the sweep). Cleanup disabled here so this pins the SIMILARITY/
+    BLEND shape alone, independent of the alpha-cleanup shape covered below."""
+    fragment = layer_input_chain(
+        1, "sub", width=864, height=1536, keyed=True, key="0xB43E7E", alpha_cleanup_radius=0
+    )
+    assert fragment == "[1:v]scale=864:1536,setsar=1,colorkey=0xB43E7E:0.06:0.05,format=rgba[sub]"
+
+
+def test_layer_input_chain_keyed_default_applies_alpha_cleanup():
+    """P-IF-F2c, DEFECT 1's cleanup pass: the DEFAULT keyed chain (radius
+    not overridden) extracts the alpha channel, despeckles it with `median`,
+    and merges it back - `split`+`alphaextract`+`median`+`alphamerge`, none
+    of which touch colour. Checked as three ";"-joined statements rather
+    than one giant string, the same way the full two-layer graph below is
+    checked part-by-part."""
     fragment = layer_input_chain(1, "sub", width=864, height=1536, keyed=True, key="0xB43E7E")
-    assert fragment == "[1:v]scale=864:1536,setsar=1,colorkey=0xB43E7E:0.16:0.05,format=rgba[sub]"
+    parts = fragment.split(";")
+    assert parts[0] == (
+        "[1:v]scale=864:1536,setsar=1,colorkey=0xB43E7E:0.06:0.05,format=rgba,"
+        "split[sub_rgba1][sub_rgba2]"
+    )
+    assert parts[1] == "[sub_rgba1]alphaextract,median=radius=2[sub_a]"
+    assert parts[2] == "[sub_rgba2][sub_a]alphamerge,format=rgba[sub]"
+    assert fragment.endswith("[sub]")
+    # The unkeyed (background) chain never gains this - it has no alpha
+    # holes to clean, since it was never selectively made transparent.
+    unkeyed = layer_input_chain(0, "bg", width=864, height=1536, keyed=False)
+    assert "alphaextract" not in unkeyed
+    assert "median" not in unkeyed
+
+
+def test_layer_input_chain_keyed_cleanup_disabled_matches_the_old_single_statement_shape():
+    fragment = layer_input_chain(
+        1, "sub", width=864, height=1536, keyed=True, key="0xB43E7E", alpha_cleanup_radius=0
+    )
+    assert ";" not in fragment
+    assert "median" not in fragment
 
 
 def test_layer_input_chain_keyed_without_a_key_raises():
@@ -103,21 +144,35 @@ def _subject(index=1, drift_x=110.0, drift_y=0.0, scale=1.2, key="0xB43E7E") -> 
 
 
 def test_two_layer_filter_complex_matches_the_probes_clip_a_shape():
+    """P-IF-F2c: the subject's keyed chain is now three ";"-joined
+    statements (colorkey+split, alphaextract+median, alphamerge), not one -
+    see `test_layer_input_chain_keyed_default_applies_alpha_cleanup` above
+    for that shape in isolation. This test checks the surrounding graph
+    (base canvas, background chain, the two overlays) is otherwise
+    unchanged, and that the subject's cleanup statements sit exactly
+    between the background chain and the two overlays."""
     fragment = build_two_layer_parallax_filter_complex(
         _bg(), _subject(), canvas_w=720, canvas_h=1280, fps=30, duration_s=5.0
     )
     parts = fragment.split(";")
     assert parts[0] == "color=c=0x101418:s=720x1280:r=30:d=5.0[base]"
     assert parts[1] == "[0:v]scale=864:1536,setsar=1,format=rgba[pxbg]"
-    assert parts[2] == "[1:v]scale=864:1536,setsar=1,colorkey=0xB43E7E:0.16:0.05,format=rgba[pxsub]"
-    assert (
-        parts[3] == "[base][pxbg]overlay=x='-72-(24.0*t/5.0)':y='-128-(0.0*t/5.0)':shortest=1[pxb1]"
+    assert parts[2] == (
+        "[1:v]scale=864:1536,setsar=1,colorkey=0xB43E7E:0.06:0.05,format=rgba,"
+        "split[pxsub_rgba1][pxsub_rgba2]"
     )
-    assert parts[4] == "[pxb1][pxsub]overlay=x='-72-(110.0*t/5.0)':y='-128-(0.0*t/5.0)'[out]"
+    assert parts[3] == "[pxsub_rgba1]alphaextract,median=radius=2[pxsub_a]"
+    assert parts[4] == "[pxsub_rgba2][pxsub_a]alphamerge,format=rgba[pxsub]"
+    assert (
+        parts[5] == "[base][pxbg]overlay=x='-72-(24.0*t/5.0)':y='-128-(0.0*t/5.0)':shortest=1[pxb1]"
+    )
+    assert parts[6] == "[pxb1][pxsub]overlay=x='-72-(110.0*t/5.0)':y='-128-(0.0*t/5.0)'[out]"
+    assert len(parts) == 7
     assert fragment.endswith("[out]")
     # Exactly one keyed layer (the subject), never the background.
     assert fragment.count("colorkey=") == 1
     assert fragment.count("overlay=") == 2
+    assert fragment.count("alphamerge") == 1
 
 
 def test_two_layer_filter_complex_uses_a_custom_label():
@@ -295,7 +350,11 @@ def test_keyed_fraction_guard_distinguishes_the_two_failure_directions():
     with pytest.raises(ParallaxKeyGuardError) as zero_exc:
         check_keyed_fraction(0.0)
     with pytest.raises(ParallaxKeyGuardError) as high_exc:
-        check_keyed_fraction(0.95)
+        # Derived, not a literal: this boundary is a tunable constant
+        # (raised 0.85 -> 0.95 when P-IF-F2c made subjects small on
+        # purpose), and a test that hardcodes it pins today's value
+        # instead of verifying the behaviour either side of it.
+        check_keyed_fraction(_KEYED_FRACTION_MAX + 0.01)
     assert str(zero_exc.value) != str(high_exc.value)
     assert "matched nothing" in str(zero_exc.value)
     assert "matched nothing" not in str(high_exc.value)
@@ -307,10 +366,110 @@ def test_keyed_fraction_guard_below_band_but_nonzero_also_raises():
 
 
 def test_keyed_fraction_guard_band_boundaries_are_inclusive():
-    check_keyed_fraction(0.15)
-    check_keyed_fraction(0.85)
+    check_keyed_fraction(_KEYED_FRACTION_MIN)
+    check_keyed_fraction(_KEYED_FRACTION_MAX)
 
 
 def test_keyed_fraction_guard_message_carries_shot_and_layer_when_given():
     with pytest.raises(ParallaxKeyGuardError, match=r"\(sh_01/subject\)"):
         check_keyed_fraction(0.0, shot_id="sh_01", layer_role="subject")
+
+
+# ---------------------------------------------------------------------------
+# The distribution guard (P-IF-F2c, DEFECT 3). `keyed_fraction`/
+# `check_keyed_fraction` above measure how MUCH of the frame keys away - the
+# real defect this pass was built for (project 93c6cbde-a3c6-41d4-a2f0-
+# 8459b677a938's own first layered render) passed that guard comfortably,
+# because thousands of tiny holes summed to a normal-looking fraction. These
+# tests prove the NEW guard tells a real cut-out (one big region) apart from
+# grain being eaten (many small ones), on fixtures shaped like each.
+# ---------------------------------------------------------------------------
+
+
+def _clean_cutout_png() -> bytes:
+    """Same shape as `_subject_like_png()` above - one large key-colour
+    region, one large subject region, no scattered pixels anywhere. A real
+    cut-out looks like this."""
+    return _subject_like_png()
+
+
+def _speckled_subject_png(n_specks: int = 8) -> bytes:
+    """The shape of the actual shipped defect: a subject region that is
+    mostly its own colour, but with several ISOLATED key-colour pixels
+    punched into it - grain (or, as measured on the real project image this
+    pass responds to, scaling/edge artefacts) falling inside the old key
+    tolerance and getting cut out along with the background. Specks are
+    spaced 12px apart (three times `keyed_scatter_fraction`'s default
+    stride of 4) so each lands on its own, non-adjacent sampled grid cell -
+    a size-1 component, not one merged blob."""
+    image = Image.new("RGB", (100, 100), (0xFF, 0x00, 0xFF))
+    for x in range(100):
+        for y in range(40, 100):
+            image.putpixel((x, y), (10, 10, 10))
+    for i in range(n_specks):
+        image.putpixel((8 + 12 * i, 60), (0xFF, 0x00, 0xFF))
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_keyed_scatter_fraction_is_zero_for_a_real_cutout():
+    """A real cut-out (large background region, large subject region, no
+    scattered pixels) has NO small connected components - the whole keyed
+    area belongs to one region big enough that it is never counted as
+    'scattered'."""
+    fraction = keyed_scatter_fraction(_clean_cutout_png(), "0xFF00FF")
+    assert fraction == 0.0
+
+
+def test_keyed_scatter_fraction_is_positive_for_a_speckled_subject():
+    """Measured, not just asserted non-zero: eight isolated single-cell
+    specks (illustrated_faceless.md §7's P-IF-F2c log entry has the
+    corresponding measurement on a real generated layer image) score
+    0.0128 on this fixture - both real and above zero, unlike the clean
+    cutout above."""
+    fraction = keyed_scatter_fraction(_speckled_subject_png(), "0xFF00FF")
+    assert fraction == pytest.approx(0.0128, abs=1e-4)
+
+
+def test_keyed_scatter_fraction_grows_with_more_isolated_specks():
+    few = keyed_scatter_fraction(_speckled_subject_png(n_specks=2), "0xFF00FF")
+    many = keyed_scatter_fraction(_speckled_subject_png(n_specks=8), "0xFF00FF")
+    assert 0.0 < few < many
+
+
+def test_check_keyed_distribution_passes_a_real_cutout():
+    fraction = keyed_scatter_fraction(_clean_cutout_png(), "0xFF00FF")
+    check_keyed_distribution(fraction)  # must not raise
+
+
+def test_check_keyed_distribution_raises_on_a_speckled_subject():
+    fraction = keyed_scatter_fraction(_speckled_subject_png(), "0xFF00FF")
+    with pytest.raises(ParallaxKeyGuardError, match="scattered across many small"):
+        check_keyed_distribution(fraction)
+
+
+def test_check_keyed_distribution_message_is_distinct_from_check_keyed_fraction():
+    """Both guards raise the SAME exception TYPE (so `slideshow.py`'s
+    existing per-shot degrade handler catches either with no new except
+    clause), but the message must name the different bug - this is a
+    distribution problem, not a quantity problem, so it must not be
+    mistaken for either of `check_keyed_fraction`'s two failure modes."""
+    fraction = keyed_scatter_fraction(_speckled_subject_png(), "0xFF00FF")
+    with pytest.raises(ParallaxKeyGuardError) as exc:
+        check_keyed_distribution(fraction)
+    message = str(exc.value)
+    assert "scattered" in message
+    assert "matched nothing" not in message
+    assert "ate the subject" not in message
+
+
+def test_check_keyed_distribution_boundary_is_inclusive():
+    check_keyed_distribution(0.0007)  # must not raise
+    with pytest.raises(ParallaxKeyGuardError):
+        check_keyed_distribution(0.0007001)
+
+
+def test_check_keyed_distribution_message_carries_shot_and_layer_when_given():
+    with pytest.raises(ParallaxKeyGuardError, match=r"\(sh_01/subject\)"):
+        check_keyed_distribution(0.01, shot_id="sh_01", layer_role="subject")

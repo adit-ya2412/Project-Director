@@ -88,9 +88,11 @@ _SUBJECT = (
     f"{_WORLD} A single school-age Korean boy with straight black hair in a neat short "
     "cut, light-medium skin tone, slim build, wearing a white shirt with a dark backpack, "
     "seated and seen entirely FROM BEHIND - the back of his head and shoulders only, his "
-    "face turned away and not visible. He is the sole content in the frame, isolated on "
-    "one perfectly even solid magenta field that fills the frame completely, edge to "
-    "edge, with flat shadowless lighting. No text, no lettering, no numbers, no watermark."
+    "face turned away. He is a modest presence occupying roughly the lower third of the "
+    "frame height, the sole content in the frame, isolated on one perfectly even solid "
+    "magenta field that fills the frame completely, edge to edge, with generous solid "
+    "magenta surrounding him on every side and flat shadowless lighting. No text, no "
+    "lettering, no numbers, no watermark."
 )
 
 

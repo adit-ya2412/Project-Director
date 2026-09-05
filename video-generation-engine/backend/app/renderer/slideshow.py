@@ -74,8 +74,10 @@ from app.renderer.parallax import (
     ParallaxKeyGuardError,
     ParallaxLayerInput,
     build_two_layer_parallax_filter_complex,
+    check_keyed_distribution,
     check_keyed_fraction,
     keyed_fraction,
+    keyed_scatter_fraction,
     sample_key_colour,
 )
 from app.renderer.split_screen import build_split_filter, should_composite_split
@@ -614,6 +616,13 @@ async def _encode_or_reuse_shot_stream(
             subject_key = sample_key_colour(subject_bytes)
             fraction = keyed_fraction(subject_bytes, subject_key)
             check_keyed_fraction(fraction, shot_id=shot.id, layer_role=LayerRole.SUBJECT.value)
+            # P-IF-F2c, DEFECT 3: the fraction guard above measures how MUCH
+            # of the frame keys away and passed on the real defect this
+            # module was built to catch (thousands of tiny holes summed to a
+            # normal-looking fraction) - this measures WHERE those pixels
+            # are, and raises the SAME exception type on a scattered result.
+            scatter = keyed_scatter_fraction(subject_bytes, subject_key)
+            check_keyed_distribution(scatter, shot_id=shot.id, layer_role=LayerRole.SUBJECT.value)
         except (ParallaxKeyGuardError, OSError, ValueError) as exc:
             logger.warning(
                 "render.parallax_guard_failed_degrading",

@@ -2482,6 +2482,251 @@ the full suite were never run.
 - F3/F4/F5, `PicturePath`, `resolve_picture_path`, `frame_aspect`, and the four
   pre-existing styles - untouched, per the DO-NOT list.
 
+### P-IF-F2c — Three defects from the first real layered render (2026-09-05)
+
+**Scope executed:** the three defects named in the brief, on evidence from
+project `93c6cbde-a3c6-41d4-a2f0-8459b677a938` (80c, 4 of 9 shots on layers) -
+`tmp/jiho-parallax/jiho-parallax.mp4` and its frame `tmp/jiho-parallax/p_2.1.jpg`.
+Mapped the frame to source: the `_bg`/`_sub` pairs land in that project's own
+`storage/.../work/run_000_s000_{bg,sub}.jpg` (matched by content - alarm clock,
+window/moon/skyline, boy seen from behind in a white shirt and dark vest).
+Reproduced the composite locally with production code and real ffmpeg (no API
+call, free) before touching anything, confirmed it matched the shipped
+artefact, then iterated entirely on cached/local images. No project re-rendered,
+no workflow started, no commit. **Spend: 0c** - every measurement in this
+entry comes from files already on disk (this project's own `work/` layer
+plates, and `tmp/f1a-f2b-microtest/`'s cached generation from an earlier pass)
+plus local ffmpeg/PIL analysis; the FAL API was never called this pass.
+
+**DEFECT 1 - the chroma key was eating the subject.**
+- `backend/app/renderer/parallax.py:78-92` - `_KEY_SIMILARITY` 0.16 -> 0.06.
+  Measured, not guessed, against two real generated layer images: this
+  project's own `run_000_s000_sub.jpg` (photoreal rendering, not risograph -
+  see "unrelated finding" below) and `tmp/f1a-f2b-microtest/subject.png` (a
+  true risograph-grain subject plate from an earlier, already-paid pass).
+  Ground-truth interior mask built from that image's own cleanest keying
+  (sim 0.04, which shows zero background leak); at the OLD similarity 0.16,
+  **4.73% of the subject's own verified-interior area (22104 of 467753
+  sampled cells) fell inside the key tolerance and was wrongly cut out** -
+  the pinhole defect, reproduced pixel-for-pixel in the alpha channel (see
+  `tmp/f2c-sweep/alpha_0.16_small.png` vs `alpha_0.04_small.png`, built this
+  pass). At the new 0.06, that drops to **0.12% (576 cells) - a ~38x
+  reduction**. Lower still trades one failure for the other (see below), so
+  0.06 is a measured balance point, not a floor.
+- **The opposite failure, checked, not assumed:** a true risograph-grain
+  subject plate (`tmp/f1a-f2b-microtest/subject.png`) has its background
+  fully keyed at 0.06 (0/432000 sampled background cells above threshold,
+  stride 1, rows 0-500). Going tighter starts failing the OTHER direction -
+  at 0.04 the same plate leaves visible unkeyed grain flecks in the
+  background (1584/432000 = 0.37% leak, vs 0.04% at 0.06, vs 0.02% at 0.07) -
+  visible directly in the alpha channel as scattered white noise in what
+  should be solid black (`tmp/f2c-sweep/mt/alpha_0.04_small.png`). 0.06 sits
+  comfortably on the clean side of that boundary too.
+- `backend/app/renderer/parallax.py:96-107` (`_ALPHA_CLEANUP_RADIUS = 2`),
+  `:242-274` (`layer_input_chain`'s keyed branch) - the cleanup pass. Checked
+  `ffmpeg -filters` (this project's installed 9.0 build) before reaching for
+  a shape: no purpose-built "fill small alpha holes" filter exists, but
+  `median`/`alphaextract`/`alphamerge` all do, and composed they are exactly
+  a despeckle - extract the keyed layer's alpha, run a `median` filter over
+  it alone (radius 2, at the layer's oversized working resolution), merge it
+  back with `alphamerge`. A median filter on a mask fixes BOTH directions at
+  once: an isolated transparent pixel surrounded by opaque neighbours (a
+  hole eaten into the subject) and an isolated opaque speck surrounded by
+  transparent neighbours (background grain the key missed) are both
+  overwritten by their neighbourhood's majority value; a real, many-pixel
+  silhouette edge is untouched. Verified two ways: (1) RGB channels are
+  byte-identical with/without the cleanup pass on a real composite (the
+  filter touches only alpha - confirmed by sampling every pixel channel at
+  a stride and diffing); (2) radius 2 fully removed the microtest plate's
+  residual background leak (0.04% -> 0%) while leaving the photoreal
+  subject's finest real feature (its backpack strap outline, at the layer's
+  oversized resolution) pixel-identical in shape. The unkeyed background
+  layer never gets this pass (`layer_input_chain`'s `if not keyed: return`
+  branch, unchanged) - it was never selectively made transparent, so it has
+  no alpha holes to clean.
+- Re-composited the actual shot locally with the fixed defaults
+  (`tmp/jiho-parallax/_repro_fixed_2.1.jpg`, built this pass): the scattered
+  white/coloured speckle visible throughout the hair and vest in the shipped
+  frame is gone. A separate, thin magenta-toned fringe along part of the
+  hair's silhouette edge remains - checked against the SAME crop of the
+  original (unfixed) composite and found already present there too (if
+  anything fractionally more visible before this fix), so it predates this
+  pass and is not introduced or worsened by it. Not one of the three named
+  defects; flagged rather than silently left.
+- **Unrelated finding, not one of the three defects, flagged rather than
+  acted on:** this project's own subject-layer plates (`run_000_s000_sub.jpg`,
+  `run_000_s003_sub.jpg`) came back photorealistic, not in the risograph
+  style the fragment's prompt asks for (contrast with
+  `tmp/f1a-f2b-microtest/subject.png`, generated from the same style's
+  wording, which IS genuinely risograph - visible grain and halftone in its
+  shirt shading). This is a generation-fidelity gap in a live project, not a
+  renderer defect, and is out of the three named defects and the DO-NOT
+  list (`resolve_picture_path`/prompt files beyond the one line DEFECT 2
+  needed) - left for whoever next looks at that project's generation
+  quality.
+
+**DEFECT 2 - wrong subject scale, reads as a collage.** Chose **option (b),
+prompt-side**, per the brief's own recommendation: no schema change, no
+`compute_render_fingerprint` entry needed, no regeneration-cost multiplier
+beyond the one already priced into a parallax shot, and it matches how the
+subject prompt already carries every other constraint (isolation, lighting,
+key colour) - scale is one more thing for the same prompt to state, not a new
+mechanism.
+- `backend/app/prompts/shot_planner_styles/illustrated_risograph.md:40` - one
+  sentence appended to the subject-layer bullet: "Draw the figure at the same
+  scale and distance it would actually read at within the setting the first
+  layer describes - a modest presence occupying roughly the lower third to
+  half of the frame's height, with generous solid magenta surrounding it on
+  every side - so the two layers agree on scale the moment they are placed
+  one over the other." Checked against §4.10 before writing it: no artefact
+  noun (nothing on the forbidden list - "poster", "notebook", "printed on",
+  "page", "sheet", "book", "stamp", "signature", "border", "open background",
+  "no face" - appears in it), no negation (states what to draw, never what to
+  avoid). `test_the_whole_fragment_names_no_artefact_or_negation_noun`
+  (existing, unmodified) still passes over the whole file, comment included.
+- Costs exactly what the brief said option (b) would: a regeneration next
+  time this style's shots are planned and rendered (new `layer_prompt_hash`
+  for every subject layer, since the prompt text changed) - not attempted
+  this pass (DO-NOT: no workflow started).
+
+**DEFECT 3 - the guard measured quantity, not distribution.**
+- `backend/app/renderer/parallax.py:135-136` (`_SCATTER_MAX_COMPONENT_CELLS =
+  4`, `_SCATTER_FRACTION_MAX = 0.0007`), `:475-517` (`keyed_scatter_fraction`),
+  `:541-563` (`check_keyed_distribution`) - a plain 4-connected flood fill
+  over the same strided boolean grid `keyed_fraction` already samples (no new
+  dependency, no external library), measuring what SHARE of the sampled grid
+  belongs to small (<= 4 cell) connected components rather than the few large
+  ones a real cut-out produces. Raises the SAME `ParallaxKeyGuardError`
+  `check_keyed_fraction` does, with a distinct message ("scattered across
+  many small isolated regions", never "matched nothing" or "ate the
+  subject").
+- `backend/app/renderer/slideshow.py:73-80` (imports),
+  `:617-625` (one more call, right after the existing `check_keyed_fraction`)
+  - **no new wiring in the except block**: because the new guard raises the
+  same exception type, the existing `except (ParallaxKeyGuardError, OSError,
+  ValueError)` handler two lines below already catches it and degrades that
+  shot to its plain image, exactly like a `check_keyed_fraction` failure
+  already does (`GenerateDiegeticSfxStep`'s own docstring precedent: one
+  cue/layer failing must not kill the render).
+- **Threshold, stated as a measurement, calibrated on two real images (four
+  data points) - explicitly a small sample, same epistemic status as
+  `_DEAD_STOP_CEILING_MULTIPLIER`, not a statistical fit.** Using
+  `keyed_scatter_fraction` itself: the actual shipped defect (this project's
+  `run_000_s000_sub.jpg` at the OLD similarity 0.16) scores **0.00118**; the
+  same image at the NEW similarity 0.06 scores **0.00050**; the true
+  risograph-grain plate (`tmp/f1a-f2b-microtest/subject.png`, a genuinely
+  clean cut-out at either similarity) scores 0.00021 (sim 0.16) / 0.00012
+  (sim 0.06). `_SCATTER_FRACTION_MAX = 0.0007` sits between the shipped
+  defect and every measured clean case - **confirmed directly: the guard
+  raises on the actual shot at the old similarity (proving it would have
+  caught the real regression) and passes on the same shot at the new
+  default, and on both risograph-plate measurements.**
+- Synthetic fixtures added for CI (`tests/unit/renderer/test_parallax.py`,
+  see below) rather than relying on the live-project measurement above for
+  ongoing coverage - `backend/storage/93c6cbde-.../` is this developer's live
+  project data, not a checked-in fixture, so no test reads it; the real
+  numbers are recorded here in the log instead.
+
+**Test files (new tests, one new file each edited, none new):**
+- `backend/tests/unit/renderer/test_parallax.py` (28 -> 38 tests, +10):
+  `test_layer_input_chain_keyed_default_applies_alpha_cleanup` and
+  `test_layer_input_chain_keyed_cleanup_disabled_matches_the_old_single_
+  statement_shape` (the cleanup filter-graph shape, with and without it);
+  `test_two_layer_filter_complex_matches_the_probes_clip_a_shape` rewritten
+  for the new 7-statement graph (was 5) rather than left to silently pass on
+  stale indices; eight new tests for `keyed_scatter_fraction`/
+  `check_keyed_distribution` - zero on a clean two-tone cut-out fixture,
+  positive and monotonically increasing with more isolated specks on a
+  speckled-subject fixture (measured at 0.0128 for 8 specks, not just
+  asserted non-zero), the guard passing the clean fixture and raising on the
+  speckled one, the raised message containing "scattered" and excluding both
+  of `check_keyed_fraction`'s own phrases, inclusive boundary at exactly
+  0.0007, and the shot/layer label format.
+- `backend/tests/unit/planners/test_illustrated_risograph_fragment.py` (14 ->
+  15 tests, +1): `test_subject_layer_prompt_asks_for_matching_scale` checks
+  the new sentence's two load-bearing phrases are present in the fragment.
+- `layers=[]` byte-identical for the four pre-existing styles: unaffected by
+  any change this pass made (no schema field, no fingerprint field, no
+  compositing-dispatch change) - re-confirmed by re-running
+  `test_shot_layers.py`'s and `test_parallax_dispatch.py`'s own existing
+  isolation tests (unmodified), both still passing.
+
+**Verification (exact commands, run from `backend/`):**
+```
+../.venv/Scripts/python.exe -m pytest tests/unit/renderer/test_parallax.py -q
+  -> 38 passed
+../.venv/Scripts/python.exe -m pytest tests/unit/planners/test_illustrated_risograph_fragment.py -q
+  -> 15 passed
+../.venv/Scripts/python.exe -m pytest tests/unit/renderer -q
+  -> 350 passed
+../.venv/Scripts/python.exe -m pytest tests/unit/timeline/test_shot_layers.py tests/unit/renderer/test_parallax_dispatch.py tests/unit/renderer/test_fingerprint_parallax.py -q
+  -> 47 passed
+../.venv/Scripts/python.exe -m pytest tests/integration/test_render_parallax.py -q
+  -> 4 passed
+../.venv/Scripts/python.exe -m pytest tests/integration/test_render_parallax.py tests/integration/test_render_split_screen.py tests/integration/test_render_determinism.py tests/integration/test_render_ken_burns.py tests/integration/test_render_two_pass.py tests/integration/test_render_run_cache.py tests/integration/test_render_motion_clips.py -q
+  -> 29 passed (targeted render-pipeline integration re-run, no regressions)
+../.venv/Scripts/python.exe -m pytest tests/unit/timeline tests/unit/renderer tests/unit/planners tests/unit/workflow tests/unit/script tests/unit/api -q
+  -> 6 failed, 800 passed - the SAME 6 the brief names as pre-existing (5 in
+     test_sfx_overlays_diegetic.py, 1 in test_director_planner.py::
+     test_every_attempt_is_recorded_as_an_llm_call), confirmed by reading each
+     failure's own error line, not merely counted - none is new. Nothing else
+     failed anywhere in this sweep.
+```
+No `PYTEST_TRUNCATE_DB` was set. `make test` and the full suite were never
+run, per the brief. `black --check`/`ruff check` clean on every touched file
+after one auto-format pass (`test_illustrated_risograph_fragment.py`
+reformatted by `black` for the new test's line wrapping; content unaffected,
+re-ran its tests after to confirm). `mypy` on both touched production files
+(`parallax.py`, `slideshow.py`): `Success: no issues found in 2 source
+files`.
+
+**Effects / notes for the reviewer:**
+- **Every existing keyed-fraction call site gains one more guard call for
+  free.** `check_keyed_distribution` needs nothing `check_keyed_fraction`
+  didn't already have available at its one call site (`subject_bytes`,
+  `subject_key`, `shot.id`) - no new plumbing, no new failure-handling shape,
+  just one more line and one more import.
+- **This pass did not re-render the project the defects were found on.**
+  DEFECT 1/3's numbers are measured against that project's own already-
+  generated layer images (real bytes, real ffmpeg locally), not against a
+  fresh generation - so whether a NEW generation under DEFECT 2's prompt
+  change actually lands the subject at the intended scale, and whether the
+  full fix reads as intended end-to-end, is exactly the human-pass gate
+  `illustrated_faceless.md` §5/§8 already reserves for a person watching a
+  real render. **This entry does not, and should not be read to, claim the
+  picture looks right** - it reports what was measured on cached bytes and
+  local recompositing, nothing more.
+- **The pre-existing edge fringe (see DEFECT 1 above) was checked, not
+  ignored, and left alone** - it is not one of the three named defects, it
+  predates this pass, and the brief's own DO-NOT list does not ask for a
+  fringe-free key at every edge pixel (the probe's own §1.4 already notes
+  flat illustration keys "clean" in the general case; this fringe is a
+  narrow, pre-existing exception on one edge of one real generated image,
+  not a regression this pass introduced).
+- **The photoreal-vs-risograph generation-fidelity gap (DEFECT 1's
+  "unrelated finding" above) is left for a future pass.** It plausibly
+  explains why this project's own subject plates show the artefact strongly
+  enough to have been noticed at all (a photorealistic image's specular
+  highlights and hard-edged garment seams give the scaling/keying chain more
+  opportunities to ring toward the key colour than genuine flat risograph
+  art would) - but confirming that would need a real generation, which this
+  pass's budget and the DO-NOT list both withhold.
+
+**What is NOT done:**
+- No human pass, no real render, no workflow started - per the DO-NOT list.
+  Whether DEFECT 2's prompt change actually produces a correctly-scaled
+  subject figure, and whether DEFECT 1's fix reads as clean motion rather
+  than merely measuring cleaner on cached bytes, are both real, outstanding
+  questions for the next render someone actually watches.
+- The pre-existing edge fringe noted under DEFECT 1 - not attempted, not one
+  of the three named defects.
+- The photoreal-vs-risograph generation-fidelity gap noted under DEFECT 1 -
+  not attempted, out of scope, flagged for whoever next touches this
+  project's generation quality.
+- §4.3's per-project layer budget cap, F3/F4/F5, `PicturePath`,
+  `resolve_picture_path`, `frame_aspect`, the four pre-existing styles - all
+  untouched, per the DO-NOT list, same as every prior F2 pass.
+
 ---
 
 ## 8. F1 CLOSED — human pass given 2026-09-04
