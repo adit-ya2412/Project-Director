@@ -5,11 +5,13 @@ Three things this file must prove, per the plan's own isolation section
 (§3.1): `layers` defaults to empty and empty means today's behaviour
 exactly; `layers` and split-screen's `secondary_prompt`/
 `secondary_asset_plan` are mutually exclusive, both directions (§6 Q1);
-and nothing in the renderer's existing composition modules has been
-wired to read `Shot.layers` yet (F2 ships the schema + a standalone
-`parallax.py`, not the render.py seam - proven by source inspection
-rather than merely asserted, matching this codebase's own precedent for
-"is X actually wired in" claims).
+and (F2) that `ken_burns.py`/`split_screen.py` - the two composition
+modules F2a's own dispatch wiring deliberately left untouched - still
+never reference `Shot.layers` directly (only `slideshow.py`'s new
+`should_composite_parallax`/`_encode_or_reuse_shot_stream` do, per
+illustrated_faceless.md F2a, 2026-09-05 - see
+`tests/unit/renderer/test_parallax_dispatch.py` for that wiring's own
+coverage).
 """
 
 import re
@@ -179,23 +181,28 @@ def test_empty_layers_list_does_not_trip_the_validator_even_with_secondary_promp
     [
         "app/renderer/ken_burns.py",
         "app/renderer/split_screen.py",
-        "app/renderer/slideshow.py",
     ],
 )
-def test_existing_composition_modules_do_not_yet_reference_shot_layers(relative_path):
-    """Source-inspection, not a behavioural assumption: proves the
-    isolation claim ("F2 does not wire parallax.py into the existing
-    composition pass yet") is a fact about the code, not merely a plan
-    statement. `render.py` is checked separately below since the brief
-    forbids editing it, not reading it."""
+def test_untouched_composition_modules_do_not_reference_shot_layers(relative_path):
+    """Source-inspection, not a behavioural assumption: F2a's own brief
+    named these two modules as untouched ("do not invent a parallel
+    mechanism" - the parallax dispatch lives in `slideshow.py` beside
+    `should_composite_split`, not duplicated into either of these). This
+    is the narrowed survivor of F2's own isolation test, now that
+    `slideshow.py`/`render.py` are deliberately, verifiably wired (see
+    `test_parallax_dispatch.py`)."""
     text = (_BACKEND / relative_path).read_text(encoding="utf-8")
     assert not re.search(r"\.layers\b", text), f"{relative_path} already references .layers"
 
 
-def test_render_py_does_not_yet_reference_shot_layers():
-    """render.py is off-limits to edit in this pass (uncommitted A15 work
-    lives there) - this only reads it to confirm F2 has not silently
-    become live without the render.py wiring the plan says a later task
-    must do."""
-    text = (_BACKEND / "app/workflow/steps/render.py").read_text(encoding="utf-8")
-    assert not re.search(r"\.layers\b", text)
+def test_render_py_and_slideshow_now_reference_shot_layers():
+    """The flip side of F2's own claim: illustrated_faceless.md F2a
+    (2026-09-05) closed exactly this gap - `render.py` now threads
+    `shot_layer_images`/`layer_content_hashes` through to
+    `render_timeline`, and `slideshow.py` dispatches a `parallax` shot's
+    two layers into `app/renderer/parallax.py`. Checked here as a fact
+    about the code (not merely this plan's own log entry) so a future
+    revert of the wiring is caught the same way F2's absence once was."""
+    for relative_path in ("app/workflow/steps/render.py", "app/renderer/slideshow.py"):
+        text = (_BACKEND / relative_path).read_text(encoding="utf-8")
+        assert re.search(r"\.layers\b", text), f"{relative_path} lost its .layers wiring"

@@ -500,6 +500,24 @@ class Settings(BaseSettings):
     # check exactly (`shot/planner.py`).
     max_video_shots_per_project: int = 5
 
+    # illustrated_faceless.md §4.3/F2a (2026-09-05): a per-project cap on
+    # TOTAL parallax layer count (1 layer = 4c, F2a's own two-layer shots
+    # always cost 8c), same reasoning as `max_video_shots_per_project`
+    # immediately above - a careless planner asking for a layered shot
+    # every scene is a real budget event, not merely a pacing quirk. 10
+    # is a reasoned starting point (five two-layer shots, 40c), not a
+    # measured constant - the plan's own §2.4 arithmetic ($4-7 total for
+    # a 61-shot parallax film) shows the FLOOR this could safely rise to
+    # once F3's three-layer shots exist and someone has actually watched
+    # a project against this number; recalibrate after that viewing
+    # pass, the same epistemic status `_DEAD_STOP_CEILING_MULTIPLIER`
+    # (app/script/styles.py) already carries. Enforced in
+    # `ShotPlanner.plan()` (`_cap_parallax_layers`), resolved
+    # length-aware through `resolve_constraint_bundle` - never read
+    # directly at a use site (the R1 lesson `resolve_sfx_whoosh_enabled`
+    # already cites).
+    max_parallax_layers_per_project: int = 10
+
     # --- Script pre-flight (motion_new_styles_and_long_form_videos.md
     # §3, Track D) - estimates a script's spoken duration BEFORE any
     # narration exists, from character count alone. Speed is applied by

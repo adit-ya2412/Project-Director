@@ -54,6 +54,7 @@ def _shot_output(text_card: str) -> ShotPlanOutput:
         secondary_prompt="",
         text_card=text_card,
         sfx_cue="",
+        layers=[],
     )
 
 

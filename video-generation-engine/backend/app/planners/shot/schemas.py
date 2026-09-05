@@ -8,6 +8,7 @@ from app.schemas.timeline import (
     CameraDirection,
     CameraMovement,
     Framing,
+    LayerRole,
     ShotIntent,
     TransitionType,
 )
@@ -22,6 +23,20 @@ class ShotCameraOutput(BaseModel):
 class ShotTransitionOutput(BaseModel):
     type: TransitionType
     duration_s: float
+
+
+class ShotLayerOutput(BaseModel):
+    """One plane of a `parallax` shot (illustrated_faceless.md §2.2/F2a).
+    Mirrors `Shot.layers`' own `ShotLayer` shape, narrowed to what the
+    Shot Planner actually authors: `asset_plan`/`drift_x`/`drift_y`/
+    `scale` stay resolver/Asset-Planner concerns, the same way top-level
+    `Shot.asset_plan` is never on `ShotPlanOutput` either -
+    `app/planners/shot/planner.py::_to_domain_shot` always sets it to
+    `None` today, and F2's own log names filling a layer's `asset_plan`
+    from a planner as later scope, not this one."""
+
+    role: LayerRole
+    prompt: str
 
 
 class ShotPlanOutput(BaseModel):
@@ -66,6 +81,14 @@ class ShotPlanOutput(BaseModel):
     # `app/planners/shot/planner.py::_to_domain_shot` empty-string-to-None
     # normalises it, same convention as `text_card` above.
     sfx_cue: str
+    # illustrated_faceless.md F2a (2026-09-05): the two planes of a
+    # `movement: parallax` shot (background then subject) - `[]` on
+    # every other movement (OpenAI strict mode: required, never omitted;
+    # no `minItems` here per this file's own docstring rule - quantity
+    # checks belong in `_make_validator` below, never the schema).
+    # `app/planners/shot/planner.py::_to_domain_shot` converts each entry
+    # to a `ShotLayer`.
+    layers: list[ShotLayerOutput]
 
 
 class ShotPlannerOutput(BaseModel):

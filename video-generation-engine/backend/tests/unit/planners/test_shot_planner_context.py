@@ -127,9 +127,7 @@ def test_path_a_scene_user_content_is_byte_identical_to_pre_a6_output():
 
     actual = _build_user_content(scene, _CTX, fragments, suppress_camera_language=False)
 
-    expected = _base_expected(
-        scene, camera_line=f"- camera_language: {_CTX.camera_language}\n"
-    )
+    expected = _base_expected(scene, camera_line=f"- camera_language: {_CTX.camera_language}\n")
     assert actual == expected
     assert "Long-form context" not in actual
     assert "act:" not in actual
@@ -314,7 +312,9 @@ async def project_id() -> str:
         return project.id
 
 
-def _shot_output(shot_id: str, order: int, fragment_start: int, fragment_end: int) -> ShotPlanOutput:
+def _shot_output(
+    shot_id: str, order: int, fragment_start: int, fragment_end: int
+) -> ShotPlanOutput:
     return ShotPlanOutput(
         id=shot_id,
         order=order,
@@ -332,6 +332,7 @@ def _shot_output(shot_id: str, order: int, fragment_start: int, fragment_end: in
         secondary_prompt="",
         text_card="",
         sfx_cue="",
+        layers=[],
     )
 
 
@@ -374,6 +375,7 @@ async def test_plan_gives_a_path_a_project_a_canvas_line_but_no_act_context(proj
             min_shot_duration_s=1.0,
             max_shot_duration_s=8.0,
             max_shots_per_project=40,
+            max_parallax_layers_per_project=100,
             render_style="documentary_archival",
         )
     user = provider.calls[0]["user_content"]
@@ -409,6 +411,7 @@ async def test_plan_threads_acts_and_frame_aspect_into_act_opening_scene(project
             min_shot_duration_s=1.0,
             max_shot_duration_s=8.0,
             max_shots_per_project=40,
+            max_parallax_layers_per_project=100,
             render_style="documentary_archival",
             acts=acts,
             frame_aspect=None,
@@ -438,6 +441,7 @@ async def test_plan_marks_a_second_scene_in_the_same_act_as_not_opening_it(proje
             min_shot_duration_s=1.0,
             max_shot_duration_s=8.0,
             max_shots_per_project=40,
+            max_parallax_layers_per_project=100,
             render_style="documentary_archival",
             acts=acts,
             frame_aspect=None,
@@ -466,6 +470,7 @@ async def test_plan_uses_stillness_portrait_reel_canvas_when_frame_aspect_is_9_1
             min_shot_duration_s=1.0,
             max_shot_duration_s=8.0,
             max_shots_per_project=40,
+            max_parallax_layers_per_project=100,
             render_style="stillness",
             acts=acts,
             frame_aspect="9:16",

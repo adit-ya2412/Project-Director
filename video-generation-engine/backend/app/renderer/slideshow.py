@@ -54,6 +54,7 @@ import os
 import shutil
 import subprocess
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -69,8 +70,23 @@ from app.renderer.ken_burns import (
     ken_burns_crop_and_zoompan_focal,
 )
 from app.renderer.motion import MediaKind, MediaProbe, build_duration_fit_fragment, probe_media
+from app.renderer.parallax import (
+    ParallaxKeyGuardError,
+    ParallaxLayerInput,
+    build_two_layer_parallax_filter_complex,
+    check_keyed_fraction,
+    keyed_fraction,
+    sample_key_colour,
+)
 from app.renderer.split_screen import build_split_filter, should_composite_split
-from app.schemas.timeline import Shot, Timeline, TransitionType
+from app.schemas.timeline import (
+    CameraMovement,
+    LayerRole,
+    Shot,
+    ShotLayer,
+    Timeline,
+    TransitionType,
+)
 from app.timeline.duration import group_into_runs
 from app.utils.bounded_gather import bounded_gather, ffmpeg_run_concurrency
 
@@ -447,9 +463,7 @@ def _ken_burns_aim(
         return None, None, None
     canvas_w = round(settings.width * WORKING_CANVAS_SCALE)
     canvas_h = round(settings.height * WORKING_CANVAS_SCALE)
-    return ken_burns_crop_and_zoompan_focal(
-        probe.width, probe.height, canvas_w, canvas_h, focal
-    )
+    return ken_burns_crop_and_zoompan_focal(probe.width, probe.height, canvas_w, canvas_h, focal)
 
 
 def _per_shot_filter(
@@ -516,6 +530,30 @@ def _cwd_output_arg(output_path: Path, work_dir: Path) -> str:
         return str(output_path)
 
 
+def should_composite_parallax(
+    movement: CameraMovement,
+    layers: list[ShotLayer],
+    *,
+    layer_paths: Sequence[Path | None],
+    layer_kinds: Sequence[MediaKind | None],
+) -> bool:
+    """Mirrors `should_composite_split`'s own degrade-on-missing-input
+    shape (illustrated_faceless.md §2.2/F2a): a `parallax` shot composites
+    its two planes only when BOTH are actually resolved and BOTH are
+    stills. Anything missing, a motion clip on either plane, or a shot
+    that carries `layers` in the wrong shape degrades to the plain
+    single-image path below - never a fake parallax out of one picture,
+    the same "missing second still... degrades" rule `split_screen.py`'s
+    own module docstring states."""
+    if movement != CameraMovement.PARALLAX or len(layers) != 2:
+        return False
+    if layers[0].role is not LayerRole.BACKGROUND or layers[1].role is not LayerRole.SUBJECT:
+        return False
+    if len(layer_paths) != 2 or any(p is None for p in layer_paths):
+        return False
+    return len(layer_kinds) == 2 and all(k is MediaKind.STILL for k in layer_kinds)
+
+
 async def _encode_or_reuse_shot_stream(
     *,
     shot: Shot,
@@ -533,11 +571,17 @@ async def _encode_or_reuse_shot_stream(
     secondary_asset_hash: str = "",
     focal: tuple[float, float] | None = None,
     focal_fingerprint: str = "",
+    layer_srcs: list[Path] | None = None,
+    layer_probes: list[MediaProbe] | None = None,
+    layer_asset_hashes: list[str] | None = None,
 ) -> Path:
     """Pass 1 of C3 (d): one shot's normalised stream, cached by
     `compute_shot_stream_fingerprint`. tpad, never `-loop 1 -t`.
     Split-screen is two still inputs composited here, so xfade still
-    sees one stream per shot.
+    sees one stream per shot. Parallax (illustrated_faceless.md §2.2/F2a)
+    is the same shape - two still inputs, composited here via
+    `app/renderer/parallax.py` instead of `split_screen.py` - so xfade
+    still only ever sees one stream per shot either way.
     """
     from app.renderer.fingerprint import compute_shot_stream_fingerprint
 
@@ -547,6 +591,40 @@ async def _encode_or_reuse_shot_stream(
         top_kind=probe.kind,
         bot_kind=secondary_probe.kind if secondary_probe is not None else None,
     )
+    parallax = should_composite_parallax(
+        shot.camera.movement,
+        shot.layers,
+        layer_paths=list(layer_srcs) if layer_srcs is not None else [],
+        layer_kinds=[p.kind for p in layer_probes] if layer_probes is not None else [],
+    )
+    subject_key: str | None = None
+    if parallax:
+        assert layer_srcs is not None
+        # §4.5's guard: SAMPLE the key from the subject layer's own
+        # delivered bytes (§1.5 - never assume the requested colour came
+        # back), then check the keyed fraction falls inside the sane
+        # band. A guard failure must not kill the render (the same
+        # per-shot failure isolation `GenerateDiegeticSfxStep` already
+        # applies to a diegetic cue that fails to generate: "one cue
+        # failing must not kill the run... that shot simply renders with
+        # no diegetic sound") - here, that shot simply renders with no
+        # parallax, via the plain single-image path below.
+        try:
+            subject_bytes = layer_srcs[1].read_bytes()
+            subject_key = sample_key_colour(subject_bytes)
+            fraction = keyed_fraction(subject_bytes, subject_key)
+            check_keyed_fraction(fraction, shot_id=shot.id, layer_role=LayerRole.SUBJECT.value)
+        except (ParallaxKeyGuardError, OSError, ValueError) as exc:
+            logger.warning(
+                "render.parallax_guard_failed_degrading",
+                extra={
+                    "shot_id": shot.id,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
+            parallax = False
+            subject_key = None
     fingerprint = compute_shot_stream_fingerprint(
         shot=shot,
         asset_hash=asset_hash,
@@ -554,6 +632,7 @@ async def _encode_or_reuse_shot_stream(
         ffmpeg_version=ffmpeg_version,
         secondary_asset_hash=secondary_asset_hash if split else "",
         focal=focal_fingerprint,
+        layer_asset_hashes=list(layer_asset_hashes or []) if parallax else [],
     )
     cache_dir = work_dir / "shot_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -569,7 +648,37 @@ async def _encode_or_reuse_shot_stream(
     frames = max(round(shot.duration_s * settings.fps), 1)
     hold_s = (frames - 1) / settings.fps
     args = [settings.ffmpeg_binary, "-y"]
-    if split:
+    if parallax:
+        assert layer_srcs is not None and subject_key is not None
+        background_src, subject_src = layer_srcs
+        short_bg = f"{run_stem}_s{index:03d}_bg{background_src.suffix.lower() or '.png'}"
+        short_sub = f"{run_stem}_s{index:03d}_sub{subject_src.suffix.lower() or '.png'}"
+        stage_short_input(background_src, work_dir / short_bg)
+        stage_short_input(subject_src, work_dir / short_sub)
+        # `-loop 1 -t`, not `-framerate ... -i` + a downstream `tpad`
+        # hold (STATIC/SPLIT_FRAME's own convention, avoided precisely
+        # for the memory blowup this module's own docstring documents at
+        # 185-shot scale): `build_two_layer_parallax_filter_complex`
+        # below is `parallax_probe.py::_clip_a`'s own filter shape,
+        # ported unmodified (F2), and that shape has no per-layer tpad
+        # stage - each `overlay`'s drift expression needs BOTH planes to
+        # already span the shot's full duration before it runs. §4.3's
+        # layer budget cap (`_cap_parallax_layers`) is what keeps this
+        # bounded: a `-loop 1 -t` demuxer per plane is only ever open for
+        # the handful of `parallax` shots a project's own cap allows, not
+        # for every shot the way the abandoned universal approach was.
+        args += ["-loop", "1", "-t", str(shot.duration_s), "-i", short_bg]
+        args += ["-loop", "1", "-t", str(shot.duration_s), "-i", short_sub]
+        graph = build_two_layer_parallax_filter_complex(
+            ParallaxLayerInput.from_shot_layer(shot.layers[0], index=0, key=None),
+            ParallaxLayerInput.from_shot_layer(shot.layers[1], index=1, key=subject_key),
+            canvas_w=settings.width,
+            canvas_h=settings.height,
+            fps=settings.fps,
+            duration_s=shot.duration_s,
+            label="vout",
+        )
+    elif split:
         assert secondary_src is not None
         short_top = f"{run_stem}_s{index:03d}_top{src.suffix.lower() or '.png'}"
         short_bot = f"{run_stem}_s{index:03d}_bot{secondary_src.suffix.lower() or '.png'}"
@@ -841,6 +950,9 @@ async def _render_run_two_pass(
     secondary_content_hashes: dict[str, str] | None = None,
     shot_focals: dict[str, tuple[float, float] | None] | None = None,
     shot_focal_fingerprints: dict[str, str] | None = None,
+    shot_layer_images: dict[str, list[Path]] | None = None,
+    layer_probes: dict[str, list[MediaProbe]] | None = None,
+    layer_content_hashes: dict[str, list[str]] | None = None,
 ) -> None:
     run_stem = output_path.stem
     secondaries = shot_secondary_images or {}
@@ -848,6 +960,9 @@ async def _render_run_two_pass(
     sec_hashes = secondary_content_hashes or {}
     focals = shot_focals or {}
     focal_fps = shot_focal_fingerprints or {}
+    layers = shot_layer_images or {}
+    layer_probe_map = layer_probes or {}
+    layer_hashes = layer_content_hashes or {}
 
     async def _one(item: tuple[int, Shot]) -> Path:
         index, shot = item
@@ -868,6 +983,9 @@ async def _render_run_two_pass(
             secondary_asset_hash=sec_hashes.get(shot.id, ""),
             focal=focals.get(shot.id),
             focal_fingerprint=focal_fps.get(shot.id, ""),
+            layer_srcs=layers.get(shot.id),
+            layer_probes=layer_probe_map.get(shot.id),
+            layer_asset_hashes=layer_hashes.get(shot.id),
         )
 
     gathered = await bounded_gather(
@@ -898,6 +1016,9 @@ async def _render_run(
     secondary_content_hashes: dict[str, str] | None = None,
     shot_focals: dict[str, tuple[float, float] | None] | None = None,
     shot_focal_fingerprints: dict[str, str] | None = None,
+    shot_layer_images: dict[str, list[Path]] | None = None,
+    layer_probes: dict[str, list[MediaProbe]] | None = None,
+    layer_content_hashes: dict[str, list[str]] | None = None,
 ) -> None:
     """Render one run (shots joined only by crossfades, no hard cuts) to
     a single MP4.
@@ -921,6 +1042,9 @@ async def _render_run(
     sec_hashes = secondary_content_hashes or {}
     focals = shot_focals or {}
     focal_fps = shot_focal_fingerprints or {}
+    layers = shot_layer_images or {}
+    layer_probe_map = layer_probes or {}
+    layer_hashes = layer_content_hashes or {}
     split_in_run = any(
         should_composite_split(
             shot.camera.movement,
@@ -930,12 +1054,25 @@ async def _render_run(
         )
         for shot in run
     )
-    if len(run) >= 2 or split_in_run:
+    # illustrated_faceless.md §2.2/F2a: same "forces the per-shot cached
+    # path" shape as `split_in_run` immediately above - the plain
+    # single-pass batch path below (M8 step 5) has no parallax support,
+    # only `_encode_or_reuse_shot_stream` does.
+    parallax_in_run = any(
+        should_composite_parallax(
+            shot.camera.movement,
+            shot.layers,
+            layer_paths=layers.get(shot.id, []),
+            layer_kinds=[p.kind for p in layer_probe_map.get(shot.id, [])],
+        )
+        for shot in run
+    )
+    if len(run) >= 2 or split_in_run or parallax_in_run:
         if ffmpeg_version is None:
             from app.renderer.fingerprint import get_ffmpeg_version
 
             ffmpeg_version = await get_ffmpeg_version(settings.ffmpeg_binary)
-        if len(run) == 1 and split_in_run:
+        if len(run) == 1 and (split_in_run or parallax_in_run):
             shot = run[0]
             await _encode_or_reuse_shot_stream(
                 shot=shot,
@@ -953,6 +1090,9 @@ async def _render_run(
                 secondary_asset_hash=sec_hashes.get(shot.id, ""),
                 focal=focals.get(shot.id),
                 focal_fingerprint=focal_fps.get(shot.id, ""),
+                layer_srcs=layers.get(shot.id),
+                layer_probes=layer_probe_map.get(shot.id),
+                layer_asset_hashes=layer_hashes.get(shot.id),
             )
             return
         await _render_run_two_pass(
@@ -969,6 +1109,9 @@ async def _render_run(
             secondary_content_hashes=sec_hashes,
             shot_focals=focals,
             shot_focal_fingerprints=focal_fps,
+            shot_layer_images=layers,
+            layer_probes=layer_probe_map,
+            layer_content_hashes=layer_hashes,
         )
         return
     # M8 step 5: a Ken-Burns shot's frame count is computed HERE (the one
@@ -978,8 +1121,7 @@ async def _render_run(
     # zoompan expression at all, regardless of what `shot.camera` says.
     frame_counts = [max(round(shot.duration_s * settings.fps), 1) for shot in run]
     ken_burns_aims = [
-        _ken_burns_aim(media_probes[shot.id], settings, focals.get(shot.id))
-        for shot in run
+        _ken_burns_aim(media_probes[shot.id], settings, focals.get(shot.id)) for shot in run
     ]
     ken_burns_exprs = [
         (
@@ -1144,6 +1286,9 @@ async def _render_or_reuse_run(
     secondary_content_hashes: dict[str, str] | None = None,
     shot_focals: dict[str, tuple[float, float] | None] | None = None,
     shot_focal_fingerprints: dict[str, str] | None = None,
+    shot_layer_images: dict[str, list[Path]] | None = None,
+    layer_probes: dict[str, list[MediaProbe]] | None = None,
+    layer_content_hashes: dict[str, list[str]] | None = None,
 ) -> Path:
     """Encode one run, or copy a previous encode of the same run.
 
@@ -1160,6 +1305,7 @@ async def _render_or_reuse_run(
         ffmpeg_version=ffmpeg_version,
         secondary_content_hashes=secondary_content_hashes,
         shot_focal=shot_focal_fingerprints,
+        layer_content_hashes=layer_content_hashes,
     )
     cache_dir = work_dir / "run_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1186,6 +1332,9 @@ async def _render_or_reuse_run(
         secondary_content_hashes=secondary_content_hashes,
         shot_focals=shot_focals,
         shot_focal_fingerprints=shot_focal_fingerprints,
+        shot_layer_images=shot_layer_images,
+        layer_probes=layer_probes,
+        layer_content_hashes=layer_content_hashes,
     )
     _atomic_copy(run_path, cache_path)
     return run_path
@@ -1200,11 +1349,20 @@ async def render_timeline(
     work_dir: Path,
     shot_secondary_images: dict[str, Path] | None = None,
     shot_focals: dict[str, tuple[float, float] | None] | None = None,
+    shot_layer_images: dict[str, list[Path]] | None = None,
 ) -> Path:
     """Render an approved Timeline plus resolved shot images into a single
     MP4. Hard cuts between runs are joined losslessly via the concat
     demuxer; non-cut transitions become an ffmpeg xfade crossfade inside a
-    run (see app.timeline.duration for the grouping rule, D5)."""
+    run (see app.timeline.duration for the grouping rule, D5).
+
+    `shot_layer_images` (illustrated_faceless.md §2.2/F2a) is `Shot.
+    layers`' resolved-image counterpart to `shot_secondary_images` -
+    ordered per shot to match `Shot.layers` (background then subject).
+    Same degrade rule as the secondary image: a shot whose pair is
+    missing, or whose PAIR includes a motion clip, is skipped here and
+    falls through to the plain single-image path (`should_composite_
+    parallax` re-checks the same facts at dispatch time)."""
     work_dir.mkdir(parents=True, exist_ok=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1251,6 +1409,26 @@ async def render_timeline(
             path, shot_id=f"{shot_id}__split", work_dir=work_dir, settings=settings
         )
 
+    # illustrated_faceless.md §2.2/F2a: same shape as the secondary-image
+    # resolution immediately above, but each shot carries a PAIR of paths
+    # (background, subject) rather than one - the whole pair is skipped
+    # (never a lone layer) the moment either plane turns out to be a
+    # motion clip, matching `should_composite_parallax`'s own "both must
+    # be stills" rule.
+    resolved_layers: dict[str, list[Path]] = {}
+    layer_media_probes: dict[str, list[MediaProbe]] = {}
+    for shot_id, paths in (shot_layer_images or {}).items():
+        probes = [await probe_media(p, ffprobe_binary=settings.ffprobe_binary) for p in paths]
+        if any(p.kind is MediaKind.MOTION for p in probes):
+            continue
+        resolved_layers[shot_id] = [
+            await ensure_still_image(
+                p, shot_id=f"{shot_id}__layer{i}", work_dir=work_dir, settings=settings
+            )
+            for i, p in enumerate(paths)
+        ]
+        layer_media_probes[shot_id] = probes
+
     runs = group_into_runs(shots)
 
     # Lazy: fingerprint.py imports RenderSettings from this module.
@@ -1261,15 +1439,17 @@ async def render_timeline(
     secondary_content_hashes = {
         shot_id: _file_content_hash(path) for shot_id, path in resolved_secondary.items()
     }
+    layer_content_hashes = {
+        shot_id: [_file_content_hash(p) for p in paths]
+        for shot_id, paths in resolved_layers.items()
+    }
     # OQ-2: focals are resolved once in RenderStep and threaded in (RV2).
     # Fingerprint strings use "" when unresolved so a later sidecar cannot
     # cache-HIT a centre-aimed encode.
     from app.assets.focal import format_focal_fingerprint
 
     focals = shot_focals or {}
-    focal_fingerprints = {
-        shot.id: format_focal_fingerprint(focals.get(shot.id)) for shot in shots
-    }
+    focal_fingerprints = {shot.id: format_focal_fingerprint(focals.get(shot.id)) for shot in shots}
 
     async def _one_run(item: tuple[int, list[Shot]]) -> Path:
         index, run = item
@@ -1287,6 +1467,9 @@ async def render_timeline(
             secondary_content_hashes=secondary_content_hashes,
             shot_focals=focals,
             shot_focal_fingerprints=focal_fingerprints,
+            shot_layer_images=resolved_layers,
+            layer_probes=layer_media_probes,
+            layer_content_hashes=layer_content_hashes,
         )
 
     gathered = await bounded_gather(

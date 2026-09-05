@@ -147,6 +147,7 @@ def _shot_output(scene_id: str, duration_s: float) -> ShotPlannerOutput:
                 secondary_prompt="",
                 text_card="",
                 sfx_cue="",
+                layers=[],
             ),
         ]
     )

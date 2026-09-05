@@ -228,6 +228,20 @@ async def render_video(
     secondary_content_hashes: dict[str, str] = {}
     shot_images: dict[str, Path] = {}
     shot_secondary_images: dict[str, Path] = {}
+    # illustrated_faceless.md F2a (2026-09-05): `Shot.layers`' resolved-
+    # image counterpart to `shot_secondary_images` above. `[]` for every
+    # shot today - `ShotBindingModel` carries no per-layer slots and no
+    # planner authors `ShotLayer.asset_plan` yet (P-IF-F2's own log:
+    # filling a layer's `asset_plan` from a planner is later scope), so
+    # there is nothing to resolve FROM here. What this feeds is real:
+    # `render_timeline` -> `_render_run` -> `_encode_or_reuse_shot_
+    # stream` dispatches into `app/renderer/parallax.py` the moment this
+    # dict is non-empty (exercised directly with synthetic layer images
+    # in `tests/unit/renderer/test_parallax_dispatch.py`) - only "where
+    # do real layer files come from" remains open, a `ResolveAssetsStep`
+    # extension for `Shot.layers` out of F2a's own numbered scope.
+    shot_layer_images: dict[str, list[Path]] = {}
+    layer_content_hashes: dict[str, list[str]] = {}
     for shot in timeline.all_shots():
         binding = bindings_by_shot.get(shot.id)
         path, content_hash = await _resolved_path_and_hash(ctx.session, binding)
@@ -425,6 +439,7 @@ async def render_video(
         sfx_diegetic_duck_depth_db=settings.sfx_diegetic_duck_depth_db,
         ffmpeg_version=ffmpeg_version,
         shot_focal=shot_focal_fingerprints,
+        layer_content_hashes=layer_content_hashes,
     )
 
     render_repo = RenderRepository(ctx.session)
@@ -453,6 +468,7 @@ async def render_video(
             work_dir=work_dir,
             shot_secondary_images=shot_secondary_images,
             shot_focals=shot_focals,
+            shot_layer_images=shot_layer_images,
         )
 
         # The "video filter pass" (docs/plans/watermark_implementation_plan.md
@@ -979,9 +995,7 @@ def _sfx_overlays(
         return []
     if timeline.sfx_plan is None or not timeline.sfx_plan.clips:
         return []
-    by_kind = {
-        clip.kind: clip for clip in timeline.sfx_plan.clips if clip.kind != SfxKind.DIEGETIC
-    }
+    by_kind = {clip.kind: clip for clip in timeline.sfx_plan.clips if clip.kind != SfxKind.DIEGETIC}
     diegetic_by_shot = {
         clip.shot_id: clip
         for clip in timeline.sfx_plan.clips

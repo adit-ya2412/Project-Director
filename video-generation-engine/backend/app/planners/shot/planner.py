@@ -47,8 +47,10 @@ from app.schemas.timeline import (
     CameraMovement,
     CreativeContext,
     Framing,
+    LayerRole,
     Scene,
     Shot,
+    ShotLayer,
     Transition,
     TransitionType,
 )
@@ -442,6 +444,62 @@ def _cap_sfx_cues(planned_scenes: list[Scene]) -> list[Scene]:
     return out
 
 
+def _cap_parallax_layers(planned_scenes: list[Scene], *, max_layers: int) -> list[Scene]:
+    """§4.3's per-project layer budget, enforced post-gather - fourth
+    instance of the same structural blindness `_cap_glitch_transitions`/
+    `_cap_text_cards`/`_cap_sfx_cues` already correct for: the Shot
+    Planner is called ONCE PER SCENE, so a per-scene decision to use
+    parallax cannot see how many OTHER scenes made the same choice, and
+    1 layer = 4c / 2 = 8c (F2a's own two-layer shots always cost 8c)
+    means an uncapped project-wide total is a real budget event, not
+    merely a pacing quirk - the same reasoning `max_video_shots_per_
+    project` already applies to the far more expensive per-shot video
+    cost (`app/planners/asset/planner.py`).
+
+    Cleared in scene/shot order, keeping every layer up to `max_layers`
+    and clearing (`layers=[]`) the first shot whose OWN layers would
+    push the running total over the cap - never a partial layer list,
+    since `parallax.py`'s two-layer builder rejects anything but exactly
+    `[background, subject]`. A cleared shot still legally carries
+    `movement=parallax` with empty `layers` - already a documented,
+    unguarded no-op state (`CameraMovement.PARALLAX`'s own docstring),
+    the same degrade `SPLIT_FRAME` with an empty `secondary_prompt`
+    already takes. Silently correct + log (style_extensions.md §2.7),
+    matching every sibling cap above - the model was never able to see
+    the other scenes it would need to self-correct against.
+    """
+    flat: list[Shot] = [shot for scene in planned_scenes for shot in scene.shots]
+    total_layers = sum(len(shot.layers) for shot in flat)
+    if total_layers <= max_layers:
+        return planned_scenes
+
+    kept_layers = 0
+    cleared_shots = 0
+    out: list[Scene] = []
+    for scene in planned_scenes:
+        new_shots: list[Shot] = []
+        for shot in scene.shots:
+            if shot.layers:
+                if kept_layers + len(shot.layers) <= max_layers:
+                    kept_layers += len(shot.layers)
+                else:
+                    shot = shot.model_copy(update={"layers": []})
+                    cleared_shots += 1
+            new_shots.append(shot)
+        out.append(scene.model_copy(update={"shots": new_shots}))
+
+    logger.warning(
+        "shot_planner.parallax_layer_budget_exceeded_downgrading",
+        extra={
+            "max_layers": max_layers,
+            "planned_layers": total_layers,
+            "kept_layers": kept_layers,
+            "cleared_shots": cleared_shots,
+        },
+    )
+    return out
+
+
 def _snap_fragment_boundaries(
     shots: list[ShotPlanOutput], fragment_count: int, *, scene_id: str
 ) -> None:
@@ -660,6 +718,49 @@ def _make_validator(
                     f"shot {s.id}: framing=split is only for split_frame, "
                     f"got {s.camera.movement.value}"
                 )
+            # illustrated_faceless.md F2a: same shape as the split_frame/
+            # secondary_prompt pair immediately above - a `parallax` shot
+            # needs its two layers, and `layers` means nothing outside
+            # `parallax`. Checked here (loud failure via repair's retry),
+            # not silently corrected like `_cap_glitch_transitions`/
+            # `_cap_text_cards`: unlike those project-wide RATE limits,
+            # a single scene's own shot already carries every fact needed
+            # to get this right (the model chose the movement AND the
+            # layer list in the same call), so a mismatch is a genuine
+            # in-band mistake, not information the model was structurally
+            # denied.
+            is_parallax = s.camera.movement == CameraMovement.PARALLAX
+            if is_parallax:
+                if len(s.layers) != 2:
+                    violations.append(
+                        f"shot {s.id}: parallax needs exactly 2 layers "
+                        f"(background, subject), got {len(s.layers)}"
+                    )
+                else:
+                    background, subject = s.layers
+                    if background.role != LayerRole.BACKGROUND:
+                        violations.append(
+                            f"shot {s.id}: parallax's first layer must be "
+                            f"role=background, got {background.role.value}"
+                        )
+                    if subject.role != LayerRole.SUBJECT:
+                        violations.append(
+                            f"shot {s.id}: parallax's second layer must be "
+                            f"role=subject, got {subject.role.value}"
+                        )
+                    if not background.prompt.strip():
+                        violations.append(
+                            f"shot {s.id}: parallax's background layer needs a " "non-empty prompt"
+                        )
+                    if not subject.prompt.strip():
+                        violations.append(
+                            f"shot {s.id}: parallax's subject layer needs a " "non-empty prompt"
+                        )
+            elif s.layers:
+                violations.append(
+                    f"shot {s.id}: layers is only for parallax, got "
+                    f"{s.camera.movement.value} with {len(s.layers)} layer(s)"
+                )
             # A5 (long_form_direction.md §3): vertical pan only makes
             # sense on a landscape canvas - a tall subject on a wide
             # frame. Hard-fail (not a silent downgrade like
@@ -744,6 +845,13 @@ def _to_domain_shot(
         # both alike ("no cue").
         sfx_cue=s.sfx_cue.strip() or None,
         asset_plan=None,
+        # illustrated_faceless.md F2a: `[]` on every non-parallax shot,
+        # matching the strict-mode output's own required-but-usually-
+        # empty shape (same convention as `text_card`/`sfx_cue` above,
+        # just list-shaped rather than empty-string-shaped). `asset_plan`
+        # stays `None` on every layer - not authored by this planner, the
+        # same reason the shot's own `asset_plan` two lines up is `None`.
+        layers=[ShotLayer(role=layer.role, prompt=layer.prompt) for layer in s.layers],
     )
 
 
@@ -764,6 +872,7 @@ class ShotPlanner:
         min_shot_duration_s: float,
         max_shot_duration_s: float,
         max_shots_per_project: int,
+        max_parallax_layers_per_project: int,
         render_style: str | None = None,
         acts: list[Act] | None = None,
         frame_aspect: str | None = None,
@@ -864,15 +973,17 @@ class ShotPlanner:
         # can run in either order; here purely to sit next to its two
         # siblings and the glitch cap it directly follows.
         capped = _cap_sfx_cues(capped)
+        # illustrated_faceless.md F2a (§4.3): same class of pass as its
+        # two siblings above, over `layers` (parallax's per-project cost
+        # budget) rather than transitions or cues.
+        capped = _cap_parallax_layers(capped, max_layers=max_parallax_layers_per_project)
         # A7 (long_form_direction.md §3): a chapter card is A4's fragment
         # instructing the model to put it on an act-opening scene's FIRST
         # shot - so identify one by shot id, not a new Shot field. Reuse
         # `opening_scene_ids` (A6, computed above) rather than
         # recomputing "which scene opens an act" a second way.
         chapter_shot_ids = frozenset(
-            scene.shots[0].id
-            for scene in capped
-            if scene.id in opening_scene_ids and scene.shots
+            scene.shots[0].id for scene in capped if scene.id in opening_scene_ids and scene.shots
         )
         return _cap_text_cards(
             capped,

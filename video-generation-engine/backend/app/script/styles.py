@@ -645,6 +645,11 @@ class ConstraintBundle:
     max_video_duration_s: float
     budget_cap_cents: int
     max_video_shots_per_project: int
+    # illustrated_faceless.md §4.3/F2a: same sub-linear-in-length shape
+    # as `max_video_shots_per_project` immediately above, over parallax
+    # layer count rather than video-shot count. See
+    # `resolve_constraint_bundle`'s own computation for the formula.
+    max_parallax_layers_per_project: int
 
     def __iter__(self):
         yield self.min_shot_duration_s
@@ -739,6 +744,15 @@ def resolve_constraint_bundle(
         settings.max_video_shots_per_project,
         math.ceil(settings.max_video_shots_per_project * math.sqrt(duration_ratio)),
     )
+    # illustrated_faceless.md §4.3/F2a: identical sub-linear shape, over
+    # `max_parallax_layers_per_project` instead of the video-shot cap -
+    # a 10-minute project may reasonably want more total layers than a
+    # 90s one, but not linearly more (D4's same reasoning: sqrt, not a
+    # flat multiple).
+    max_parallax_layers_per_project = max(
+        settings.max_parallax_layers_per_project,
+        math.ceil(settings.max_parallax_layers_per_project * math.sqrt(duration_ratio)),
+    )
 
     return ConstraintBundle(
         min_shot_duration_s=min_shot_duration_s,
@@ -748,4 +762,5 @@ def resolve_constraint_bundle(
         max_video_duration_s=max_video_duration_s,
         budget_cap_cents=budget_cap_cents,
         max_video_shots_per_project=max_video_shots_per_project,
+        max_parallax_layers_per_project=max_parallax_layers_per_project,
     )

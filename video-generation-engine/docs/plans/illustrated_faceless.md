@@ -1971,6 +1971,297 @@ new failure shape this pass introduced.
 - `render.py`/`fragments.py` - untouched, both pre-existing uncommitted
   A15 work on this branch, out of scope per the brief.
 
+### P-IF-F2a — Both ends connected: the planner can author layers, the renderer composites them (2026-09-05)
+
+**Scope executed:** exactly §8.5's three bullets - the Shot Planner's
+authoring path for `Shot.layers` (`ShotPlanOutput.layers`, the
+`illustrated_risograph.md` prompt wording, and `_make_validator`'s
+mirror of the `split_frame`/`secondary_prompt` rule), the composition-
+pass wiring (`app/renderer/slideshow.py` dispatches a `parallax` shot
+into `app/renderer/parallax.py`, `app/workflow/steps/render.py` threads
+resolved layer images/hashes through to it), and the §4.3 per-project
+layer budget cap. `render.py` was confirmed clean first (`c54a98a`
+committed the A15 work this branch used to carry uncommitted) before it
+was touched. `parallax.py` itself is untouched - every line below wires
+or calls its existing functions, none rewrite them. §8.1's substrate
+crop remains deliberately unattempted (DO-NOT list); no external API
+call, no image generated, no project rendered, nothing committed.
+
+**Changes:**
+- `backend/app/planners/shot/schemas.py:11` - `LayerRole` import.
+  `:28-39` - `ShotLayerOutput` (`role`, `prompt`) - narrower than
+  `ShotLayer` itself: `asset_plan`/`drift_x`/`drift_y`/`scale` stay
+  resolver/Asset-Planner concerns, the same way `Shot.asset_plan` is
+  never on `ShotPlanOutput` either. `:91` - `ShotPlanOutput.layers:
+  list[ShotLayerOutput]`, required, no `minItems` (this file's own
+  strict-mode rule - quantity checks live in `_make_validator`).
+- `backend/app/planners/shot/planner.py:50,52-53` - `LayerRole`/`Shot`/
+  `ShotLayer` imports. `:721-765` - `_make_validator`'s new block, same
+  shape as the `split_frame`/`secondary_prompt` pair immediately above
+  it: a `parallax` shot needs exactly 2 layers in `[background,
+  subject]` order with non-empty prompts; a non-parallax shot with any
+  `layers` is rejected the other direction. A hard failure via
+  `run_structured_with_repair`'s retry (not a silent downgrade) -
+  unlike the three `_cap_*` passes below, the model already had every
+  fact it needed in this same call. `:806-857` (`_to_domain_shot`),
+  `:856` - `layers=[ShotLayer(role=layer.role, prompt=layer.prompt)
+  for layer in s.layers]`; `asset_plan` stays `None` per layer, same
+  reason the
+  shot's own `asset_plan` two lines up is `None` (not authored by this
+  planner - later scope, per F2's own log). `:447-500` -
+  `_cap_parallax_layers(planned_scenes, *, max_layers)`: §4.3's budget,
+  fourth instance of the `_cap_glitch_transitions`/`_cap_text_cards`/
+  `_cap_sfx_cues` shape (the Shot Planner runs once per scene and
+  cannot see another scene's layer spend) - clears a whole shot's
+  `layers` (never a lone layer; `parallax.py`'s builder rejects
+  anything but exactly two) once the running total would exceed the
+  cap, in scene/shot order, logging
+  `shot_planner.parallax_layer_budget_exceeded_downgrading`. `:876-877`
+  (`plan()` signature) - new required `max_parallax_layers_per_project:
+  int` parameter. `:981` - wired into the post-gather pipeline beside
+  its three siblings.
+- `backend/app/prompts/shot_planner_styles/illustrated_risograph.md:34-38`
+  - the parallax bullet: a `parallax` shot needs exactly two `layers`
+  (`background` then `subject`), the subject "isolated on one perfectly
+  even, solid magenta field that fills the frame completely, edge to
+  edge - flat, shadowless lighting, and the figure as the sole content
+  in the frame" (the probe's own working phrasing, generalised to the
+  positive form §4.10 requires - "shadowless"/"sole content" rather
+  than "no shadow"/"no other object"). Names no artefact noun, no
+  negation - `test_the_whole_fragment_names_no_artefact_or_negation_noun`
+  (existing, unmodified) still passes over the whole file, comment
+  included.
+- `backend/app/core/config.py:503-519` - `max_parallax_layers_per_project:
+  int = 10` (five two-layer shots, 40c) - a reasoned starting point, not
+  measured, same epistemic status as `_DEAD_STOP_CEILING_MULTIPLIER`.
+- `backend/app/script/styles.py:652` (`ConstraintBundle` gains the
+  field), `:747-755` (`resolve_constraint_bundle` computes it with the
+  IDENTICAL `sqrt(duration_ratio)` shape `max_video_shots_per_project`
+  already uses two lines above), `:765` (returned). One function, read
+  by generate_timeline.py's call site - never a band field at a use
+  site (the R1 lesson `resolve_sfx_whoosh_enabled` cites).
+- `backend/app/workflow/steps/generate_timeline.py:323` -
+  `ShotPlanner(...).plan(...)` gains
+  `max_parallax_layers_per_project=bundle.max_parallax_layers_per_project`.
+- `backend/app/renderer/slideshow.py:72-79` (parallax.py imports),
+  `:81` (`CameraMovement`/`LayerRole`/`ShotLayer` added to the timeline
+  import) - `:527-546` `should_composite_parallax`, the parallax mirror
+  of `should_composite_split`'s own degrade-on-missing-input shape:
+  `False` unless movement is `parallax`, `layers` is exactly
+  `[background, subject]`, both paths are resolved, and both are
+  stills. `:568-573` (`_encode_or_reuse_shot_stream` gains
+  `layer_srcs`/`layer_probes`/`layer_asset_hashes`), `:591-623` (the
+  §4.5 guard: sample the subject's key from its own delivered bytes,
+  check the keyed fraction, and on `ParallaxKeyGuardError`/`OSError`/
+  `ValueError` log `render.parallax_guard_failed_degrading` and fall
+  back to the plain single-image path - the same per-shot failure
+  isolation `GenerateDiegeticSfxStep`'s own docstring states for one
+  failed diegetic cue: "that shot simply renders with no diegetic
+  sound," here "that shot simply renders with no parallax"), `:624-632`
+  (`layer_asset_hashes` reaches `compute_shot_stream_fingerprint` only
+  when `parallax` is actually true - a guard failure therefore
+  fingerprints identically to a plain shot with the same `src`, so it
+  reuses that cache rather than minting a new one), `:647-667` (the
+  filter-graph branch: `-loop 1 -t {duration_s}`, not `-framerate` +
+  `tpad` - see the inline comment for why `parallax.py`'s ported filter
+  shape needs the probe's own looping-input convention, and why that
+  reintroduces zero risk of this module's own documented 185-shot
+  memory blowup, since §4.3's cap bounds how many shots this path ever
+  runs for). `:949-951`/`:971-973` (`_render_run_two_pass` threads the
+  three params to each call), `:1015-1017`/`:1057-1082` (`_render_run`
+  gains `parallax_in_run`, the same "forces the per-shot cached path"
+  role `split_in_run` already plays, since the plain single-pass batch
+  path has no parallax support), `:1286-1293` (`_render_or_reuse_run`
+  passes `layer_content_hashes` into `compute_run_fingerprint`),
+  `:1349-1436` (`render_timeline` gains `shot_layer_images`, resolves
+  each shot's layer PAIR through `probe_media`/`ensure_still_image`
+  exactly like `shot_secondary_images` - skipping the whole pair, never
+  a lone layer, the moment either plane is a motion clip - and computes
+  `layer_content_hashes` from the resolved bytes).
+- `backend/app/workflow/steps/render.py:229-244` - `shot_layer_images`/
+  `layer_content_hashes`, declared and threaded through but populated
+  `{}` for every shot today: `ShotBindingModel` carries no per-layer
+  slots and no planner authors `ShotLayer.asset_plan` (later scope, per
+  F2's own log) - see "What is NOT done" below. `:442` -
+  `layer_content_hashes` reaches `compute_render_fingerprint`. `:471` -
+  `shot_layer_images` reaches `render_timeline`.
+
+**Test files (new):**
+- `backend/tests/unit/planners/test_shot_planner_parallax_layers.py`
+  (6 tests) - `ShotPlanOutput.layers` both directions (a `parallax`
+  shot without 2 layers / with layers in the wrong role order / with an
+  empty layer prompt all fail loudly; a non-parallax shot with layers
+  fails loudly the other way; a well-formed pair lands on the domain
+  `Shot` with `asset_plan=None` per layer; a non-parallax shot keeps
+  `layers=[]`) - through the real `ShotPlanner.plan()` entry point via
+  `FakePlanningProvider`, the same shape `test_split_frame_without_
+  secondary_prompt_is_rejected` already uses.
+- `backend/tests/unit/planners/test_shot_planner_parallax_layer_cap.py`
+  (6 tests) - `_cap_parallax_layers` pure-function tests, same shape as
+  `test_shot_planner_sfx_cue_cap.py`: under-cap is byte-identical (not
+  even `model_copy`'d); a project with no layers is untouched; excess
+  layers are cleared keeping the FIRST shots, never a lone layer left
+  behind; **the budget is enforced project-wide, not per scene** (three
+  scenes each individually within budget still get the third cleared);
+  the log record's four fields are asserted exactly.
+- `backend/tests/unit/renderer/test_parallax_dispatch.py` (8 tests) -
+  `should_composite_parallax`, pure, no ffmpeg: the well-formed case,
+  wrong movement, no layers, three layers (F3, not F2a), wrong role
+  order, a missing layer path, no paths at all, and a motion clip on
+  either plane - every one degrades to `False` rather than raising,
+  mirroring `test_split_screen.py`'s own `test_should_composite_
+  requires_two_stills_and_split_movement`.
+- `backend/tests/integration/test_render_parallax.py` (3 tests, real
+  ffmpeg, no DB) - mirrors `test_render_split_screen.py`'s shape
+  exactly, with each shot's OWN `shot_images` entry a THIRD colour
+  (red) distinct from both layers (blue background / green-on-magenta
+  subject) so a test can tell from the rendered frame alone which path
+  actually ran: (1) both layers composite over the shot's own image -
+  blue and green both present, no magenta (the key was removed), no
+  red (the plain path did NOT run); (2) a subject plate with nothing to
+  cut out (§4.5's "ate the subject" failure) degrades to the shot's own
+  red image and logs `render.parallax_guard_failed_degrading`, never
+  killing the render; (3) a `parallax` shot with no resolved layer
+  images at all renders as its own plain image, the same documented
+  degrade `test_split_frame_without_a_second_still_is_a_static_shot`
+  already proves for split-screen.
+- `backend/tests/unit/timeline/test_shot_layers.py` - F2's own three
+  isolation tests narrowed to the two modules F2a's brief named as
+  untouched (`ken_burns.py`/`split_screen.py`,
+  `test_untouched_composition_modules_do_not_reference_shot_layers`)
+  plus a new test asserting the FLIP side
+  (`test_render_py_and_slideshow_now_reference_shot_layers`) - a fact
+  about the code, not merely this log entry.
+
+**Test files (fixed, mechanical, per the brief's task 4):**
+`backend/tests/unit/renderer/test_fingerprint.py` - its one shared
+`_fingerprint()` helper (all ~50 call sites go through it) was missing
+`sfx_diegetic_shot_carry_s`; added once, all 50 fixed. Also updated (new
+required field, not a behaviour change): `_shot()`/`_shot_output()`
+factories in `test_shot_planner.py`, `test_shot_planner_context.py`,
+`test_shot_text_cards.py`, and `tests/integration/
+test_generate_timeline_real.py` all gained `layers=[]`; every
+`ShotPlanner(...).plan(...)` call site in `test_shot_planner.py`/
+`test_shot_planner_context.py` gained
+`max_parallax_layers_per_project=100`.
+
+**Measured:**
+- Debugging note, not a defect in shipped code: the FIRST working
+  version of the parallax filter-graph branch staged the two layer
+  inputs with `-framerate {fps} -i` (matching `split`'s own staging)
+  and produced a 1-frame, 0.04s output regardless of `shot.duration_s`
+  - `overlay=shortest=1` truncates to the shortest INPUT stream, and an
+  image2 input without `-loop 1` decodes exactly one frame. Fixed by
+  staging with `-loop 1 -t {duration_s}` instead (`parallax_probe.py`'s
+  own convention, ported alongside its filter shape) - confirmed by
+  `ffprobe` on a real encode: `nb_frames` 1 -> 37 at 24fps/1.5417s,
+  matching `shot.duration_s=1.5` within one frame.
+- The real composite: a 640x480 blue background plus a 640x480
+  magenta-keyed plate with a green rectangle, rendered at 240x320/24fps,
+  sampled at t=0.7s - `Image.getcolors` on the extracted frame: 46848px
+  blue, 28216px green, a few hundred anti-aliased edge pixels, ZERO
+  magenta and ZERO red (the shot's own distractor colour) above noise.
+- The guard-degrade path: an all-magenta subject plate (nothing to key
+  out) - `check_keyed_fraction` raises "ate the subject" exactly as
+  `test_parallax.py` already proved in isolation; the integration test
+  confirms the CALLER catches it, logs
+  `render.parallax_guard_failed_degrading`, and the extracted frame
+  shows only the shot's own red image, never a half-built composite and
+  never a raised exception reaching `render_timeline`'s caller.
+- Test counts: `test_shot_planner_parallax_layers.py` +
+  `test_shot_planner_parallax_layer_cap.py` +
+  `test_parallax_dispatch.py` -> 20 passed. `test_render_parallax.py`
+  (real ffmpeg) -> 3 passed. `test_fingerprint.py` -> 65 passed (was 50
+  failed / 15 passed). `test_shot_layers.py` -> 20 passed (was 21; F2's
+  3-way parametrize narrowed to 2, its `render.py`-only test replaced
+  by one covering both `render.py` and `slideshow.py`).
+- Full sweep `tests/unit/timeline tests/unit/renderer tests/unit/
+  planners tests/unit/workflow tests/unit/script tests/unit/api` ->
+  **772 passed, 6 failed, 0 new**: 5 in `test_sfx_overlays_diegetic.py`
+  (pre-A15 dissolve-swoosh behaviour, explicitly left red per the
+  brief) and 1 in `test_director_planner.py::test_every_attempt_is_
+  recorded_as_an_llm_call` (documented cross-project DB pollution) -
+  both named in the brief as known-remaining, neither touched.
+- A broader, NOT-required sweep also touching `tests/integration`
+  turned up 20 unrelated failures (narration persistence/cache,
+  workflow-trigger orphan reclaim, draft retention, a live-provider
+  music test) - none in any file this slice touched, none mentioning
+  `layers`/`parallax`/fingerprint kwargs, and reproducing the same
+  cross-project DB-pollution shape the brief already documents for
+  `test_director_planner.py`. Re-run narrowly instead: every render-
+  pipeline integration file (`test_render_parallax.py`,
+  `test_render_split_screen.py`, `test_render_determinism.py`,
+  `test_render_ken_burns.py`, `test_render_two_pass.py`,
+  `test_render_run_cache.py`, `test_render_motion_clips.py`) together
+  -> 28 passed, confirming this slice caused none of the 20.
+- `black --check`/`ruff check` clean on every touched file after one
+  `ruff --fix` (an unsorted import in `test_parallax_dispatch.py`).
+  `mypy` on the touched production files: no new errors.
+
+**Verification (exact commands, run from `backend/`):**
+```
+../.venv/Scripts/python.exe -m pytest tests/unit/renderer/test_fingerprint.py -q
+  -> 65 passed
+../.venv/Scripts/python.exe -m pytest tests/unit/planners/test_shot_planner_parallax_layers.py tests/unit/planners/test_shot_planner_parallax_layer_cap.py tests/unit/renderer/test_parallax_dispatch.py -q
+  -> 20 passed
+../.venv/Scripts/python.exe -m pytest tests/integration/test_render_parallax.py -q
+  -> 3 passed
+../.venv/Scripts/python.exe -m pytest tests/unit/timeline/test_shot_layers.py -q
+  -> 20 passed
+../.venv/Scripts/python.exe -m pytest tests/unit/planners/test_shot_planner.py tests/unit/planners/test_shot_planner_context.py tests/unit/planners/test_shot_text_cards.py tests/unit/planners/test_illustrated_risograph_fragment.py -q
+  -> 36 + 14 passed (both files unaffected beyond the new `layers=[]`/cap kwarg)
+../.venv/Scripts/python.exe -m pytest tests/unit/timeline tests/unit/renderer tests/unit/planners tests/unit/workflow tests/unit/script tests/unit/api -q
+  -> 6 failed, 772 passed (5 test_sfx_overlays_diegetic.py + 1 test_director_planner.py, both pre-existing/documented, neither touched)
+../.venv/Scripts/python.exe -m pytest tests/integration/test_render_parallax.py tests/integration/test_render_split_screen.py tests/integration/test_render_determinism.py tests/integration/test_render_ken_burns.py tests/integration/test_render_two_pass.py tests/integration/test_render_run_cache.py tests/integration/test_render_motion_clips.py -q
+  -> 28 passed (targeted render-pipeline integration re-run, after a broader tests/integration sweep surfaced 20 unrelated, pre-existing DB-pollution failures elsewhere - see Measured above)
+```
+No `PYTEST_TRUNCATE_DB` set; `--noconftest` used only for the pure
+planner/renderer files that support it (no DB fixture). `make test` and
+the full suite were never run, per the brief.
+
+**Effects / notes for the reviewer:**
+- **Production behaviour is unchanged for every project today.**
+  `shot_layer_images`/`layer_content_hashes` are `{}` in `render.py`
+  because nothing yet resolves a real image for `ShotLayer` (no
+  `ResolveAssetsStep` support, no Asset-Planner authoring of
+  `ShotLayer.asset_plan`) - so `should_composite_parallax` returns
+  `False` for every shot in production, and every existing style stays
+  byte-identical, same as F2's own claim. What is NEW and real: the
+  Shot Planner CAN author `layers` for `illustrated_risograph` now, and
+  the render pipeline WILL composite them correctly, guard them, and
+  fingerprint them the moment a later slice supplies real layer image
+  paths - proven directly with synthetic fixtures in `test_render_
+  parallax.py`, not merely argued.
+- **`-loop 1 -t` for parallax's two inputs only, not a reversion for
+  everything else.** This module's own docstring explains why STATIC/
+  SPLIT_FRAME abandoned looping inputs (10.6 GB resident at 185 shots);
+  `parallax.py`'s ported filter shape has no per-input `tpad` hold
+  (correctly - it was ported unmodified from a probe that used `-loop
+  1 -t` throughout), and §4.3's own cap is precisely what keeps this
+  reintroduction bounded to a handful of shots per project rather than
+  every shot. If a future slice raises the layer cap by an order of
+  magnitude, revisit whether this still holds.
+- **R2 checked, nothing newly uncovered.** `subject_key` is sampled
+  from bytes already in `layer_asset_hashes`/`layer_content_hashes` (no
+  separate fingerprint entry needed, same as §1.5 states); `parallax`
+  itself is a deterministic function of `shot.camera.movement`/
+  `shot.layers` (already hashed) and path/kind presence (reflected by
+  whether a `layer_*hashes` entry exists for that shot at all).
+
+**What is NOT done:**
+- **Real layer image resolution.** `ShotBindingModel` gained no columns
+  and `ResolveAssetsStep`/`AssetPlanner` were not touched - `ShotLayer.
+  asset_plan` still has no authoring OR resolution path, exactly as F2's
+  own log flagged as later scope. This is why production stays inert;
+  wiring the DISPATCH ahead of a real media source was the brief's own
+  explicit shape (§8.5: "the composition-pass wiring in render.py,"
+  listed as F2a scope, separately from resolving real files).
+- No human pass (still nothing to render for real - §8.1's substrate
+  crop is still the prerequisite for judging any real layered output).
+- F3 (three layers), F4 (timed entry), F5 (element transforms) -
+  untouched, explicitly out of scope.
+- §8.1's substrate crop - deliberately not attempted.
+
 ---
 
 ## 8. F1 CLOSED — human pass given 2026-09-04

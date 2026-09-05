@@ -117,6 +117,7 @@ def _shot(
         secondary_prompt="",
         text_card="",
         sfx_cue="",
+        layers=[],
     )
 
 
@@ -202,6 +203,7 @@ async def test_shot_plan_snaps_a_fragment_end_short_by_one(project_id):
             min_shot_duration_s=1.0,
             max_shot_duration_s=8.0,
             max_shots_per_project=40,
+            max_parallax_layers_per_project=100,
         )
 
     assert len(provider.calls) == 1  # no repair round needed
@@ -234,6 +236,7 @@ async def test_shot_plan_still_fails_on_a_genuine_internal_gap(project_id, monke
                 min_shot_duration_s=1.0,
                 max_shot_duration_s=8.0,
                 max_shots_per_project=40,
+                max_parallax_layers_per_project=100,
             )
 
     assert len(provider.calls) == 2  # original attempt + one repair, both rejected
@@ -259,6 +262,7 @@ async def test_shot_plan_snaps_a_large_fragment_end_drift_but_logs_a_warning(pro
                 min_shot_duration_s=1.0,
                 max_shot_duration_s=8.0,
                 max_shots_per_project=40,
+                max_parallax_layers_per_project=100,
             )
 
     assert len(provider.calls) == 1
@@ -286,6 +290,7 @@ async def test_shot_plan_snaps_a_small_fragment_end_drift_without_a_warning(proj
                 min_shot_duration_s=1.0,
                 max_shot_duration_s=8.0,
                 max_shots_per_project=40,
+                max_parallax_layers_per_project=100,
             )
 
     assert not any(r.levelno == logging.WARNING for r in caplog.records)
@@ -307,6 +312,7 @@ async def test_shot_plan_fills_shots_covering_the_full_narration(project_id):
             min_shot_duration_s=1.5,
             max_shot_duration_s=8.0,
             max_shots_per_project=40,
+            max_parallax_layers_per_project=100,
         )
 
     shots = planned[0].shots
@@ -333,6 +339,7 @@ async def test_shot_plan_loops_once_per_scene(project_id):
             min_shot_duration_s=1.5,
             max_shot_duration_s=8.0,
             max_shots_per_project=40,
+            max_parallax_layers_per_project=100,
         )
 
     assert len(provider.calls) == 2
@@ -361,6 +368,7 @@ async def test_shot_plan_enforces_project_wide_shot_cap(project_id, monkeypatch)
                 min_shot_duration_s=1.5,
                 max_shot_duration_s=8.0,
                 max_shots_per_project=1,  # the fixture produces 2 shots
+                max_parallax_layers_per_project=100,
             )
 
 
@@ -386,6 +394,7 @@ async def test_one_fragment_scene_gets_exactly_one_shot(project_id):
             min_shot_duration_s=1.0,
             max_shot_duration_s=8.0,
             max_shots_per_project=40,
+            max_parallax_layers_per_project=100,
         )
 
     assert len(provider.calls) == 1
@@ -432,6 +441,7 @@ async def test_one_fragment_scene_rejects_a_second_shot(project_id, monkeypatch)
                 min_shot_duration_s=1.0,
                 max_shot_duration_s=8.0,
                 max_shots_per_project=40,
+                max_parallax_layers_per_project=100,
             )
 
     assert len(provider.calls) == 2
@@ -467,6 +477,7 @@ async def test_shot_plan_rejects_a_shot_whose_own_range_exceeds_the_fragment_cou
                 min_shot_duration_s=1.0,
                 max_shot_duration_s=8.0,
                 max_shots_per_project=40,
+                max_parallax_layers_per_project=100,
             )
 
     assert len(provider.calls) == 2
@@ -489,6 +500,7 @@ async def test_split_frame_without_secondary_prompt_is_rejected(project_id, monk
                 min_shot_duration_s=1.0,
                 max_shot_duration_s=8.0,
                 max_shots_per_project=40,
+                max_parallax_layers_per_project=100,
             )
 
 
@@ -510,6 +522,7 @@ async def test_split_frame_with_wide_framing_is_rejected(project_id, monkeypatch
                 min_shot_duration_s=1.0,
                 max_shot_duration_s=8.0,
                 max_shots_per_project=40,
+                max_parallax_layers_per_project=100,
             )
 
 
@@ -539,6 +552,7 @@ async def test_vertical_pan_is_rejected_on_a_portrait_canvas(project_id, monkeyp
                 min_shot_duration_s=1.0,
                 max_shot_duration_s=8.0,
                 max_shots_per_project=40,
+                max_parallax_layers_per_project=100,
                 render_style="retention_fast",
             )
 
@@ -562,6 +576,7 @@ async def test_vertical_pan_is_accepted_on_a_landscape_canvas(project_id):
             min_shot_duration_s=1.0,
             max_shot_duration_s=8.0,
             max_shots_per_project=40,
+            max_parallax_layers_per_project=100,
             render_style="documentary_archival",
         )
     assert planned[0].shots[0].camera.movement == CameraMovement.PAN
@@ -584,6 +599,7 @@ async def test_split_frame_secondary_prompt_lands_on_the_shot(project_id):
             min_shot_duration_s=1.0,
             max_shot_duration_s=8.0,
             max_shots_per_project=40,
+            max_parallax_layers_per_project=100,
         )
     assert planned[0].shots[0].secondary_prompt == "1930s map of the Ruhr"
     assert planned[0].shots[0].camera.movement == CameraMovement.SPLIT_FRAME
@@ -607,6 +623,7 @@ async def test_retention_fast_omits_director_camera_language(project_id):
             min_shot_duration_s=1.0,
             max_shot_duration_s=8.0,
             max_shots_per_project=40,
+            max_parallax_layers_per_project=100,
             render_style="retention_fast",
         )
     user = provider.calls[0]["user_content"]
@@ -642,6 +659,7 @@ async def test_documentary_archival_no_longer_receives_director_camera_language(
             min_shot_duration_s=1.0,
             max_shot_duration_s=8.0,
             max_shots_per_project=40,
+            max_parallax_layers_per_project=100,
             render_style="documentary_archival",
         )
     user = provider.calls[0]["user_content"]

@@ -320,6 +320,7 @@ class GenerateTimelineStep:
                 min_shot_duration_s=min_shot_duration_s,
                 max_shot_duration_s=max_shot_duration_s,
                 max_shots_per_project=max_shots_per_project,
+                max_parallax_layers_per_project=bundle.max_parallax_layers_per_project,
                 render_style=timeline.metadata.render_style,
                 acts=timeline.acts,
                 frame_aspect=timeline.metadata.frame_aspect,

@@ -79,6 +79,7 @@ def _fingerprint(**overrides) -> str:
         "sfx_gain_db": -8.0,
         "sfx_max_clip_s": 1.5,
         "sfx_diegetic_max_clip_s": 8.0,
+        "sfx_diegetic_shot_carry_s": 0.25,
         "sfx_whoosh_enabled": True,
         "sfx_normalize_target_db": -8.0,
         "sfx_kind_gain_overrides_db": {},
