@@ -23,6 +23,7 @@ from app.script.styles import (
     resolve_picture_path,
     resolve_render_format,
     resolve_sfx_whoosh_enabled,
+    resolve_transition_sfx_structural_only,
     style_accepts_frame_aspect,
 )
 
@@ -592,12 +593,23 @@ def test_illustrated_risograph_defaults_to_documentary_archivals_inert_pacing_ex
     overrides `narration_speed` to 1.15 - the conservative end of
     `archival_montage`'s own documented 1.15-1.25 Hinglish band (this
     project's `language_code=hi`), not the 1.0 inert default anymore.
-    Everything else this style does not override (pacing bounds, music
-    gain, whoosh) is unaffected and still matches documentary_archival's
-    baseline exactly."""
+    2026-09-05: the SFX gates left the inert set too. The band had
+    inherited `whoosh_enabled=True` and
+    `transition_sfx_structural_only=False` - the only style of the five
+    carrying BOTH - and a real 23s render fired 7 transition swooshes (6
+    dissolves + 1 fadeblack), one every 3.3 seconds. The user asked for
+    none. Same finding A15 recorded for documentary_archival, and this
+    style dissolves just as heavily.
+
+    So what remains genuinely inert is now only the PACING BOUNDS and the
+    MUSIC GAINS - the two nothing has yet measured a difference for. That
+    shrinking list is the point of this test: each departure should be a
+    deliberate, measured decision, not a default nobody looked at."""
     assert resolve_constraint_bundle("illustrated_risograph") == resolve_constraint_bundle(None)
     assert resolve_narration_speed("illustrated_risograph") == 1.15
-    assert resolve_sfx_whoosh_enabled("illustrated_risograph") is True
+    # Overridden, both measured on a real render - see the band's comment.
+    assert resolve_sfx_whoosh_enabled("illustrated_risograph") is False
+    assert resolve_transition_sfx_structural_only("illustrated_risograph") is True
     gains = resolve_music_gains("illustrated_risograph")
     assert gains == resolve_music_gains(None)
 

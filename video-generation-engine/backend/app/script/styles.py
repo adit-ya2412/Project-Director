@@ -353,6 +353,30 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
     # implying it - not the case yet, so it is not built.
     "illustrated_risograph": StylePacingBand(
         name="illustrated_risograph",
+        # Both SFX gates set 2026-09-05, after the user heard the first
+        # watchable cut: "i hear a lot of woosh and sound, please no such
+        # effects for this style". Measured on that render (9 shots, 23s):
+        # 6 dissolves + 1 fadeblack = 7 non-cut transitions, so a swoosh
+        # every 3.3 seconds. Exactly A15's own finding for
+        # documentary_archival - "45 of 77 shots fired a transition swoosh
+        # because that style dissolves heavily... texture, not
+        # punctuation" - and this style dissolves just as heavily.
+        #
+        # The bad combination was inherited, not chosen: the band shipped
+        # with no SFX overrides at all, so it took `whoosh_enabled=True`
+        # and `transition_sfx_structural_only=False`, the only style of
+        # the five carrying BOTH. `retention_fast` and `archival_montage`
+        # had already turned whoosh off for the same density reason.
+        #
+        # `structural_only=True` takes the swoosh from 7 to 1 (the lone
+        # fadeblack; plain dissolves go silent). Whoosh off is belt-and-
+        # braces - this style plans no `punch_in` today, so it fires
+        # nothing, but nothing should start firing if that changes.
+        # DIEGETIC cues are deliberately untouched: they are the one
+        # CONTENT-driven kind (a sound the shot's subject actually makes,
+        # A8), not an editing effect, and there were 2 in 23s.
+        whoosh_enabled=False,
+        transition_sfx_structural_only=True,
         target_shot_duration_s=None,
         max_shots_override=None,
         picture_path=PicturePath.GENERATION_ONLY,
