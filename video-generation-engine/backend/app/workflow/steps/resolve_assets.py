@@ -1055,11 +1055,50 @@ class ResolveAssetsStep:
         shots = timeline.all_shots()
         if len(bindings) < len(shots):
             return False
-        return all(
+        if not all(
             bindings[s.id].state in self._done_states
             and secondary_panel_done(s, bindings[s.id], done_states=self._done_states)
             for s in shots
-        )
+        ):
+            return False
+        # F2b, fixed 2026-09-05 after a real run produced ZERO layer
+        # images: a shot's LAYERS have no binding row to read a state
+        # from (see `layer_prompt_hash`'s docstring for why there is no
+        # per-layer column), so a binding-only check reported this step
+        # satisfied while every layer was still ungenerated - and because
+        # `is_satisfied` short-circuits the whole step, `run()`'s own
+        # `needs_layers` revisit never executed. That is not a narrow
+        # window: the approval gate REQUIRES every shot resolved before
+        # it will approve, so on the real path this branch is always
+        # taken and layers could never generate at all. Measured on
+        # project 8897321f: 9 primaries, 0 of 8 layers, 42c instead of
+        # 74c, and a "parallax" film with no parallax in it - the
+        # renderer's own missing-input degrade quietly produced stills.
+        #
+        # Checked the same way `render.py` finds an already-resolved
+        # layer: recompute the identical `layer_prompt_hash` and look for
+        # its clip. Gated on `_generation_permitted` so the search-only
+        # pass is unaffected (layers are GENERATION_ONLY by construction,
+        # never a search rung) - the same gate `run()`'s `needs_layers`
+        # uses, so the two cannot disagree about what this pass owes.
+        if not self._generation_permitted:
+            return True
+        clip_repo = GeneratedClipRepository(ctx.session)
+        for shot in shots:
+            for index, layer in enumerate(shot.layers):
+                phash = layer_prompt_hash(
+                    shot,
+                    layer,
+                    layer_index=index,
+                    project_uuid=uuid_module.UUID(ctx.project_id),
+                    creative_context=timeline.creative_context,
+                    style=timeline.metadata.render_style,
+                    frame_aspect=timeline.metadata.frame_aspect,
+                )
+                clip = await clip_repo.get_by_prompt_hash(phash)
+                if clip is None or not clip.local_path or not Path(clip.local_path).exists():
+                    return False
+        return True
 
     async def run(self, ctx: RunContext) -> StepResult:
         timeline = await ctx.timeline_service.get_active(ctx.project_id)

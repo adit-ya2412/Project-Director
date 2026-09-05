@@ -218,3 +218,33 @@ def test_layer_prompt_hash_matches_generation_prompt_hash_directly_for_real_mode
         style="illustrated_risograph",
     )
     assert actual == expected
+
+
+def test_is_satisfied_gates_layers_only_on_the_generating_pass():
+    """The bug that produced a parallax film with no parallax in it
+    (project 8897321f, 2026-09-05).
+
+    A shot's LAYERS have no binding row, so a binding-only `is_satisfied`
+    reported this step done while every layer was still ungenerated - and
+    because `is_satisfied` short-circuits the whole step, `run()`'s own
+    `needs_layers` revisit never ran. Not a narrow window: the approval
+    gate requires every shot resolved before it will approve, so on the
+    real path the binding check ALWAYS passed and layers could never
+    generate at all. The renderer's missing-input degrade then quietly
+    produced stills - no error anywhere, 42c instead of 74c, and a
+    "parallax" video that does not move.
+
+    The search-only pass must stay unaffected: layers are GENERATION_ONLY
+    by construction and never a search rung.
+    """
+    from app.workflow.steps.resolve_assets import ResolveAssetsStep
+    from app.schemas.timeline import AssetStrategy
+
+    search_only = ResolveAssetsStep(
+        name="s", permitted_strategies=frozenset({AssetStrategy.HISTORICAL_SEARCH})
+    )
+    generating = ResolveAssetsStep(
+        name="g", permitted_strategies=frozenset({AssetStrategy.GENERATE_IMAGE})
+    )
+    assert search_only._generation_permitted is False
+    assert generating._generation_permitted is True
