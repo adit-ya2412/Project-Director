@@ -12,9 +12,11 @@ import pytest
 from app.core.clock import utcnow
 from app.core.errors import PermanentError
 from app.schemas.timeline import (
+    LayerRole,
     Scene,
     Shot,
     ShotIntent,
+    ShotLayer,
     Timeline,
     TimelineMetadata,
     Transition,
@@ -23,9 +25,11 @@ from app.schemas.timeline import (
 from app.timeline.duration import compute_timeline_duration
 from app.timeline.narration_fit import (
     SceneAlignment,
+    _clamp_entry_offset,
     compensate_for_transitions,
     reconcile_spoken_durations,
     reconcile_timeline_durations,
+    resolve_layer_entry_offsets,
 )
 
 # ---------------------------------------------------------------------------
@@ -324,3 +328,132 @@ def test_compensate_for_transitions_inflates_only_the_follower():
     shot2 = _shot("sh2", 1, (5, 11))
     reconciled = compensate_for_transitions([shot1, shot2], {"sh1": 1.0, "sh2": 2.0})
     assert reconciled == {"sh1": 1.0, "sh2": 2.4}
+
+
+# ---------------------------------------------------------------------------
+# 5. F4 - `resolve_layer_entry_offsets` (illustrated_faceless.md §2/F4):
+# a layer's fragment-anchored entry, turned into real seconds at the SAME
+# seam `duration_s` itself is fitted to narration at.
+# ---------------------------------------------------------------------------
+
+# "Coal built the factories. Steel followed close behind." - two
+# sentences, so `split_narration_fragments` produces exactly two
+# fragments: 1 = [0, 26) "Coal built the factories.", 2 = [26, 54) "Steel
+# followed close behind." (confirmed directly against the real splitter,
+# not assumed by hand).
+_F4_TEXT = "Coal built the factories. Steel followed close behind."
+
+
+def _layered_shot(shot_id: str, order: int, span: tuple[int, int], *, entry: int | None) -> Shot:
+    return Shot(
+        id=shot_id,
+        order=order,
+        intent=ShotIntent.EXPLAIN,
+        narration_span=span,
+        duration_s=1.0,  # placeholder - overwritten by reconciliation
+        layers=[
+            ShotLayer(role=LayerRole.BACKGROUND, prompt="a mill"),
+            ShotLayer(role=LayerRole.SUBJECT, prompt="a worker", enter_on_fragment=entry),
+        ],
+    )
+
+
+def test_entry_resolves_to_the_fragments_own_start_time_relative_to_the_shot():
+    shot = _layered_shot("sh1", 0, (0, len(_F4_TEXT)), entry=2)
+    scene = _scene("sc1", 0, _F4_TEXT, [shot])
+    alignment = _uniform_alignment(_F4_TEXT, chars_per_second=10.0)
+
+    reconciled = reconcile_timeline_durations(_timeline([scene]), {"sc1": alignment})
+    offsets = resolve_layer_entry_offsets([scene], {"sc1": alignment}, reconciled)
+
+    # Fragment 2 starts at character 26 -> onset 2.6s. The shot's own
+    # onset is character 0 -> 0.0s. So the reveal lands at 2.6s into the
+    # shot - the exact moment narration reaches "Steel".
+    background_offset, subject_offset = offsets["sh1"]
+    assert background_offset == 0.0
+    assert subject_offset == pytest.approx(2.6)
+
+
+def test_a_shot_with_no_entry_is_absent_from_the_result():
+    """Present for the whole shot (the default, and the common case even
+    among parallax shots, §3.1) means NOTHING to resolve - the shot is
+    absent from the dict entirely, not merely present with a `0.0` list."""
+    shot = _layered_shot("sh1", 0, (0, len(_F4_TEXT)), entry=None)
+    scene = _scene("sc1", 0, _F4_TEXT, [shot])
+    alignment = _uniform_alignment(_F4_TEXT, chars_per_second=10.0)
+
+    reconciled = reconcile_timeline_durations(_timeline([scene]), {"sc1": alignment})
+    offsets = resolve_layer_entry_offsets([scene], {"sc1": alignment}, reconciled)
+
+    assert offsets == {}
+
+
+def test_a_shot_with_no_layers_at_all_is_untouched():
+    shot = _shot("sh1", 0, (0, len(_F4_TEXT)))  # the plain builder - layers=[]
+    scene = _scene("sc1", 0, _F4_TEXT, [shot])
+    alignment = _uniform_alignment(_F4_TEXT, chars_per_second=10.0)
+
+    reconciled = reconcile_timeline_durations(_timeline([scene]), {"sc1": alignment})
+    assert resolve_layer_entry_offsets([scene], {"sc1": alignment}, reconciled) == {}
+
+
+def test_the_clamp_keeps_the_entry_strictly_inside_the_shot():
+    """A contrived (non-uniform) alignment where the entering fragment's
+    own start time sits closer to the scene's real end than F4's own
+    minimum tail (`_ENTRY_MIN_TAIL_S`) allows - the arithmetic that would
+    otherwise land the entry AT (or past) the shot's own duration is
+    clamped back inside it, never dropped (see `_clamp_entry_offset`'s own
+    docstring for why clamp rather than drop)."""
+    text = "Ab. C."  # fragment 2 = [4, 6), "C."
+    starts = [0.00, 0.10, 0.20, 0.30, 0.97, 0.99]
+    ends = [0.10, 0.20, 0.30, 0.40, 0.99, 1.00]
+    alignment = SceneAlignment(
+        characters=list(text),
+        character_start_times_seconds=starts,
+        character_end_times_seconds=ends,
+    )
+    shot = _layered_shot("sh1", 0, (0, len(text)), entry=2)
+    scene = _scene("sc1", 0, text, [shot])
+
+    reconciled = reconcile_timeline_durations(_timeline([scene]), {"sc1": alignment})
+    assert reconciled["sh1"] == pytest.approx(1.00)  # the shot's own final duration
+
+    offsets = resolve_layer_entry_offsets([scene], {"sc1": alignment}, reconciled)
+    _, subject_offset = offsets["sh1"]
+
+    # Raw arithmetic would put the entry at 0.97s into a 1.00s shot - only
+    # 0.03s of visible layer left. Clamped to leave at least
+    # `_ENTRY_MIN_TAIL_S` (0.05s) of tail instead.
+    assert subject_offset < reconciled["sh1"]
+    assert subject_offset == pytest.approx(0.95)
+
+
+def test_clamp_entry_offset_passes_a_value_already_in_range_unchanged():
+    assert _clamp_entry_offset(1.0, duration_s=5.0, shot_id="sh1") == pytest.approx(1.0)
+
+
+def test_clamp_entry_offset_never_reaches_or_exceeds_duration():
+    clamped = _clamp_entry_offset(10.0, duration_s=2.0, shot_id="sh1")
+    assert clamped < 2.0
+    assert clamped == pytest.approx(2.0 - 0.05)
+
+
+def test_clamp_entry_offset_never_goes_negative():
+    assert _clamp_entry_offset(-1.0, duration_s=5.0, shot_id="sh1") == 0.0
+
+
+def test_clamp_entry_offset_on_a_shot_shorter_than_the_tail_clamps_to_zero():
+    assert _clamp_entry_offset(0.5, duration_s=0.02, shot_id="sh1") == 0.0
+
+
+def test_clamp_logs_only_when_it_actually_changes_the_value(caplog):
+    with caplog.at_level("INFO"):
+        _clamp_entry_offset(1.0, duration_s=5.0, shot_id="sh1")
+    assert not any(r.message == "narration_fit.layer_entry_clamped" for r in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        _clamp_entry_offset(10.0, duration_s=2.0, shot_id="sh1")
+    records = [r for r in caplog.records if r.message == "narration_fit.layer_entry_clamped"]
+    assert len(records) == 1
+    assert records[0].shot_id == "sh1"

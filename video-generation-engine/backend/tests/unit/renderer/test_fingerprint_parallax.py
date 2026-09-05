@@ -204,6 +204,25 @@ def test_layer_content_hashes_are_a_real_fingerprint_input():
     assert fp_a != fp_b
 
 
+def test_changing_only_enter_on_fragment_changes_the_fingerprint():
+    """F4 (illustrated_faceless.md §2/F4), the task this file's own R2
+    docstring exists for: `Shot.layers` creative fields ride into
+    `compute_render_fingerprint` for free via the full `timeline.model_
+    dump` - "should be" is not verification, so this asserts it directly
+    for the two NEW fields, changing ONLY one at a time."""
+    a = _timeline(layers=_two_layers())
+    b = _timeline(layers=_two_layers())
+    b.scenes[0].shots[0].layers[1].enter_on_fragment = 2
+    assert _render_fingerprint(timeline=a) != _render_fingerprint(timeline=b)
+
+
+def test_changing_only_enter_offset_s_changes_the_fingerprint():
+    a = _timeline(layers=_two_layers())
+    b = _timeline(layers=_two_layers())
+    b.scenes[0].shots[0].layers[1].enter_offset_s = 1.4
+    assert _render_fingerprint(timeline=a) != _render_fingerprint(timeline=b)
+
+
 def test_layer_content_hash_dict_key_order_does_not_matter():
     timeline = _timeline(layers=_two_layers())
     hashes = {"sh_01": ["bg-hash", "sub-hash"]}
@@ -259,6 +278,20 @@ def test_shot_stream_fingerprint_changes_when_layers_are_added():
 def test_shot_stream_fingerprint_changes_when_a_layers_drift_changes():
     a = _shot(layers=_two_layers(subject_drift_x=110.0))
     b = _shot(layers=_two_layers(subject_drift_x=200.0))
+    assert _shot_stream_fingerprint(a) != _shot_stream_fingerprint(b)
+
+
+def test_shot_stream_fingerprint_changes_when_only_enter_on_fragment_changes():
+    a = _shot(layers=_two_layers())
+    b = _shot(layers=_two_layers())
+    b.layers[1].enter_on_fragment = 2
+    assert _shot_stream_fingerprint(a) != _shot_stream_fingerprint(b)
+
+
+def test_shot_stream_fingerprint_changes_when_only_enter_offset_s_changes():
+    a = _shot(layers=_two_layers())
+    b = _shot(layers=_two_layers())
+    b.layers[1].enter_offset_s = 1.4
     assert _shot_stream_fingerprint(a) != _shot_stream_fingerprint(b)
 
 

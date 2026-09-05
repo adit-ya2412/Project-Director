@@ -127,6 +127,47 @@ def test_layer_roles_are_background_subject_foreground():
     assert {r.value for r in LayerRole} == {"background", "subject", "foreground"}
 
 
+# -- F4: a layer's timed entry (illustrated_faceless.md §2/F4) ----------
+
+
+def test_shot_layer_entry_fields_default_to_present_from_the_start():
+    layer = ShotLayer(role=LayerRole.SUBJECT)
+    assert layer.enter_on_fragment is None
+    assert layer.enter_offset_s == 0.0
+
+
+def test_shot_layer_can_carry_a_fragment_anchored_entry():
+    layer = ShotLayer(role=LayerRole.SUBJECT, enter_on_fragment=3)
+    assert layer.enter_on_fragment == 3
+    # Not resolved here - that happens at the narration_fit seam.
+    assert layer.enter_offset_s == 0.0
+
+
+def test_a_background_layer_with_an_entry_is_rejected():
+    layers = [
+        ShotLayer(role=LayerRole.BACKGROUND, enter_on_fragment=1),
+        ShotLayer(role=LayerRole.SUBJECT),
+    ]
+    with pytest.raises(ValidationError, match="background layer must never carry"):
+        _shot(layers=layers)
+
+
+def test_a_subject_layer_with_an_entry_is_legal_at_the_schema_level():
+    """Range-checking `enter_on_fragment` against the owning shot's own
+    `fragment_start`/`fragment_end` happens in the Shot Planner's own
+    output validator (`_make_validator`, `app/planners/shot/planner.py`)
+    - the domain `Shot` no longer carries fragment numbers by the time it
+    exists (they were already converted into `narration_span`), so this
+    schema has nothing to range-check against and legitimately accepts
+    any fragment number here."""
+    layers = [
+        ShotLayer(role=LayerRole.BACKGROUND),
+        ShotLayer(role=LayerRole.SUBJECT, enter_on_fragment=99),
+    ]
+    shot = _shot(layers=layers)
+    assert shot.layers[1].enter_on_fragment == 99
+
+
 # -- mutual exclusion (§6 Q1), both directions -------------------------
 
 

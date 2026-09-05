@@ -92,8 +92,8 @@ async def _plan(scene: Scene, output: ShotPlanOutput, project_id: str, *, attemp
 
 
 _LAYER_OUTPUTS = [
-    ShotLayerOutput(role=LayerRole.BACKGROUND, prompt="a quiet room"),
-    ShotLayerOutput(role=LayerRole.SUBJECT, prompt="a seated figure"),
+    ShotLayerOutput(role=LayerRole.BACKGROUND, prompt="a quiet room", enter_on_fragment=0),
+    ShotLayerOutput(role=LayerRole.SUBJECT, prompt="a seated figure", enter_on_fragment=0),
 ]
 
 
@@ -125,8 +125,8 @@ async def test_parallax_with_wrong_role_order_is_rejected(project_id, monkeypatc
             movement=CameraMovement.PARALLAX, direction=CameraDirection.NONE, intensity=0.0
         ),
         layers=[
-            ShotLayerOutput(role=LayerRole.SUBJECT, prompt="a seated figure"),
-            ShotLayerOutput(role=LayerRole.BACKGROUND, prompt="a quiet room"),
+            ShotLayerOutput(role=LayerRole.SUBJECT, prompt="a seated figure", enter_on_fragment=0),
+            ShotLayerOutput(role=LayerRole.BACKGROUND, prompt="a quiet room", enter_on_fragment=0),
         ],
     )
     with pytest.raises(PermanentError, match="first layer must be role=background"):
@@ -141,8 +141,8 @@ async def test_parallax_with_an_empty_layer_prompt_is_rejected(project_id, monke
             movement=CameraMovement.PARALLAX, direction=CameraDirection.NONE, intensity=0.0
         ),
         layers=[
-            ShotLayerOutput(role=LayerRole.BACKGROUND, prompt="   "),
-            ShotLayerOutput(role=LayerRole.SUBJECT, prompt="a seated figure"),
+            ShotLayerOutput(role=LayerRole.BACKGROUND, prompt="   ", enter_on_fragment=0),
+            ShotLayerOutput(role=LayerRole.SUBJECT, prompt="a seated figure", enter_on_fragment=0),
         ],
     )
     with pytest.raises(PermanentError, match="background layer needs a non-empty prompt"):
@@ -165,6 +165,72 @@ async def test_a_valid_parallax_shot_lands_on_the_domain_shot(project_id):
     # Not authored by this planner (later scope, same as the shot's own
     # top-level `asset_plan`).
     assert all(layer.asset_plan is None for layer in shot.layers)
+    # F4: `ShotLayerOutput`'s own `enter_on_fragment=0` default means
+    # "unset" - the domain `ShotLayer` must carry the real `None`, never
+    # the `0` sentinel itself.
+    assert all(layer.enter_on_fragment is None for layer in shot.layers)
+
+
+# F4 (illustrated_faceless.md §2/F4): `ShotLayer.enter_on_fragment`.
+
+
+async def test_parallax_background_layer_with_an_entry_is_rejected(project_id, monkeypatch):
+    monkeypatch.setattr(settings, "planner_max_repair_attempts", 1)
+    scene = _scene()
+    bad = _shot_output(
+        camera=ShotCameraOutput(
+            movement=CameraMovement.PARALLAX, direction=CameraDirection.NONE, intensity=0.0
+        ),
+        layers=[
+            ShotLayerOutput(role=LayerRole.BACKGROUND, prompt="a quiet room", enter_on_fragment=1),
+            ShotLayerOutput(role=LayerRole.SUBJECT, prompt="a seated figure", enter_on_fragment=0),
+        ],
+    )
+    with pytest.raises(PermanentError, match="background layer must never carry"):
+        await _plan(scene, bad, project_id, attempts=2)
+
+
+async def test_parallax_subject_entry_outside_the_shots_own_fragment_range_is_rejected(
+    project_id, monkeypatch
+):
+    monkeypatch.setattr(settings, "planner_max_repair_attempts", 1)
+    scene = _scene()
+    # This shot covers fragments 1-2 (see _shot_output's own defaults) -
+    # fragment 5 is not one of the words this shot's narration covers.
+    bad = _shot_output(
+        camera=ShotCameraOutput(
+            movement=CameraMovement.PARALLAX, direction=CameraDirection.NONE, intensity=0.0
+        ),
+        layers=[
+            ShotLayerOutput(role=LayerRole.BACKGROUND, prompt="a quiet room", enter_on_fragment=0),
+            ShotLayerOutput(role=LayerRole.SUBJECT, prompt="a seated figure", enter_on_fragment=5),
+        ],
+    )
+    with pytest.raises(PermanentError, match="cannot enter on words the shot does not cover"):
+        await _plan(scene, bad, project_id, attempts=2)
+
+
+async def test_parallax_subject_entry_within_range_lands_on_the_domain_shot(project_id):
+    scene = _scene()
+    good = _shot_output(
+        camera=ShotCameraOutput(
+            movement=CameraMovement.PARALLAX, direction=CameraDirection.NONE, intensity=0.0
+        ),
+        fragment_start=1,
+        fragment_end=2,
+        layers=[
+            ShotLayerOutput(role=LayerRole.BACKGROUND, prompt="a quiet room", enter_on_fragment=0),
+            ShotLayerOutput(role=LayerRole.SUBJECT, prompt="a seated figure", enter_on_fragment=2),
+        ],
+    )
+    planned = await _plan(scene, good, project_id)
+    shot = planned[0].shots[0]
+    background, subject = shot.layers
+    assert background.enter_on_fragment is None
+    assert subject.enter_on_fragment == 2
+    # Resolved at the narration_fit seam, never here - see
+    # tests/unit/timeline/test_narration_fit.py.
+    assert subject.enter_offset_s == 0.0
 
 
 async def test_a_non_parallax_shot_keeps_layers_empty(project_id):

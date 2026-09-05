@@ -518,6 +518,28 @@ class Settings(BaseSettings):
     # already cites).
     max_parallax_layers_per_project: int = 10
 
+    # illustrated_faceless.md F4 (2026-09-05): minimum number of shots
+    # between two `enter_on_fragment` entries, enforced PROJECT-WIDE after
+    # the per-scene gather (`_cap_layer_entries`, planners/shot/planner.py)
+    # - same shape as `text_card_min_shot_gap`/`sfx_cue_min_shot_gap` above
+    # (a per-scene call cannot see whether another scene already used one),
+    # not `max_parallax_layers_per_project`'s shape (that one bounds a real
+    # cost; an entry costs nothing beyond the layer it already sits on, so
+    # it is rate-limited by spacing like the two prose devices, not by a
+    # project-wide budget).
+    #
+    # Set deliberately WIDER than either sibling gap: F4's own style
+    # fragment already asks for an entry on "roughly one parallax shot in
+    # three at most", and a parallax shot is itself already the rarer of
+    # the two movements this style offers ("roughly one shot in four") -
+    # an entry is a specific, one-off dramatic move, not a default, and
+    # this is the outermost layer of that same restraint. 10 is a reasoned
+    # starting point, not a measured one (no real render with a timed
+    # entry has been watched yet - F4's own human pass, "do the reveals
+    # land on the words?", is still outstanding), same epistemic status
+    # `max_parallax_layers_per_project` immediately above already carries.
+    layer_entry_min_shot_gap: int = 10
+
     # illustrated_faceless.md F1a/§8.1 (2026-09-05): for a `GENERATION_
     # ONLY` style, request the image this fraction OVERSIZED and centre-
     # crop it back to the style's exact canvas before persisting - a

@@ -288,6 +288,43 @@ class ShotLayer(BaseModel):
     # Must exceed 1.0 - see the class docstring's "scale must COVER the
     # output" note. 1.2 matches parallax_probe.py's own measured default.
     scale: float = Field(default=1.2, gt=1.0)
+    # illustrated_faceless.md F4 (2026-09-05): the SAME 1-indexed,
+    # INCLUSIVE fragment idiom `ShotPlanOutput.fragment_start`/
+    # `fragment_end` already uses (see that field's own docstring, adopted
+    # after three incidents of character-offset arithmetic failing),
+    # applied one level in, to a single layer's own entry. A model cannot
+    # reliably predict a duration that does not exist yet (narration is
+    # measured AFTER planning - `app/planners/fragments.py`'s own thesis),
+    # but CAN judge which fragment's words a reveal should land on - the
+    # real time then falls out of measured narration deterministically,
+    # exactly as `narration_span` already does for a whole shot.
+    #
+    # `None` (the default) means "present for the whole shot" - today's
+    # behaviour on every layer that predates this field and every layer
+    # that never sets it (§3.1). Mirrors `ShotLayerOutput.enter_on_fragment`
+    # (`app/planners/shot/schemas.py`, planner-facing) except for the `0`
+    # sentinel that file's own docstring explains (OpenAI structured-output
+    # strict mode forbids a default/optional field); this domain schema
+    # carries no such constraint and uses a real `None`.
+    #
+    # A `background` layer must never set this - see `Shot`'s own
+    # `_background_layer_never_carries_an_entry` validator below for why
+    # and where that is enforced.
+    enter_on_fragment: int | None = None
+    # The RESOLVED half of the pair above: a float offset in SECONDS from
+    # this shot's own start, at which this layer's alpha ramp should begin
+    # (`app/renderer/parallax.py`). Mirrors `narration_span`'s own split
+    # between a planner-authored character range (a creative decision, I2)
+    # and the measured seconds that fall out of it once real narration
+    # timing exists - resolved at the SAME seam `Shot.duration_s` is
+    # itself fitted to narration
+    # (`app/timeline/narration_fit.py::resolve_layer_entry_offsets`), never
+    # at render time (§4.1/R2 - this is exactly the gap F2's own log
+    # named and left open: "layer drift was left a resolver concern, no
+    # resolver was written, and every drift shipped as 0.0"). Default
+    # `0.0` = present from the start, matching `enter_on_fragment`'s own
+    # `None` default and every layer that predates this field.
+    enter_offset_s: float = 0.0
 
 
 class Shot(BaseModel):
@@ -384,6 +421,34 @@ class Shot(BaseModel):
                 "split-screen composites PANELS (each occupies part of the "
                 "frame) - a shot may use one system or the other, never both."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _background_layer_never_carries_an_entry(self) -> Shot:
+        """F4 (illustrated_faceless.md, 2026-09-05): a `background` layer
+        is the ground the shot stands on, not something that arrives
+        partway through it - fading it in would mean fading in from
+        nothing, over nothing. Enforced here, at the domain schema, rather
+        than only in the Shot Planner's own output validator
+        (`_make_validator`'s `is_parallax` block, `app/planners/shot/
+        planner.py`) for the same reason `_layers_and_split_screen_are_
+        mutually_exclusive` above is: a `Timeline` is also read back from
+        storage and reached by hand-edited/future code paths that never
+        pass through the planner at all, and this is the one place both
+        of those go through. `app/renderer/parallax.py` also rejects a
+        non-zero `enter_offset_s` on a background layer at composite time
+        - belt and suspenders, matching this module's existing practice
+        of not trusting a single upstream check (`validate_two_layer_shot`
+        re-checks role order there too, even though this exact invariant
+        already guarantees it structurally)."""
+        for layer in self.layers:
+            if layer.role is LayerRole.BACKGROUND and layer.enter_on_fragment is not None:
+                raise ValueError(
+                    "a background layer must never carry enter_on_fragment "
+                    "(illustrated_faceless.md F4): it is the ground the shot "
+                    "stands on, and fading it in would mean fading in from "
+                    "nothing"
+                )
         return self
 
 

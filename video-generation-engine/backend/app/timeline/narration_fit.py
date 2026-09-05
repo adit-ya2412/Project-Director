@@ -91,13 +91,42 @@ that is wrong but looks fine. The Shot Planner's own output validator
 already guarantees exact tiling for freshly-planned timelines (see
 `app/planners/shot/planner.py`), so a violation here means corrupted or
 hand-edited data, not a planner bug this module should paper over.
+
+## F4 — a layer's timed entry lives at this same seam (2026-09-05)
+
+`resolve_layer_entry_offsets` (bottom of this file) answers the identical
+question one level in: `ShotLayer.enter_on_fragment` is a fragment INDEX,
+never a time in seconds, for the same reason `narration_span` itself is a
+character span rather than something the model predicts in seconds — a
+model cannot predict a duration that does not exist yet, since narration
+is measured AFTER planning. This module is where that duration first
+becomes real, for a whole shot AND now, unconditionally CLAMPED so it can
+never equal or exceed the shot's own (already-reconciled) duration, for
+one layer within it — never a second place, and never at render time.
 """
 
 from dataclasses import dataclass
 
 from app.core.errors import PermanentError
+from app.core.logging import get_logger
+from app.planners.fragments import split_narration_fragments
 from app.schemas.timeline import Scene, Shot, Timeline
 from app.timeline.duration import group_into_runs
+
+logger = get_logger(__name__)
+
+# F4 (illustrated_faceless.md, 2026-09-05): the minimum time a layer must
+# remain on screen before its shot ends, once a fragment-derived entry is
+# clamped into range (see `_clamp_entry_offset` below). Small on purpose -
+# this is a floating-point/edge-case backstop, not a creative choice: by
+# construction, `enter_on_fragment` is validated at plan time to fall
+# within the OWNING SHOT's own fragment range (`_make_validator`'s
+# `is_parallax` block, `app/planners/shot/planner.py`), so the fragment's
+# own start time is already comfortably before this shot's own narration
+# ends in the overwhelming majority of cases - this constant only matters
+# when the entering fragment is the shot's very LAST one, where rounding
+# could otherwise land the offset AT or past `duration_s`.
+_ENTRY_MIN_TAIL_S = 0.05
 
 
 @dataclass(frozen=True)
@@ -243,3 +272,102 @@ def reconcile_timeline_durations(
     this module reuses it, never re-derives it)."""
     spoken = reconcile_spoken_durations(timeline.scenes, alignments)
     return compensate_for_transitions(timeline.all_shots(), spoken)
+
+
+def _clamp_entry_offset(raw_offset_s: float, *, duration_s: float, shot_id: str) -> float:
+    """Clamp a fragment-derived layer entry strictly inside its shot - F4's
+    own requirement: "an entry can never equal or exceed the shot's
+    duration, and can never stretch narration" (D1). CLAMPED, never
+    dropped: dropping would silently discard a planner-authored creative
+    decision (F4 is deliberately a rare, specific dramatic move - see
+    `illustrated_risograph.md`'s own rate cue - so silently losing one is
+    a worse outcome than the reveal landing a beat later than planned) with
+    no visible trace; clamping still plays the reveal, only compressed into
+    whatever tail of the shot remains, and is logged so the compression is
+    observable rather than silent. Lower-bounded at `0.0` (present from the
+    very start) and upper-bounded at `duration_s - _ENTRY_MIN_TAIL_S` (or
+    `0.0` if the shot is shorter than that tail) so the layer is never
+    invisible for its entire shot."""
+    lower = max(0.0, raw_offset_s)
+    ceiling = max(0.0, duration_s - _ENTRY_MIN_TAIL_S)
+    clamped = min(lower, ceiling)
+    if abs(clamped - raw_offset_s) > 1e-6:
+        logger.info(
+            "narration_fit.layer_entry_clamped",
+            extra={
+                "shot_id": shot_id,
+                "raw_offset_s": raw_offset_s,
+                "clamped_offset_s": clamped,
+                "shot_duration_s": duration_s,
+            },
+        )
+    return clamped
+
+
+def resolve_layer_entry_offsets(
+    scenes: list[Scene],
+    alignments: dict[str, SceneAlignment],
+    reconciled_durations: dict[str, float],
+) -> dict[str, list[float]]:
+    """{shot_id: [each of `Shot.layers`' own resolved `enter_offset_s`, in
+    `Shot.layers` order]} — F4 (illustrated_faceless.md §2/F4)'s own
+    fragment-index-to-seconds derivation, at the SAME seam
+    `reconcile_spoken_durations`/`compensate_for_transitions` above already
+    fit `Shot.duration_s` to measured narration at (D1: narration is the
+    master clock, picture — and now a layer's entry — is fitted to it,
+    never the reverse). An entry anchored to a fragment INDEX rather than
+    a time in seconds (the whole point of F4 -
+    `app/planners/fragments.py`'s own thesis, applied one level in, to a
+    layer) can only become a real second value once real character-level
+    timestamps exist, exactly like `duration_s` itself — there is no
+    earlier point in the pipeline where this arithmetic could run, and
+    recording it here rather than at render time is what keeps
+    `compute_render_fingerprint` honest (§4.1/R2) and closes the gap F2's
+    own log named and left open: "layer drift was left a resolver concern,
+    no resolver was written, and every drift shipped as 0.0".
+
+    For each shot with at least one layer carrying `enter_on_fragment`:
+    the entering fragment's own character START position (recomputed via
+    `split_narration_fragments` on the scene's `narration_text` — pure and
+    deterministic, I5; `Shot.narration_span` already depends on the
+    identical "narration_text is unchanged since planning" assumption for
+    this same reconciliation to mean anything at all, so this adds no new
+    one) is looked up in the scene's real alignment, and the offset from
+    THIS SHOT's own onset (the same `onset(shot)` `_spoken_durations_for_
+    scene` above computes) is clamped into range by `_clamp_entry_offset`.
+
+    A shot with no layers, or whose layers all have `enter_on_fragment is
+    None` (present for the whole shot — the default and by far the common
+    case, §3.1), is absent from the returned dict entirely, so a caller
+    can tell "nothing to resolve" from "resolved to zero, on purpose" —
+    and every project that never uses F4 touches this function for
+    exactly zero shots."""
+    offsets: dict[str, list[float]] = {}
+    for scene in scenes:
+        shots_with_entries = [
+            shot
+            for shot in scene.shots
+            if any(layer.enter_on_fragment is not None for layer in shot.layers)
+        ]
+        if not shots_with_entries:
+            continue
+
+        alignment = alignments[scene.id]
+        fragments = split_narration_fragments(scene.narration_text)
+
+        for shot in shots_with_entries:
+            assert shot.narration_span is not None  # already guaranteed for every planned shot
+            onset = alignment.character_start_times_seconds[shot.narration_span[0]]
+            duration = reconciled_durations[shot.id]
+            shot_offsets: list[float] = []
+            for layer in shot.layers:
+                if layer.enter_on_fragment is None:
+                    shot_offsets.append(0.0)
+                    continue
+                char_pos = fragments[layer.enter_on_fragment - 1].start
+                raw_offset = alignment.character_start_times_seconds[char_pos] - onset
+                shot_offsets.append(
+                    _clamp_entry_offset(raw_offset, duration_s=duration, shot_id=shot.id)
+                )
+            offsets[shot.id] = shot_offsets
+    return offsets

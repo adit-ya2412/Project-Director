@@ -63,6 +63,22 @@ clean test art never exercised:
    raise `ParallaxKeyGuardError` (already caught and degraded by
    `slideshow.py`'s existing per-shot handler, so this needed no new wiring
    there beyond one more call).
+
+## F4 (2026-09-05) - a layer can ENTER partway through a shot
+
+`ShotLayer.enter_offset_s` (already resolved to seconds - see `app/timeline/
+narration_fit.py::resolve_layer_entry_offsets`; this module never reads the
+planner-authored `enter_on_fragment` itself) drives an ffmpeg `fade=t=in:
+...:alpha=1` appended to the SUBJECT layer's own chain, after the §4.5/P-IF-
+F2c despeckle pass rather than before it (a fade's own partially-transparent
+frames would otherwise read as more small alpha holes to the median filter
+to smooth away). A `background` layer may never carry one -
+`build_two_layer_parallax_filter_complex` rejects a non-zero
+`background.enter_offset_s` outright, matching `Shot`'s own domain-level
+validator - it is the ground the shot stands on, and fading it in would
+mean fading in from nothing. `_LAYER_ENTRY_FADE_S` is the one new module
+constant, alongside the measured ones above; unlike them it is a REASONED
+default, not a measured one (no real render with a timed entry exists yet).
 """
 
 from __future__ import annotations
@@ -180,6 +196,20 @@ _KEYED_FRACTION_MAX = 0.95
 _SCATTER_MAX_COMPONENT_CELLS = 4
 _SCATTER_FRACTION_MAX = 0.0007
 
+# F4 (illustrated_faceless.md §2/F4, 2026-09-05): how long a layer's alpha
+# ramp takes once it ENTERS partway through a shot (`ShotLayer.
+# enter_offset_s`, resolved from a planner-authored fragment index - see
+# `app/timeline/narration_fit.py::resolve_layer_entry_offsets`). No real
+# render with a timed entry has been watched yet (F4's own human pass, "do
+# the reveals land on the words?", is still outstanding) - reasoned from
+# `app/renderer/text_cards.py::_FADE_IN_S` (0.5s), the only other place
+# this codebase fades a whole visual element onto a video frame, rather
+# than invented fresh. "A short fade rather than a hard pop": long enough
+# to read as a deliberate reveal, short enough that the layer does not
+# look like it is still arriving after the narration has already moved
+# past the words that cued it.
+_LAYER_ENTRY_FADE_S = 0.5
+
 
 # ---------------------------------------------------------------------------
 # Oversize / travel arithmetic (ported from parallax_probe.py's module-level
@@ -296,6 +326,8 @@ def layer_input_chain(
     blend: float = _KEY_BLEND,
     alpha_cleanup_radius: int = _ALPHA_CLEANUP_RADIUS,
     alpha_erode_passes: int = _ALPHA_ERODE_PASSES,
+    entry_offset_s: float = 0.0,
+    entry_fade_s: float = _LAYER_ENTRY_FADE_S,
 ) -> str:
     """Scale one ffmpeg input to its oversized working size, then
     chroma-key it if it is a cut-out plane. Ported from
@@ -312,21 +344,33 @@ def layer_input_chain(
     filter exists, but `median`/`alphaextract`/`alphamerge` all do, and
     together are exactly a despeckle. The unkeyed background layer never
     needs this - it was never selectively made transparent, so it has no
-    alpha-channel holes to clean."""
+    alpha-channel holes to clean.
+
+    F4: `entry_offset_s > 0.0` appends an ffmpeg `fade=t=in:...:alpha=1`
+    onto the FINAL rgba stream - after the despeckle pass, never before
+    it, since the despeckle is a median filter over the alpha channel and
+    would read a fade's own partially-transparent frames as more small
+    holes to smooth away. `entry_offset_s <= 0.0` (the default, and every
+    call site that predates F4) appends nothing at all - byte-identical
+    to this function's own pre-F4 output, which is what keeps every
+    existing parallax shot's filter-graph untouched (§3.1)."""
     chain = f"[{index}:v]scale={width}:{height},setsar=1"
+    fade = (
+        f",fade=t=in:st={entry_offset_s}:d={entry_fade_s}:alpha=1" if entry_offset_s > 0.0 else ""
+    )
     if not keyed:
-        return f"{chain},format=rgba[{name}]"
+        return f"{chain},format=rgba{fade}[{name}]"
     if key is None:
         raise ValueError("keyed=True requires a sampled key colour")
     chain += f",colorkey={key}:{similarity}:{blend},format=rgba"
     if alpha_cleanup_radius <= 0:
-        return f"{chain}[{name}]"
+        return f"{chain}{fade}[{name}]"
     erode = ",".join("erosion" for _ in range(max(0, alpha_erode_passes)))
     erode = f",{erode}" if erode else ""
     return (
         f"{chain},split[{name}_rgba1][{name}_rgba2];"
         f"[{name}_rgba1]alphaextract,median=radius={alpha_cleanup_radius}{erode}[{name}_a];"
-        f"[{name}_rgba2][{name}_a]alphamerge,format=rgba[{name}]"
+        f"[{name}_rgba2][{name}_a]alphamerge,format=rgba{fade}[{name}]"
     )
 
 
@@ -335,8 +379,9 @@ class ParallaxLayerInput:
     """One layer's renderer-side inputs: which ffmpeg input index carries
     its still, and (for anything but the background) the key colour
     SAMPLED from that still's own bytes (§1.5). `scale`/`drift_x`/
-    `drift_y` come straight off the Timeline's own `ShotLayer` -
-    planner-authored, canon 3.1 - via `from_shot_layer` below."""
+    `drift_y`/`enter_offset_s` come straight off the Timeline's own
+    `ShotLayer` - planner/resolver-authored, canon 3.1 - via
+    `from_shot_layer` below; this module only ever EXECUTES them."""
 
     role: LayerRole
     index: int
@@ -344,6 +389,13 @@ class ParallaxLayerInput:
     drift_x: float
     drift_y: float
     key: str | None = None
+    # F4: the RESOLVED (seconds) half of `ShotLayer.enter_on_fragment` -
+    # `app/timeline/narration_fit.py::resolve_layer_entry_offsets` already
+    # did the fragment-to-seconds arithmetic and the clamp; this module
+    # never reads `enter_on_fragment` itself; it only ever consumes
+    # already-resolved seconds. `0.0` (the default, and every layer that
+    # predates F4) means "present from the start".
+    enter_offset_s: float = 0.0
 
     @classmethod
     def from_shot_layer(
@@ -356,6 +408,7 @@ class ParallaxLayerInput:
             drift_x=layer.drift_x,
             drift_y=layer.drift_y,
             key=key,
+            enter_offset_s=layer.enter_offset_s,
         )
 
 
@@ -383,6 +436,7 @@ def build_two_layer_parallax_filter_complex(
     duration_s: float,
     label: str = "out",
     background_color: str = _BASE_COLOR,
+    entry_fade_s: float = _LAYER_ENTRY_FADE_S,
 ) -> str:
     """F2's two-layer parallax `filter_complex`: an un-keyed background
     plane and one keyed subject plane, each drifting at its own rate over
@@ -394,6 +448,16 @@ def build_two_layer_parallax_filter_complex(
     This function deliberately rejects anything but `(BACKGROUND,
     SUBJECT)` in that order rather than silently building a two-layer
     graph out of the wrong roles.
+
+    F4: only the SUBJECT plane may fade in (`subject.enter_offset_s`) -
+    `background.enter_offset_s` is REJECTED outright if non-zero, never
+    silently ignored, matching this function's own existing practice of
+    raising rather than degrading on a malformed role (`Shot`'s own
+    `_background_layer_never_carries_an_entry` validator should already
+    make this unreachable in practice; this is the belt to that
+    suspenders). The fade duration is clamped to whatever of the shot
+    remains after `enter_offset_s` so a late entry on a short shot cannot
+    ask for a fade longer than the shot itself.
     """
     if background.role is not LayerRole.BACKGROUND:
         raise ValueError(f"expected a BACKGROUND layer first, got {background.role.value}")
@@ -401,6 +465,12 @@ def build_two_layer_parallax_filter_complex(
         raise ValueError(f"expected a SUBJECT layer second, got {subject.role.value}")
     if subject.key is None:
         raise ValueError("a SUBJECT layer must carry a sampled key colour")
+    if background.enter_offset_s:
+        raise ValueError(
+            "a BACKGROUND layer must never carry an entry offset "
+            "(illustrated_faceless.md F4): it is the ground the shot stands "
+            "on, and fading it in would mean fading in from nothing"
+        )
 
     bg_w, bg_h = oversized_size(canvas_w, canvas_h, background.scale)
     bg_x0, bg_y0 = base_offset(canvas_w, canvas_h, bg_w, bg_h)
@@ -410,13 +480,26 @@ def build_two_layer_parallax_filter_complex(
     sub_x0, sub_y0 = base_offset(canvas_w, canvas_h, sub_w, sub_h)
     sub_x, sub_y = drift_expressions(sub_x0, sub_y0, subject.drift_x, subject.drift_y, duration_s)
 
+    # F4: never let the fade outlast what remains of the shot once the
+    # entry has happened - the same `min(fade, remaining/2-or-less)` guard
+    # `text_cards.py`'s own `clamped_in`/`clamped_out` apply for a short
+    # shot, one level simpler here since only ONE fade (in) is ever built.
+    effective_fade_s = min(entry_fade_s, max(0.0, duration_s - subject.enter_offset_s))
+
     parts = [
         base_canvas_filter(
             width=canvas_w, height=canvas_h, fps=fps, duration_s=duration_s, color=background_color
         ),
         layer_input_chain(background.index, "pxbg", width=bg_w, height=bg_h, keyed=False),
         layer_input_chain(
-            subject.index, "pxsub", width=sub_w, height=sub_h, keyed=True, key=subject.key
+            subject.index,
+            "pxsub",
+            width=sub_w,
+            height=sub_h,
+            keyed=True,
+            key=subject.key,
+            entry_offset_s=subject.enter_offset_s,
+            entry_fade_s=effective_fade_s,
         ),
         f"[base][pxbg]overlay=x='{bg_x}':y='{bg_y}':shortest=1[pxb1]",
         f"[pxb1][pxsub]overlay=x='{sub_x}':y='{sub_y}'[{label}]",

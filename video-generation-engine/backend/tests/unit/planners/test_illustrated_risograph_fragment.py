@@ -257,6 +257,22 @@ def test_shot_planner_must_reproduce_the_directors_figure_block_verbatim():
     assert "visual_style" in fragment
 
 
+def test_a_timed_entry_is_taught_as_rarer_than_parallax_itself():
+    """F4 (illustrated_faceless.md §2/F4): the fragment must teach the
+    Shot Planner `enter_on_fragment`, that it must fall within THIS
+    shot's own fragment range, that the background layer never gets one,
+    and a rate cue rarer than parallax's own "one shot in four" (§4.10:
+    the rate cue lives here, in the fragment; the reasoning/justification
+    for the chosen rate lives in the plan, not in this file)."""
+    fragment = load_style_fragment("shot_planner", _STYLE_NAME)
+    assert fragment is not None
+    lower = fragment.lower()
+    assert "enter_on_fragment" in fragment
+    assert "fragment_start" in lower and "fragment_end" in lower
+    assert "one parallax shot in three" in lower
+    assert "background" in lower and "never gets one" in lower
+
+
 def test_the_other_four_styles_fragment_resolution_is_unaffected():
     for style in ("documentary_archival", "retention_fast", "archival_montage", "stillness"):
         assert load_style_fragment("shot_planner", style) is not None

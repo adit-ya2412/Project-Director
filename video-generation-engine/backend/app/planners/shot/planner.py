@@ -501,6 +501,88 @@ def _cap_parallax_layers(planned_scenes: list[Scene], *, max_layers: int) -> lis
     return out
 
 
+def _cap_layer_entries(planned_scenes: list[Scene], *, min_gap: int) -> list[Scene]:
+    """F4's own project-wide rate cap, enforced post-gather - same
+    structural-blindness shape as `_cap_text_cards`/`_cap_sfx_cues`
+    above (a minimum-shot-GAP between kept occurrences, not a total
+    count like `_cap_parallax_layers`): the illustrated_risograph
+    fragment's own rate cue asks for a timed entry on "roughly one
+    parallax shot in three at most", but the Shot Planner is called ONCE
+    PER SCENE and cannot see whether another scene already reached for
+    one - a device meant to read as a rare, specific dramatic move
+    becomes routine the moment every scene uses it once, exactly the
+    `text_card`/`sfx_cue` failure mode this mirrors.
+
+    Unlike `_cap_parallax_layers`, this is a NARRATIVE-frequency cap, not
+    a cost one: an entry costs nothing beyond the two-layer shot it
+    already sits on (same generation, same layer count), so it is capped
+    by SPACING like the two prose-level devices above, not by a project-
+    wide budget like layer count/`max_video_shots_per_project`.
+
+    Clears only the ENTRY - the subject layer's own `enter_on_fragment`,
+    reset to `None` ("present for the whole shot") - never the layer
+    itself or the shot's `parallax` movement, which stay exactly as
+    planned; the two-layer composite still plays, only the timed reveal
+    degrades to being present from the start, the same graceful,
+    silently-corrected-and-logged degrade `_cap_text_cards`/`_cap_sfx_
+    cues` already use (style_extensions.md §2.7) - the model was
+    structurally denied the one fact (how many other scenes also reached
+    for an entry) it would need to self-correct.
+    """
+    if min_gap <= 0:
+        return planned_scenes
+
+    flat: list[Shot] = [shot for scene in planned_scenes for shot in scene.shots]
+
+    def _entry_layer_index(shot: Shot) -> int | None:
+        for i, layer in enumerate(shot.layers):
+            if layer.enter_on_fragment is not None:
+                return i
+        return None
+
+    original = [_entry_layer_index(shot) for shot in flat]
+    decisions: list[int | None] = list(original)
+
+    shots_since_kept: int | None = None  # None = no entry kept yet
+    kept = 0
+    cleared = 0
+    for i, layer_index in enumerate(original):
+        if layer_index is None:
+            if shots_since_kept is not None:
+                shots_since_kept += 1
+            continue
+        if shots_since_kept is None or shots_since_kept >= min_gap:
+            kept += 1
+            shots_since_kept = 0
+        else:
+            decisions[i] = None
+            cleared += 1
+            shots_since_kept += 1
+
+    if cleared:
+        logger.warning(
+            "shot_planner.layer_entries_too_dense_trimmed",
+            extra={"kept": kept, "cleared": cleared, "min_gap": min_gap},
+        )
+
+    out: list[Scene] = []
+    idx = 0
+    for scene in planned_scenes:
+        new_shots: list[Shot] = []
+        for shot in scene.shots:
+            layer_index = original[idx]
+            if layer_index is not None and decisions[idx] is None:
+                new_layers = list(shot.layers)
+                new_layers[layer_index] = new_layers[layer_index].model_copy(
+                    update={"enter_on_fragment": None}
+                )
+                shot = shot.model_copy(update={"layers": new_layers})
+            new_shots.append(shot)
+            idx += 1
+        out.append(scene.model_copy(update={"shots": new_shots}))
+    return out
+
+
 def _snap_fragment_boundaries(
     shots: list[ShotPlanOutput], fragment_count: int, *, scene_id: str
 ) -> None:
@@ -757,6 +839,28 @@ def _make_validator(
                         violations.append(
                             f"shot {s.id}: parallax's subject layer needs a " "non-empty prompt"
                         )
+                    # F4 (illustrated_faceless.md §2/F4): checked here, not
+                    # on `ShotLayerOutput` itself - a layer cannot see its
+                    # own parent's `fragment_start`/`fragment_end`, so the
+                    # range check can only run where both are already in
+                    # scope, exactly as this shot-level output is for
+                    # everything else `is_parallax` checks above.
+                    if background.enter_on_fragment != 0:
+                        violations.append(
+                            f"shot {s.id}: background layer must never carry "
+                            "enter_on_fragment - it is the ground the shot stands "
+                            "on, not something that fades in"
+                        )
+                    if subject.enter_on_fragment != 0 and not (
+                        s.fragment_start <= subject.enter_on_fragment <= s.fragment_end
+                    ):
+                        violations.append(
+                            f"shot {s.id}: subject layer's enter_on_fragment "
+                            f"({subject.enter_on_fragment}) must fall within this "
+                            f"shot's own fragment range [{s.fragment_start}, "
+                            f"{s.fragment_end}] - a layer cannot enter on words "
+                            "the shot does not cover"
+                        )
             elif s.layers:
                 violations.append(
                     f"shot {s.id}: layers is only for parallax, got "
@@ -867,6 +971,16 @@ def _to_domain_shot(
                 prompt=layer.prompt,
                 drift_x=default_drift_for_role(layer.role)[0],
                 drift_y=default_drift_for_role(layer.role)[1],
+                # F4: `0` -> `None` ("present for the whole shot"), the
+                # same empty-string-to-None normalisation `text_card`/
+                # `sfx_cue` already use above - `ShotLayerOutput`'s own
+                # docstring explains why the planner-facing field uses `0`
+                # rather than a real optional int. `enter_offset_s` is
+                # NOT resolved here - it stays at the schema default
+                # (0.0) until `app/timeline/narration_fit.py::resolve_
+                # layer_entry_offsets` fits it to measured narration, the
+                # same seam `duration_s` itself is fitted at.
+                enter_on_fragment=layer.enter_on_fragment or None,
             )
             for layer in s.layers
         ],
@@ -995,6 +1109,13 @@ class ShotPlanner:
         # two siblings above, over `layers` (parallax's per-project cost
         # budget) rather than transitions or cues.
         capped = _cap_parallax_layers(capped, max_layers=max_parallax_layers_per_project)
+        # F4 (illustrated_faceless.md §2/F4): same class of pass again,
+        # over the RATE of timed entries specifically (a narrative-
+        # frequency concern like text cards/sfx cues), independent of the
+        # layer-cost cap immediately above - a project could stay well
+        # under budget on layer COUNT while still using an entry on every
+        # single parallax shot it planned.
+        capped = _cap_layer_entries(capped, min_gap=settings.layer_entry_min_shot_gap)
         # A7 (long_form_direction.md §3): a chapter card is A4's fragment
         # instructing the model to put it on an act-opening scene's FIRST
         # shot - so identify one by shot id, not a new Shot field. Reuse

@@ -33,10 +33,32 @@ class ShotLayerOutput(BaseModel):
     `Shot.asset_plan` is never on `ShotPlanOutput` either -
     `app/planners/shot/planner.py::_to_domain_shot` always sets it to
     `None` today, and F2's own log names filling a layer's `asset_plan`
-    from a planner as later scope, not this one."""
+    from a planner as later scope, not this one.
+
+    `enter_on_fragment` (F4, illustrated_faceless.md §2/F4): a 1-indexed
+    fragment number - the SAME idiom `ShotPlanOutput.fragment_start`/
+    `fragment_end` already use, and for the identical reason (see that
+    field's own docstring) - naming the fragment whose words this layer
+    should fade in on, or the SENTINEL `0` for "present for the whole
+    shot" (by far the common case, even among parallax shots). Required,
+    with no Python-level default, exactly like `role`/`prompt` above and
+    like `text_card`/`sfx_cue` on `ShotPlanOutput` one level up: this
+    class docstring's own module header explains why (OpenAI structured-
+    output strict mode requires every field in `required`, and pydantic
+    drops a defaulted field from `required` when generating the JSON
+    schema - a field the model is never asked for cannot be range-checked
+    or converted to `None`, it simply never arrives). `app/planners/shot/
+    planner.py::_to_domain_shot` normalises `0 -> None` when building the
+    domain `ShotLayer`, exactly like `s.text_card.strip() or None` there.
+    Range-checked against the OWNING SHOT's own `fragment_start`/
+    `fragment_end` in `_make_validator` (not here): a layer cannot see its
+    parent shot's fragment range, so that check can only happen where
+    both are in scope - the shot-level output, not the layer's own nested
+    model."""
 
     role: LayerRole
     prompt: str
+    enter_on_fragment: int
 
 
 class ShotPlanOutput(BaseModel):

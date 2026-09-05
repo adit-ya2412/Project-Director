@@ -319,6 +319,13 @@ animation can stretch it.
 
 **Human pass:** do the reveals land on the words?
 
+**BUILT (P-IF-F4, 2026-09-05), awaiting human pass — see §7/§8.6.** Schema,
+planner authoring + validation, the fragment→seconds resolver at the
+narration-fit seam, the renderer's alpha fade, fingerprint coverage, the
+project-wide rate cap, and the style fragment's rate cue are all in. No
+image was generated and no render was watched — the human pass above is
+entirely outstanding, same as every other visual slice in this plan.
+
 ### F5 — Element transforms (grow, draw, wipe)
 
 Extends F4's schedule from *entry* to *transform*: a bar growing, an arrow
@@ -2346,6 +2353,19 @@ DOES watch a real render and finds the margin still showing (or the crop
 eating too much) can retune it without hunting for a hardcoded literal - the
 same epistemic status the plan itself assigns `_DEAD_STOP_CEILING_MULTIPLIER`.
 
+**Stale as of the F4 pass (2026-09-05): the shipped value is 0.08, not 0.04.**
+`app/core/config.py`'s own committed history (`793887c`, "F1a+F2b: a layer
+becomes a real file, and 4% was not enough crop") retuned it after this entry
+was written, evidently on a real observed render, but this paragraph was
+never updated to match and no `P-IF` log entry above records the retune or
+its measurement - found while reading this section before starting F4, not
+touched further (out of F4's own scope; flagged here per the pickup
+protocol's "if a finding contradicts this plan, change the plan text in the
+same commit" rather than silently left to mislead the next reader). The
+REASONING above (single named `Settings` field, retune without hunting for a
+literal) still holds; only the number and its "kept as the default" framing
+are out of date.
+
 **The `generation_prompt_hash` decision, made explicitly per the brief's own
 ask.** `_generate_image_once`'s `prompt_hash` is keyed on the REQUESTED
 `width`/`height` - the oversized ones - never on the canvas size. Consequence,
@@ -2863,6 +2883,376 @@ task is about, caught in test-support code rather than the feature itself.
 
 ---
 
+### P-IF-F4 — Timed layer entry, anchored to fragments not seconds (2026-09-05)
+
+**Scope executed:** exactly F4's §2 scope - the planner schema
+(`ShotLayerOutput.enter_on_fragment`, range-checked against the owning
+shot's own `fragment_start`/`fragment_end`), the domain schema
+(`ShotLayer.enter_on_fragment`/`enter_offset_s`, plus a background-never-
+enters validator), the fragment→seconds resolver at the SAME seam
+`Shot.duration_s` is itself fitted to narration at, the renderer's alpha
+fade (with a background-entry rejection as a second line of defence), R2
+fingerprint verification (no code change needed - written as tests), the
+project-wide entry-rate cap, and the style fragment's rate cue. No image
+was generated, no render was produced, nothing committed - per the task's
+own "offline verification only" constraint.
+
+**NOT started, explicitly:** F5 (element transforms - grow/draw/wipe),
+F3 (three layers), and any per-layer scale/placement tuning - all
+untouched, explicitly out of this slice's scope. `render.py`'s own
+`should_composite_parallax` dispatch was not touched (it already resolves
+`ShotLayer` in full, `enter_offset_s` included, via
+`ParallaxLayerInput.from_shot_layer` - no new field needed there). No
+project deletion, deployment, or the coordinator's uncommitted A15 work
+were touched.
+
+**Changes:**
+- `backend/app/schemas/timeline.py:296-327` - `ShotLayer` gains
+  `enter_on_fragment: int | None = None` (planner-authored, the SAME
+  1-indexed idiom `ShotPlanOutput.fragment_start`/`fragment_end` already
+  use) and `enter_offset_s: float = 0.0` (the RESOLVED seconds offset,
+  default = "present from the start" - every layer that predates this
+  field and every layer that never sets an entry). `:408-434` -
+  `Shot._background_layer_never_carries_an_entry`, a `model_validator`
+  beside the existing `_layers_and_split_screen_are_mutually_exclusive`
+  - a `background` layer may never carry `enter_on_fragment` (it is the
+  ground the shot stands on; fading it in means fading in from nothing).
+  Enforced at the DOMAIN schema (not only the planner's own output
+  validator below) because a `Timeline` is also read back from storage
+  and reached by paths that never pass through the planner at all - the
+  identical reasoning the mutual-exclusion validator already gives for
+  living at this level.
+- `backend/app/planners/shot/schemas.py:28-62` - `ShotLayerOutput` gains
+  `enter_on_fragment: int` - required, NO Python-level default (unlike
+  the task's own literal wording, `int | None = None`; see "Effects"
+  below for why). `0` is the sentinel for "unset", the same convention
+  `text_card`/`sfx_cue` already use one level up, forced by OpenAI
+  strict-mode structured output (a defaulted field is dropped from
+  pydantic's generated `required` list, which strict mode rejects -
+  `director/schemas.py`'s own module docstring states this precedent).
+- `backend/app/planners/shot/planner.py:848-863` (`_make_validator`'s
+  `is_parallax` block) - two new checks, same shape as the sibling
+  role/prompt checks immediately above: a background layer's
+  `enter_on_fragment` must be `0`; a subject layer's, if non-zero, must
+  fall within `[s.fragment_start, s.fragment_end]` - checked HERE, not
+  on `ShotLayerOutput` itself, because a layer cannot see its own
+  parent's fragment range (only the shot-level output has both fragment
+  numbers and the layer list in scope at once). `:983` (`_to_domain_shot`)
+  - `enter_on_fragment=layer.enter_on_fragment or None`, the `0 -> None`
+  normalisation, exactly like `s.text_card.strip() or None` two lines up.
+  `:504-582` - `_cap_layer_entries(planned_scenes, *, min_gap)`, the F4
+  project-wide RATE cap (spacing-shaped like `_cap_text_cards`/
+  `_cap_sfx_cues`, deliberately NOT shaped like `_cap_parallax_layers` -
+  an entry costs nothing beyond the two-layer shot it already sits on, so
+  it is a narrative-frequency concern, not a cost budget). Clears only
+  the entry (`enter_on_fragment -> None`), never the layer or the
+  movement. `:1118` - wired into `plan()`'s post-gather pipeline right
+  after `_cap_parallax_layers`.
+- `backend/app/core/config.py:520-540` - `layer_entry_min_shot_gap: int
+  = 10`, read directly at `plan()`'s own call site (same pattern
+  `text_card_min_shot_gap`/`sfx_cue_min_shot_gap` already use - a flat
+  gap, not threaded through `ConstraintBundle`/`resolve_constraint_
+  bundle`, since a minimum GAP already scales with video length for
+  free, unlike a total COUNT cap).
+- `backend/app/timeline/narration_fit.py:96-108` (module docstring
+  addendum), `:109-129` (`_ENTRY_MIN_TAIL_S = 0.05`), `:277-303`
+  (`_clamp_entry_offset`), `:307-372` (`resolve_layer_entry_offsets`) -
+  the fragment→seconds derivation, at the exact seam
+  `reconcile_spoken_durations`/`compensate_for_transitions` already fit
+  `Shot.duration_s` to measured narration at. Recomputes each scene's
+  fragments via `split_narration_fragments` (deterministic, I5) rather
+  than threading them through from planning; a shot absent from the
+  returned dict has nothing to resolve (every layer's `enter_on_fragment`
+  is `None`) rather than being present with a `0.0` list.
+- `backend/app/workflow/steps/narration.py:133-137` (import), `:566-570`
+  (`_reconcile_and_append` calls `resolve_layer_entry_offsets` right
+  after `reconcile_timeline_durations`, using the SAME `reconciled`
+  final-duration dict as the clamp's own ceiling), `:600-609`
+  (`_apply_durations` writes each resolved offset onto
+  `shot.layers[i].enter_offset_s`, mutating in place exactly like
+  `shot.duration_s = reconciled[shot.id]` two lines up already does).
+- `backend/app/renderer/parallax.py:68-81` (module docstring addendum),
+  `:196-211` (`_LAYER_ENTRY_FADE_S = 0.5`, reasoned from `text_cards.py`'s
+  own `_FADE_IN_S`, not measured - no real timed-entry render exists yet),
+  `:329-372` (`layer_input_chain` gains `entry_offset_s`/`entry_fade_s`;
+  the fade is appended AFTER the §4.5/P-IF-F2c despeckle pass, never
+  before it, so a fade's own partially-transparent frames are never read
+  as more alpha holes for `median` to smooth away), `:381-411`
+  (`ParallaxLayerInput` gains `enter_offset_s`, populated by
+  `from_shot_layer`), `:436-508` (`build_two_layer_parallax_filter_
+  complex` gains `entry_fade_s`; rejects a non-zero
+  `background.enter_offset_s` outright - belt-and-suspenders alongside
+  the domain validator above; clamps the effective fade to whatever of
+  the shot remains after the entry, mirroring `text_cards.py`'s own
+  `clamped_in`/`clamped_out` shape for a short shot).
+- `backend/app/prompts/shot_planner_styles/illustrated_risograph.md` -
+  one new bullet teaching `enter_on_fragment`: the range constraint, the
+  `0`-means-unset convention, when to reach for it (the narration itself
+  introducing or naming the figure), the rate cue ("roughly one parallax
+  shot in three at most... most scenes should use it not at all"), and
+  that the background layer never gets one. Positive framings throughout,
+  no negation, no artefact noun (checked against the existing, unmodified
+  `test_the_whole_fragment_names_no_artefact_or_negation_noun`) - §4.10's
+  discipline applies to this bullet exactly as it does to every other one
+  in the file.
+
+**The fragment→seconds seam, and why there:** `app/timeline/
+narration_fit.py`'s `_spoken_durations_for_scene`/`compensate_for_
+transitions` (called together as `reconcile_timeline_durations`) is
+where `Shot.duration_s` already turns from a planning ESTIMATE into a
+MEASURED fact, using the scene's real ElevenLabs alignment - the same
+"narration is the master clock, picture is fitted to it" arithmetic (D1)
+this plan names as the seam to reuse. `resolve_layer_entry_offsets` sits
+right beside it, in the same module, reusing the same alignment data and
+the same per-shot onset: an `enter_on_fragment` is meaningless until real
+character timestamps exist (the whole reason F4 anchors to a fragment
+index rather than a second value in the first place), and this is the
+first and only point in the pipeline where they do. It is called from
+`NarrationStep._reconcile_and_append`, immediately after `reconcile_
+timeline_durations`, and its output is written onto `Shot.layers[i].
+enter_offset_s` in the SAME `_apply_durations` closure that already
+writes `duration_s` - one `append_version` call persists both.
+
+**The clamp decision: clamp, never drop.** `_clamp_entry_offset` bounds a
+raw fragment-derived offset into `[0.0, duration_s - 0.05]` (or `0.0` if
+the shot is shorter than that tail). Chosen over dropping the entry
+because F4 is deliberately a RARE, specific dramatic move (the fragment's
+own rate cue asks for it on at most one parallax shot in three) - losing
+one silently is a worse outcome than the reveal landing fractionally
+early, and clamping still plays it, only compressed into whatever tail of
+the shot remains, logged (`narration_fit.layer_entry_clamped`) so the
+compression is observable rather than silent. In practice this should
+rarely fire: `enter_on_fragment` is validated at plan time to fall within
+the owning shot's own fragment range, so the entering fragment's own
+start time is already, by construction, comfortably before this shot's
+narration ends in the overwhelming majority of cases - the clamp is a
+floating-point/single-character-fragment backstop, not a routine path
+(proven directly in `test_the_clamp_keeps_the_entry_strictly_inside_the_
+shot`, a contrived alignment built specifically to exercise it).
+
+**The entry rate chosen, and why:** the style fragment asks for
+`enter_on_fragment` on "roughly one parallax shot in three at most" and
+tells the model most scenes should use it not at all - deliberately
+rarer than parallax's own already-restrained "roughly one shot in four",
+since an entry is a property of an already-parallax shot (so it can only
+ever be as frequent as parallax is, upper-bounded) and this plan's own
+§2/F4 text calls it "a specific dramatic move, not a default." The
+project-wide cap (`layer_entry_min_shot_gap = 10`) is set wider than
+either sibling gap (`text_card_min_shot_gap = 4`, `sfx_cue_min_shot_gap =
+6`) for the identical reason, one layer of restraint further out. Both
+numbers are REASONED, not measured - no real render with a timed entry
+exists yet, the same epistemic status `max_parallax_layers_per_project`/
+`substrate_crop_oversize_fraction` already carry in this plan.
+
+**The fade duration chosen, and why:** `_LAYER_ENTRY_FADE_S = 0.5`,
+reasoned from `app/renderer/text_cards.py::_FADE_IN_S` (also 0.5s) - the
+only other place in this codebase that fades a whole visual element onto
+a video frame, rather than invented fresh. Not measured either, for the
+same reason as the rate above.
+
+**Fingerprint verification result:** no code change to `app/renderer/
+fingerprint.py` was needed - `Shot.layers`' full `model_dump` already
+covers any new field on `ShotLayer` in every function that dumps the
+whole document/shot, and `compute_shot_stream_fingerprint`'s existing
+explicit `"layers": [layer.model_dump(...) for layer in shot.layers]`
+entry (added in F2, precisely because this is the one function that
+hand-picks fields) already covers it too. Verified, not assumed: new
+tests in `tests/unit/renderer/test_fingerprint_parallax.py` change ONLY
+`enter_on_fragment` and, separately, ONLY `enter_offset_s` on an
+otherwise-identical timeline/shot and assert the fingerprint changes,
+for both `compute_render_fingerprint` and `compute_shot_stream_
+fingerprint` - all four new tests pass.
+
+**Test files (new):**
+- `backend/tests/unit/planners/test_shot_planner_layer_entry_cap.py`
+  (new, 9 tests) - `_cap_layer_entries`: under-cap byte-identical (never
+  even `model_copy`'d), a project with no entries untouched, entries too
+  close cleared while the layer/movement survive, the budget enforced
+  project-wide (not per-scene), a far-enough-apart entry kept, a plain
+  parallax shot with NO entry never touched by this cap at all, already-
+  sparse entries untouched, the log record's three fields, and
+  `min_gap<=0` as a no-op.
+
+**Test files (extended):**
+- `backend/tests/unit/planners/test_shot_planner_parallax_layers.py`
+  (+4 tests) - background-with-entry rejected, subject entry outside the
+  shot's own fragment range rejected, a valid in-range entry lands on the
+  domain shot (`0 -> None`, `enter_offset_s` still `0.0` pre-resolution),
+  and the existing valid-shot test extended to assert `0 -> None` too.
+  Every pre-existing `ShotLayerOutput(...)` call site updated to pass
+  `enter_on_fragment` explicitly (no longer optional).
+- `backend/tests/unit/timeline/test_shot_layers.py` (+4 tests) - the two
+  new `ShotLayer` fields default correctly, a subject layer can carry an
+  entry, a background layer with one is rejected at the schema level, and
+  a subject entry is legal at the schema level regardless of value (range
+  checking is the planner's own job, not this schema's - it no longer has
+  a shot's fragment numbers to check against by the time it exists).
+- `backend/tests/unit/timeline/test_narration_fit.py` (+11 tests) - the
+  fragment→seconds derivation against a real two-fragment text (fragment
+  2's own start time, relative to the shot's own onset), a shot with no
+  entry absent from the result, a shot with no layers untouched, the
+  clamp firing on a contrived near-boundary alignment (and NOT dropping
+  the entry), and `_clamp_entry_offset` in isolation (in-range unchanged,
+  never reaching/exceeding duration, never negative, a shot shorter than
+  the tail clamps to zero, logs only when it actually changes the value).
+- `backend/tests/unit/renderer/test_parallax.py` (+9 tests) - no entry
+  means no `fade=` anywhere (byte-identical, §3.1); the fade lands after
+  `format=rgba` in the unkeyed/cleanup-disabled shapes and after the full
+  despeckle pass in the default keyed shape; the composed two-layer graph
+  applies the subject's own fade and leaves the background chain
+  untouched; a background entry is rejected outright; the fade is clamped
+  to what remains of the shot.
+- `backend/tests/unit/renderer/test_fingerprint_parallax.py` (+4 tests) -
+  see "Fingerprint verification result" above.
+- `backend/tests/unit/planners/test_illustrated_risograph_fragment.py`
+  (+1 test) - the fragment teaches `enter_on_fragment`, the range
+  constraint, the rate cue, and that the background layer never gets one.
+
+**Measured:**
+- Fragment split of `"Coal built the factories. Steel followed close
+  behind."` (used as the F4 narration-fit fixture): fragment 1 = `[0,
+  26)`, fragment 2 = `[26, 54)` - confirmed by actually running
+  `split_narration_fragments`, not computed by hand, before writing the
+  fixture's expected values.
+- `resolve_layer_entry_offsets` on that fixture at 10 chars/sec: fragment
+  2's onset (2.6s) minus the shot's own onset (0.0s) = `2.6` exactly,
+  matching the shot's own reconciled duration (5.4s) with no clamping
+  needed - the ordinary, unclamped case.
+- The clamp fixture (`"Ab. C."`, a hand-built non-uniform alignment):
+  raw arithmetic would land the entry at `0.97s` into a `1.00s` shot -
+  clamped to `0.95s` (`duration_s - _ENTRY_MIN_TAIL_S`), confirmed
+  strictly less than the shot's own duration, and the clamp log record
+  fires only in this case, never on an in-range value.
+- Test counts: 42 new tests across six files (9 + 4 + 4 + 11 + 9 + 4 + 1
+  = 42, matching the six "Test files" sections above once the
+  entry-cap file's own count is added). Full suite:
+  `tests/unit` -> **1134 passed, 6 failed** (up from the stated baseline
+  of 1096 passed / 6 failed - the 6 failures are the SAME ones named in
+  the task brief, 5 in `test_sfx_overlays_diegetic.py` and 1 in
+  `test_director_planner.py::test_every_attempt_is_recorded_as_an_llm_
+  call`, confirmed by reading each failure's own error line, not merely
+  counted - none is new).
+- `black --check`: 3 files needed reformatting on first write
+  (`app/workflow/steps/narration.py`, `tests/unit/renderer/
+  test_parallax.py`, `tests/unit/timeline/test_narration_fit.py`) - all
+  three cosmetic (line-wrap only), reformatted and re-verified clean.
+- `ruff check`: clean on every touched file except one PRE-EXISTING
+  finding at `app/planners/shot/planner.py` (an unsorted import block) -
+  confirmed via `git stash`/`git stash pop` that this finding is present
+  on the base commit too, at a different line number purely because this
+  pass's own insertions shifted it; not introduced by this pass, not
+  fixed (out of scope - a pre-existing, unrelated finding).
+- `mypy` on the seven touched production files: 2 findings, both
+  PRE-EXISTING - confirmed via the same `git stash` comparison
+  (`app/assets/cost.py:146`, untouched by this pass; `app/planners/shot/
+  planner.py`, the same finding at line 949 on the base commit, shifted
+  to line 1063 here purely by this pass's own insertions). Zero new
+  mypy errors.
+
+**Verification (exact commands, run from `backend/`):**
+```
+../.venv/Scripts/python.exe -m pytest tests/unit/timeline/test_shot_layers.py tests/unit/timeline/test_narration_fit.py tests/unit/renderer/test_parallax.py tests/unit/renderer/test_fingerprint_parallax.py tests/unit/planners/test_shot_planner_layer_entry_cap.py tests/unit/planners/test_shot_planner_parallax_layer_cap.py tests/unit/planners/test_illustrated_risograph_fragment.py tests/unit/planners/test_shot_planner_parallax_layers.py -q
+  -> 160 passed in 6.81s
+../.venv/Scripts/python.exe -m pytest tests/unit -q
+  -> 6 failed, 1134 passed in 76.94s   (same 6 pre-existing failures named in the task brief)
+../.venv/Scripts/python.exe -m black --check app/schemas/timeline.py app/planners/shot/schemas.py app/planners/shot/planner.py app/timeline/narration_fit.py app/workflow/steps/narration.py app/renderer/parallax.py app/core/config.py tests/unit/timeline/test_shot_layers.py tests/unit/timeline/test_narration_fit.py tests/unit/renderer/test_parallax.py tests/unit/renderer/test_fingerprint_parallax.py tests/unit/planners/test_shot_planner_parallax_layers.py tests/unit/planners/test_shot_planner_layer_entry_cap.py tests/unit/planners/test_illustrated_risograph_fragment.py
+  -> 3 reformatted (cosmetic line-wrap only), 11 unchanged; re-ran clean after
+../.venv/Scripts/python.exe -m ruff check <same files>
+  -> 1 pre-existing finding (planner.py import order, confirmed via git stash), otherwise clean
+../.venv/Scripts/python.exe -m mypy app/schemas/timeline.py app/planners/shot/schemas.py app/planners/shot/planner.py app/timeline/narration_fit.py app/workflow/steps/narration.py app/renderer/parallax.py app/core/config.py
+  -> 2 pre-existing errors (confirmed via git stash), 0 new
+```
+No `PYTEST_TRUNCATE_DB` was set; `--noconftest` was not used (the
+`test_shot_planner_parallax_layers.py` tests need a real, never-
+truncated Postgres session, same as F2a's own). `make test` and the full
+suite via `make` were never run, per the task's own DB-hazard
+instruction. No external API was called; no render was produced; nothing
+was committed.
+
+**Effects / notes for the reviewer:**
+- **The task's own literal schema wording (`ShotLayerOutput.enter_on_
+  fragment: int | None = None`) was not followed as written.** OpenAI
+  structured-output strict mode requires every property in `required`,
+  and pydantic drops a field with ANY default (including `None`) from
+  the generated `required` list - `director/schemas.py`'s own module
+  docstring states this precedent, and every existing "optional" field
+  on `ShotPlanOutput` (`text_card`, `sfx_cue`, `secondary_prompt`) is
+  already a required, default-free, sentinel-valued field for exactly
+  this reason. `enter_on_fragment: int` (required, `0` sentinel) follows
+  that established convention instead; the DOMAIN `ShotLayer` (not
+  subject to strict mode) uses the real `int | None = None` the task
+  described, matching `Shot.text_card: str | None = None`'s own shape.
+- **A plan staleness found and corrected in this pass, unrelated to F4
+  itself:** §8.1's own "oversize fraction: 4%" paragraph no longer
+  matches the shipped code (`substrate_crop_oversize_fraction = 0.08`,
+  per `app/core/config.py`'s committed history, commit `793887c` - "4%
+  was not enough crop") - found while reading §8 before starting F4, per
+  the pickup protocol's "read §4 before touching the renderer" and this
+  task's own "read the plan first" instruction. No `P-IF` log entry
+  records the retune or what real render prompted it. Corrected inline
+  with a dated addendum (this file, immediately after that paragraph)
+  rather than silently rewriting the historical number - the retune
+  itself, and whatever measurement prompted it, remains undocumented and
+  is not reconstructed here.
+- **The renderer never reads `enter_on_fragment`, only `enter_offset_s`.**
+  `ParallaxLayerInput`/`layer_input_chain`/`build_two_layer_parallax_
+  filter_complex` consume the already-resolved seconds value exclusively
+  - the fragment index is a planning/narration-fit-time concept the
+  renderer has no business interpreting, consistent with `parallax.py`'s
+  own existing "this module only ever executes what the Timeline already
+  resolved" posture for drift/scale.
+- **Two independent enforcement layers for "background never enters",
+  by design, not oversight:** the domain `Shot` validator (construction
+  time, covers every path including hand-edited/restored Timelines) and
+  `build_two_layer_parallax_filter_complex`'s own rejection (composite
+  time, belt-and-suspenders) - matching this exact file's own established
+  practice of `validate_two_layer_shot` re-checking role order even
+  though the domain validator already guarantees it structurally.
+- **The cap is a NARRATIVE-frequency spacing cap, not a cost budget -
+  argued, not assumed.** An entry adds no new generation, no new layer,
+  no new money: the two-layer shot it sits on is already priced and
+  already capped by `_cap_parallax_layers`/`max_parallax_layers_per_
+  project`. `_cap_layer_entries` exists purely because the Shot Planner
+  is blind to other scenes' choices, the identical structural gap
+  `_cap_text_cards`/`_cap_sfx_cues` already correct for - so it is built
+  in THEIR shape (a minimum shot gap between kept occurrences), not
+  `_cap_parallax_layers`'s (a running total against a budget).
+- **The clamp's ceiling uses the shot's FINAL reconciled `duration_s`,
+  not its "spoken" (pre-transition-compensation) duration** -
+  deliberately, since `duration_s` is what the renderer's own drift/fade
+  arithmetic actually runs against. This is slightly generous for a shot
+  that follows a non-hard-cut transition (`duration_s` there is inflated
+  by the incoming overlap, prepended to the front of the shot's own
+  on-screen time) - the clamp ceiling is a hair roomier than the shot's
+  own "spoken" portion in that one case, never tighter, so this can only
+  ever err toward NOT clamping a value that arguably should be, never the
+  reverse. Not modelled precisely (that would need knowing exactly how
+  much of `duration_s` is prepended silence versus real narration, a
+  finer-grained fact `narration_fit.py` does not currently expose) -
+  flagged as a known, harmless imprecision rather than silently assumed
+  correct.
+
+**What is NOT done:**
+- **The human pass.** F4's own §2 gate ("do the reveals land on the
+  words?") is entirely outstanding - no image was generated, no render
+  was produced, nothing was watched. Every claim above is verified as
+  arithmetic/text/fingerprint behaviour, never against a real composite.
+- F3 (three layers, per-layer scale/placement), F5 (element transforms) -
+  untouched, explicitly out of scope.
+- The pre-existing `app/planners/shot/planner.py` import-sort finding and
+  the pre-existing `app/assets/cost.py`/`app/planners/shot/planner.py`
+  mypy findings - neither touched, both confirmed pre-existing via `git
+  stash` comparison, out of scope for this pass.
+- The undocumented `substrate_crop_oversize_fraction` 4%->8% retune - the
+  plan's stale number is corrected (see "Effects" above), but the retune
+  itself, and whatever real render prompted it, is not reconstructed or
+  further investigated here.
+- `app/workflow/steps/render.py`'s A15 diegetic-SFX work and the
+  `test_sfx_overlays_diegetic.py`/`test_director_planner.py` pre-existing
+  failures - neither touched, per the task's own explicit baseline.
+
+---
+
 ## 8. F1 CLOSED — human pass given 2026-09-04
 
 **Pacing signed off by the user on the second render** (`b521aacc-7afc-4ea9-a953-89a843f738df`,
@@ -3022,3 +3412,49 @@ images too - the exact "worse case" this section's own note warned about.
 (fixtures and a real-but-never-truncated Postgres only, per the task's own
 "no spending" constraint) - do not judge a real layered render until someone
 has actually watched one.
+
+### 8.6 F4 — Timed layer entry is BUILT, awaiting human pass (P-IF-F4)
+
+Schema (`ShotLayer.enter_on_fragment`/`enter_offset_s`), planner authoring +
+validation (`ShotLayerOutput.enter_on_fragment`, range-checked against the
+owning shot's own fragment range), the fragment→seconds resolver at the
+narration-fit seam (`resolve_layer_entry_offsets`), the renderer's alpha
+fade (`layer_input_chain`/`build_two_layer_parallax_filter_complex`),
+fingerprint coverage (verified by test, no code change needed), the
+project-wide rate cap (`_cap_layer_entries`), and the style fragment's rate
+cue are all landed - see §7's `P-IF-F4` entry for the full account.
+
+**Not yet verified against a real render.** Same status every prior F2/F4
+entry in this section has carried: no image was generated and nothing was
+watched this pass (fixtures and pure arithmetic only, per the task's own
+"offline verification only, no spending" constraint). F4's own gate - "do
+the reveals land on the words?" - is the one thing none of this proves.
+
+**Two landmines for whoever builds F3 (three layers):**
+1. **`_cap_layer_entries` assumes at most ONE entry per shot.** True today
+   by construction - F2 legalises exactly `[background, subject]`, and the
+   background layer can never carry an entry (validated at both the
+   domain schema and the renderer) - so a shot has at most one layer with
+   `enter_on_fragment` set, and `_entry_layer_index` (the cap's own helper)
+   returns the first (only) one it finds. If F3's foreground layer is ALSO
+   allowed to carry an entry, a shot with TWO entries would have only the
+   first cleared by a spacing violation, potentially leaving a second
+   entry on the same shot surviving within `min_gap` of another shot's
+   entry - the cap would need to walk ALL of a shot's entries, not the
+   first, before F3 ships this.
+2. **The renderer's fade hook only ever reaches the SUBJECT layer.**
+   `layer_input_chain` itself is generic (any layer can pass
+   `entry_offset_s`), but `build_two_layer_parallax_filter_complex` - the
+   only filter-graph builder that exists today - only ever calls it with
+   an entry offset for the subject's own chain; there is no three-layer
+   builder yet to thread a foreground layer's own entry through. F3's own
+   three-layer builder will need to decide whether foreground can enter
+   too and, if so, wire this hook for it explicitly - it will not happen
+   automatically by extending the two-layer function.
+
+**A plan staleness found and fixed while reading this section (not F4's own
+work, but recorded here since it was found reading §8 before F4):** §8.1's
+"oversize fraction: 4%" no longer matches the shipped code
+(`substrate_crop_oversize_fraction = 0.08`, per `app/core/config.py`'s
+committed history) - corrected inline at that paragraph, with a dated
+addendum rather than a silent rewrite of the historical number.

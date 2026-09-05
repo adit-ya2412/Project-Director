@@ -130,7 +130,11 @@ from app.timeline.narration_batch import (
     plan_tts_batches,
     split_batched_alignment,
 )
-from app.timeline.narration_fit import SceneAlignment, reconcile_timeline_durations
+from app.timeline.narration_fit import (
+    SceneAlignment,
+    reconcile_timeline_durations,
+    resolve_layer_entry_offsets,
+)
 from app.utils.bounded_gather import narration_concurrency, reserve_then_gather
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
@@ -452,9 +456,7 @@ class NarrationStep:
                 pieces: list[tuple[SceneNarrationSlice, bytes]] = []
                 for sl in slices:
                     if settings.dry_run:
-                        piece = (
-                            f"fake-narration-audio:{sl.scene_id}:{sl.text}".encode()
-                        )
+                        piece = f"fake-narration-audio:{sl.scene_id}:{sl.text}".encode()
                     else:
                         # RV-Q11: PCM/WAV, not a second MP3 encode - see
                         # `slice_wav`'s docstring for the measured drift
@@ -557,6 +559,14 @@ class NarrationStep:
         self, ctx: RunContext, timeline: Timeline, alignments: dict[str, SceneAlignment]
     ) -> Timeline:
         reconciled = reconcile_timeline_durations(timeline, alignments)
+        # F4 (illustrated_faceless.md §2/F4): the same seam `duration_s`
+        # itself is fitted to measured narration at - a layer's entry
+        # (`ShotLayer.enter_on_fragment`) is resolved to real seconds here
+        # too, never at render time (§4.1/R2). `reconciled` (this shot's
+        # FINAL duration_s, post-transition-compensation) is what bounds
+        # the clamp, since that is the shot's own on-screen length the
+        # renderer's alpha fade actually runs against.
+        layer_entry_offsets = resolve_layer_entry_offsets(timeline.scenes, alignments, reconciled)
 
         # D7 caps vs. reality (M8 settled decision): a shot may legitimately
         # exceed max_shot_duration_s once its real narration is in - the
@@ -589,6 +599,14 @@ class NarrationStep:
             for scene in base.scenes:
                 for shot in scene.shots:
                     shot.duration_s = reconciled[shot.id]
+                    # F4: absent from `layer_entry_offsets` means this shot
+                    # has no layer with `enter_on_fragment` set - every
+                    # `enter_offset_s` on it already sits at its schema
+                    # default (0.0), so there is nothing to write back.
+                    entries = layer_entry_offsets.get(shot.id)
+                    if entries is not None:
+                        for layer, offset in zip(shot.layers, entries, strict=True):
+                            layer.enter_offset_s = offset
             # Recomputed via the one function that owns this arithmetic
             # (D5) - never by hand.
             base.metadata.total_duration_s = compute_timeline_duration(base.all_shots())

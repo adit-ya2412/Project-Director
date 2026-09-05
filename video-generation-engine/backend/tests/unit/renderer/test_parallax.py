@@ -16,6 +16,7 @@ from app.renderer.parallax import (
     _ALPHA_ERODE_PASSES,
     _KEYED_FRACTION_MAX,
     _KEYED_FRACTION_MIN,
+    _LAYER_ENTRY_FADE_S,
     ParallaxKeyGuardError,
     ParallaxLayerInput,
     base_canvas_filter,
@@ -92,7 +93,6 @@ def test_layer_input_chain_keyed_includes_similarity_and_blend():
     assert fragment == "[1:v]scale=864:1536,setsar=1,colorkey=0xB43E7E:0.06:0.05,format=rgba[sub]"
 
 
-
 def _expected_alpha_chain(prefix: str) -> str:
     """Built from the module's own constants, never a literal.
 
@@ -141,6 +141,73 @@ def test_layer_input_chain_keyed_cleanup_disabled_matches_the_old_single_stateme
 def test_layer_input_chain_keyed_without_a_key_raises():
     with pytest.raises(ValueError, match="sampled key colour"):
         layer_input_chain(1, "sub", width=864, height=1536, keyed=True)
+
+
+# ---------------------------------------------------------------------------
+# F4 (illustrated_faceless.md §2/F4): a layer's timed entry, expressed as
+# an ffmpeg `fade=t=in:...:alpha=1` appended to the FINAL rgba stream.
+# ---------------------------------------------------------------------------
+
+
+def test_layer_input_chain_without_an_entry_has_no_fade():
+    """`entry_offset_s`'s default (0.0) - every call site that predates
+    F4 - must produce byte-identical output to before this field existed;
+    this is the isolation mechanism (§3.1), not merely an assumption."""
+    unkeyed = layer_input_chain(0, "bg", width=864, height=1536, keyed=False)
+    keyed_no_cleanup = layer_input_chain(
+        1, "sub", width=864, height=1536, keyed=True, key="0xB43E7E", alpha_cleanup_radius=0
+    )
+    keyed_with_cleanup = layer_input_chain(
+        1, "sub", width=864, height=1536, keyed=True, key="0xB43E7E"
+    )
+    for fragment in (unkeyed, keyed_no_cleanup, keyed_with_cleanup):
+        assert "fade=" not in fragment
+
+
+def test_layer_input_chain_unkeyed_entry_appends_a_fade_after_format_rgba():
+    fragment = layer_input_chain(
+        0, "bg", width=864, height=1536, keyed=False, entry_offset_s=1.5, entry_fade_s=0.5
+    )
+    assert fragment == "[0:v]scale=864:1536,setsar=1,format=rgba,fade=t=in:st=1.5:d=0.5:alpha=1[bg]"
+
+
+def test_layer_input_chain_keyed_cleanup_disabled_entry_appends_after_format_rgba():
+    fragment = layer_input_chain(
+        1,
+        "sub",
+        width=864,
+        height=1536,
+        keyed=True,
+        key="0xB43E7E",
+        alpha_cleanup_radius=0,
+        entry_offset_s=2.0,
+        entry_fade_s=0.4,
+    )
+    assert fragment == (
+        "[1:v]scale=864:1536,setsar=1,colorkey=0xB43E7E:0.06:0.05,format=rgba,"
+        "fade=t=in:st=2.0:d=0.4:alpha=1[sub]"
+    )
+
+
+def test_layer_input_chain_keyed_default_entry_appends_after_the_despeckle_pass():
+    """The fade must land AFTER `alphamerge,format=rgba`, never before the
+    despeckle - a fade's own partially-transparent frames would otherwise
+    read as more small alpha holes for `median` to smooth away."""
+    fragment = layer_input_chain(
+        1,
+        "sub",
+        width=864,
+        height=1536,
+        keyed=True,
+        key="0xB43E7E",
+        entry_offset_s=1.0,
+        entry_fade_s=0.5,
+    )
+    parts = fragment.split(";")
+    assert (
+        parts[2] == "[sub_rgba2][sub_a]alphamerge,format=rgba,fade=t=in:st=1.0:d=0.5:alpha=1[sub]"
+    )
+    assert fragment.count("fade=") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +281,77 @@ def test_two_layer_filter_complex_requires_a_subject_key():
         build_two_layer_parallax_filter_complex(
             _bg(), unkeyed_subject, canvas_w=720, canvas_h=1280, fps=30, duration_s=5.0
         )
+
+
+def test_two_layer_filter_complex_default_entry_offset_is_byte_identical():
+    """Every `ParallaxLayerInput` built before F4 has `enter_offset_s=0.0`
+    by construction - the composed graph must be unchanged from before
+    this field existed (§3.1)."""
+    fragment = build_two_layer_parallax_filter_complex(
+        _bg(), _subject(), canvas_w=720, canvas_h=1280, fps=30, duration_s=5.0
+    )
+    assert "fade=" not in fragment
+
+
+def test_two_layer_filter_complex_applies_the_subjects_entry_fade():
+    subject = ParallaxLayerInput(
+        role=LayerRole.SUBJECT,
+        index=1,
+        scale=1.2,
+        drift_x=110.0,
+        drift_y=0.0,
+        key="0xB43E7E",
+        enter_offset_s=2.0,
+    )
+    fragment = build_two_layer_parallax_filter_complex(
+        _bg(), subject, canvas_w=720, canvas_h=1280, fps=30, duration_s=5.0
+    )
+    parts = fragment.split(";")
+    assert parts[4] == (
+        "[pxsub_rgba2][pxsub_a]alphamerge,format=rgba,"
+        f"fade=t=in:st=2.0:d={_LAYER_ENTRY_FADE_S}:alpha=1[pxsub]"
+    )
+    # The background chain (no entry - it may never carry one) is
+    # untouched.
+    assert "fade=" not in parts[1]
+
+
+def test_two_layer_filter_complex_rejects_a_background_entry():
+    """F4: a background layer is the ground the shot stands on - fading
+    it in would mean fading in from nothing. Rejected outright, matching
+    this function's existing practice of raising rather than degrading
+    on a malformed input (wrong role order, a subject with no key)."""
+    background_with_entry = ParallaxLayerInput(
+        role=LayerRole.BACKGROUND,
+        index=0,
+        scale=1.2,
+        drift_x=24.0,
+        drift_y=0.0,
+        enter_offset_s=1.0,
+    )
+    with pytest.raises(ValueError, match="BACKGROUND layer must never carry an entry"):
+        build_two_layer_parallax_filter_complex(
+            background_with_entry, _subject(), canvas_w=720, canvas_h=1280, fps=30, duration_s=5.0
+        )
+
+
+def test_two_layer_filter_complex_clamps_the_fade_to_what_remains_of_the_shot():
+    """A late entry on a short shot must never ask for a fade longer than
+    what is actually left of the shot - here only 0.25s remains after the
+    entry, well under `_LAYER_ENTRY_FADE_S` (0.5s)."""
+    subject = ParallaxLayerInput(
+        role=LayerRole.SUBJECT,
+        index=1,
+        scale=1.2,
+        drift_x=110.0,
+        drift_y=0.0,
+        key="0xB43E7E",
+        enter_offset_s=1.75,
+    )
+    fragment = build_two_layer_parallax_filter_complex(
+        _bg(), subject, canvas_w=720, canvas_h=1280, fps=30, duration_s=2.0
+    )
+    assert "fade=t=in:st=1.75:d=0.25:alpha=1" in fragment
 
 
 def test_validate_two_layer_shot_accepts_exactly_background_then_subject():
