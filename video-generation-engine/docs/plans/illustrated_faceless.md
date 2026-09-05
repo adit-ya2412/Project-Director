@@ -2262,6 +2262,226 @@ the full suite were never run, per the brief.
   untouched, explicitly out of scope.
 - §8.1's substrate crop - deliberately not attempted.
 
+### P-IF-F1a-F2b — The substrate crop, and a layer becomes a real file (2026-09-05)
+
+**Scope executed:** §8.1 (F1a) and §8.5's remaining two bullets (F2b) together, as
+one slice - the same render exercises both, and F1a is what makes F2b's output
+judgeable (a subject layer's off-white margin is the worse failure, §8.1's own
+"why this blocks F2" note). No external API call, no image generated, no project
+rendered, nothing committed.
+
+**Changes:**
+- `backend/app/core/config.py` (`substrate_crop_oversize_fraction: float = 0.04`,
+  beside `max_parallax_layers_per_project`) - the one tunable, documented at the
+  setting itself, not buried in a call site.
+- `backend/app/script/styles.py::resolve_generation_request_format(style, frame)`
+  (new, beside `resolve_draft_format`) - the ONE resolver every generation call
+  site reads through: returns `frame` unchanged unless
+  `resolve_picture_path(style) is GENERATION_ONLY`, in which case it returns
+  `frame` oversized by the configured fraction (`math.ceil`, never `round` - the
+  request must never come in UNDER the canvas). A retrieval style gets `frame`
+  back byte-identical; nothing else had to change to prove that (§3.2's R1 shape).
+- `backend/app/assets/substrate_crop.py` (new) - `center_crop_to_canvas(image_bytes,
+  canvas_width, canvas_height)`, a pure, deterministic centre-crop (I5): opens the
+  bytes, raises if they are smaller than the canvas in either dimension (a request
+  built through the resolver above should never hit this), crops centred, and
+  re-saves in the SAME format the source arrived in.
+- `backend/app/workflow/steps/resolve_assets.py`:
+  - `_generate_image_once` gains optional `canvas_width`/`canvas_height` - when
+    given and different from the requested `width`/`height`, the delivered bytes
+    are cropped via `center_crop_to_canvas` and re-validated
+    (`validate_and_identify_image`) BEFORE anything is written to disk or
+    inserted as a `GeneratedClip` row. Both default to `None` (a no-op, byte-
+    identical to before this pass) for every call that doesn't pass them.
+  - `generate_image_real` now resolves `request_frame = resolve_generation_
+    request_format(style, frame)` and requests `request_frame`'s dimensions,
+    passing the true `frame` through as the crop target.
+  - `_generate_fake` (the DRY_RUN primary-image path) gets the identical
+    treatment - deliberately exercised in DRY_RUN too, not skipped, so the
+    oversize/crop arithmetic is proven by the fast, free test double as well as
+    the real path (see "Effects" below for why this is a decision, not an
+    oversight).
+  - New F2b functions: `layer_styled_prompt` (a layer's prompt through the
+    SAME `_styled_prompt` pipeline a shot's own prompt already gets, via the
+    existing `model_copy` swap the secondary-panel path already uses),
+    `_layer_seed` (a fixed per-index seed variation - `varied_seed` reused,
+    never `count_for_shot`'s attempt-count convention, since a layer has no
+    per-layer "generate again" endpoint), `layer_prompt_hash` (the ONE cache-key
+    function both the generation path and `render.py`'s lookup read through -
+    see "the render.py wiring" below), `generate_layer_image_real` (real,
+    budget-checked, F1a-cropped) and `_generate_layer_fake` (DRY_RUN, cost 0).
+  - `ResolveAssetsStep._resolve_layers` - loops `shot.layers`, dispatching real
+    vs. fake exactly like the primary path does on `settings.dry_run`. Wired
+    into `run()`'s per-shot loop in its OWN try/except (mirroring the
+    secondary-panel block immediately above it) so one failed layer degrades
+    that shot's parallax rather than marking the whole shot `failed`. The
+    pending-shot skip condition (`if binding.state in self._done_states and
+    not needs_secondary: continue`) gained a third term, `not needs_layers`
+    (`bool(shot.layers) and self._generation_permitted`), so a shot whose
+    PRIMARY binding is already terminal is still revisited for its layers -
+    otherwise a crash between the primary resolving and its layers generating
+    would leave the layers unresolved forever.
+- `backend/app/assets/cost.py::estimate_project_cost_cents` - unconditionally
+  adds `len(shot.layers) * fal_image_cost_cents_estimate` for every shot with
+  layers (see "the cost-estimate decision" below).
+- `backend/app/workflow/steps/render.py` - imports `GeneratedClipRepository` and
+  `layer_prompt_hash`; the per-shot loop that already resolves `shot_images`/
+  `shot_secondary_images` now also recomputes each layer's `layer_prompt_hash`
+  and looks the resulting clip up by content hash, populating `shot_layer_images`
+  (feeding `render_timeline`) and `layer_content_hashes` (feeding
+  `compute_render_fingerprint`) - both were declared and threaded but always
+  `{}` before this pass. A shot missing any one layer clip gets NO entry (never
+  a lone layer), matching `should_composite_parallax`'s own degrade rule.
+
+**The oversize fraction: 4%, and why.** The plan's own suggestion, kept as
+the default rather than re-derived, because there was nothing to measure it
+against without spending real money on a real generation (out of scope here -
+"no external API call... fixtures only"). 4% on a 720-wide canvas is a 15px
+total margin (about 7-8px a side after the centre crop) - comfortably larger
+than the paper border/signature/stamp observed hugging the frame edge in the
+real render this fix responds to (`P-IF-F1-fixes`, §8.1), and small enough that
+the crop cannot meaningfully eat into the composition. It is a single, named
+`Settings` field (`substrate_crop_oversize_fraction`) precisely so a human who
+DOES watch a real render and finds the margin still showing (or the crop
+eating too much) can retune it without hunting for a hardcoded literal - the
+same epistemic status the plan itself assigns `_DEAD_STOP_CEILING_MULTIPLIER`.
+
+**The `generation_prompt_hash` decision, made explicitly per the brief's own
+ask.** `_generate_image_once`'s `prompt_hash` is keyed on the REQUESTED
+`width`/`height` - the oversized ones - never on the canvas size. Consequence,
+accepted deliberately: every existing `illustrated_risograph` `GeneratedClip`
+row (from F1's own human-pass render, `b521aacc-...`) misses on its next
+generation and re-generates once, at the new, oversized request size. This is
+judged correct rather than an accident to route around, for the same reason
+`_CACHE_KEY_BASELINE`'s own comment gives for the opposite case ("different
+bytes" deserves a different cache key) - the request dimensions are a REAL
+generation input, not incidental metadata, and the whole point of this fix is
+that the bytes returned for an oversized request are DIFFERENT bytes (a bigger
+canvas, a substrate margin that then gets cropped away) than an unmodified-size
+request would return. Keying on the canvas size instead would have let a
+stale, uncropped, margin-bearing image silently keep serving from cache forever
+under the new code path - exactly the kind of drift R1 warns about.
+
+**Why the crop itself cannot produce two different images sharing one hash**
+(the brief's second, narrower ask): the crop is a PURE function of two things -
+the delivered bytes, and the canvas size. The canvas size is fixed by the style
+alone (`resolve_render_format`), never itself a quantity that varies from one
+generation to the next for a fixed style/aspect - so it is not a hidden,
+unhashed input that could make two calls sharing a `prompt_hash` diverge after
+cropping. A given `prompt_hash` therefore still pins exactly one request
+(prompt, model, seed, requested W×H); assuming the provider itself is
+deterministic for that request (already relied on everywhere else this cache
+is used - the whole architecture this project's caching stands on), the
+delivered bytes are pinned too, and the crop of pinned bytes to a pinned canvas
+size is pinned. No new source of hash collision or divergence is introduced.
+
+**F2b - a layer becomes a real file, resolved via recomputed hash, not a
+stored binding column.** `ShotBindingModel` gained NO new columns this pass -
+a layer's resolved `GeneratedClip` is found again purely by recomputing
+`layer_prompt_hash` (the identical arithmetic `generate_layer_image_real`/
+`_generate_layer_fake` used when generating it) and querying
+`GeneratedClipRepository.get_by_prompt_hash`. This works only because
+`ResolveAssetsStep` always runs before `RenderStep` in the pipeline and both
+read `settings`/the timeline's own `render_style`/`frame_aspect` identically
+within one process - so the row `render.py` recomputes the hash for has always
+already been written (or cache-hit) by the time it looks it up. **This is the
+one design decision in this pass I am least certain about** - a real
+per-layer binding column (mirroring `secondary_asset_id`/`secondary_clip_id`)
+would be more robust (survives a settings/model change between generation and
+render, gives a genuine "layers resolved" signal to `ResolveAssetsStep.
+is_satisfied` for retry purposes) but needs a schema migration against the
+shared Postgres the dev server also uses - out of what "fixtures only, no
+live render" scope seemed to license me to do unsupervised. Flagging this
+plainly rather than either doing the migration unasked or hiding the
+limitation: **`ResolveAssetsStep.is_satisfied` does not know whether a shot's
+layers still need generating** - it is keyed off the primary/secondary binding
+state alone. In the ordinary case (a fresh run) this is invisible, because a
+shot's primary and its layers are resolved together in the same pass. The gap
+is narrow but real: if a process crashes AFTER a shot's primary binding
+reaches a terminal state but BEFORE its layers finish generating, and the
+run is then resumed, `is_satisfied` would report the step complete for that
+shot (favouring `needs_layers`'s own check in `run()`'s pending-loop, which
+DOES revisit such a shot - so a plain re-run of `run()` still recovers
+correctly; only the ENGINE's own decision to call `run()` again at all, which
+reads `is_satisfied`, could be fooled into skipping the step entirely). A
+future slice giving layers real binding state would close this properly.
+
+**The cost-estimate decision: deliberately over-counts.**
+`estimate_project_cost_cents` cannot tell whether a shot's layers are
+"already generated" the way it does for primary media (`binding_states`/
+`_ALREADY_HAS_MEDIA_STATES`) - there is no per-layer binding state, per the
+decision immediately above. So it adds `len(shot.layers) *
+fal_image_cost_cents_estimate` for EVERY shot carrying layers, unconditionally,
+even after they are actually resolved and cached. Chosen deliberately, in the
+same direction this file's own docstring already argues for music
+("an estimate that looks free when it is not is worse than useless") - an
+estimate that keeps counting a resolved layer over-states remaining spend,
+which is a nuisance; an estimate that silently drops to zero for a real,
+paid layer would be the exact defect Task 5 fixed for the primary-media path.
+
+**DRY_RUN gets the oversize/crop mechanism too, not a shortcut around it** -
+`_generate_fake`/`_generate_layer_fake` both call `resolve_generation_request_
+format` and `center_crop_to_canvas` exactly like their real-mode counterparts.
+`FakeImageProvider` never produces a substrate margin, so this buys nothing
+qualitatively, but it means the dimension arithmetic is exercised by the fast,
+free, always-run test double instead of only by a real (and here, entirely
+unexercised - no API call was made this pass) generation. This is a deliberate
+choice to widen test coverage of the mechanism, not an accidental scope creep.
+
+**§4.3's cap is now live, not additional new gating code.** F2a already wired
+`max_parallax_layers_per_project`/`_cap_parallax_layers` into the Shot Planner
+- what was missing was layer generation actually costing anything for that cap
+to matter. This pass makes it matter: `generate_layer_image_real` runs the
+identical `check_budget`/`total_project_spend_cents` sequence any other paid
+generation runs, so a shot whose layers would exceed the project's budget cap
+now genuinely fails that ONE layer (isolated, per-shot/per-layer, never the
+whole render) rather than silently succeeding for free. No new cap-enforcement
+code was added inside `ResolveAssetsStep` itself - the existing planning-time
+cap plus this pass's real spending is what makes the existing cap real.
+
+**Verification (exact commands, run from `backend/`):**
+```
+../.venv/Scripts/python.exe -m pytest tests/unit/assets/test_substrate_crop.py tests/unit/script/test_styles.py tests/unit/workflow/test_layer_generation.py tests/unit/assets/test_cost.py -q
+  -> 6 + 43 + 11 + 25 = 85 passed, individually: test_substrate_crop.py (new
+     file, 6/6 new), test_styles.py (43 total, 4 new `resolve_generation_
+     request_format` tests among them, rest pre-existing and unmoved),
+     test_layer_generation.py (new file, 11/11 new), test_cost.py (25 total,
+     4 new layer-cost tests among them, rest pre-existing and unmoved)
+../.venv/Scripts/python.exe -m pytest tests/integration/test_render_parallax.py -q
+  -> 4 passed (1 new: the real-fixture "keys to ~0%" guard test)
+../.venv/Scripts/python.exe -m pytest tests/integration/test_resolve_assets_layers_real.py -q
+  -> 5 passed (real Postgres, never truncated - unique project id per test,
+     no other project's rows read or written)
+../.venv/Scripts/python.exe -m pytest tests/unit/ -q
+  -> 1078 passed, 6 failed - the SAME 6 named in the brief as pre-existing and
+     deliberately untouched (5 in test_sfx_overlays_diegetic.py, 1 in
+     test_director_planner.py::test_every_attempt_is_recorded_as_an_llm_call);
+     confirmed identical on the base commit via `git stash` before/after
+     comparison, not merely counted.
+```
+`ruff check`/`black --check`/`mypy` clean on every touched/created production
+file (one pre-existing `B905` at `test_styles.py`, one pre-existing `LANCZOS`
+mypy finding in `openai_provider.py`, both outside this diff, both already
+named in P-IF-F1's own log). No `PYTEST_TRUNCATE_DB` was set; `make test` and
+the full suite were never run.
+
+**What is NOT done:**
+- No per-layer `ShotBindingModel` column - see the design-decision note above;
+  this is the one place I would want a second opinion before this ships past
+  fixtures.
+- No human pass of any kind - F1a's crop and F2b's layer generation are both
+  proven with fixtures and a real (never-truncated) Postgres, never against a
+  real image model. Whether the crop actually removes a real substrate margin,
+  and whether a real two-layer parallax shot reads as intended, is exactly the
+  human pass §8.1/F2's own gates require and this pass does not attempt.
+- Video-path generation (`_generate_keyframe_once`/`submit_video_generation`)
+  was NOT given the F1a crop - `GENERATION_ONLY` styles force
+  `preferred_type=IMAGE` (`_force_generation_only_picture_path`, P-IF-F1), so
+  the video path is structurally unreachable for this format today. Flagged
+  rather than silently left inconsistent.
+- F3/F4/F5, `PicturePath`, `resolve_picture_path`, `frame_aspect`, and the four
+  pre-existing styles - untouched, per the DO-NOT list.
+
 ---
 
 ## 8. F1 CLOSED — human pass given 2026-09-04
@@ -2288,7 +2508,14 @@ unnecessary for this format, exactly as the Verdict predicted.
 **What F1 did NOT prove:** that one world holds across a *full* 53-shot film. Nine
 shots is a much better sample than twelve probe images, and it is not 53.
 
-### 8.1 F1a — Deterministic substrate crop ⛔ PREREQUISITE FOR F2
+### 8.1 F1a — Deterministic substrate crop — BUILT, awaiting human pass (P-IF-F1a-F2b)
+
+**Code and unit/fixture tests landed 2026-09-05** (`P-IF-F1a-F2b` in §7):
+`resolve_generation_request_format` + `center_crop_to_canvas`, wired into both the
+real and DRY_RUN image-generation paths and into layer generation. **Not yet
+verified against a real render** - no image was generated this pass (fixtures
+only); whether the crop actually removes a real substrate margin is still the
+human pass this section originally asked for.
 
 **Prompt wording has now failed this twice** (§1.7, then `P-IF-F1-fixes`), and §4.10
 records why a third rewording is a poor bet. The token needs the words "print" and
@@ -2357,7 +2584,7 @@ silently break a *different* project's render. **A purge must check content-hash
 reachability across all projects before unlinking any narration file**, not just filter by
 project id.
 
-### 8.5 F2a — Parallax is BUILT BUT NOT REACHABLE ⛔ required before any layered render
+### 8.5 F2a/F2b — Parallax is BUILT, connected, AND now resolves real layer images (awaiting human pass)
 
 `P-IF-F2` delivered the primitives correctly — `Shot.layers` defaulting to empty,
 the §6 Q1 mutual-exclusion validator, `renderer/parallax.py` ported from the
@@ -2403,3 +2630,16 @@ constraint, which was the right call.
 composited subject layer carries an off-white margin that `colorkey` will not
 remove, so it appears as a pale rectangle inside the frame. Wire F2a if you like,
 but do not judge parallax before F1a.
+
+**2026-09-05 update (`P-IF-F1a-F2b`, §7): both of the above are now done.**
+F2a's own three bullets were already complete (planner authoring, `render.py`
+wiring, the layer budget cap) before this pass; what remained per §8.5's own
+text was F2b proper - `ResolveAssetsStep` actually generating a real image per
+layer (`generate_layer_image_real`/`_generate_layer_fake`), `render.py`
+resolving those into `shot_layer_images`/`layer_content_hashes` (previously
+always `{}`), and F1a's crop (§8.1, immediately above) applying to layer
+images too - the exact "worse case" this section's own note warned about.
+**Still awaiting the human pass**: no real image was generated this pass
+(fixtures and a real-but-never-truncated Postgres only, per the task's own
+"no spending" constraint) - do not judge a real layered render until someone
+has actually watched one.

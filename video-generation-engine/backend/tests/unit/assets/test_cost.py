@@ -254,3 +254,61 @@ def test_check_budget_honours_an_explicit_length_aware_cap():
 def test_budget_cap_for_a_short_timeline_is_todays_1000():
     timeline = _timeline_with_shots([_shot("sh_01", AssetStrategy.GENERATE_IMAGE)])
     assert budget_cap_cents_for(timeline) == settings.project_budget_cap_cents
+
+
+# --- F2b/§4.3: layer generations must show up in the pre-approval estimate
+# (illustrated_faceless.md, 2026-09-05) -------------------------------------
+
+
+def _layer_shot(shot_id: str, n_layers: int) -> Shot:
+    from app.schemas.timeline import LayerRole, ShotLayer
+
+    # Search-primary `asset_plan` (free) isolates the assertion to ONLY
+    # the layer estimate, same reason `_cue_shot` does above - a real
+    # `illustrated_risograph` shot is GENERATION_ONLY (forced in code), but
+    # this function's own logic for the primary media reads `asset_plan`,
+    # not the style, so isolating it this way is deliberate and correct.
+    layers = [ShotLayer(role=LayerRole.BACKGROUND, prompt="bg")]
+    if n_layers > 1:
+        layers.append(ShotLayer(role=LayerRole.SUBJECT, prompt="subject"))
+    return Shot(
+        id=shot_id,
+        order=0,
+        intent=ShotIntent.EXPLAIN,
+        duration_s=3.0,
+        asset_plan=AssetPlan(
+            strategy=AssetStrategy.HISTORICAL_SEARCH,
+            preferred_type=PreferredMediaType.IMAGE,
+            fallback_chain=[AssetStrategy.HISTORICAL_SEARCH],
+        ),
+        layers=layers[:n_layers],
+    )
+
+
+def test_a_two_layer_shot_adds_two_image_generations():
+    timeline = _timeline_with_shots([_layer_shot("sh_01", 2)])
+    assert estimate_project_cost_cents(timeline) == 2 * settings.fal_image_cost_cents_estimate
+
+
+def test_a_shot_with_no_layers_adds_nothing_for_layers():
+    timeline = _timeline_with_shots([_layer_shot("sh_01", 0)])
+    assert estimate_project_cost_cents(timeline) == 0
+
+
+def test_layer_cost_sums_across_multiple_layered_shots():
+    timeline = _timeline_with_shots([_layer_shot("sh_01", 2), _layer_shot("sh_02", 2)])
+    assert estimate_project_cost_cents(timeline) == 4 * settings.fal_image_cost_cents_estimate
+
+
+def test_layer_cost_is_counted_even_when_the_shots_own_binding_is_already_resolved():
+    """Deliberate, documented over-counting (see this file's own comment
+    at the layer-estimate line): there is no per-layer binding state to
+    check, so a shot whose PRIMARY media already resolved for free still
+    shows its layers' cost - the safe direction, never a paid layer
+    silently showing as free."""
+    timeline = _timeline_with_shots([_layer_shot("sh_01", 2)])
+    binding_states = {"sh_01": "resolved"}
+    assert (
+        estimate_project_cost_cents(timeline, binding_states)
+        == 2 * settings.fal_image_cost_cents_estimate
+    )

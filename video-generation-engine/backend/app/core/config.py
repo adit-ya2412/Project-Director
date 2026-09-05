@@ -518,6 +518,41 @@ class Settings(BaseSettings):
     # already cites).
     max_parallax_layers_per_project: int = 10
 
+    # illustrated_faceless.md F1a/§8.1 (2026-09-05): for a `GENERATION_
+    # ONLY` style, request the image this fraction OVERSIZED and centre-
+    # crop it back to the style's exact canvas before persisting - a
+    # deterministic fix for the paper-margin/signature/stamp substrate
+    # artefact two rounds of prompt wording failed to remove (§1.7,
+    # `P-IF-F1-fixes`; §4.10 records why a third wording is a poor bet).
+    # 8%, MEASURED 2026-09-05 (`backend/scripts/f1a_f2b_microtest.py`,
+    # `tmp/f1a-f2b-microtest/`) - it shipped at the plan's suggested 4%
+    # and 4% was too small. Re-cropping ONE real generated subject layer
+    # at a range of fractions, free, off bytes already downloaded:
+    #
+    #   crop   frame edge   colour `sample_key_colour` returns   keyed fraction
+    #   4%     226 (pale)   0xEADECD  <- the PAPER BORDER          0.146  guard trips
+    #   6%     153          0xA32A74  <- the actual magenta        0.522
+    #   8%     109          0xA52B77                               0.528
+    #   12%     77          0xA82D7A                               0.516
+    #
+    # Below the flip point the margin survives the crop, and because
+    # `sample_key_colour` reads the frame EDGE it then samples the border
+    # rather than the key field - so the key matches almost nothing and
+    # §4.5's guard correctly refuses the cut-out. The two failures look
+    # like one bug and are not: the crop is the cause, the sampler is the
+    # symptom. Everything from 6% up is stable, so 8% is chosen for
+    # margin over the 6% threshold while still eating little enough that
+    # the composition is unaffected (the background layer was already
+    # clean at 4%; only the subject layer, whose border ran wider, was
+    # not - so the fraction must cover the WORST observed margin, not the
+    # typical one). Read through ONE resolver,
+    # `app/script/styles.py::resolve_generation_request_format` - never
+    # at a use site (the R1 lesson `resolve_sfx_whoosh_enabled` already
+    # cites) - so retrieval styles are provably untouched (that resolver
+    # returns the canvas unchanged whenever `resolve_picture_path(style)`
+    # is not `GENERATION_ONLY`).
+    substrate_crop_oversize_fraction: float = 0.08
+
     # --- Script pre-flight (motion_new_styles_and_long_form_videos.md
     # §3, Track D) - estimates a script's spoken duration BEFORE any
     # narration exists, from character count alone. Speed is applied by

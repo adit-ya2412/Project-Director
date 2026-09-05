@@ -594,6 +594,36 @@ def resolve_render_format(style: str | None, *, frame_aspect: str | None = None)
     return default_fmt
 
 
+def resolve_generation_request_format(style: str | None, frame: RenderFormat) -> RenderFormat:
+    """F1a (illustrated_faceless.md §8.1, 2026-09-05): the size to actually
+    REQUEST from the image provider for `frame` (the style's real canvas,
+    from `resolve_render_format`) - oversized by
+    `settings.substrate_crop_oversize_fraction` for a `GENERATION_ONLY`
+    style, unchanged for every `RETRIEVAL_LADDER` style. The delivered
+    bytes are centre-cropped back to `frame` before anything is persisted
+    (`app/assets/substrate_crop.py::center_crop_to_canvas`) - this pairs
+    with that crop as the ONE resolver every generation call site reads
+    through (never a band field, never `settings.substrate_crop_
+    oversize_fraction` read directly at a use site - the R1 lesson
+    `resolve_sfx_whoosh_enabled` already cites), so a retrieval style is
+    provably byte-identical: this function returns `frame` unchanged
+    whenever `resolve_picture_path(style)` is not `GENERATION_ONLY`, and a
+    caller that gets `frame` back unchanged never invokes the crop at all
+    (its own `if request != canvas` guard is a no-op).
+
+    `math.ceil`, not `round` - the requested size must never come in
+    UNDER the canvas in either dimension (the crop would have nothing to
+    trim), whatever the configured fraction and whatever the canvas's own
+    parity."""
+    if resolve_picture_path(style) is not PicturePath.GENERATION_ONLY:
+        return frame
+    fraction = settings.substrate_crop_oversize_fraction
+    return RenderFormat(
+        width=math.ceil(frame.width * (1 + fraction)),
+        height=math.ceil(frame.height * (1 + fraction)),
+    )
+
+
 def resolve_draft_format(style: str | None, *, frame_aspect: str | None = None) -> RenderFormat:
     """Same aspect as the style, at the draft short-side (480)."""
     fmt = resolve_render_format(style, frame_aspect=frame_aspect)

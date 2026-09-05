@@ -111,6 +111,7 @@ from app.renderer.watermark import (
 from app.renderer.watermark import (
     watermark_params_hash as compute_watermark_params_hash,
 )
+from app.repositories.generated_clip_repository import GeneratedClipRepository
 from app.repositories.narration_repository import NarrationRepository
 from app.repositories.render_repository import RenderRepository
 from app.repositories.shot_binding_repository import ShotBindingRepository
@@ -126,6 +127,7 @@ from app.script.styles import (
 from app.timeline.acts import act_time_ranges, music_content_hash_for
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
+from app.workflow.steps.resolve_assets import layer_prompt_hash
 
 
 class RenderStep:
@@ -228,20 +230,22 @@ async def render_video(
     secondary_content_hashes: dict[str, str] = {}
     shot_images: dict[str, Path] = {}
     shot_secondary_images: dict[str, Path] = {}
-    # illustrated_faceless.md F2a (2026-09-05): `Shot.layers`' resolved-
-    # image counterpart to `shot_secondary_images` above. `[]` for every
-    # shot today - `ShotBindingModel` carries no per-layer slots and no
-    # planner authors `ShotLayer.asset_plan` yet (P-IF-F2's own log:
-    # filling a layer's `asset_plan` from a planner is later scope), so
-    # there is nothing to resolve FROM here. What this feeds is real:
-    # `render_timeline` -> `_render_run` -> `_encode_or_reuse_shot_
-    # stream` dispatches into `app/renderer/parallax.py` the moment this
-    # dict is non-empty (exercised directly with synthetic layer images
-    # in `tests/unit/renderer/test_parallax_dispatch.py`) - only "where
-    # do real layer files come from" remains open, a `ResolveAssetsStep`
-    # extension for `Shot.layers` out of F2a's own numbered scope.
+    # illustrated_faceless.md F2b (2026-09-05): `Shot.layers`' resolved-
+    # image counterpart to `shot_secondary_images` above. Populated below
+    # by recomputing each layer's `layer_prompt_hash` (the SAME cache key
+    # `ResolveAssetsStep`'s own `generate_layer_image_real`/
+    # `_generate_layer_fake` compute - never a second copy of that
+    # arithmetic, the R1 lesson) and looking the resulting clip up by
+    # content hash - there is no per-layer binding column to read a clip
+    # id FROM (see `layer_prompt_hash`'s own docstring for why), so this
+    # is the one place a layer's resolved path is found, on every render.
+    # A shot whose layer clip is missing (never generated, or generation
+    # failed and was isolated per-shot) simply gets no entry here, which
+    # is exactly what `should_composite_parallax`'s own missing-input
+    # degrade rule already expects.
     shot_layer_images: dict[str, list[Path]] = {}
     layer_content_hashes: dict[str, list[str]] = {}
+    clip_repo = GeneratedClipRepository(ctx.session)
     for shot in timeline.all_shots():
         binding = bindings_by_shot.get(shot.id)
         path, content_hash = await _resolved_path_and_hash(ctx.session, binding)
@@ -262,6 +266,28 @@ async def render_video(
             secondary_content_hashes[shot.id] = sec_hash
         if sec_path is not None:
             shot_secondary_images[shot.id] = sec_path
+        if shot.layers:
+            layer_paths: list[Path] = []
+            layer_hashes: list[str] = []
+            for index, layer in enumerate(shot.layers):
+                phash = layer_prompt_hash(
+                    shot,
+                    layer,
+                    layer_index=index,
+                    project_uuid=project_uuid,
+                    creative_context=timeline.creative_context,
+                    style=timeline.metadata.render_style,
+                    frame_aspect=timeline.metadata.frame_aspect,
+                )
+                clip = await clip_repo.get_by_prompt_hash(phash)
+                if clip is None or not clip.local_path or not Path(clip.local_path).exists():
+                    layer_paths = []
+                    break
+                layer_paths.append(Path(clip.local_path))
+                layer_hashes.append(phash)
+            if layer_paths:
+                shot_layer_images[shot.id] = layer_paths
+                layer_content_hashes[shot.id] = layer_hashes
 
     # OQ-2: resolve subject focals once from asset sidecars (RV2). Missing
     # sidecar → None → centre Ken Burns + logged fallback. Never re-read

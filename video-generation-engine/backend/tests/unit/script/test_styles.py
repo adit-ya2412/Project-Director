@@ -5,6 +5,8 @@ points (`generate_timeline.py`, `shot/planner.py`) now read this instead
 of flat `settings.*` values directly.
 """
 
+import math
+
 import pytest
 
 from app.core.config import settings
@@ -15,6 +17,7 @@ from app.script.styles import (
     frame_aspect_error,
     resolve_constraint_bundle,
     resolve_draft_format,
+    resolve_generation_request_format,
     resolve_music_gains,
     resolve_narration_speed,
     resolve_picture_path,
@@ -706,3 +709,47 @@ def test_style_accepts_frame_aspect_is_the_single_source_of_truth():
         assert style_accepts_frame_aspect(style) is False
     assert style_accepts_frame_aspect(None) is False
     assert style_accepts_frame_aspect("not_a_real_style") is False
+
+
+# --- F1a: resolve_generation_request_format (illustrated_faceless.md
+# §8.1, 2026-09-05) -----------------------------------------------------
+
+
+def test_retrieval_styles_get_the_canvas_back_unchanged():
+    """The whole point of F1a's isolation: a RETRIEVAL_LADDER style must
+    be byte-identical to before F1a - this resolver is the first place
+    that could leak an oversize into a style it must never touch."""
+    for style in ("documentary_archival", "retention_fast", "archival_montage", "stillness", None):
+        frame = resolve_render_format(style)
+        assert resolve_generation_request_format(style, frame) == frame
+
+
+def test_generation_only_style_is_oversized_by_the_configured_fraction(monkeypatch):
+    monkeypatch.setattr(settings, "substrate_crop_oversize_fraction", 0.04)
+    frame = resolve_render_format("illustrated_risograph")
+    request = resolve_generation_request_format("illustrated_risograph", frame)
+    assert request.width > frame.width
+    assert request.height > frame.height
+    # math.ceil, never round - the request must never come in UNDER the
+    # canvas regardless of the fraction/canvas parity (the crop would
+    # have nothing to trim).
+    assert request.width == 749  # ceil(720 * 1.04)
+    assert request.height == 1332  # ceil(1280 * 1.04)
+
+
+def test_generation_only_landscape_canvas_is_also_oversized():
+    frame = resolve_render_format("illustrated_risograph", frame_aspect="16:9")
+    request = resolve_generation_request_format("illustrated_risograph", frame)
+    assert request.width > frame.width and request.height > frame.height
+
+
+def test_oversize_fraction_is_tunable_via_settings(monkeypatch):
+    """Bumping the setting changes the request size - the fraction lives
+    in exactly one place a human can tune, per the plan's own ask."""
+    frame = resolve_render_format("illustrated_risograph")
+    monkeypatch.setattr(settings, "substrate_crop_oversize_fraction", 0.0)
+    assert resolve_generation_request_format("illustrated_risograph", frame) == frame
+    monkeypatch.setattr(settings, "substrate_crop_oversize_fraction", 0.5)
+    bigger = resolve_generation_request_format("illustrated_risograph", frame)
+    assert bigger.width == math.ceil(frame.width * 1.5)
+    assert bigger.height == math.ceil(frame.height * 1.5)

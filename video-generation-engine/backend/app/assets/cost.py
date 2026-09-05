@@ -98,6 +98,27 @@ def estimate_project_cost_cents(
             total += settings.fal_video_cost_cents_estimate
         elif strategy == AssetStrategy.GENERATE_IMAGE:
             total += settings.fal_image_cost_cents_estimate
+    # illustrated_faceless.md F2b/§4.3 (2026-09-05): every one of a shot's
+    # `Shot.layers` is its own paid generation (`generate_layer_image_
+    # real`), never routed through the Asset Planner and never reflected
+    # in `shot.asset_plan` above - so a shot with layers needs its OWN
+    # addition here, unconditionally, for every shot that carries any.
+    # This deliberately does NOT try to detect "this shot's layers were
+    # already generated" the way the primary-media branch above does via
+    # `binding_states` (`_ALREADY_HAS_MEDIA_STATES`): there is no per-layer
+    # binding column to read (see `layer_prompt_hash`'s own docstring for
+    # why), so this function has no way to know from a `Timeline` alone
+    # whether a given shot's layers are still pending or long since
+    # cached. The safe direction, per this file's own stated philosophy
+    # ("an estimate that looks free when it is not is worse than
+    # useless"), is to keep counting them even after they are resolved -
+    # an estimate that OVER-counts a shot whose layers already exist is a
+    # much smaller sin than one that silently shows a paid generation as
+    # free. A future slice that gives layers real binding state should
+    # narrow this the same way the primary-media branch already is.
+    total += sum(
+        len(shot.layers) * settings.fal_image_cost_cents_estimate for shot in timeline.all_shots()
+    )
     # M8 step 4: folded in for the same reason the generation estimate is
     # shown pre-approval at all - 0 by default (Pixabay search is free),
     # but a project whose music_plan exists is always shown the true

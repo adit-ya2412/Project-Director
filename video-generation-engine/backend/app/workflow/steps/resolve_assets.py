@@ -123,6 +123,7 @@ from app.assets.focal import persist_vision_focal
 from app.assets.focal_check import locate_subject_focal
 from app.assets.ranking import rank_candidates, reuse_gaps_s, reuse_window_s
 from app.assets.relevance import candidate_relevance, passes_relevance_gate
+from app.assets.substrate_crop import center_crop_to_canvas
 from app.assets.thumbnails import cached_video_frame, is_video_file, shot_frame_cache_path
 from app.assets.validation import (
     mime_type_for_extension,
@@ -159,8 +160,18 @@ from app.repositories.generated_clip_repository import GeneratedClipRepository
 from app.repositories.llm_call_repository import LlmCallRepository
 from app.repositories.narration_repository import NarrationRepository
 from app.repositories.shot_binding_repository import TERMINAL_STATES, ShotBindingRepository
-from app.schemas.timeline import AssetStrategy, CreativeContext, PreferredMediaType, Shot
-from app.script.styles import RenderFormat, resolve_render_format
+from app.schemas.timeline import (
+    AssetStrategy,
+    CreativeContext,
+    PreferredMediaType,
+    Shot,
+    ShotLayer,
+)
+from app.script.styles import (
+    RenderFormat,
+    resolve_generation_request_format,
+    resolve_render_format,
+)
 from app.timeline.duration import compute_shot_start_times
 from app.utils.bounded_gather import asset_search_concurrency, bounded_gather
 from app.workflow.context import RunContext
@@ -223,6 +234,7 @@ def _raise_if_prefetch_failed(
     if isinstance(result, Exception):
         raise result
     return result
+
 
 # The canonical ladder split (implementation guide, M6.5 build order + A5):
 # rungs 1-4 are free and run before approval; rungs 5-6 cost real money and
@@ -347,19 +359,26 @@ async def generate_image_real(
     whether THIS call actually cost anything or reused an already-paid-for
     image - the workflow step ignores both, same as it always has."""
     frame = resolve_render_format(style, frame_aspect=frame_aspect)
+    # F1a (illustrated_faceless.md §8.1): a GENERATION_ONLY style requests
+    # a slightly oversized image here so `_generate_image_once` can crop
+    # any substrate margin back off before persisting - a RETRIEVAL_LADDER
+    # style gets `frame` back unchanged (byte-identical to before F1a).
+    request_frame = resolve_generation_request_format(style, frame)
     prompt = _styled_prompt(shot, creative_context, frame=frame)
     clip, cache_hit = await _generate_image_once(
         shot,
         base_prompt=prompt,
         project_uuid=project_uuid,
         project_dir=project_dir,
-        width=frame.width,
-        height=frame.height,
+        width=request_frame.width,
+        height=request_frame.height,
         model_id=settings.fal_image_model,
         image_provider=image_provider,
         clip_repo=clip_repo,
         narration_repo=narration_repo,
         cap_cents=cap_cents,
+        canvas_width=frame.width,
+        canvas_height=frame.height,
     )
     binding.clip_id = clip.id
     # Task 4 (2026-08-16): `asset_id` is explicitly cleared here, mirroring
@@ -394,8 +413,39 @@ async def _generate_image_once(
     clip_repo: GeneratedClipRepository,
     narration_repo: NarrationRepository,
     cap_cents: int | None = None,
+    canvas_width: int | None = None,
+    canvas_height: int | None = None,
 ) -> tuple[GeneratedClipModel, bool]:
-    """Generates once - no retry, no constraint check. The human at the
+    """F1a (illustrated_faceless.md §8.1, 2026-09-05): `canvas_width`/
+    `canvas_height`, when given and different from the REQUESTED `width`/
+    `height` below, are the style's real canvas - the caller
+    (`generate_image_real`) asks for a style-scoped oversized `width`/
+    `height` for a `GENERATION_ONLY` style
+    (`resolve_generation_request_format`) and passes the true canvas here
+    so the delivered bytes are centre-cropped
+    (`app/assets/substrate_crop.py::center_crop_to_canvas`) back to it
+    BEFORE anything is persisted or hashed downstream - the rest of the
+    pipeline must see exactly the canvas size it has always seen. Both
+    default to `None`, a no-op identical to this function's pre-F1a
+    behaviour - every `RETRIEVAL_LADDER` style's call site never passes
+    them, and `generate_image_real` itself only ever passes a DIFFERENT
+    canvas than `width`/`height` for a `GENERATION_ONLY` style.
+
+    `prompt_hash` below is keyed on the REQUESTED `width`/`height`, never
+    on the canvas size - a decision, not an accident: the request size is
+    a real generation input (the provider is asked for different bytes),
+    so an existing `GENERATION_ONLY`-style cache row correctly MISSES the
+    moment this oversize is introduced, exactly as it would for any other
+    change to what is actually requested. The crop itself cannot cause
+    two different images to share one hash: it is a pure function of the
+    delivered bytes and the canvas size, and the canvas size is fixed by
+    the style alone (never itself part of what varies call to call) - so
+    a given hash still pins one exact request, and the same request
+    (assuming a deterministic provider - already relied on everywhere else
+    this cache is used, e.g. the seed/attempt-count arithmetic just above)
+    always crops down to the same final bytes.
+
+    Generates once - no retry, no constraint check. The human at the
     one gate is the check now, not an automated vision call that used to
     be able to kill a shot on a false positive (M6.5 -> gate redesign).
     Returns `(clip, cache_hit)` - Task 6 (2026-08-16): `cache_hit` is
@@ -449,8 +499,21 @@ async def _generate_image_once(
         ImageRequest(prompt=prompt, width=width, height=height, shot_id=shot.id, seed=seed)
     )
     ext, _width_px, _height_px = validate_and_identify_image(result.content)
+    content = result.content
+    if (
+        canvas_width is not None
+        and canvas_height is not None
+        and (width, height) != (canvas_width, canvas_height)
+    ):
+        # F1a: crop the substrate margin off before anything downstream
+        # ever sees these bytes, then re-derive `ext` from the CROPPED
+        # content - a format-preserving crop should not change it, but
+        # the persisted file's extension must describe the bytes actually
+        # written, not the ones that arrived over the wire.
+        content = center_crop_to_canvas(content, canvas_width, canvas_height)
+        ext, _width_px, _height_px = validate_and_identify_image(content)
     path = project_dir / "clips" / f"{prompt_hash}.{ext}"
-    path.write_bytes(result.content)
+    path.write_bytes(content)
     clip = await clip_repo.insert(
         project_id=project_uuid,
         shot_id=shot.id,
@@ -463,6 +526,236 @@ async def _generate_image_once(
         cost_cents=settings.fal_image_cost_cents_estimate,
     )
     return clip, False
+
+
+def layer_styled_prompt(
+    shot: Shot,
+    layer: ShotLayer,
+    creative_context: CreativeContext,
+    *,
+    frame: RenderFormat | None = None,
+) -> str:
+    """F2b (illustrated_faceless.md §8.5, 2026-09-05): a layer's own
+    styled prompt, through the IDENTICAL pipeline (`_styled_prompt`) a
+    shot's own primary prompt already gets - the `visual_style`
+    truncation (the collage bug that function's own docstring measures)
+    and the landscape suffix both apply to a layer exactly as they do to
+    a shot, since a layer is generated as its own standalone image
+    (`ShotLayer.prompt` is a planner-authored creative decision, canon
+    3.1 - this function only executes it, never invents one). Built via
+    the same `shot.model_copy(update={"prompt": ...})` swap
+    `ResolveAssetsStep`'s own secondary-panel resolution already uses,
+    not a parallel implementation."""
+    layer_shot = shot.model_copy(update={"prompt": layer.prompt})
+    return _styled_prompt(layer_shot, creative_context, frame=frame)
+
+
+def _layer_seed(project_seed: int, layer_index: int) -> int:
+    """F2b: a fixed, deterministic per-layer seed variation (I5) -
+    `varied_seed` reused rather than `_generate_image_once`'s own
+    `count_for_shot`-based attempt numbering. A layer is generated
+    exactly once per `(shot, layer_index)` by `ResolveAssetsStep` alone -
+    there is no per-layer "generate again" endpoint the way a standalone
+    shot image has (`POST /shots/{id}/generate`), so there is no attempt
+    count to read. Layer 0 (background) keeps the bare project seed,
+    matching every other rung's own attempt-0 convention; later layers
+    vary from it deterministically - never `random`, never wall-clock."""
+    return project_seed if layer_index == 0 else varied_seed(project_seed, layer_index)
+
+
+def layer_prompt_hash(
+    shot: Shot,
+    layer: ShotLayer,
+    *,
+    layer_index: int,
+    project_uuid: uuid_module.UUID,
+    creative_context: CreativeContext,
+    style: str | None = None,
+    frame_aspect: str | None = None,
+) -> str:
+    """F2b: the exact cache key `generate_layer_image_real`/
+    `_generate_layer_fake` each compute for one of a shot's `ShotLayer`s -
+    exposed so `app/workflow/steps/render.py` can recompute the IDENTICAL
+    hash to look an already-resolved layer clip up
+    (`GeneratedClipRepository.get_by_prompt_hash`), rather than either
+    module owning a second copy of this arithmetic (the R1 lesson every
+    other `resolve_*` helper in this codebase already follows - "a single
+    function neither call site can bypass is what makes that true").
+
+    No per-layer binding column exists (`ShotBindingModel` gained none for
+    this slice - see the plan's own log for why): a layer's resolved clip
+    is found purely by recomputing this same hash, never by a stored
+    foreign key. This only works because `ResolveAssetsStep` always runs
+    before `RenderStep` in the pipeline and both read `settings`
+    identically within one process - so the row this recomputes has
+    always already been written (or cache-hit) by the time `render.py`
+    looks it up.
+
+    Real vs DRY_RUN diverge only in which `model_id`/seed are hashed -
+    `settings.dry_run` is the one process-wide flag both sides read."""
+    frame = resolve_render_format(style, frame_aspect=frame_aspect)
+    request_frame = resolve_generation_request_format(style, frame)
+    prompt = layer_styled_prompt(shot, layer, creative_context, frame=frame)
+    if settings.dry_run:
+        return generation_prompt_hash(
+            prompt, "fake_image", width=request_frame.width, height=request_frame.height
+        )
+    project_seed = _project_seed(str(project_uuid))
+    seed = _layer_seed(project_seed, layer_index)
+    return generation_prompt_hash(
+        prompt,
+        settings.fal_image_model,
+        seed,
+        width=request_frame.width,
+        height=request_frame.height,
+    )
+
+
+async def generate_layer_image_real(
+    shot: Shot,
+    layer: ShotLayer,
+    *,
+    layer_index: int,
+    project_uuid: uuid_module.UUID,
+    project_dir,
+    image_provider: ImageProvider,
+    clip_repo: GeneratedClipRepository,
+    narration_repo: NarrationRepository,
+    creative_context: CreativeContext,
+    cap_cents: int | None = None,
+    style: str | None = None,
+    frame_aspect: str | None = None,
+) -> tuple[GeneratedClipModel, bool]:
+    """F2b (illustrated_faceless.md §8.5, 2026-09-05): one of a shot's
+    `ShotLayer`s, generated exactly like a standalone shot image
+    (`generate_image_real`) - same budget check
+    (`check_budget`/`total_project_spend_cents`), same clip repository,
+    same content hashing (`layer_prompt_hash`), same F1a substrate crop
+    (§4.3: layers are paid generations and must be counted like any
+    other, never a free or uncounted side channel). A dedicated entry
+    point rather than a call into `generate_image_real` with a swapped
+    prompt because the SEED differs (`_layer_seed`, not
+    `_generate_image_once`'s own attempt-count convention - see that
+    function's own docstring for why layers do not use it).
+
+    **Never routes through the Asset Planner** (§3.2's reasoning
+    generalised one level: `ShotLayer.asset_plan` is never authored - see
+    that field's own docstring - so "generate this image" is the only
+    acquisition path a layer ever has, decided in code, never asked of an
+    LLM that was never given the choice in the first place)."""
+    frame = resolve_render_format(style, frame_aspect=frame_aspect)
+    request_frame = resolve_generation_request_format(style, frame)
+    prompt = layer_styled_prompt(shot, layer, creative_context, frame=frame)
+    prompt_hash = layer_prompt_hash(
+        shot,
+        layer,
+        layer_index=layer_index,
+        project_uuid=project_uuid,
+        creative_context=creative_context,
+        style=style,
+        frame_aspect=frame_aspect,
+    )
+
+    cached = await clip_repo.get_by_prompt_hash(prompt_hash)
+    if cached is not None:
+        return cached, True
+
+    already_spent = await total_project_spend_cents(
+        clip_repo=clip_repo, narration_repo=narration_repo, project_id=project_uuid
+    )
+    check_budget(
+        already_spent_cents=already_spent,
+        additional_cents=settings.fal_image_cost_cents_estimate,
+        cap_cents=cap_cents,
+    )
+
+    project_seed = _project_seed(str(project_uuid))
+    seed = _layer_seed(project_seed, layer_index)
+    result = await image_provider.generate(
+        ImageRequest(
+            prompt=prompt,
+            width=request_frame.width,
+            height=request_frame.height,
+            shot_id=shot.id,
+            seed=seed,
+        )
+    )
+    ext, _width_px, _height_px = validate_and_identify_image(result.content)
+    content = result.content
+    if (request_frame.width, request_frame.height) != (frame.width, frame.height):
+        content = center_crop_to_canvas(content, frame.width, frame.height)
+        ext, _width_px, _height_px = validate_and_identify_image(content)
+    path = project_dir / "clips" / f"{prompt_hash}.{ext}"
+    path.write_bytes(content)
+    clip = await clip_repo.insert(
+        project_id=project_uuid,
+        shot_id=shot.id,
+        provider=image_provider.name,
+        model_id=settings.fal_image_model,
+        prompt=prompt,
+        prompt_hash=prompt_hash,
+        duration_s=None,
+        local_path=str(path),
+        cost_cents=settings.fal_image_cost_cents_estimate,
+    )
+    return clip, False
+
+
+async def _generate_layer_fake(
+    shot: Shot,
+    layer: ShotLayer,
+    *,
+    layer_index: int,
+    project_uuid: uuid_module.UUID,
+    project_dir,
+    image_provider: ImageProvider,
+    clip_repo: GeneratedClipRepository,
+    creative_context: CreativeContext,
+    style: str | None = None,
+    frame_aspect: str | None = None,
+) -> GeneratedClipModel:
+    """DRY_RUN counterpart to `generate_layer_image_real` - mirrors
+    `_generate_fake`'s own unchecked, cost-0 shape exactly:
+    `FakeImageProvider` never spends anything real, so there is nothing
+    to budget-check here, only a cache to populate (still through the
+    same `layer_prompt_hash` every other layer path reads)."""
+    frame = resolve_render_format(style, frame_aspect=frame_aspect)
+    request_frame = resolve_generation_request_format(style, frame)
+    prompt = layer_styled_prompt(shot, layer, creative_context, frame=frame)
+    prompt_hash = layer_prompt_hash(
+        shot,
+        layer,
+        layer_index=layer_index,
+        project_uuid=project_uuid,
+        creative_context=creative_context,
+        style=style,
+        frame_aspect=frame_aspect,
+    )
+    clip = await clip_repo.get_by_prompt_hash(prompt_hash)
+    if clip is not None:
+        return clip
+
+    result = await image_provider.generate(
+        ImageRequest(
+            prompt=prompt, width=request_frame.width, height=request_frame.height, shot_id=shot.id
+        )
+    )
+    content = result.content
+    if (request_frame.width, request_frame.height) != (frame.width, frame.height):
+        content = center_crop_to_canvas(content, frame.width, frame.height)
+    path = project_dir / "clips" / f"{prompt_hash}.png"
+    path.write_bytes(content)
+    return await clip_repo.insert(
+        project_id=project_uuid,
+        shot_id=shot.id,
+        provider=image_provider.name,
+        model_id="fake-image-v1",
+        prompt=prompt,
+        prompt_hash=prompt_hash,
+        duration_s=None,
+        local_path=str(path),
+        cost_cents=0,
+    )
 
 
 async def _generate_keyframe_once(
@@ -843,10 +1136,23 @@ class ResolveAssetsStep:
             binding = await binding_repo.get_or_create_pending(
                 project_uuid, timeline.version, shot.id
             )
-            needs_secondary = not secondary_panel_done(
-                shot, binding, done_states=self._done_states
-            )
-            if binding.state in self._done_states and not needs_secondary:
+            needs_secondary = not secondary_panel_done(shot, binding, done_states=self._done_states)
+            # illustrated_faceless.md F2b (2026-09-05): a shot's layers
+            # have no binding column of their own (§3.2's generation-only
+            # enforcement generalised - a layer never searches, so there
+            # is no per-layer state machine to track, only "generate it,
+            # cache-hit if it's already there" - see `_resolve_layers`).
+            # So a shot whose PRIMARY binding is already terminal must
+            # still be revisited here whenever it carries layers and this
+            # pass permits generation - otherwise a crash between the
+            # primary resolving and its layers generating would leave the
+            # layers unresolved forever (the `continue` below would skip
+            # this shot on every future run). Gated on
+            # `self._generation_permitted` so the search-only pass never
+            # touches a shot's layers at all - layers are GENERATION_ONLY
+            # by construction, never a search rung.
+            needs_layers = bool(shot.layers) and self._generation_permitted
+            if binding.state in self._done_states and not needs_secondary and not needs_layers:
                 continue
             pending.append(
                 _PendingShot(
@@ -859,9 +1165,9 @@ class ResolveAssetsStep:
 
         # Search I/O overlaps across shots; rank/bind below stays serial
         # so reuse_gap_s sees earlier picks in timeline order (C4).
-        prefetched: list[tuple[list[_PrefetchedRung], list[_PrefetchedRung] | None] | Exception] | None = (
-            None
-        )
+        prefetched: (
+            list[tuple[list[_PrefetchedRung], list[_PrefetchedRung] | None] | Exception] | None
+        ) = None
         if (
             pending
             and not settings.dry_run
@@ -1030,6 +1336,37 @@ class ResolveAssetsStep:
                         )
                         binding.secondary_state = "failed"
                         binding.secondary_last_error = str(exc)
+                if shot.layers and self._generation_permitted:
+                    # F2b: its own try/except, same isolation reasoning as
+                    # the secondary-panel block above - a failed LAYER
+                    # must never mark the whole shot `failed` (its primary
+                    # media may already be perfectly good); it degrades
+                    # that shot's parallax composite to a plain image
+                    # instead (`should_composite_parallax`'s own
+                    # missing-input rule), never the render itself.
+                    try:
+                        await self._resolve_layers(
+                            shot,
+                            project_uuid=project_uuid,
+                            project_dir=project_dir,
+                            image_provider=image_provider,
+                            clip_repo=clip_repo,
+                            narration_repo=narration_repo,
+                            creative_context=timeline.creative_context,
+                            cap_cents=cap_cents,
+                            style=timeline.metadata.render_style,
+                            frame_aspect=timeline.metadata.frame_aspect,
+                        )
+                    except TransientError as exc:
+                        logger.warning(
+                            "resolve_assets.layer_transient",
+                            extra={"shot_id": shot.id, "error": str(exc)},
+                        )
+                    except Exception as exc:  # noqa: BLE001 - isolate, do not erase
+                        logger.warning(
+                            "resolve_assets.layer_failed",
+                            extra={"shot_id": shot.id, "error": str(exc)},
+                        )
             except TransientError as exc:
                 # Leave state as "pending" (not terminal) - eligible for
                 # another attempt on a future run, without failing the
@@ -1232,9 +1569,7 @@ class ResolveAssetsStep:
                 pool
                 if strategy == AssetStrategy.PROJECT_ASSETS
                 else [
-                    c
-                    for c in pool
-                    if not licence_requirements or c.licence in licence_requirements
+                    c for c in pool if not licence_requirements or c.licence in licence_requirements
                 ]
             )
             if not eligible:
@@ -1266,7 +1601,9 @@ class ResolveAssetsStep:
                 _PrefetchedRung(
                     strategy=strategy,
                     provider_name=provider.name,
-                    entity_provider_name=entity_provider.name if entity_provider is not None else None,
+                    entity_provider_name=(
+                        entity_provider.name if entity_provider is not None else None
+                    ),
                     entries=deduped,
                 )
             )
@@ -1511,24 +1848,34 @@ class ResolveAssetsStep:
         frame_aspect: str | None = None,
     ) -> None:
         frame = resolve_render_format(style, frame_aspect=frame_aspect)
+        # F1a: exercised in DRY_RUN too (not just real generation) - the
+        # crop is a no-op quality-wise against `FakeImageProvider` (its
+        # output never carries a substrate margin), but requesting the
+        # oversized size and cropping back is the same mechanism either
+        # way, so DRY_RUN/unit tests exercise the real dimension
+        # arithmetic rather than a second, untested code path.
+        request_frame = resolve_generation_request_format(style, frame)
         result = await image_provider.generate(
             ImageRequest(
                 prompt=shot.prompt,
-                width=frame.width,
-                height=frame.height,
+                width=request_frame.width,
+                height=request_frame.height,
                 shot_id=shot.id,
             )
         )
+        content = result.content
+        if (request_frame.width, request_frame.height) != (frame.width, frame.height):
+            content = center_crop_to_canvas(content, frame.width, frame.height)
         prompt_hash = generation_prompt_hash(
             shot.prompt,
             image_provider.name,
-            width=frame.width,
-            height=frame.height,
+            width=request_frame.width,
+            height=request_frame.height,
         )
         clip = await clip_repo.get_by_prompt_hash(prompt_hash)
         if clip is None:
             path = project_dir / "clips" / f"{prompt_hash}.png"
-            path.write_bytes(result.content)
+            path.write_bytes(content)
             clip = await clip_repo.insert(
                 project_id=project_uuid,
                 shot_id=shot.id,
@@ -1543,6 +1890,62 @@ class ResolveAssetsStep:
         binding.clip_id = clip.id
         binding.state = "generated"
         binding.rung = AssetStrategy.GENERATE_IMAGE.value
+
+    async def _resolve_layers(
+        self,
+        shot: Shot,
+        *,
+        project_uuid: uuid_module.UUID,
+        project_dir,
+        image_provider: ImageProvider | None,
+        clip_repo: GeneratedClipRepository,
+        narration_repo: NarrationRepository,
+        creative_context: CreativeContext,
+        cap_cents: int | None,
+        style: str | None,
+        frame_aspect: str | None,
+    ) -> None:
+        """F2b (illustrated_faceless.md §8.5, 2026-09-05): resolves every
+        one of `shot.layers` to a real generated image - the ONLY
+        acquisition path a layer ever takes (see `generate_layer_image_
+        real`'s own docstring). No binding field is written here - a
+        layer's resolved clip is found again purely by recomputing
+        `layer_prompt_hash` (see that function's own docstring for why);
+        the caller wraps this whole call in its own try/except so one
+        failed layer degrades that shot's parallax rather than failing
+        the shot's own, separately-resolved primary media."""
+        if not shot.layers:
+            return
+        assert image_provider is not None
+        for index, layer in enumerate(shot.layers):
+            if settings.dry_run:
+                await _generate_layer_fake(
+                    shot,
+                    layer,
+                    layer_index=index,
+                    project_uuid=project_uuid,
+                    project_dir=project_dir,
+                    image_provider=image_provider,
+                    clip_repo=clip_repo,
+                    creative_context=creative_context,
+                    style=style,
+                    frame_aspect=frame_aspect,
+                )
+            else:
+                await generate_layer_image_real(
+                    shot,
+                    layer,
+                    layer_index=index,
+                    project_uuid=project_uuid,
+                    project_dir=project_dir,
+                    image_provider=image_provider,
+                    clip_repo=clip_repo,
+                    narration_repo=narration_repo,
+                    creative_context=creative_context,
+                    cap_cents=cap_cents,
+                    style=style,
+                    frame_aspect=frame_aspect,
+                )
 
     # Track C §15 N4: this method and `_generate_checked_image_temp_old` /
     # `_generate_checked_image` / `_generate_checked_keyframe` below are

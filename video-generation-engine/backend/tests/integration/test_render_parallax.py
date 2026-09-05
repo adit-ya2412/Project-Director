@@ -12,6 +12,7 @@ shot` already proves for split-screen.
 """
 
 import json
+import random
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -204,6 +205,59 @@ async def test_a_failed_key_guard_degrades_to_the_shots_own_image(tmp_path, capl
     _extract_frame(output, frame)
     # Degraded to the shot's OWN single image - never a half-built
     # composite, never a killed render.
+    assert _frame_has_colour(frame, _RED)
+    assert not _frame_has_colour(frame, _BLUE)
+
+
+def _real_looking_subject(*, width: int = 640, height: int = 480, seed: int = 7) -> Image.Image:
+    """A densely-varied, photographic-style fixture - deliberately NOT a
+    flat colour field, unlike every synthetic plate above. This is
+    closer to what a REAL delivered illustration actually looks like
+    (paper grain, halftone texture, §1.5) than a hand-picked flat colour
+    is, so the §4.5 guard's ZERO-match direction (the opaque-rectangle
+    bug - "the key matched nothing") is exercised here against something
+    that actually resembles delivered media, per the F2b brief's own ask
+    ("verify its degrade path with a real (fixture) image that keys to
+    ~0%"). `random.Random(seed)` is deterministic - not a live provider
+    call, no spending - so this stays a reproducible fixture, not a flaky
+    one."""
+    data = random.Random(seed).randbytes(width * height * 3)
+    return Image.frombytes("RGB", (width, height), data)
+
+
+async def test_a_zero_key_match_on_a_real_looking_image_degrades_to_the_shots_own_image(
+    tmp_path, caplog
+):
+    """§4.5's OTHER failure direction (§1.5's own opaque-rectangle bug):
+    a subject plate whose sampled top-strip key matches almost nothing
+    else in the frame. Unlike the synthetic magenta plates above, this
+    fixture is genuinely busy/textured - the first time this guard is
+    exercised against something that looks like real delivered media
+    rather than a flat colour a test author picked to key cleanly (or
+    not) on purpose."""
+    background = tmp_path / "bg.png"
+    subject = tmp_path / "sub.png"
+    primary = tmp_path / "primary.png"
+    Image.new("RGB", (640, 480), color=_BLUE).save(background, format="PNG")
+    _real_looking_subject().save(subject, format="PNG")
+    Image.new("RGB", (640, 480), color=_RED).save(primary, format="PNG")
+
+    output = tmp_path / "out.mp4"
+    with caplog.at_level("WARNING"):
+        await render_timeline(
+            _timeline([_parallax_shot()]),
+            {"sh_01": primary},
+            _RENDER_SETTINGS,
+            output,
+            work_dir=tmp_path / "work",
+            shot_layer_images={"sh_01": [background, subject]},
+        )
+
+    assert any(r.message == "render.parallax_guard_failed_degrading" for r in caplog.records)
+    frame = tmp_path / "frame.png"
+    _extract_frame(output, frame)
+    # Degraded to the shot's OWN single image - the busy fixture never
+    # composited as a half-built parallax shot.
     assert _frame_has_colour(frame, _RED)
     assert not _frame_has_colour(frame, _BLUE)
 
