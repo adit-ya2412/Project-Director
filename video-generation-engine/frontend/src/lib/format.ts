@@ -40,6 +40,23 @@ export function formatDateTime(iso: string | null | undefined): string {
   })
 }
 
+/** Storage footprint for the deletion-preview dialog. `0` reads as "0 B",
+ * not "—" - an empty-but-present storage directory is a real, reportable
+ * fact (`storage_exists: true, storage_bytes: 0`), distinct from the
+ * directory being absent entirely (which the dialog states in words, not
+ * through this formatter). */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let value = bytes / 1024
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+  return `${value.toFixed(value < 10 ? 1 : 0)} ${units[unitIndex]}`
+}
+
 export function wordCount(text: string): number {
   return text
     .trim()

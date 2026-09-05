@@ -29,6 +29,7 @@ export const qk = {
   timeline: (id: string) => ["timeline", id] as const,
   sceneShots: (id: string, sceneId: string) =>
     ["scene-shots", id, sceneId] as const,
+  deletionPreview: (id: string) => ["deletion-preview", id] as const,
 };
 
 export function useProjects() {
@@ -68,6 +69,38 @@ export function useProgress(
     queryFn: () => api.getProgress(projectId as string, { expandShots }),
     enabled: !!projectId && (opts?.enabled ?? true),
     refetchInterval: (query) => progressPollMs(query.state.data),
+  });
+}
+
+/** Fetched on demand (`enabled`), not polled - a confirmation dialog opens,
+ * asks once, and shows whatever it gets back. `staleTime: 0` (the default)
+ * is deliberate: reopening the dialog after some other change (another
+ * project just approved/deleted something of its own) should never show a
+ * stale cross-project dependency list. */
+export function useDeletionPreview(
+  projectId: string | undefined,
+  opts?: { enabled?: boolean },
+) {
+  return useQuery({
+    queryKey: qk.deletionPreview(projectId ?? ""),
+    queryFn: () => api.getDeletionPreview(projectId as string),
+    enabled: !!projectId && (opts?.enabled ?? true),
+  });
+}
+
+/** No `onSettled` trigger-invalidation shape (`invalidateAfterTrigger`) -
+ * this isn't a workflow trigger, the project is simply gone. Invalidates
+ * the project LIST (the screen the caller returns to) and drops this
+ * project's own cached queries so a stale card can never flash back. */
+export function useDeleteProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) => api.deleteProject(projectId),
+    onSuccess: (_data, projectId) => {
+      qc.invalidateQueries({ queryKey: qk.projects });
+      qc.removeQueries({ queryKey: qk.project(projectId) });
+      qc.removeQueries({ queryKey: qk.deletionPreview(projectId) });
+    },
   });
 }
 

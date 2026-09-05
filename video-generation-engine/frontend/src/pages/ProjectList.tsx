@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Film, Clock3, CalendarDays, ImageOff } from 'lucide-react'
+import { Film, Clock3, CalendarDays, ImageOff, Trash2 } from 'lucide-react'
 import { useProjects } from '@/lib/queries'
 import { projectThumbnailUrl } from '@/lib/api'
 import { formatDate, formatDuration } from '@/lib/format'
 import type { Project, ProjectStatus } from '@/lib/types'
 import { StatusChip } from '@/components/StatusChip'
+import { DeleteProjectDialog } from '@/components/DeleteProjectDialog'
 import { Card } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
@@ -55,19 +56,40 @@ function ThumbnailImg({ project }: { project: Project }) {
   )
 }
 
-function ProjectCard({ project }: { project: Project }) {
+function ProjectCard({
+  project,
+  onRequestDelete,
+}: {
+  project: Project
+  onRequestDelete: (project: Project) => void
+}) {
   const shotCount = project.timeline?.scenes.reduce((n, s) => n + s.shots.length, 0) ?? null
   const duration = project.timeline?.metadata.total_duration_s ?? null
   const isFailed = project.status === 'failed'
 
   return (
-    <Link to={`/projects/${project.id}`}>
+    <Link to={`/projects/${project.id}`} className="block">
       <Card
         className={cn(
-          'group overflow-hidden transition-colors hover:border-primary/50',
+          'group relative overflow-hidden transition-colors hover:border-primary/50',
           isFailed && 'border-destructive/50 bg-destructive/[0.04]',
         )}
       >
+        <button
+          type="button"
+          aria-label={`Delete ${project.name}`}
+          className="absolute right-2 top-2 z-10 rounded-md bg-background/80 p-1.5 text-muted-foreground opacity-0 backdrop-blur transition-opacity hover:bg-destructive hover:text-destructive-foreground group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={(e) => {
+            // The whole card is a Link (navigate to the project) - this
+            // button sits on top of it and must never let that click
+            // through, or "delete" would also open the project.
+            e.preventDefault()
+            e.stopPropagation()
+            onRequestDelete(project)
+          }}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
         <div className={`${(project.render_width ?? 720) > (project.render_height ?? 1280) ? "aspect-video" : "aspect-[9/16]"} w-full max-h-56 overflow-hidden bg-secondary/40`}>
           <ThumbnailImg project={project} />
         </div>
@@ -101,6 +123,7 @@ function ProjectCard({ project }: { project: Project }) {
 
 export function ProjectList() {
   const { data: projects, isLoading, isError, error } = useProjects()
+  const [pendingDelete, setPendingDelete] = useState<Project | null>(null)
 
   return (
     <div>
@@ -140,9 +163,20 @@ export function ProjectList() {
       {!isLoading && !isError && projects && projects.length > 0 && (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
           {sortProjects(projects).map((p) => (
-            <ProjectCard key={p.id} project={p} />
+            <ProjectCard key={p.id} project={p} onRequestDelete={setPendingDelete} />
           ))}
         </div>
+      )}
+
+      {pendingDelete && (
+        <DeleteProjectDialog
+          projectId={pendingDelete.id}
+          projectName={pendingDelete.name}
+          open={pendingDelete !== null}
+          onOpenChange={(open) => {
+            if (!open) setPendingDelete(null)
+          }}
+        />
       )}
     </div>
   )

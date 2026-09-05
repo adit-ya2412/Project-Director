@@ -122,6 +122,7 @@ from app.core.logging import get_logger
 from app.db.session import get_db
 from app.models.asset import AssetModel
 from app.models.generated_clip import GeneratedClipModel
+from app.projects.deletion import build_deletion_preview, delete_project
 from app.providers.fakes.image import FakeImageProvider
 from app.providers.fal_image import FalImageProvider
 from app.providers.fal_video import FalVideoProvider
@@ -136,6 +137,7 @@ from app.repositories.project_repository import ProjectRepository
 from app.repositories.shot_binding_repository import ShotBindingRepository
 from app.repositories.workflow_repository import WorkflowRunRepository
 from app.schemas.project import Project, ProjectStatus
+from app.schemas.project_deletion import ProjectDeletionSummary
 from app.schemas.script_preflight import (
     BreakSuggestionOut,
     FragmentEstimateOut,
@@ -502,6 +504,43 @@ async def list_projects(
 @router.get("/{project_id}", response_model=Project)
 async def get_project(project_id: str, repo: ProjectRepository = Depends(get_repo)) -> Project:
     return await _get_project_or_404(project_id, repo)
+
+
+@router.get("/{project_id}/deletion-preview", response_model=ProjectDeletionSummary)
+async def get_deletion_preview(
+    project_id: str,
+    session: AsyncSession = Depends(get_db),
+) -> ProjectDeletionSummary:
+    """What `DELETE /{project_id}` would destroy, and what it would cost
+    OTHER projects - see `app/projects/deletion.py`'s module docstring
+    for the full accounting (row counts, storage bytes, the verified FK
+    order) and the cross-project detection's exact honest limits.
+    Read-only - safe for a confirmation dialog to call as often as it
+    needs to before a human actually commits to deleting anything."""
+    summary = await build_deletion_preview(session, project_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found")
+    return summary
+
+
+@router.delete("/{project_id}", response_model=ProjectDeletionSummary)
+async def delete_project_endpoint(
+    project_id: str,
+    session: AsyncSession = Depends(get_db),
+) -> ProjectDeletionSummary:
+    """Deletes every DB row belonging to this project (verified FK-safe
+    order, one transaction - `app/projects/deletion.py`) and its storage
+    directory, then returns what was removed: the same shape
+    `GET .../deletion-preview` already showed the caller before they
+    confirmed. Silently releases (never deletes) any OTHER project's
+    `shot_binding` still pointing at one of this project's
+    `generated_clip` rows, resetting it to `pending` rather than leaving
+    a dangling reference or failing the whole delete on Postgres' FK
+    constraint - see that module's docstring for why."""
+    summary = await delete_project(session, project_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found")
+    return summary
 
 
 @router.post("/{project_id}/script", response_model=Project)
@@ -3237,11 +3276,3 @@ async def get_project_thumbnail(
             return FileResponse(served_path, media_type="image/jpeg")
 
     raise HTTPException(status_code=404, detail="no thumbnail available yet")
-
-
-@router.delete("/{project_id}")
-async def delete_project(project_id: str, repo: ProjectRepository = Depends(get_repo)) -> dict:
-    await _get_project_or_404(project_id, repo)
-    # No delete method on ProjectRepository yet - CASCADE behavior across
-    # script/timeline_version/asset/etc. needs deciding first (M3+).
-    raise HTTPException(status_code=501, detail="project deletion lands in M3+")

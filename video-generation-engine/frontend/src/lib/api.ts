@@ -4,6 +4,7 @@ import type {
   MusicUploadResult,
   Project,
   ProgressResponse,
+  ProjectDeletionSummary,
   RegenerateFailedResult,
   SceneApprovalResult,
   ScriptPreflightResponse,
@@ -73,6 +74,28 @@ export function listProjects(): Promise<Project[]> {
 
 export function getProject(projectId: string): Promise<Project> {
   return request(`/projects/${projectId}`);
+}
+
+/** What deleting this project would destroy, AND what it would cost other
+ * projects still sharing its cached narration/generated media (global
+ * content-hash cache - `backend/app/projects/deletion.py`'s own module
+ * docstring). Read-only, safe to call repeatedly - the confirmation dialog
+ * calls this before ever showing a "delete" button as enabled. */
+export function getDeletionPreview(
+  projectId: string,
+): Promise<ProjectDeletionSummary> {
+  return request(`/projects/${projectId}/deletion-preview`);
+}
+
+/** Actually deletes the project: every DB row (verified FK-safe order) and
+ * its storage directory. Returns the same shape `getDeletionPreview`
+ * already showed the caller - what was actually removed. Only ever call
+ * this after the caller has shown the preview and gotten explicit human
+ * confirmation - there is no undo. */
+export function deleteProject(
+  projectId: string,
+): Promise<ProjectDeletionSummary> {
+  return request(`/projects/${projectId}`, { method: "DELETE" });
 }
 
 export function createProject(

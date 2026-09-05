@@ -2729,6 +2729,140 @@ files`.
 
 ---
 
+### P-project-deletion — Project deletion endpoint, closing the §8.4 gap (2026-09-05)
+
+**Scope executed:** not a slice of the illustrated format itself - logged
+here because it directly answers §8.4's own closing line ("a purge must
+check content-hash reachability across all projects before unlinking any
+narration file"), which nothing had done yet. Nine abandoned ~$0.66 test
+renders had accumulated in the UI with no way to remove them.
+
+Built:
+- `GET /projects/{id}/deletion-preview` and `DELETE /projects/{id}`
+  (`backend/app/api/projects.py`) - the second REPLACES a `DELETE
+  /{project_id}` stub already sitting in that file returning `501 "project
+  deletion lands in M3+"`. **Correction to the brief this task started
+  from**: it stated no delete endpoint existed at all; a non-functional
+  placeholder route already did, at the exact same path this work needed -
+  found via a ruff `F811` redefinition error, not by reading first. Removed
+  and replaced, not left beside it.
+- `backend/app/projects/deletion.py` - `build_deletion_preview` (read-only)
+  and `delete_project` (performs it), plus `resolve_project_storage_dir`,
+  the path-escape guard.
+- `backend/app/schemas/project_deletion.py` - the shared response shape.
+- Frontend: `DeleteProjectDialog.tsx`, a `Trash2` icon per card in
+  `ProjectList.tsx` (stops event propagation so it never also navigates
+  into the project), `getDeletionPreview`/`deleteProject` in `lib/api.ts`,
+  `useDeletionPreview`/`useDeleteProject` in `lib/queries.ts`.
+
+**FK deletion order** (verified against every model's own FK declaration,
+not assumed from the table list): `workflow_step_attempt` → `shot_binding`
+→ {`asset`, `generated_clip`, `narration`, `render`, `script`,
+`timeline_version`, `domain_event`, `llm_call`, `workflow_run`} → `project`.
+`workflow_step_attempt` has no `project_id` of its own - counted/deleted via
+its parent `workflow_run`. `shot_binding` is the one table with FKs beyond
+`project` (`asset_id`/`secondary_asset_id`, `clip_id`/`secondary_clip_id`),
+so it must go before those two.
+
+**The wrinkle the FK order alone doesn't cover:** `generated_clip.prompt_hash`
+being globally cached (same rung-0 discipline as `narration.content_hash`,
+§8.4's own subject) means ANOTHER project's `shot_binding` can legitimately
+point at a clip this project owns, right now, in the shared dev database -
+measured, not theoretical (see Verification). Deleting that clip row out
+from under a live FK would either be rejected by Postgres outright, or (if
+it somehow weren't) leave that binding's `state` claiming a shot is filled
+when its media no longer exists. `delete_project` releases every such
+binding first - clears the dangling id, resets `state`/`secondary_state` to
+`"pending"` - the same "reset one row and re-run" recovery
+`ShotBindingModel`'s own docstring already documents for partial
+regeneration, applied here instead of failing the whole delete.
+
+**Cross-project detection, and its honest limits** (this is the part the
+brief said mattered most):
+- **Narration**: NOT the proxy the brief allowed as a fallback - a real
+  recomputation. For every OTHER project's LATEST timeline, recompute
+  `compute_narration_content_hash` per scene using THAT project's own
+  resolved voice/model/format/speed/language (the exact algorithm
+  `RenderStep._resolve_narration_rows` uses to look a row up), and check
+  whether the result matches one of THIS project's own rows. Catches the
+  case that matters even when the dependent project has never inserted a
+  narration row of its own. Cannot catch: a project whose latest timeline
+  never reached `narration_locked`; a dependency living only in a
+  superseded, non-latest version; a project that doesn't exist yet.
+- **GeneratedClip**: an exact `shot_binding` query (`clip_id`/
+  `secondary_clip_id` in another project pointing at this project's rows),
+  not a recomputation - shot-image prompt construction lives in the shot
+  planner, out of this task's scope and not worth duplicating outside its
+  one owner. Cannot catch a project that would compute the identical
+  `prompt_hash` on some future plan/regenerate pass but has no binding
+  pointing at this clip yet - there is no way to know a not-yet-computed
+  hash in advance.
+
+**Measured:**
+- Real shared dev DB, read-only probe before writing any test: **1821
+  project rows**, **159 of them with a `timeline_version`**, **640
+  `narration` rows** - confirms the brief's "not hypothetical" framing and
+  set the scale this had to hold up against.
+- `build_deletion_preview` against that live data (one seeded throwaway
+  project, cleaned up after): **4.47s**, scanning all 159 other timelines.
+  No crash - added a defensive `try/except` around `Timeline.model_validate`
+  per other-project document after confirming SOME of that accumulated data
+  predates the current `schema_version` and would otherwise raise
+  `ValidationError` and take down the WHOLE preview for an unrelated
+  project's stale row.
+- End-to-end smoke test (`delete_project`, real Postgres, cleaned up after):
+  seeded one project across all 11 tables + a workflow_run/attempt pair +
+  a second project's `shot_binding` referencing its clip on both panels.
+  After delete: every row for the target project gone, storage directory
+  gone, the OTHER project's binding correctly released
+  (`state="pending"`, both clip ids `None`).
+
+**Verification:**
+```
+cd backend && python -m pytest tests/unit -q
+# 1096 passed, 6 failed in 94.15s
+# (same 6 pre-existing failures as the stated baseline - 5 in
+# test_sfx_overlays_diegetic.py, 1 in test_director_planner.py; the 5 extra
+# passes are this task's own new tests/unit/projects/ suite)
+
+cd backend && python -m pytest tests/integration/test_project_deletion.py tests/unit/projects -q
+# 12 passed in 30.62s
+
+cd frontend && npx tsc -b        # clean
+cd frontend && npm run lint      # same 3 pre-existing warnings in ui/*.tsx, nothing new
+```
+Real-DB row count re-checked before and after the full run
+(`SELECT count(*) FROM project`): **1821 before, 1821 after** - the
+integration suite's own cleanup (fixed once, see next paragraph) leaves the
+shared database exactly as it found it.
+
+**A cleanup bug in the TEST suite itself, caught by watching it fail
+honestly:** the first full run of the new cross-project-clip test left one
+project row behind - `_hard_cleanup`'s helper deleted each seeded project's
+rows one project at a time, and cleaning the CLIP OWNER first (while the
+OTHER seeded project's `shot_binding` still pointed at its clip) hit the
+exact FK violation `delete_project` itself exists to avoid, aborted that
+project's whole cleanup transaction, and silently left every one of its
+rows in the shared dev database. Fixed by deleting every seeded project's
+`shot_binding` rows in one pass BEFORE touching any `asset`/`generated_clip`
+row, for any of them - re-ran clean afterward (confirmed via the row-count
+check above). Reported because it is the same class of bug the whole
+task is about, caught in test-support code rather than the feature itself.
+
+**What is NOT done:**
+- No defence against a cross-project `asset` reference (`asset.
+  content_hash` dedup is per-project by design - `AssetModel`'s own
+  docstring - so this was never expected to occur; an unexpected one would
+  surface as a loud Postgres `IntegrityError`, not a silent skip).
+- No UI affordance for bulk-deleting several projects at once - one
+  project, one confirmation, per the brief.
+- `docs/plans/illustrated_faceless.md`'s own DO-NOT list for THIS feature
+  (parallax.py, schemas/timeline.py, planners/shot/,
+  prompts/shot_planner_styles/) - untouched, as instructed; this slice
+  never needed any of them.
+
+---
+
 ## 8. F1 CLOSED — human pass given 2026-09-04
 
 **Pacing signed off by the user on the second render** (`b521aacc-7afc-4ea9-a953-89a843f738df`,

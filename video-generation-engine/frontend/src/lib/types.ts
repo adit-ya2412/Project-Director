@@ -446,3 +446,48 @@ export interface ScriptRewriteResponse {
   feasibility: RewriteFeasibility | null;
   persisted: boolean;
 }
+
+// -- GET /projects/{id}/deletion-preview, DELETE /projects/{id} -------------
+//
+// Both endpoints return the identical shape (backend/app/schemas/
+// project_deletion.py) - DELETE reports what it actually removed, which is
+// exactly what the preview promised. `narration_dependencies`/
+// `generated_clip_dependencies` are non-empty only when at least one OTHER
+// project depends on media this project owns (the global content-hash/
+// prompt-hash cache, backend/app/projects/deletion.py's own module
+// docstring) - the confirmation dialog's warning hinges on these being
+// non-empty, not on `affected_project_ids` alone (kept for convenience).
+
+export interface NarrationDependency {
+  narration_id: string;
+  scene_id: string;
+  content_hash: string;
+  depended_on_by_project_id: string;
+  depended_on_by_project_name: string;
+  depended_on_by_scene_id: string;
+  respend_estimate_cents: number;
+}
+
+export interface GeneratedClipDependency {
+  clip_id: string;
+  shot_id: string;
+  prompt_hash: string;
+  depended_on_by_project_id: string;
+  depended_on_by_project_name: string;
+  depended_on_by_shot_id: string;
+  panel: "primary" | "secondary";
+  respend_estimate_cents: number;
+}
+
+export interface ProjectDeletionSummary {
+  project_id: string;
+  project_name: string;
+  row_counts: Record<string, number>;
+  storage_path: string;
+  storage_exists: boolean;
+  storage_bytes: number;
+  narration_dependencies: NarrationDependency[];
+  generated_clip_dependencies: GeneratedClipDependency[];
+  affected_project_ids: string[];
+  total_respend_estimate_cents: number;
+}
