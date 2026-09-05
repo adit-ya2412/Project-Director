@@ -172,3 +172,36 @@ async def test_a_non_parallax_shot_keeps_layers_empty(project_id):
     good = _shot_output()
     planned = await _plan(scene, good, project_id)
     assert planned[0].shots[0].layers == []
+
+
+def test_layers_get_role_differentiated_drift_not_the_schema_default():
+    """The regression that cost a re-plan (illustrated_faceless.md,
+    2026-09-05).
+
+    `ShotLayerOutput` correctly keeps `drift_x`/`drift_y` off the Shot
+    Planner's structured output - a pixel travel is craft, not a creative
+    judgement. But nothing then SET them, so the first real parallax
+    timeline came back with every layer at the schema default of 0.0.
+    Two planes drifting at the same zero rate composite as a static
+    image: the shot is marked `parallax`, costs an extra generation, and
+    does not move. It fails SILENTLY - no error, no guard, just a still.
+
+    So the assertion is not "drift is set" but "the two roles differ":
+    the ratio between them is what reads as depth, and a bug that set
+    both to the same non-zero value would look fine here otherwise.
+    """
+    from app.renderer.parallax import default_drift_for_role
+    from app.schemas.timeline import LayerRole
+
+    bg_x, bg_y = default_drift_for_role(LayerRole.BACKGROUND)
+    subj_x, subj_y = default_drift_for_role(LayerRole.SUBJECT)
+
+    assert bg_x > 0.0, "background must drift, or there is no parallax"
+    assert subj_x > 0.0, "subject must drift, or there is no parallax"
+    assert subj_x > bg_x, (
+        "the subject must travel FURTHER than the background - equal rates are "
+        "a pan, and a background moving faster reads as inverted depth"
+    )
+    # Horizontal-only until a vertical variant is eye-signed: vertical
+    # travel eats the scale headroom much faster on a 9:16 canvas.
+    assert bg_y == 0.0 and subj_y == 0.0

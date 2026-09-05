@@ -40,6 +40,7 @@ from app.planners.shot.schemas import ShotPlannerOutput, ShotPlanOutput
 from app.prompts.loader import load_prompt, load_style_fragment
 from app.providers.base import PlanningLLMProvider
 from app.repositories.llm_call_repository import LlmCallRepository
+from app.renderer.parallax import default_drift_for_role
 from app.schemas.timeline import (
     Act,
     Camera,
@@ -851,7 +852,24 @@ def _to_domain_shot(
         # just list-shaped rather than empty-string-shaped). `asset_plan`
         # stays `None` on every layer - not authored by this planner, the
         # same reason the shot's own `asset_plan` two lines up is `None`.
-        layers=[ShotLayer(role=layer.role, prompt=layer.prompt) for layer in s.layers],
+        # `drift_x`/`drift_y` are NOT planner-authored (see
+        # `ShotLayerOutput`'s docstring) but they must still be recorded
+        # HERE rather than applied at render time: R2 requires anything
+        # that changes render bytes to be in the fingerprint, and the
+        # fingerprint reads `ShotLayer`'s own fields. Leaving them at the
+        # schema default of 0.0 and overriding downstream would mean the
+        # Timeline says "no motion" while the picture moves - and two
+        # different drifts would share a cache key. Derived from role,
+        # deterministically, by the one function that owns those numbers.
+        layers=[
+            ShotLayer(
+                role=layer.role,
+                prompt=layer.prompt,
+                drift_x=default_drift_for_role(layer.role)[0],
+                drift_y=default_drift_for_role(layer.role)[1],
+            )
+            for layer in s.layers
+        ],
     )
 
 

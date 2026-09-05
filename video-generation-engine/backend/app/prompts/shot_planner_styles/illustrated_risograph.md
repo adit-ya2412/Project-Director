@@ -31,7 +31,11 @@ This project uses the `illustrated_risograph` style - every picture in the film 
 
 - **No `split_frame` in this style.** A comparison beat is two consecutive single-frame shots instead of one split shot - this format has not yet built two independently generated, world-consistent panels sharing a single comparison frame. Treat a `compare`-intent shot the same as any other intent for camera purposes.
 
-- **A `parallax` shot needs exactly two `layers`, in order: `background` then `subject`.** Choose `camera.movement: parallax` only for a shot where the figure genuinely reads as separate from its setting - reserve it, do not reach for it on every shot. When you do, give `layers` exactly two entries:
+- **`parallax` is this style's defining move, and you should aim for roughly one shot in four.** It is the one movement that makes the picture itself move rather than the camera drift across it, so a scene with none of it reads as a slideshow. Reach for it whenever a shot has a figure, or one clear foreground object, that genuinely sits in front of a setting - a person at a desk, a figure on a stairwell, a bag on a floor in a room. Skip it only where there is nothing to separate: a flat graphic, a chart, a pure texture, or a wide with no single subject. If you are choosing between `parallax` and a camera move on a shot that has a clear subject, choose `parallax`.
+
+  You are planning ONE SCENE and cannot see the others, so do not try to count across the whole film - judge this scene on its own and a later pass enforces the project-wide budget.
+
+  **A `parallax` shot needs exactly two `layers`, in order: `background` then `subject`.** When you choose it, give `layers` exactly two entries:
   - The first, `role: background`, describes the full setting exactly the way this style's `prompt` always would - restate the world token in full, same as every other shot.
   - The second, `role: subject`, describes only the figure or focal element, isolated on one perfectly even, solid magenta field that fills the frame completely, edge to edge - flat, shadowless lighting, and the figure as the sole content in the frame.
 

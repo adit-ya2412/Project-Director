@@ -355,3 +355,42 @@ def check_keyed_fraction(
             "(illustrated_faceless.md §4.5): the key matched too little of "
             "the frame to be a real cut-out."
         )
+
+
+# Role-derived drift, resolved at PLANNING time (illustrated_faceless.md,
+# 2026-09-05). `ShotLayerOutput`'s docstring correctly keeps `drift_x`/
+# `drift_y` off the Shot Planner's structured output - a pixel travel is
+# craft, not a creative judgement, the same way `ken_burns.py` derives a
+# zoompan expression from movement+intensity rather than asking a planner
+# for pixel coordinates. But nothing then SET them, so every layer of the
+# first real parallax timeline came back at the schema default of 0.0 -
+# two planes drifting at the same zero rate, which composites as a static
+# image and is not parallax at all. Measured on a real plan
+# (`5587a407-aa9d-4581-8c95-d00f21e1768c`, 5 parallax shots, every layer
+# 0.0/0.0) before a cent was spent generating them.
+#
+# The values are `parallax_probe.py`'s own two-layer clip, the one that
+# was eye-signed in §1.4: background 24px, subject 110px over the shot,
+# at scale 1.2. The RATIO is what reads as depth - a subject travelling
+# ~4.5x the background - not the absolute numbers.
+#
+# Resolved here rather than in the renderer on purpose: R2/§4.1 requires
+# every value that changes render bytes to be in the fingerprint, and the
+# fingerprint reads `ShotLayer`'s own fields. A renderer-side override
+# would leave the Timeline recording 0.0 while the picture moved, so the
+# cache could not tell two different drifts apart.
+_ROLE_DRIFT_X: dict[LayerRole, float] = {
+    LayerRole.BACKGROUND: 24.0,
+    LayerRole.SUBJECT: 110.0,
+    LayerRole.FOREGROUND: 230.0,
+}
+
+
+def default_drift_for_role(role: LayerRole) -> tuple[float, float]:
+    """Horizontal-only by default: a vertical component on a 9:16 canvas
+    eats the scale headroom far faster (the same "scale must COVER the
+    output" arithmetic §4.7 of long_form_direction.md spells out for
+    PAN), and no vertical drift has been eye-signed. Returns
+    `(drift_x, drift_y)` so a future vertical variant needs no call-site
+    change."""
+    return _ROLE_DRIFT_X.get(role, 0.0), 0.0
