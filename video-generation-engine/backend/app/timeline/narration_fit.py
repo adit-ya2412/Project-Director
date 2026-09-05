@@ -103,13 +103,30 @@ is measured AFTER planning. This module is where that duration first
 becomes real, for a whole shot AND now, unconditionally CLAMPED so it can
 never equal or exceed the shot's own (already-reconciled) duration, for
 one layer within it — never a second place, and never at render time.
+
+## F5 — a shot's own element reveal generalises the same arithmetic to a WINDOW (2026-09-05)
+
+`resolve_element_reveals` (bottom of this file) is F4's identical
+fragment-to-seconds idea, extended from a fragment-anchored POINT (a
+layer's entry — "present from THIS moment on") to a fragment-anchored
+WINDOW (a shot's own progressive reveal — "hidden until this moment,
+fully revealed by that one"). Both anchors reuse the SAME "look up a
+fragment's own character position in the real alignment, offset from
+this shot's own onset" primitive (`_fragment_onset_offset_s`), plus one
+new sibling for the window's far edge (`_fragment_finish_offset_s`,
+using the fragment's own last character's END time rather than its
+first character's START time) — one arithmetic idea shared by both
+callers, not a second copy of it (R1). F5's own clamp
+(`_clamp_reveal_window`) is correspondingly a WINDOW clamp: both the
+start and the finish must land strictly inside the shot's own duration,
+never merely the start.
 """
 
 from dataclasses import dataclass
 
 from app.core.errors import PermanentError
 from app.core.logging import get_logger
-from app.planners.fragments import split_narration_fragments
+from app.planners.fragments import NarrationFragment, split_narration_fragments
 from app.schemas.timeline import Scene, Shot, Timeline
 from app.timeline.duration import group_into_runs
 
@@ -127,6 +144,26 @@ logger = get_logger(__name__)
 # when the entering fragment is the shot's very LAST one, where rounding
 # could otherwise land the offset AT or past `duration_s`.
 _ENTRY_MIN_TAIL_S = 0.05
+
+# F5 (illustrated_faceless.md, 2026-09-05): same reasoning as
+# `_ENTRY_MIN_TAIL_S` above (a floating-point/edge-case backstop, not a
+# creative choice), kept as its own constant rather than reused because
+# F5's ceiling has to leave room for a nonzero reveal DURATION on top of
+# a single instant, not just a point.
+_REVEAL_MIN_TAIL_S = 0.05
+# The shortest a reveal window is allowed to shrink to when clamped -
+# below this it would no longer read as a wipe, only a pop. Reasoned,
+# not measured (no real reveal render exists yet, the same epistemic
+# status `_LAYER_ENTRY_FADE_S`/`layer_entry_min_shot_gap` already
+# carry): a wipe needs to visibly sweep across at least a few frames to
+# read as motion rather than a cut, and this floor only ever bites in
+# the rare case where the planner-chosen fragment window itself lands
+# very close to the shot's own end (by construction, `reveal_start_
+# fragment`/`reveal_end_fragment` are validated at plan time to fall
+# inside the owning shot's own fragment range, so this is a backstop,
+# not the ordinary path - the identical relationship `_ENTRY_MIN_TAIL_S`
+# already has to F4's own entry).
+_REVEAL_MIN_DURATION_S = 0.2
 
 
 @dataclass(frozen=True)
@@ -274,6 +311,35 @@ def reconcile_timeline_durations(
     return compensate_for_transitions(timeline.all_shots(), spoken)
 
 
+def _fragment_onset_offset_s(
+    fragments: list[NarrationFragment], fragment_index: int, alignment: SceneAlignment, onset: float
+) -> float:
+    """Seconds from a shot's own onset to the moment fragment number
+    `fragment_index` (1-indexed) STARTS being spoken. Factored out of
+    `resolve_layer_entry_offsets` (F4) so F5's `resolve_element_reveals`
+    below shares the identical arithmetic rather than re-deriving it
+    (R1) - both callers are asking the same question ("where, in real
+    seconds relative to this shot, does this fragment's first character
+    land") for two different creative decisions (a layer's entry point;
+    a reveal's start)."""
+    char_pos = fragments[fragment_index - 1].start
+    return alignment.character_start_times_seconds[char_pos] - onset
+
+
+def _fragment_finish_offset_s(
+    fragments: list[NarrationFragment], fragment_index: int, alignment: SceneAlignment, onset: float
+) -> float:
+    """F5's own sibling to `_fragment_onset_offset_s` above: seconds from
+    a shot's own onset to the moment fragment number `fragment_index`
+    FINISHES being spoken - needed because a reveal must know when it
+    COMPLETES, not merely when it starts (§2/F5), which a layer's entry
+    never needed. Uses the fragment's own LAST character's END time, the
+    same convention `_spoken_durations_for_scene` already uses for a
+    scene's very last shot's own offset above."""
+    char_pos = fragments[fragment_index - 1].end - 1
+    return alignment.character_end_times_seconds[char_pos] - onset
+
+
 def _clamp_entry_offset(raw_offset_s: float, *, duration_s: float, shot_id: str) -> float:
     """Clamp a fragment-derived layer entry strictly inside its shot - F4's
     own requirement: "an entry can never equal or exceed the shot's
@@ -364,10 +430,111 @@ def resolve_layer_entry_offsets(
                 if layer.enter_on_fragment is None:
                     shot_offsets.append(0.0)
                     continue
-                char_pos = fragments[layer.enter_on_fragment - 1].start
-                raw_offset = alignment.character_start_times_seconds[char_pos] - onset
+                raw_offset = _fragment_onset_offset_s(
+                    fragments, layer.enter_on_fragment, alignment, onset
+                )
                 shot_offsets.append(
                     _clamp_entry_offset(raw_offset, duration_s=duration, shot_id=shot.id)
                 )
             offsets[shot.id] = shot_offsets
     return offsets
+
+
+def _clamp_reveal_window(
+    raw_start_s: float, raw_finish_s: float, *, duration_s: float, shot_id: str
+) -> tuple[float, float]:
+    """Clamp a fragment-derived reveal WINDOW so it both starts and
+    FINISHES strictly inside its shot (§2/F5's own binding requirement -
+    "a wipe still running when the shot cuts is worse than one that
+    completes early"). Extends `_clamp_entry_offset`'s clamp-never-drop
+    precedent from a single point to a window: never dropped, because
+    dropping would silently discard a planner-authored creative decision
+    with no visible trace (the same reasoning `_clamp_entry_offset`'s own
+    docstring gives), and logged only when it actually changes something,
+    so the compression is observable rather than silent.
+
+    `start` is bounded into `[0.0, ceiling]` exactly like
+    `_clamp_entry_offset`'s own single point. `finish` is then bounded
+    into `[min(start + _REVEAL_MIN_DURATION_S, ceiling), ceiling]` - at
+    least `_REVEAL_MIN_DURATION_S` after `start` whenever the shot has
+    that much room left, otherwise pulled in to `ceiling` itself (a
+    still-valid, if shorter-than-ideal, window; never inverted, never
+    past the shot's own end)."""
+    ceiling = max(0.0, duration_s - _REVEAL_MIN_TAIL_S)
+    start = min(max(0.0, raw_start_s), ceiling)
+    min_finish = min(start + _REVEAL_MIN_DURATION_S, ceiling)
+    finish = min(max(raw_finish_s, min_finish), ceiling)
+    if abs(start - raw_start_s) > 1e-6 or abs(finish - raw_finish_s) > 1e-6:
+        logger.info(
+            "narration_fit.element_reveal_clamped",
+            extra={
+                "shot_id": shot_id,
+                "raw_start_s": raw_start_s,
+                "raw_finish_s": raw_finish_s,
+                "clamped_start_s": start,
+                "clamped_finish_s": finish,
+                "shot_duration_s": duration_s,
+            },
+        )
+    return start, finish
+
+
+def resolve_element_reveals(
+    scenes: list[Scene],
+    alignments: dict[str, SceneAlignment],
+    reconciled_durations: dict[str, float],
+) -> dict[str, tuple[float, float]]:
+    """{shot_id: (reveal_start_offset_s, reveal_duration_s)} — F5
+    (illustrated_faceless.md §2/F5)'s own fragment-window-to-seconds
+    derivation, at the SAME seam `resolve_layer_entry_offsets` (F4)
+    already reuses from `reconcile_spoken_durations`/`compensate_for_
+    transitions` above. Generalises F4's single fragment-anchored POINT
+    to a fragment-anchored WINDOW (`Shot.reveal_start_fragment` through
+    `Shot.reveal_end_fragment`) using the SAME two primitives
+    (`_fragment_onset_offset_s`/`_fragment_finish_offset_s`) rather than
+    re-deriving the arithmetic a second time (R1) - both this function
+    and F4's already answer "where, in real seconds relative to this
+    shot, does fragment N's speech land", just at the window's two
+    different edges.
+
+    For each shot carrying a reveal (`reveal_direction is not None`,
+    which `Shot._reveal_fields_are_all_or_nothing` already guarantees
+    means both fragment numbers are set too): the start fragment's own
+    character START position gives the raw window start, the end
+    fragment's own character END position gives the raw window finish,
+    both relative to THIS SHOT's own onset (the same `onset(shot)`
+    `_spoken_durations_for_scene` computes), and `_clamp_reveal_window`
+    bounds the pair strictly inside the shot's own (already-reconciled)
+    duration.
+
+    A shot with no reveal (`reveal_direction is None` - the default, and
+    every shot that predates F5) is absent from the returned dict
+    entirely, mirroring `resolve_layer_entry_offsets`'s own "nothing to
+    resolve" contract exactly - a project that never uses F5 touches
+    this function for zero shots."""
+    windows: dict[str, tuple[float, float]] = {}
+    for scene in scenes:
+        shots_with_reveals = [shot for shot in scene.shots if shot.reveal_direction is not None]
+        if not shots_with_reveals:
+            continue
+
+        alignment = alignments[scene.id]
+        fragments = split_narration_fragments(scene.narration_text)
+
+        for shot in shots_with_reveals:
+            assert shot.narration_span is not None  # already guaranteed for every planned shot
+            assert shot.reveal_start_fragment is not None
+            assert shot.reveal_end_fragment is not None
+            onset = alignment.character_start_times_seconds[shot.narration_span[0]]
+            duration = reconciled_durations[shot.id]
+            raw_start = _fragment_onset_offset_s(
+                fragments, shot.reveal_start_fragment, alignment, onset
+            )
+            raw_finish = _fragment_finish_offset_s(
+                fragments, shot.reveal_end_fragment, alignment, onset
+            )
+            start, finish = _clamp_reveal_window(
+                raw_start, raw_finish, duration_s=duration, shot_id=shot.id
+            )
+            windows[shot.id] = (start, finish - start)
+    return windows

@@ -498,6 +498,16 @@ def compute_shot_stream_fingerprint(
     they are already on `shot`; `layer_asset_hashes` is the resolved-
     image-bytes half (I2 - not on the Timeline), same shape as
     `secondary_asset_hash` immediately above.
+
+    illustrated_faceless.md F5 (2026-09-05): same R2 gap, same fix - a
+    shot's own reveal (`reveal_direction`/`reveal_start_offset_s`/
+    `reveal_duration_s`) changes this ONE shot's own encoded stream (the
+    wipe timing/direction is baked into it) but this function hand-picks
+    fields, so it needs the same EXPLICIT entry `layers` already got.
+    Unlike a layer, a reveal has no resolved-image-bytes half of its own
+    to add - it acts on THIS shot's own `asset_hash`, already hashed
+    above - so `"reveal"` needs no sibling `*_asset_hashes` parameter the
+    way `layer_asset_hashes`/`secondary_asset_hash` do.
     """
     payload = {
         "kind": "shot_stream_v1",
@@ -509,6 +519,11 @@ def compute_shot_stream_fingerprint(
         "focal": focal,
         "layers": [layer.model_dump(mode="json") for layer in shot.layers],
         "layer_asset_hashes": list(layer_asset_hashes or []),
+        "reveal": {
+            "direction": shot.reveal_direction.value if shot.reveal_direction else None,
+            "start_offset_s": shot.reveal_start_offset_s,
+            "duration_s": shot.reveal_duration_s,
+        },
         "render_settings": {
             "width": render_settings.width,
             "height": render_settings.height,

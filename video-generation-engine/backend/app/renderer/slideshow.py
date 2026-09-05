@@ -46,6 +46,25 @@ Determinism (Invariant I5): every ffmpeg invocation is built as an argument
 list (never a shell string — see security guidance in the implementation
 guide), inputs are normalised individually before composition, and nothing
 here reads the wall clock or iterates an unordered collection.
+
+## Element reveal (illustrated_faceless.md F5, 2026-09-05)
+
+A shot carrying `Shot.reveal_direction` gets its own picture wiped into
+view over `[reveal_start_offset_s, reveal_start_offset_s +
+reveal_duration_s]` instead of the plain static hold - `_reveal_filter`
+below, dispatched from `_per_shot_filter` (and mirrored in `_render_run`'s
+own single-shot tail, the same duplication Ken Burns/motion already have
+between the two call sites). This is a STATIC-IMAGE-path transform, not a
+parallax one: a generated illustration is one flat PNG with no bar/arrow
+OBJECT inside it to animate, so "a bar growing" can only mean the
+FINISHED graphic revealed progressively out of its own substrate colour -
+see the plan's own F5 entry for why this could not be built as a
+`ShotLayer` (the shots it targets are exactly the ones this style's
+prompt fragment tells the planner to skip parallax on). `Shot`'s own
+domain validator requires `camera.movement=static` whenever a reveal is
+set, so `_reveal_filter` is only ever reached via `_per_shot_filter`'s
+`expr is None` branch (Ken Burns already returns no expression for
+`STATIC`/`SPLIT_FRAME`) - never alongside a Ken Burns zoom/pan.
 """
 
 import asyncio
@@ -73,17 +92,20 @@ from app.renderer.motion import MediaKind, MediaProbe, build_duration_fit_fragme
 from app.renderer.parallax import (
     ParallaxKeyGuardError,
     ParallaxLayerInput,
+    base_canvas_filter,
     build_two_layer_parallax_filter_complex,
     check_keyed_distribution,
     check_keyed_fraction,
     keyed_fraction,
     keyed_scatter_fraction,
     sample_key_colour,
+    sample_substrate_colour,
 )
 from app.renderer.split_screen import build_split_filter, should_composite_split
 from app.schemas.timeline import (
     CameraMovement,
     LayerRole,
+    RevealDirection,
     Shot,
     ShotLayer,
     Timeline,
@@ -314,6 +336,144 @@ def _normalize_filter(index: int, settings: RenderSettings, label: str, *, hold_
     )
 
 
+# F5 (illustrated_faceless.md §2/F5, 2026-09-05): which real `xfade`
+# transition name realises each `RevealDirection`. Measured directly
+# (2026-09-05, a synthetic red/green clip pair, this ffmpeg build - see
+# the plan's own P-IF-F5 log entry for the exact pixel readout): `wipeup`
+# reveals the SECOND input starting at the BOTTOM of the frame and
+# sweeping the boundary upward (bottom-to-top - a bar climbing from its
+# own baseline); `wiperight` reveals it starting at the LEFT and sweeping
+# rightward (left-to-right - an arrow or line drawing itself, the
+# reading-order default). Both are real `xfade` transition names already
+# verified against this ffmpeg build (`TransitionType.WIPE_LEFT` ships
+# `wipeleft` the identical way for a shot-to-shot cut) - reused for ONE
+# shot's own before/after state instead of two different shots, not a
+# new mechanism.
+_REVEAL_TRANSITIONS: dict[RevealDirection, str] = {
+    RevealDirection.BOTTOM_TO_TOP: "wipeup",
+    RevealDirection.LEFT_TO_RIGHT: "wiperight",
+}
+
+
+def _effective_reveal_window(
+    start_offset_s: float, duration_s: float, *, total_s: float
+) -> tuple[float, float]:
+    """Review finding (2026-09-05, illustrated_faceless.md §8.8): a
+    renderer-side defensive re-clamp of the resolved reveal window
+    against THIS renderer's own frame-quantised `total_s = frames/fps`,
+    mirroring `build_two_layer_parallax_filter_complex`'s own `effective_
+    fade_s` shape ("never let the fade outlast what remains of the
+    shot") exactly - same belt-and-suspenders reasoning, applied to a
+    reveal instead of an entry.
+
+    Why this is needed even though `app/timeline/narration_fit.py::
+    _clamp_reveal_window` already clamps the window at resolve time:
+    that clamp bounds the window against the shot's own CONTINUOUS
+    `duration_s` (a measured-narration float), not against this
+    renderer's `total_s` (`frames = round(duration_s * settings.fps)`,
+    which can differ from `duration_s` by up to `0.5/fps`). `xfade`'s
+    own combination rule is `len(first) + len(second) - transition`, and
+    this module's `_reveal_filter` builds both streams to length
+    `total_s`, then `trim`s to `total_s` - so the trim is safe exactly
+    when `duration_s <= total_s`. Measured directly (a fine sweep of
+    `_clamp_reveal_window`'s own worst-case output against `total_s`
+    across fps 5-60): the gap first exceeds `_clamp_reveal_window`'s own
+    `_REVEAL_MIN_TAIL_S` margin (0.05s) below fps 10 (fps=9's worst
+    margin: -0.00555s; fps=10 and above: exactly 0.0, never negative) -
+    NOT at fps 30, a threshold an earlier review pass calculated from an
+    incorrect model of this module's own `_normalize_filter` output
+    length (see that review's own correction in the plan). `render_fps`
+    ships at 30, safely above the REAL threshold either way, but this
+    re-clamp removes the threshold entirely rather than merely padding
+    it, and costs nothing on the ordinary path (a no-op whenever the
+    resolved window already fits, which is every case above fps 10).
+
+    Deliberately NOT fixed by teaching `app/timeline/narration_fit.py`
+    about `fps`: that module resolves a shot's own master-clock
+    arithmetic (D1) and has no render-settings dependency today: fixing
+    the mismatch here, where the frame-quantised `total_s` this specific
+    concern is actually ABOUT already lives, needs no new import there
+    and keeps that module's layering exactly as clean as it already is."""
+    effective_start_s = min(max(0.0, start_offset_s), total_s)
+    effective_duration_s = min(max(0.0, duration_s), max(0.0, total_s - effective_start_s))
+    return effective_start_s, effective_duration_s
+
+
+def _reveal_filter(
+    input_index: int,
+    settings: RenderSettings,
+    label: str,
+    *,
+    direction: RevealDirection,
+    start_offset_s: float,
+    duration_s: float,
+    frames: int,
+    substrate_color: str,
+) -> str:
+    """F5's progressive reveal - the shot's own FINISHED picture wiped
+    into view, never a per-element animation (there is no bar/arrow
+    OBJECT inside a generated PNG to move, only pixels; see this
+    module's own docstring addendum above).
+
+    Two streams, each held for the shot's own full `frames`/`fps`
+    duration - the identical arithmetic `_normalize_filter` itself uses,
+    so a reveal shot's stream is exactly as long as every sibling
+    movement's, and the crossfade-offset arithmetic downstream never
+    needs to know a shot took this path: the SUBSTRATE colour
+    (`base_canvas_filter`, reused from `parallax.py` rather than
+    re-invented - the same "sample from delivered bytes" discipline this
+    whole renderer already follows for the chroma key literal) standing
+    in for "not yet revealed", and the picture itself, normalised exactly
+    like every other static shot (`_normalize_filter`, reused directly
+    rather than re-derived). `xfade`'s own `offset`/`duration` do the
+    reveal (see `_REVEAL_TRANSITIONS` above for which transition name
+    realises which direction, and how that was measured); `trim`
+    afterward discards the surplus tail `xfade` leaves when its second
+    input outlasts the transition window - verified empirically
+    (2026-09-05, the plan's own P-IF-F5 log entry has the numbers):
+    `xfade`'s own output is `offset + len(second input)` long whenever
+    the second input outlasts the transition, not `len(first input)`, so
+    an untrimmed graph would run this shot's stream LONG.
+
+    `start_offset_s`/`duration_s` are re-clamped via `_effective_reveal_
+    window` before either is used - see that function's own docstring
+    for the review finding this guards against (§8.8).
+
+    Every intermediate label is namespaced off the caller's own `label`
+    (unique per shot in a multi-shot filter graph, `_render_run`'s own
+    `f"n{i}"` convention) so two reveal shots in the same graph can never
+    collide, the same discipline `_glitch_transition_filter`'s own
+    `f"g{out_label}"` labels already follow."""
+    w, h = settings.width, settings.height
+    hold_s = (frames - 1) / settings.fps
+    total_s = frames / settings.fps
+    effective_start_s, effective_duration_s = _effective_reveal_window(
+        start_offset_s, duration_s, total_s=total_s
+    )
+    transition = _REVEAL_TRANSITIONS[direction]
+    base_label = f"{label}_rvbase"
+    full_label = f"{label}_rvfull"
+    xfade_label = f"{label}_rvx"
+    base = base_canvas_filter(
+        width=w,
+        height=h,
+        fps=settings.fps,
+        duration_s=total_s,
+        color=substrate_color,
+        label=base_label,
+    )
+    full = _normalize_filter(input_index, settings, full_label, hold_s=hold_s)
+    xfade = (
+        f"[{base_label}][{full_label}]xfade=transition={transition}:"
+        f"duration={effective_duration_s:.6f}:offset={effective_start_s:.6f}[{xfade_label}]"
+    )
+    trim = (
+        f"[{xfade_label}]trim=0:{total_s:.6f},setpts=PTS-STARTPTS,"
+        f"format={settings.pixel_format}[{label}]"
+    )
+    return ";".join([base, full, xfade, trim])
+
+
 def _motion_filter(
     index: int, settings: RenderSettings, label: str, probe: MediaProbe, target_duration_s: float
 ) -> str:
@@ -476,10 +636,29 @@ def _per_shot_filter(
     label: str,
     *,
     focal: tuple[float, float] | None = None,
+    substrate_color: str | None = None,
 ) -> str:
     frames = max(round(shot.duration_s * settings.fps), 1)
     if probe.kind is MediaKind.MOTION:
         return _motion_filter(input_index, settings, label, probe, shot.duration_s)
+    if shot.reveal_direction is not None:
+        # F5: `Shot._reveal_requires_static_camera` already guarantees
+        # `camera.movement == STATIC` whenever this is set, so Ken Burns
+        # would have returned no expression anyway - checked BEFORE
+        # `_ken_burns_aim`/`build_zoompan_expression` run at all, not
+        # merely relying on `expr is None` falling through, so this
+        # dispatch reads as deliberate rather than incidental.
+        assert substrate_color is not None, "reveal shot needs a sampled substrate colour"
+        return _reveal_filter(
+            input_index,
+            settings,
+            label,
+            direction=shot.reveal_direction,
+            start_offset_s=shot.reveal_start_offset_s,
+            duration_s=shot.reveal_duration_s,
+            frames=frames,
+            substrate_color=substrate_color,
+        )
     crop_x, crop_y, zoompan_focal = _ken_burns_aim(probe, settings, focal)
     expr = (
         build_zoompan_expression(
@@ -708,7 +887,19 @@ async def _encode_or_reuse_shot_stream(
     else:
         short = short_input_name(index, src, probe.kind, run_stem=run_stem)
         stage_short_input(src, work_dir / short)
-        graph = _per_shot_filter(0, shot, probe, settings, "vout", focal=focal)
+        # F5 (illustrated_faceless.md §2/F5): sample the substrate colour
+        # from THIS shot's own delivered bytes (never assumed - §8.2's
+        # palette-drift finding applies here exactly as it does to
+        # `sample_key_colour`'s own chroma key) only when a reveal is
+        # actually set - every other shot pays nothing for this.
+        substrate_color = (
+            sample_substrate_colour(src.read_bytes())
+            if shot.reveal_direction is not None and probe.kind is MediaKind.STILL
+            else None
+        )
+        graph = _per_shot_filter(
+            0, shot, probe, settings, "vout", focal=focal, substrate_color=substrate_color
+        )
         if probe.kind is MediaKind.STILL:
             args += ["-framerate", str(settings.fps), "-i", short]
         else:
@@ -1168,6 +1359,28 @@ async def _render_run(
         probe = media_probes[shot.id]
         if probe.kind is MediaKind.MOTION:
             filters.append(_motion_filter(i, settings, label, probe, shot.duration_s))
+        elif shot.reveal_direction is not None:
+            # F5 (illustrated_faceless.md §2/F5): same dispatch
+            # `_per_shot_filter`'s own `_encode_or_reuse_shot_stream`
+            # caller uses, duplicated here for the identical reason
+            # Ken-Burns/motion dispatch already is between the two call
+            # sites (this module's own docstring). `expr is None` is
+            # already guaranteed for a reveal shot (`Shot._reveal_
+            # requires_static_camera`), so this branch is checked first
+            # rather than folded into the `expr is None` branch below.
+            substrate_color = sample_substrate_colour(shot_images[shot.id].read_bytes())
+            filters.append(
+                _reveal_filter(
+                    i,
+                    settings,
+                    label,
+                    direction=shot.reveal_direction,
+                    start_offset_s=shot.reveal_start_offset_s,
+                    duration_s=shot.reveal_duration_s,
+                    frames=frame_counts[i],
+                    substrate_color=substrate_color,
+                )
+            )
         elif expr is None:
             # tpad appends after the decoded frame (§14.1). Holding
             # `frames / fps` yields frames+1. `frames == 1` → 0.0, which

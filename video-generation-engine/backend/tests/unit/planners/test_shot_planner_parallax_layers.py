@@ -30,6 +30,7 @@ from app.schemas.timeline import (
     CreativeContext,
     Framing,
     LayerRole,
+    RevealDirection,
     Scene,
     ShotIntent,
 )
@@ -70,6 +71,9 @@ def _shot_output(**overrides) -> ShotPlanOutput:
         text_card="",
         sfx_cue="",
         layers=[],
+        reveal_direction=RevealDirection.NONE,
+        reveal_start_fragment=0,
+        reveal_end_fragment=0,
     )
     fields.update(overrides)
     return ShotPlanOutput(**fields)

@@ -36,6 +36,7 @@ from app.schemas.timeline import (
     EnergyArc,
     Framing,
     PreferredMediaType,
+    RevealDirection,
     ShotIntent,
     TransitionType,
 )
@@ -148,6 +149,9 @@ def _shot_output(scene_id: str, duration_s: float) -> ShotPlannerOutput:
                 text_card="",
                 sfx_cue="",
                 layers=[],
+                reveal_direction=RevealDirection.NONE,
+                reveal_start_fragment=0,
+                reveal_end_fragment=0,
             ),
         ]
     )

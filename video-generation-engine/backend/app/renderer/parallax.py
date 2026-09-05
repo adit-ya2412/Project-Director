@@ -79,6 +79,19 @@ validator - it is the ground the shot stands on, and fading it in would
 mean fading in from nothing. `_LAYER_ENTRY_FADE_S` is the one new module
 constant, alongside the measured ones above; unlike them it is a REASONED
 default, not a measured one (no real render with a timed entry exists yet).
+
+## F5 (2026-09-05) - this module lends its substrate-colour discipline, not its layers
+
+`sample_substrate_colour` below is F5's own sampler for `app/renderer/
+slideshow.py`'s progressive-reveal wipe - a SHOT-level transform on the
+shot's own primary picture, not a parallax plane, so it deliberately does
+NOT touch `ShotLayer`/`build_two_layer_parallax_filter_complex` at all.
+It lives here anyway (mirroring `sample_key_colour` immediately below,
+rather than duplicating that function's own "median off the delivered
+bytes, never assume" discipline in a second module) and `base_canvas_
+filter` gained an optional `label` parameter so `slideshow.py` can reuse
+this same solid-colour primitive too, namespaced per shot in a
+multi-shot filter graph.
 """
 
 from __future__ import annotations
@@ -291,6 +304,51 @@ def sample_key_colour(image_bytes: bytes) -> str:
     return f"0x{r:02X}{g:02X}{b:02X}"
 
 
+def sample_substrate_colour(image_bytes: bytes) -> str:
+    """Median colour of the image's own four corners, as an ffmpeg
+    `color=` literal (`"0xRRGGBB"`) - F5's (illustrated_faceless.md
+    §2/F5, 2026-09-05) substrate backdrop for a progressive reveal
+    (`app/renderer/slideshow.py`), mirroring `sample_key_colour` above's
+    own discipline exactly: §8.2 records the risograph palette drifting
+    shot to shot (three spot colours requested, four or five delivered,
+    which ones varies), so no fixed off-white/cream literal can be
+    trusted here either - the ground colour behind the not-yet-revealed
+    portion must be read off what this specific image actually
+    delivered, never assumed.
+
+    FOUR corners, not `sample_key_colour`'s single top strip: that
+    function's convention rests on a parallax SUBJECT touching the
+    BOTTOM edge by convention (§1.3's four faceless framings all crop at
+    the waist or lower), which does not hold for a chart or diagram - a
+    graphic could plausibly place ink near any ONE edge (an axis line at
+    the bottom, a bar hard against the left), but is vanishingly
+    unlikely to ink all FOUR corners simultaneously, since a generated
+    chart's own paper margin conventionally surrounds it on every side.
+    Median across all four corners is robust to any single corner
+    landing on real ink - the identical reasoning `sample_key_colour`
+    already gives for using a median rather than a single-pixel read."""
+    with Image.open(io.BytesIO(image_bytes)) as image:
+        rgb = image.convert("RGB")
+        width, height = rgb.size
+        if width == 0 or height == 0:
+            raise ValueError("image has zero width or height; cannot sample a substrate colour")
+        corner = max(1, min(24, width // 8, height // 8))
+        corners = [
+            (0, 0),
+            (width - corner, 0),
+            (0, height - corner),
+            (width - corner, height - corner),
+        ]
+        pixels = [
+            rgb.getpixel((cx + dx, cy + dy))
+            for cx, cy in corners
+            for dx in range(0, corner, 4)
+            for dy in range(0, corner, 4)
+        ]
+    r, g, b = (sorted(p[i] for p in pixels)[len(pixels) // 2] for i in range(3))
+    return f"0x{r:02X}{g:02X}{b:02X}"
+
+
 def _key_to_rgb(key: str) -> tuple[int, int, int]:
     text = key.removeprefix("0x").removeprefix("0X")
     if len(text) != 6:
@@ -305,13 +363,30 @@ def _key_to_rgb(key: str) -> tuple[int, int, int]:
 
 
 def base_canvas_filter(
-    *, width: int, height: int, fps: int, duration_s: float, color: str = _BASE_COLOR
+    *,
+    width: int,
+    height: int,
+    fps: int,
+    duration_s: float,
+    color: str = _BASE_COLOR,
+    label: str = "base",
 ) -> str:
     """The solid backdrop every parallax composite overlays onto - ported
     from `parallax_probe.py::_base`. Only visible at a layer's own
     oversize margin if drift ever exposes one; the working canvas is
-    sized to make that not happen in practice."""
-    return f"color=c={color}:s={width}x{height}:r={fps}:d={duration_s}[base]"
+    sized to make that not happen in practice.
+
+    `label` defaults to `"base"` (byte-identical to every pre-F5 call
+    site, none of which pass it). F5 (illustrated_faceless.md §2/F5,
+    2026-09-05) reuses this same solid-canvas primitive for its own
+    substrate backdrop, from `app/renderer/slideshow.py`, where MULTIPLE
+    shots' filter graphs can share one `filter_complex` (a multi-shot
+    run) - a hardcoded `[base]` would collide the moment two such shots
+    landed in the same graph, so the label is now the caller's to
+    namespace, the identical reasoning every other intermediate label in
+    this module (`f"{name}_rgba1"`, `f"g{out_label}"` in `slideshow.py`)
+    already follows."""
+    return f"color=c={color}:s={width}x{height}:r={fps}:d={duration_s}[{label}]"
 
 
 def layer_input_chain(

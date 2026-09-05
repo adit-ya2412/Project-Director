@@ -273,6 +273,28 @@ def test_a_timed_entry_is_taught_as_rarer_than_parallax_itself():
     assert "background" in lower and "never gets one" in lower
 
 
+def test_element_reveal_is_taught_and_bridges_with_the_parallax_skip_bullet():
+    """F5 (illustrated_faceless.md §2/F5): the fragment must teach the
+    Shot Planner `reveal_direction`/`reveal_start_fragment`/
+    `reveal_end_fragment`, both reveal directions, the `camera.movement=
+    static` requirement, and that this targets the SAME shots the
+    `parallax` bullet already tells the planner to skip - "a flat
+    graphic, a chart... nothing to separate" - so the two bullets must
+    not contradict each other."""
+    fragment = load_style_fragment("shot_planner", _STYLE_NAME)
+    assert fragment is not None
+    lower = fragment.lower()
+    assert "reveal_direction" in fragment
+    assert "reveal_start_fragment" in fragment and "reveal_end_fragment" in fragment
+    assert "bottom_to_top" in fragment and "left_to_right" in fragment
+    assert "camera.movement` to `static" in fragment or "camera.movement" in lower
+    assert "static" in lower
+    # Bridges explicitly with the parallax-skip bullet, rather than
+    # silently targeting the same shots without saying so.
+    assert "chart" in lower and "diagram" in lower
+    assert "parallax" in lower and "skip" in lower
+
+
 def test_the_other_four_styles_fragment_resolution_is_unaffected():
     for style in ("documentary_archival", "retention_fast", "archival_montage", "stillness"):
         assert load_style_fragment("shot_planner", style) is not None

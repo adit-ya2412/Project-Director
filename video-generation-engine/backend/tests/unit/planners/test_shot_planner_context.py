@@ -54,6 +54,7 @@ from app.schemas.timeline import (
     CameraMovement,
     CreativeContext,
     Framing,
+    RevealDirection,
     Scene,
     ShotIntent,
     TransitionType,
@@ -333,6 +334,9 @@ def _shot_output(
         text_card="",
         sfx_cue="",
         layers=[],
+        reveal_direction=RevealDirection.NONE,
+        reveal_start_fragment=0,
+        reveal_end_fragment=0,
     )
 
 

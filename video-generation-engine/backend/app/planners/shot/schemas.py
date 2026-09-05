@@ -9,6 +9,7 @@ from app.schemas.timeline import (
     CameraMovement,
     Framing,
     LayerRole,
+    RevealDirection,
     ShotIntent,
     TransitionType,
 )
@@ -111,6 +112,25 @@ class ShotPlanOutput(BaseModel):
     # `app/planners/shot/planner.py::_to_domain_shot` converts each entry
     # to a `ShotLayer`.
     layers: list[ShotLayerOutput]
+    # illustrated_faceless.md F5 (2026-09-05): a progressive reveal of
+    # THIS SHOT'S OWN picture - a bar climbing, an arrow drawing itself -
+    # for the rare shot whose picture is a chart/diagram (the shots this
+    # style's own `parallax` bullet already tells the planner to SKIP
+    # parallax on: "a flat graphic, a chart... nothing to separate").
+    # `RevealDirection.NONE` (required, OpenAI strict mode - see this
+    # module's own docstring) is the sentinel for "no reveal", the
+    # overwhelming majority of shots even in this style.
+    # `reveal_start_fragment`/`reveal_end_fragment` are `0` (sentinel,
+    # same convention as `ShotLayerOutput.enter_on_fragment`) whenever
+    # `reveal_direction` is `NONE`; both must be non-zero, contiguous, and
+    # within THIS shot's own `fragment_start`/`fragment_end` otherwise -
+    # checked in `_make_validator` (a layer/shot cannot see its own
+    # fragment range from inside the nested output; the shot-level
+    # output is where both are already in scope, the same reasoning
+    # `ShotLayerOutput.enter_on_fragment`'s own docstring gives).
+    reveal_direction: RevealDirection
+    reveal_start_fragment: int
+    reveal_end_fragment: int
 
 
 class ShotPlannerOutput(BaseModel):

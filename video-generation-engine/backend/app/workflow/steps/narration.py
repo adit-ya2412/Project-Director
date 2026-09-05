@@ -133,6 +133,7 @@ from app.timeline.narration_batch import (
 from app.timeline.narration_fit import (
     SceneAlignment,
     reconcile_timeline_durations,
+    resolve_element_reveals,
     resolve_layer_entry_offsets,
 )
 from app.utils.bounded_gather import narration_concurrency, reserve_then_gather
@@ -567,6 +568,10 @@ class NarrationStep:
         # the clamp, since that is the shot's own on-screen length the
         # renderer's alpha fade actually runs against.
         layer_entry_offsets = resolve_layer_entry_offsets(timeline.scenes, alignments, reconciled)
+        # F5 (illustrated_faceless.md §2/F5): same seam, same reasoning -
+        # a shot's own element reveal is resolved to real seconds here
+        # too, never at render time (§4.1/R2).
+        element_reveals = resolve_element_reveals(timeline.scenes, alignments, reconciled)
 
         # D7 caps vs. reality (M8 settled decision): a shot may legitimately
         # exceed max_shot_duration_s once its real narration is in - the
@@ -607,6 +612,13 @@ class NarrationStep:
                     if entries is not None:
                         for layer, offset in zip(shot.layers, entries, strict=True):
                             layer.enter_offset_s = offset
+                    # F5: absent from `element_reveals` means this shot
+                    # has no `reveal_direction` set - both resolved
+                    # fields already sit at their schema defaults (0.0),
+                    # so there is nothing to write back.
+                    reveal = element_reveals.get(shot.id)
+                    if reveal is not None:
+                        shot.reveal_start_offset_s, shot.reveal_duration_s = reveal
             # Recomputed via the one function that owns this arithmetic
             # (D5) - never by hand.
             base.metadata.total_duration_s = compute_timeline_duration(base.all_shots())

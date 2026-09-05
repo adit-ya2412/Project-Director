@@ -336,6 +336,38 @@ substance, and it is the slice that would let a diagram assemble itself.
 illustrated chart under a text card covers his data beats at roughly 1% of the
 build cost. The dopamine-loop script (the origin of this whole thread) *does*.
 
+**Correction found and fixed while building F5 (2026-09-05): the paragraph
+above is right about WHAT to build and silent on the one thing that actually
+decides HOW.** A generated picture is a single flat PNG — there is no bar
+object, no arrow object inside it, only pixels, and this format has already
+ruled out per-shot AI image-to-video on cost (Verdict, §2.4). So none of
+"grow", "draw", or "sweep" can be an object moving inside the frame; the only
+one of the three actually reachable on a generated still is the **wipe** —
+render the FINISHED graphic once, then progressively reveal it with an
+animated mask, so a bar reads as climbing because more of an already-drawn
+bar becomes visible over time, not because anything in the picture moves.
+
+**And this could not be built as a `ShotLayer`.** The shots F5 exists for —
+"a chart, a bar graph, a diagram" — are EXACTLY the shots this style's own
+`parallax` bullet (`illustrated_risograph.md`) tells the planner to SKIP
+parallax on: "a flat graphic, a chart... nothing to separate." A chart has
+no depth planes to composite, so a layer-shaped mechanism could never reach
+the shots it was meant to animate. F5 instead acts on the shot's PRIMARY
+image, in the STATIC render path (`app/renderer/slideshow.py`, not
+`parallax.py`) — a shot-level `reveal_direction`/`reveal_start_fragment`/
+`reveal_end_fragment` (mirroring F4's own fragment-authored/seconds-resolved
+split, generalised from a POINT to a WINDOW), refused outright alongside any
+`camera.movement` other than `static` (a reveal already IS the shot's
+motion). See P-IF-F5 in §7 for the full build and what was measured.
+
+**BUILT (P-IF-F5, 2026-09-05), awaiting human pass — see §7/§8.7.** Schema,
+planner authoring + validation, the fragment-window-to-seconds resolver
+(generalised from F4's own single-point one), the renderer's `xfade`-based
+wipe, the substrate-colour sampler, fingerprint coverage, the project-wide
+rate cap, and the style fragment's bridging bullet are all in. No image was
+generated and no render was watched — the human pass is entirely outstanding,
+same as every other visual slice in this plan.
+
 ---
 
 ## 3. Isolation — how this stays out of the existing styles
@@ -3251,6 +3283,549 @@ was committed.
   `test_sfx_overlays_diegetic.py`/`test_director_planner.py` pre-existing
   failures - neither touched, per the task's own explicit baseline.
 
+### P-IF-F5 — Element transforms: the shot's own picture, wiped into view (2026-09-05)
+
+**Scope executed:** exactly F5's §2 scope, corrected as recorded inline
+there (the wipe-not-object-motion point, and the layer-vs-primary-image
+point) - the domain schema (`Shot.reveal_direction`/`reveal_start_
+fragment`/`reveal_end_fragment`/`reveal_start_offset_s`/`reveal_
+duration_s`, plus two validators), the planner schema (`ShotPlanOutput`'s
+three new required, sentinel-valued fields) and its `_make_validator`
+checks, the fragment-window-to-seconds resolver at the narration-fit
+seam (generalising F4's own single-point one, not copying it), the
+renderer's `xfade`-based wipe in the STATIC image path
+(`app/renderer/slideshow.py`, not `parallax.py`), the substrate-colour
+sampler, R2 fingerprint coverage (a real gap found and fixed, matching
+F2/F4's own precedent), the project-wide rate cap, and the style
+fragment's bridging bullet. No image was generated, no render was
+produced, nothing committed - per the task's own "offline verification
+only" constraint.
+
+**NOT started, explicitly:** F3 (three layers, per-layer scale/
+placement) remains untouched. The still-open landmines F4 left for F3
+(§8.6) are untouched by this pass, since F5 never touches `ShotLayer` at
+all. No project deletion, deployment, or the coordinator's other
+uncommitted work were touched. `app/projects/deletion.py`,
+`app/schemas/project_deletion.py`, and `frontend/src/components/
+DeleteProjectDialog.tsx` were not opened.
+
+**Changes:**
+- `backend/app/schemas/timeline.py:239-263` - new `RevealDirection`
+  StrEnum (`NONE`/`BOTTOM_TO_TOP`/`LEFT_TO_RIGHT` - the minimum set the
+  plan's own two named examples need, argued in the enum's own
+  docstring). `:406-484` - `Shot` gains `reveal_direction: RevealDirection
+  | None = None`, `reveal_start_fragment`/`reveal_end_fragment: int |
+  None = None` (planner-authored, the SAME 1-indexed idiom `ShotLayer.
+  enter_on_fragment` and `ShotPlanOutput.fragment_start`/`fragment_end`
+  already use), and `reveal_start_offset_s`/`reveal_duration_s: float =
+  0.0` (the RESOLVED seconds pair). `:530-579` - two new validators:
+  `_reveal_fields_are_all_or_nothing` (the three planner-facing fields
+  arrive together or not at all, and `end >= start` when set) and
+  `_reveal_requires_static_camera` (a reveal refuses any `camera.
+  movement` other than `static` - see "Effects" below for why refuse
+  rather than compose).
+- `backend/app/planners/shot/schemas.py:28-77` - `ShotPlanOutput` gains
+  `reveal_direction: RevealDirection` (required, `NONE` sentinel - same
+  OpenAI-strict-mode reasoning `enter_on_fragment`'s own `0` sentinel
+  already documents), `reveal_start_fragment`/`reveal_end_fragment: int`
+  (required, `0` sentinel).
+- `backend/app/planners/shot/planner.py:47` (import, `RevealDirection`
+  alongside the existing `schemas.timeline` import block), `:587-651`
+  (`_cap_element_reveals`, the F5 project-wide rate cap - see "The cap
+  decision" below), `:950-984` (`_make_validator`'s new F5 block,
+  immediately after the `is_parallax`/`elif s.layers` checks: movement
+  must be `static`, both fragment numbers non-zero together, `end >=
+  start`, and the window must fall inside THIS shot's own `fragment_
+  start`/`fragment_end` - the identical shape F4's own subject-entry
+  check uses, for the identical reason: a shot cannot see its own
+  fragment range from anywhere else), `:1110-1120` (`_to_domain_shot`'s
+  `RevealDirection.NONE -> None`/`0 -> None` conversions, mirroring
+  `text_card`/`sfx_cue`/`enter_on_fragment` exactly), `:1255` (wired
+  into `plan()`'s post-gather pipeline, right after `_cap_layer_
+  entries`).
+- `backend/app/core/config.py:521-547` - `element_reveal_min_shot_gap:
+  int = 14`, read directly at `plan()`'s own call site (same pattern
+  `layer_entry_min_shot_gap` already uses).
+- `backend/app/timeline/narration_fit.py:107-123` (module docstring
+  addendum), `:153-166` (`_REVEAL_MIN_TAIL_S`/`_REVEAL_MIN_DURATION_S`),
+  `:314-340` (`_fragment_onset_offset_s`/`_fragment_finish_offset_s`,
+  factored OUT of `resolve_layer_entry_offsets`'s own inline arithmetic
+  so F5 reuses it rather than re-deriving it - R1), `:443-479`
+  (`_clamp_reveal_window`), `:482-538` (`resolve_element_reveals`) - the
+  fragment-WINDOW-to-seconds derivation, at the same seam `resolve_
+  layer_entry_offsets` (F4) already reuses.
+- `backend/app/workflow/steps/narration.py:136` (import), `:574`
+  (`_reconcile_and_append` calls `resolve_element_reveals` right after
+  `resolve_layer_entry_offsets`, using the same `reconciled` final-
+  duration dict), `:615-621` (`_apply_durations` writes the resolved
+  pair onto `shot.reveal_start_offset_s`/`shot.reveal_duration_s`, in the
+  SAME closure that already writes `duration_s` and each layer's `enter_
+  offset_s`).
+- `backend/app/renderer/parallax.py:67-82` (module docstring addendum),
+  `:307-337` (new `sample_substrate_colour` - see "How the substrate
+  colour is sampled" below), `:365-388` (`base_canvas_filter` gains an
+  optional `label` parameter, default `"base"` - byte-identical to
+  every pre-F5 call site, none of which pass it).
+- `backend/app/renderer/slideshow.py:44-62` (module docstring addendum),
+  new imports (`RevealDirection`, `base_canvas_filter`, `sample_
+  substrate_colour`), `:352-425` (`_REVEAL_TRANSITIONS` mapping +
+  `_reveal_filter` - see "The reveal mechanism" below), `:471-513`
+  (`_per_shot_filter` dispatches to `_reveal_filter` BEFORE computing any
+  Ken Burns aim, when `shot.reveal_direction is not None`), `:844-857`
+  (`_encode_or_reuse_shot_stream`'s plain-path branch samples the
+  substrate colour from the shot's own delivered bytes, only when a
+  reveal is set, and threads it through), `:1311-1332` (`_render_run`'s
+  OWN inline single-shot tail gets the identical branch, duplicated for
+  the same reason Ken-Burns/motion dispatch is already duplicated
+  between the two call sites - see "Effects" below).
+- `backend/app/renderer/fingerprint.py:472-533` - `compute_shot_stream_
+  fingerprint` gains an explicit `"reveal"` payload entry (`direction`/
+  `start_offset_s`/`duration_s`, read straight off `shot`) - the same R2
+  gap `layers` needed there first. No change to `compute_render_
+  fingerprint`/`compute_run_fingerprint` - both already dump the whole
+  `Shot`, so the new fields ride in for free (verified by test, not
+  assumed).
+- `backend/app/prompts/shot_planner_styles/illustrated_risograph.md` -
+  one new bullet, appended directly after the F4 entry bullet, explicitly
+  bridging with the `parallax` bullet's own skip clause ("exactly the
+  shot the `parallax` bullet above tells you to skip"): both
+  `RevealDirection` values, the fragment-window instruction, the `camera.
+  movement=static` requirement, and a rate cue. Positive framings
+  throughout, no negation, no artefact noun (checked against the
+  existing, unmodified `test_the_whole_fragment_names_no_artefact_or_
+  negation_noun`).
+
+**The reveal mechanism, and how it was verified:** a shot's own already-
+generated picture is one flat PNG - there is no bar/arrow object inside
+it to move. F5 therefore does not animate anything WITHIN the frame; it
+progressively reveals the FINISHED picture out from behind a solid
+substrate-colour canvas, using ffmpeg's own `xfade` wipe transitions
+(`wipeup`/`wiperight`) rather than a hand-rolled animated `crop` -
+`xfade` is already this codebase's proven mechanism for a timed
+transition between two streams (`TransitionType.WIPE_LEFT` already ships
+a real `xfade` name for a shot-to-shot cut); F5 reuses it for ONE shot's
+own before/after state instead of two different shots. Two streams, each
+held for the shot's own full `frames`/`fps` duration (the identical
+`_normalize_filter` arithmetic every other movement uses): the substrate
+canvas (`base_canvas_filter`, reused from `parallax.py`) and the picture
+itself (`_normalize_filter`, reused verbatim, not re-derived), combined
+with one `xfade` at `duration=reveal_duration_s:offset=reveal_start_
+offset_s`, then `trim`med back to the shot's own exact duration - `xfade`
+otherwise leaves the stream `offset + len(second input)` long whenever
+the second input outlasts the transition window, which would run this
+shot's stream LONG.
+
+Both the direction mapping and the whole four-stage graph were verified
+against a REAL, free, local ffmpeg run before being written into
+production code (this ffmpeg build, 9.0-full_build):
+- `wipeup` reveals the SECOND input starting at the BOTTOM of the frame
+  and sweeping the boundary upward - measured with a synthetic
+  100x200 red/green clip pair (`xfade=transition=wipeup:duration=2:
+  offset=0`), sampling the mid-transition frame: top pixel `(254, 0, 0)`
+  (still the old/red frame), bottom pixel `(1, 128, 1)` (already the
+  new/green frame) - confirming BOTTOM_TO_TOP maps to `wipeup`.
+- `wiperight` reveals the SECOND input starting at the LEFT and sweeping
+  rightward - measured the same way with a 200x100 pair
+  (`xfade=transition=wiperight`), mid-transition: left pixel already
+  green, right pixel still red - confirming LEFT_TO_RIGHT maps to
+  `wiperight`.
+- The full base/full/xfade/trim graph was built and run once, end to
+  end, with a 200x100 blue/yellow pair (`color=c=blue:...:d=3` as the
+  substrate, a `tpad`-held yellow "picture", `xfade=transition=wipeup:
+  duration=1:offset=1`, then `trim=0:3,setpts=PTS-STARTPTS`): `ffprobe`
+  confirmed the output is exactly 3.0s (not the untrimmed 4.0s `xfade`'s
+  own `offset + len(second input)` arithmetic would otherwise produce),
+  and sampled frames confirmed fully-substrate before the offset,
+  bottom-revealed-top-hidden mid-transition, and fully-revealed after -
+  see `tests/unit/renderer/test_reveal_filter.py` for the pinned string
+  shapes this measurement produced.
+
+**How the substrate colour is sampled, and why FOUR corners, not
+`sample_key_colour`'s one strip:** `sample_substrate_colour` mirrors
+`sample_key_colour`'s own "median off the delivered bytes, never assume"
+discipline exactly - §8.2 already records the risograph palette drifting
+shot to shot, so no fixed off-white/cream literal can be trusted here
+either. But `sample_key_colour`'s single-top-strip convention rests on a
+parallax SUBJECT touching the BOTTOM edge by convention (§1.3's four
+faceless framings), which does not hold for a chart or diagram - a
+graphic could plausibly place ink near any ONE edge (an axis line at the
+bottom, a bar hard against the left), but is vanishingly unlikely to ink
+all FOUR corners simultaneously, since a generated chart's own paper
+margin conventionally surrounds it on every side. Median across all four
+corners is robust to any single corner landing on real ink - proven
+directly in `test_sample_substrate_colour_ignores_ink_touching_one_edge`,
+a contrived image with a dark band hard against the bottom edge (deep
+enough to bleed into both bottom corners' own sampling boxes) that still
+returns the true substrate colour, because the pooled median across all
+four corners is dominated by the two untouched top corners.
+
+**The camera-movement interaction decision: refused outright, never
+composed.** A reveal wipes the shot's own picture into view over time -
+it IS this shot's motion. Combining it with a moving camera (Ken Burns
+zoom/pan) would require the wipe's mask to track a `zoompan`/`crop`
+expression that itself changes every frame - unverified, unbuilt, and a
+materially harder filter-graph problem than either mechanism alone.
+Refused at BOTH the domain schema (`Shot._reveal_requires_static_
+camera`) and the Shot Planner's own validator, matching this codebase's
+established precedent of refusing rather than silently reconciling two
+compositing ideas that were never designed to agree
+(`_layers_and_split_screen_are_mutually_exclusive`, §6 Q1). This is
+argued, not merely asserted: a data/chart shot (§1.3's own "plain flat
+background" rule) has no established use for camera movement in the
+first place, so the refusal costs the format nothing it was actually
+using.
+
+**The cap decision: NEEDED, argued against a first instinct to skip
+it.** F4's own layer entry is already gated behind the rarer `parallax`
+movement (itself capped to roughly one shot in four), so an entry
+inherits an upstream scarcity a reveal has no equivalent of -
+`reveal_direction` attaches to a plain `static` shot, this style's single
+MOST common movement. Several unrelated scenes could each independently
+decide "my one chart shot earns a reveal" with no shared visibility into
+how many other scenes made the identical choice - the same structural
+blindness every sibling cap in this codebase already exists to correct,
+and there is nothing about this device that makes the blindness stop
+applying. `_cap_element_reveals` is built in `_cap_layer_entries`'s own
+shape (a minimum shot GAP, not a running total) for the identical reason:
+a reveal costs nothing beyond the shot it already sits on, so it is a
+narrative-frequency concern, not a cost budget.
+`element_reveal_min_shot_gap = 14` is set WIDER than `layer_entry_min_
+shot_gap` (10) because a reveal has no upstream gate to lean on at all -
+reasoned, not measured, the same epistemic status every sibling constant
+in this plan carries.
+
+**Fingerprint verification result:** `compute_shot_stream_fingerprint`
+needed a real code change (the same gap `layers` hit first in F2) -
+verified, not assumed: `tests/unit/renderer/test_fingerprint_reveal.py`
+changes ONLY `reveal_direction`, ONLY `reveal_start_fragment`, ONLY
+`reveal_end_fragment`, ONLY `reveal_start_offset_s`, and ONLY `reveal_
+duration_s` on an otherwise-identical shot and asserts the fingerprint
+changes, for `compute_render_fingerprint` (no code change needed - full
+timeline dump) and `compute_shot_stream_fingerprint` (code change
+needed) both - ten new tests pass. `compute_run_fingerprint` (full shot
+dump) is covered by one representative test proving a reveal changes it
+too.
+
+**Test files (new):**
+- `backend/tests/unit/timeline/test_shot_reveal.py` (21 tests) - defaults/
+  isolation (§3.1), the all-or-nothing validator both directions, `end >=
+  start`, and the `camera.movement=static` requirement both directions.
+- `backend/tests/unit/planners/test_shot_planner_element_reveal.py`
+  (8 tests) - the Shot Planner's own validation (movement mismatch,
+  each zero-fragment case, `end < start`, out-of-range window, fields set
+  without a direction) and the domain conversion (valid case, no-reveal
+  case).
+- `backend/tests/unit/planners/test_shot_planner_element_reveal_cap.py`
+  (8 tests) - `_cap_element_reveals`, mirroring every one of `_cap_layer_
+  entries`'s own test shapes.
+- `backend/tests/unit/renderer/test_reveal_filter.py` (9 tests) - the
+  direction->transition mapping, the four-stage filter-graph shape
+  (byte-exact string assertions, reusing `_normalize_filter` directly to
+  prove the picture chain is not re-derived), label namespacing across
+  two shots in one graph, and `_per_shot_filter`'s dispatch (reaches
+  `_reveal_filter`, never `zoompan`).
+- `backend/tests/unit/renderer/test_fingerprint_reveal.py` (15 tests) -
+  see "Fingerprint verification result" above.
+
+**Test files (extended):**
+- `backend/tests/unit/timeline/test_narration_fit.py` (+17 tests) - the
+  fragment-window-to-seconds derivation (ordinary case, a non-zero shot
+  onset, absence when no reveal, a scene with no reveals at all), the
+  clamp firing in context on the same contrived alignment F4's own clamp
+  test uses, and `_clamp_reveal_window` in isolation (unchanged in-range,
+  never reaching/exceeding duration, never negative, extending a too-
+  short window UP to the minimum, a shot shorter than the tail clamping
+  both edges to zero, logging only on an actual change).
+- `backend/tests/unit/renderer/test_parallax.py` (+7 tests) -
+  `base_canvas_filter`'s new `label` parameter (default byte-identical,
+  namespaceable), and `sample_substrate_colour` (reads delivered corners,
+  robust to ink touching one edge, deterministic, smallest-image case).
+- `backend/tests/unit/planners/test_illustrated_risograph_fragment.py`
+  (+1 test) - the fragment teaches both reveal directions, the fragment-
+  window instruction, the `static`-movement requirement, and bridges
+  explicitly with the `parallax` bullet's own skip clause.
+- Four existing `ShotPlanOutput`-constructing test files
+  (`test_shot_planner.py`, `test_shot_planner_context.py`, `test_shot_
+  text_cards.py`, `test_shot_planner_parallax_layers.py`,
+  `tests/integration/test_generate_timeline_real.py`) - each gained the
+  three new required fields (`RevealDirection.NONE`/`0`/`0`) at their one
+  `ShotPlanOutput(...)` construction site, the SAME "every existing call
+  site needs the new required field" cost F4's own `enter_on_fragment`
+  paid when it was added - confirmed by running every one of them, not
+  merely assumed from the schema change.
+
+**Measured:**
+- The `xfade` direction mapping and the full base/full/xfade/trim graph -
+  see "The reveal mechanism" above for the exact pixel/duration readout.
+- Test counts: 21 + 8 + 8 + 9 + 15 + 17 + 7 + 1 = 86 new/changed-behaviour
+  tests across eight files (six new, two extended), plus five existing
+  files updated for the new required planner fields with no behaviour
+  change of their own. Full suite: `tests/unit` -> **1213 passed, 6
+  failed** (up from the stated baseline of 1134 passed / 6 failed - the 6
+  failures are the SAME ones named in the task brief, 5 in `test_sfx_
+  overlays_diegetic.py` and 1 in `test_director_planner.py::test_every_
+  attempt_is_recorded_as_an_llm_call`, confirmed by reading the failure
+  list itself, not merely counted - none is new).
+- `black --check`: 3 new test files needed reformatting on first write
+  (cosmetic line-wrap/import-order only), reformatted and re-verified
+  clean.
+- `ruff check`: clean on every touched file except one PRE-EXISTING
+  finding at `app/planners/shot/planner.py` (an unsorted import block,
+  the SAME finding F4's own log already named, confirmed via `git stash`/
+  `git stash pop` still present on the base commit at a different line
+  number purely from this pass's own insertions) - one NEW finding
+  (import order in `test_reveal_filter.py`) was found and fixed with
+  `ruff check --fix` before this measurement.
+- `mypy` on the nine touched production files: 2 findings, both
+  PRE-EXISTING - confirmed via the same `git stash` comparison
+  (`app/assets/cost.py:146`, untouched by this pass;
+  `app/planners/shot/planner.py`, the identical finding F4's own log
+  named, shifted from line 1063 to 1195 purely by this pass's own
+  insertions). Zero new mypy errors.
+
+**Verification (exact commands, run from `backend/`):**
+```
+../.venv/Scripts/python.exe -m pytest tests/unit/timeline/test_shot_reveal.py tests/unit/timeline/test_narration_fit.py tests/unit/planners/test_shot_planner_element_reveal.py tests/unit/planners/test_shot_planner_element_reveal_cap.py tests/unit/planners/test_illustrated_risograph_fragment.py tests/unit/planners/test_shot_planner_parallax_layers.py tests/unit/renderer/test_parallax.py tests/unit/renderer/test_reveal_filter.py tests/unit/renderer/test_fingerprint_reveal.py -q
+  -> all passed
+../.venv/Scripts/python.exe -m pytest tests/unit -q
+  -> 6 failed, 1213 passed   (same 6 pre-existing failures named in the task brief)
+../.venv/Scripts/python.exe -m black --check <every touched/created file>
+  -> 3 reformatted (new test files, cosmetic only); re-ran clean after
+../.venv/Scripts/python.exe -m ruff check <every touched/created file>
+  -> 1 pre-existing finding (planner.py import order, confirmed via git stash), otherwise clean
+../.venv/Scripts/python.exe -m mypy app/schemas/timeline.py app/planners/shot/schemas.py app/planners/shot/planner.py app/core/config.py app/timeline/narration_fit.py app/workflow/steps/narration.py app/renderer/parallax.py app/renderer/slideshow.py app/renderer/fingerprint.py
+  -> 2 pre-existing errors (confirmed via git stash), 0 new
+```
+Real, free, local ffmpeg runs (no API call, no spending) were used ONLY to
+verify the `xfade` direction mapping and the filter-graph shape described
+above - synthetic solid-colour test clips, never a real generated image, and
+the outputs were deleted from the scratch directory afterward. No
+`PYTEST_TRUNCATE_DB` was set; `--noconftest` was not used for the full
+suite (some planner tests need a real, never-truncated Postgres session,
+same as F2a's/F4's own). `make test` and the full suite via `make` were
+never run, per the task's own DB-hazard instruction. No external API was
+called; no image was generated; no render was produced; nothing was
+committed.
+
+**Effects / notes for the reviewer:**
+- **`_per_shot_filter`'s reveal dispatch is duplicated in `_render_run`'s
+  own inline single-shot tail**, for the identical reason Ken-Burns/
+  motion dispatch is already duplicated between the two call sites (this
+  module's own long-standing shape, not something this pass introduced):
+  a plain single-shot run (no split, no parallax) never goes through
+  `_encode_or_reuse_shot_stream`/`_per_shot_filter` at all - it is built
+  inline. Both branches are covered by test (`test_reveal_filter.py` for
+  `_per_shot_filter`'s own dispatch; the reveal path through `_render_
+  run`'s tail is exercised indirectly by the same fixtures every other
+  movement's tail branch already relies on, not a fresh integration test
+  against real ffmpeg, per the task's own no-spending/no-render
+  constraint).
+- **`base_canvas_filter` gained a `label` parameter rather than a second
+  near-duplicate function.** The existing `[base]`-hardcoded call site
+  (`build_two_layer_parallax_filter_complex`) never collides because
+  each parallax shot gets its own isolated ffmpeg invocation; F5's own
+  call site can share ONE `filter_complex` across multiple shots (a
+  multi-shot run), so it needed a namespaceable label. Generalising the
+  one function (R1) rather than writing `base_canvas_filter_v2` is the
+  same reasoning `layer_input_chain`'s own `entry_offset_s`/`entry_fade_s`
+  parameters already followed for F4.
+- **The three planner-facing reveal fields cost every existing
+  `ShotPlanOutput`-constructing test a required-field update**, the
+  identical one-time cost `enter_on_fragment` already imposed when F4
+  shipped it. Confirmed by actually running each of the five affected
+  files (four unit, one integration-file syntax-checked, since it needs
+  real network access this pass could not spend on) rather than assumed
+  from the schema diff alone.
+- **No equivalent of §4.5's keyed-fraction guard was built for the
+  reveal.** §4.5 earns its guard from a SPECIFIC, already-measured silent
+  failure mode (a hardcoded key matching nothing, §1.5). The reveal
+  mechanism has no analogous known failure yet - no real reveal render
+  has been produced - so a guard was not invented speculatively; if a
+  real render surfaces a silent failure mode (e.g. the substrate colour
+  reading noticeably wrong against a real chart's ink distribution), it
+  should earn its own guard the same way §4.5 did, not before.
+- **Two other `RevealDirection` values (top-down, right-to-left) were
+  deliberately left unbuilt.** The enum's own docstring records why: no
+  named use case in this plan needs them, and speculative motion
+  directions are exactly the kind of unmeasured surface area this plan's
+  own style repeatedly argues against building ahead of a real need.
+
+**What is NOT done:**
+- **The human pass.** F5's own implicit gate (nothing in §2 states one
+  explicitly for F5, but every visual slice in this plan carries the same
+  standing rule, §0.1 item 3) - "does the wipe actually read as a bar
+  growing, timed against the words?" - is entirely outstanding. Every
+  claim above is verified as arithmetic/text/fingerprint/local-ffmpeg-
+  string behaviour, never against a real generated chart.
+- F3 (three layers, per-layer scale/placement) - untouched, explicitly
+  out of scope; this pass never touched `ShotLayer` at all.
+- No guard analogous to §4.5's keyed-fraction check - see "Effects"
+  above for why this was a deliberate choice, not an oversight.
+- `app/workflow/steps/render.py`'s A15 diegetic-SFX work and the
+  `test_sfx_overlays_diegetic.py`/`test_director_planner.py` pre-existing
+  failures - neither touched, per the task's own explicit baseline.
+- `app/projects/deletion.py`, `app/schemas/project_deletion.py`, and
+  `frontend/src/components/DeleteProjectDialog.tsx` - not opened, per
+  the task's own DO-NOT list.
+
+### P-IF-F5-fps-review — a real fps/xfade-length coupling, at a different threshold than reviewed (2026-09-05)
+
+**Scope executed:** a review pass on P-IF-F5 raised a hypothesised
+`render_fps >= 30` dependency in `_reveal_filter`'s xfade+trim
+arithmetic. Investigated with real, free, local ffmpeg runs (synthetic
+solid-colour clips, no image generation, no spending) rather than taken
+on the review's own arithmetic alone - the review's SPECIFIC claim
+(fps 24/25 unsafe) did not reproduce, but the underlying concern was
+real at a different, lower threshold the review's own formula had
+missed. Fixed at its actual root cause. Nothing else from P-IF-F5
+changed.
+
+**What the review got right and what it got wrong, in order:**
+1. **Right:** `_reveal_filter`'s `trim=0:total_s` is only safe when
+   `xfade`'s own `first + second - transition` output is `>= total_s`,
+   and this depends on frame-count rounding (`frames = round(duration_s
+   * fps)`) in a way `_clamp_reveal_window` (which bounds the window
+   against the shot's own CONTINUOUS `duration_s`, not the renderer's
+   frame-quantised `total_s`) does not account for. This is a genuine
+   gap, and the review was right to flag it.
+2. **Wrong:** the review modelled the tpad-cloned PICTURE stream's
+   effective length, for `xfade`'s own arithmetic, as `hold_s`. Measured
+   directly (a real ffmpeg render of `_normalize_filter`'s own chain,
+   plus an exact `ffprobe -count_frames` check): the picture stream's
+   real length is `total_s = frames/fps` (one decoded frame + `hold_s`
+   of `tpad` clones), matching `_normalize_filter`'s own docstring
+   ("produce a stream of exactly duration_s seconds") - `hold_s` is only
+   the ADDED clone duration, never the resulting total. This 1-frame
+   modelling error is exactly why the review's own derived threshold
+   (`1.5/fps <= 0.05` → fps >= 30) was three times too strict.
+3. **The real threshold:** with the correct model, the worst-case gap
+   between `duration_s` and `total_s` is `0.5/fps` alone (rounding, not
+   `1.5/fps`), giving `fps >= 10`. Confirmed by a fine per-fps sweep of
+   `_clamp_reveal_window`'s own worst-case output against `total_s`:
+   fps=9's worst margin is `-0.00555s`; fps=10 and every fps above it:
+   exactly `0.0`, never negative. `render_fps` ships at `30` - safely
+   above the review's claimed threshold AND the real, lower one, so
+   production was never actually exposed - but the gap is real below
+   fps 10, and was fixed rather than left as a theoretical footnote.
+4. **Option (a) from the review (hold the picture for `total_s` instead
+   of `hold_s`) was tested directly and REJECTED**: it does remove the
+   fps coupling, but it does so by making `_normalize_filter`'s tpad
+   hold one frame too long - measured directly (fps=24, a 2.0s shot):
+   the "fixed" chain rendered at `2.041667s`, exactly `total_s + 1/fps`,
+   confirming the review's own caution ("check WHY hold_s was chosen...
+   changing it may add a frame") was right to raise. Applying option (a)
+   would have traded a real-but-rare defect (fps < 10) for a
+   guaranteed one (every reveal shot's stream one frame too long, at
+   every fps).
+5. **Option (b) from the review (an fps-aware tail in `narration_fit`)
+   was not needed either.** The mismatch this concern is actually about
+   - a shot's planning-time `duration_s` (continuous) versus this
+   renderer's own frame-quantised `total_s` - is a RENDERER fact, and
+   `narration_fit.py` has no `fps`/render-settings dependency to derive
+   it from without a new, layering-crossing import.
+
+**The fix: a renderer-side defensive re-clamp, not a bigger constant.**
+`app/renderer/slideshow.py::_effective_reveal_window` (new, right above
+`_reveal_filter`) re-clamps `start_offset_s`/`duration_s` against THIS
+renderer's own `total_s` immediately before either is used to build the
+`xfade` call - the identical shape `build_two_layer_parallax_filter_
+complex`'s existing `effective_fade_s` already uses ("never let the fade
+outlast what remains of the shot"), applied to a reveal instead of an
+entry. This removes the fps coupling ENTIRELY (provably correct for any
+fps, not merely fps >= 10) rather than padding the existing tail
+constant to survive a specific threshold, and costs nothing on the
+ordinary path (a no-op whenever the resolved window already fits,
+i.e. every case at fps >= 10). `narration_fit.py` was not touched -
+still no fps/render-settings dependency, exactly as before.
+
+**Changes:**
+- `backend/app/renderer/slideshow.py:358-399` (new `_effective_reveal_
+  window`), `:450-452` (`_reveal_filter` calls it before building the
+  `xfade` stage, using `effective_start_s`/`effective_duration_s` in
+  place of the raw `start_offset_s`/`duration_s`).
+
+**Test files (extended):**
+- `backend/tests/unit/renderer/test_reveal_filter.py` (+10 tests) - the
+  fps/xfade-length invariant swept across fps `(5, 6, 7, 8, 9, 10, 12,
+  24, 25, 30, 60)` and ~230 durations from 0.5s to 12.0s, both a
+  start-to-end window and a mid-shot window (both built from the REAL
+  `_clamp_reveal_window`, never a second copy of its arithmetic) - proof
+  the invariant holds, not a hardcoded string; a dedicated pin of the
+  two fps values (24, 25) the original review named; a test proving the
+  sweep is not vacuous (fps=9's own worst point genuinely runs short
+  WITHOUT the fix, applied via the raw unclamped arithmetic, then
+  confirmed fixed once `_effective_reveal_window` is applied); and six
+  direct unit tests of `_effective_reveal_window` in isolation (in-range
+  unchanged, shrinks an over-long duration, shrinks duration after a
+  late start, clamps a start beyond `total_s` to zero duration, never
+  negative, and the general `start + duration <= total_s` property
+  swept over a small grid).
+
+**Measured:**
+- Real ffmpeg (synthetic solid-colour clips, `.venv`-side, no image
+  generation): `_normalize_filter`'s own chain at fps=24, a 2.0s shot
+  (`hold_s=1.958333`) renders to EXACTLY `2.000000s`, confirmed by both
+  `ffprobe -show_entries format=duration` and `ffprobe -count_frames`
+  (`nb_read_frames` == the expected `frames` exactly) - the ground truth
+  the review's own formula got wrong.
+- The full base/full/xfade/trim graph, run for real across the review's
+  own worst-case methodology (the widest window `_clamp_reveal_window`
+  emits, both start-to-end and mid-shot) at fps 24/25/30/60 and
+  durations 0.6s-11.9s: zero real shortfalls (one ~0.0003-0.0005s
+  container-metadata rounding artefact at two isolated points,
+  confirmed via exact frame count to be NOT a dropped frame, and not
+  correlated with fps<30 as the review's formula predicted).
+- Pushed the same measurement down to fps 5/8/10/12: real shortfalls
+  appear ONLY below fps 10 (fps=5: short by up to 0.05s; fps=8: up to
+  ~0.0125s), never at 10 and above - contradicting the review's own
+  fps>=30 threshold directly, and confirming the corrected fps>=10
+  derivation instead.
+- After the fix: the SAME fps=9 worst-case point (previously short by
+  the pure-arithmetic model), rendered for real, produces exactly 23
+  frames at 9fps (`nb_read_frames=23`, matching `frames=23` exactly) -
+  the fix verified against real ffmpeg output, not only the Python
+  model that predicts it.
+- Full suite: `tests/unit` -> **1223 passed, 6 failed** (up from 1213 -
+  the 6 failures are the same pre-existing ones, unchanged).
+- `black`/`ruff`/`mypy` on `app/renderer/slideshow.py` and the extended
+  test file: clean (one test file needed a cosmetic black reformat,
+  fixed and re-verified).
+
+**Verification (exact commands, run from `backend/`):**
+```
+../.venv/Scripts/python.exe -m pytest tests/unit/renderer/test_reveal_filter.py -q
+  -> 19 passed
+../.venv/Scripts/python.exe -m pytest tests/unit -q
+  -> 6 failed, 1223 passed   (same 6 pre-existing failures)
+../.venv/Scripts/python.exe -m black --check app/renderer/slideshow.py tests/unit/renderer/test_reveal_filter.py
+../.venv/Scripts/python.exe -m ruff check app/renderer/slideshow.py tests/unit/renderer/test_reveal_filter.py
+../.venv/Scripts/python.exe -m mypy app/renderer/slideshow.py
+  -> all clean
+```
+Real ffmpeg runs used ONLY synthetic solid-colour test clips generated
+locally (never a real generated image, never a paid API call) to verify
+`_normalize_filter`'s and `_reveal_filter`'s actual rendered duration and
+frame count against the Python model - all scratch output deleted
+afterward. No `PYTEST_TRUNCATE_DB`, no `--noconftest` for the full
+suite, no `make test`, no seed `--force`, no server started, per the
+same standing constraints every prior pass in this plan has honoured.
+
+**Effects / notes for the reviewer:**
+- **Never assume a formula for a filter's behaviour - measure it, even
+  when the reviewer sounds confident.** The original review's own
+  derivation was internally consistent and its caution about option (a)
+  was exactly right, but its core premise (the tpad-cloned stream's
+  effective length) was wrong by exactly one frame - a small, easy
+  mistake with a 3x consequence on the derived threshold. This is the
+  identical discipline §1.5/§4.5 already state for the chroma key colour
+  ("sampled, never assumed"), applied to a filter-graph LENGTH claim
+  instead of a colour.
+- **The fix is unconditionally correct, not merely "correct at fps>=10
+  with margin."** Because `_effective_reveal_window` re-derives the safe
+  window from `total_s` directly rather than checking it against a
+  threshold, it would still be correct at fps=1 or fps=1000 - there is
+  no new magic number to re-tune if `render_fps` ever changes.
+
 ---
 
 ## 8. F1 CLOSED — human pass given 2026-09-04
@@ -3458,3 +4033,132 @@ work, but recorded here since it was found reading §8 before F4):** §8.1's
 (`substrate_crop_oversize_fraction = 0.08`, per `app/core/config.py`'s
 committed history) - corrected inline at that paragraph, with a dated
 addendum rather than a silent rewrite of the historical number.
+
+### 8.7 F5 — Element reveal is BUILT, awaiting human pass (P-IF-F5)
+
+Schema (`Shot.reveal_direction`/`reveal_start_fragment`/`reveal_end_
+fragment`/`reveal_start_offset_s`/`reveal_duration_s`), planner authoring +
+validation, the fragment-window-to-seconds resolver (`resolve_element_
+reveals`, generalising F4's own `resolve_layer_entry_offsets`), the
+renderer's `xfade`-based wipe in the STATIC image path (`_reveal_filter`,
+`app/renderer/slideshow.py`), the substrate-colour sampler
+(`sample_substrate_colour`, `app/renderer/parallax.py`), fingerprint
+coverage, the project-wide rate cap (`_cap_element_reveals`), and the style
+fragment's bridging bullet are all landed - see §7's `P-IF-F5` entry for the
+full account, including the real (free, local, no image generated) ffmpeg
+runs that verified the `xfade` direction mapping and the filter-graph shape
+before either was written into production code.
+
+**Not yet verified against a real render.** Same status every prior F1-F4
+entry in this section has carried: no image was generated and nothing was
+watched this pass (fixtures, pure arithmetic, and synthetic-colour ffmpeg
+runs only, per the task's own "offline verification only, no spending"
+constraint). The one thing none of this proves: does the wipe actually read
+as a bar growing, timed against the words, on a REAL generated risograph
+chart? A generated chart's ink is not a flat colour field the way this
+pass's synthetic red/green/blue/yellow test clips were - the substrate
+sampler's four-corner median was reasoned and tested against synthetic
+images with a controlled ink band, never against a real delivered plate.
+
+**Landmines for whoever builds F3 (three layers) or touches this mechanism
+next:**
+1. **F5 never touches `ShotLayer`, so F4's own two F3 landmines (§8.6,
+   `_cap_layer_entries`'s single-entry-per-shot assumption and the
+   renderer's fade hook only reaching the subject layer) are entirely
+   unaffected by this pass - still open, still F3's to resolve.**
+2. **`_per_shot_filter`'s reveal branch and `_render_run`'s own inline
+   tail duplicate the same three-line dispatch.** This mirrors an
+   EXISTING duplication in this file (Ken-Burns/motion dispatch between
+   the two call sites), not a new pattern introduced here - but it means
+   a future third reveal-consuming call site (if one is ever added) must
+   remember to wire BOTH places, the same risk the existing duplication
+   already carries for every other movement type.
+3. **A reveal and `split_frame` were never explicitly ruled on.** `Shot.
+   _reveal_requires_static_camera` refuses any non-`static` movement,
+   and `split_frame` is itself a `CameraMovement` value, so a shot cannot
+   legally carry both today - but this is an INCIDENTAL consequence of
+   the static-only rule, not a deliberately reasoned mutual-exclusion
+   check the way `_layers_and_split_screen_are_mutually_exclusive` (§6
+   Q1) is. If `split_frame` and a reveal are ever wanted together (e.g.
+   a comparison shot where one panel wipes in), this needs its own
+   design pass, not an assumption that the current refusal was reasoned
+   for that case.
+4. **No guard analogous to §4.5's keyed-fraction check exists for the
+   reveal.** Recorded as a deliberate choice in §7's own P-IF-F5 entry
+   ("Effects" section) - §4.5 earned its guard from a specific, already-
+   measured silent failure (§1.5); the reveal has no equivalent measured
+   failure yet. Whoever runs F5's human pass should watch specifically
+   for a wrong-looking substrate colour (the failure mode this mechanism
+   is most structurally exposed to, by analogy with §1.5/§4.5) and, if
+   it recurs, build the guard then rather than speculatively now.
+
+### 8.8 ⚠ F5's xfade+trim had a real fps floor — found in review, fixed, corrected (P-IF-F5-fps-review)
+
+A review of P-IF-F5 flagged a hidden `render_fps >= 30` dependency in
+`_reveal_filter`'s `xfade`+`trim` arithmetic: `_clamp_reveal_window`
+(`app/timeline/narration_fit.py`) bounds a reveal window against the
+shot's own CONTINUOUS `duration_s`, but the renderer actually builds
+against a frame-quantised `total_s = round(duration_s * fps) / fps`,
+which can differ from `duration_s` by up to half a frame - and since
+`xfade`'s own `first + second - transition` combination rule means the
+`trim=0:total_s` stage is only safe when the resolved reveal duration
+does not exceed `total_s`, a wide-enough rounding gap could make a
+render silently come out one instant short, desyncing every downstream
+crossfade offset that assumes each shot's stream is exactly its own
+duration.
+
+**The concern was real. The claimed threshold was not** - measured with
+real, free, local ffmpeg runs (synthetic solid-colour clips) plus exact
+`ffprobe -count_frames` checks, not merely re-derived on paper:
+
+- The review's own formula modelled the tpad-cloned picture stream's
+  effective length (for `xfade`'s own arithmetic) as `hold_s =
+  (frames-1)/fps`. Measured: the real length is `total_s = frames/fps`
+  (one decoded frame + `hold_s` of clones) - `hold_s` is only the ADDED
+  clone duration, matching `_normalize_filter`'s own docstring exactly
+  ("produce a stream of exactly duration_s seconds"). This one-frame
+  modelling error inflated the review's derived threshold 3x (`1.5/fps
+  <= 0.05` → fps>=30, instead of the correct `0.5/fps <= 0.05` →
+  fps>=10).
+- Confirmed by a fine per-fps sweep of `_clamp_reveal_window`'s own
+  worst-case output against `total_s`: fps=9's worst margin is
+  `-0.00555s`; fps=10 and every fps above it (12, 24, 25, 30, 60, and
+  every value in between checked): exactly `0.0`, never negative.
+  `render_fps` ships at `30`, comfortably above BOTH the claimed and the
+  real threshold - production was never actually at risk, but the gap
+  below fps 10 was real, not hypothetical.
+- Real ffmpeg confirms both ends: the unfixed graph at fps=9's own
+  worst point renders visibly short (frame count and wall-clock
+  duration both below the target); the same point, through the fix,
+  renders to exactly the target frame count (`nb_read_frames` matches
+  `frames` exactly).
+
+**Fixed at its actual root cause, not by padding a threshold:**
+`app/renderer/slideshow.py::_effective_reveal_window` re-clamps the
+resolved reveal window against the RENDERER's own `total_s` immediately
+before `_reveal_filter` builds the `xfade` call - the identical shape
+`build_two_layer_parallax_filter_complex`'s existing `effective_fade_s`
+already uses for F4's entry fade. This is unconditionally correct for
+any fps (no re-derivation needed if `render_fps` ever changes), not
+merely "correct above 10". `narration_fit.py` was not touched - it still
+carries no fps/render-settings dependency.
+
+**Two things this landmine is worth recording for whoever next touches
+this mechanism:**
+1. **The review's own proposed "option (a)" (hold the picture for
+   `total_s` instead of `hold_s` in `_normalize_filter`'s own call) was
+   tested directly and confirmed to introduce a real regression** - a
+   2.0s shot at fps=24 rendered to `2.041667s` (`total_s + 1/fps`, one
+   frame too long) under that change. If a future pass is tempted to
+   "simplify" by unifying `hold_s`/`total_s`, re-run this exact
+   measurement before assuming it's safe.
+2. **A filter's LENGTH-combination behaviour is exactly the kind of
+   claim this codebase's own §1.5/§4.5 discipline already applies to
+   colour** - sample it, don't assume it. This is the second time in
+   F5 alone that a filter-graph assumption needed a real ffmpeg run to
+   settle (the first being the `wipeup`/`wiperight` direction mapping
+   itself, P-IF-F5's own log entry) - a pattern worth remembering the
+   next time a new filter combination is reached for in this renderer.
+
+See §7's `P-IF-F5-fps-review` entry for the full measurement, the fix,
+and the ten new/extended tests.

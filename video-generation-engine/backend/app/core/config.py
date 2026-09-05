@@ -540,6 +540,32 @@ class Settings(BaseSettings):
     # `max_parallax_layers_per_project` immediately above already carries.
     layer_entry_min_shot_gap: int = 10
 
+    # illustrated_faceless.md F5 (2026-09-05): minimum number of shots
+    # between two `reveal_direction` uses, enforced PROJECT-WIDE after the
+    # per-scene gather (`_cap_element_reveals`, planners/shot/planner.py) -
+    # same spacing shape as `layer_entry_min_shot_gap` immediately above,
+    # a narrative-frequency cap rather than a cost one (a reveal adds no
+    # new generation).
+    #
+    # Set WIDER than `layer_entry_min_shot_gap` (10), deliberately: a
+    # layer entry is already gated behind the rarer `parallax` movement
+    # (itself capped to roughly one shot in four), so F4 inherited an
+    # upstream scarcity a reveal has no equivalent of - `reveal_direction`
+    # attaches to a plain `static` shot, this style's single most common
+    # movement. With no comparable upstream gate, the outer cap has to do
+    # more of the restraining on its own, hence a wider gap than either
+    # sibling. The plan's own F5 text frames this as a device for the
+    # rare shot whose picture genuinely IS a chart/diagram ("only build
+    # this if the content demands it" - most scripts have very few such
+    # shots at all), which argues for a gap wide enough that it rarely
+    # even binds in practice, only correcting the case where several
+    # unrelated scenes each independently reach for one. 14 is a reasoned
+    # starting point, not a measured one (no real render with a reveal
+    # has been watched yet - F5's own human pass is still outstanding),
+    # the same epistemic status `layer_entry_min_shot_gap`/
+    # `max_parallax_layers_per_project` already carry.
+    element_reveal_min_shot_gap: int = 14
+
     # illustrated_faceless.md F1a/§8.1 (2026-09-05): for a `GENERATION_
     # ONLY` style, request the image this fraction OVERSIZED and centre-
     # crop it back to the style's exact canvas before persisting - a

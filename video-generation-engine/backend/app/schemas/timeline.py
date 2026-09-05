@@ -236,6 +236,34 @@ class AssetPlan(BaseModel):
         return chain
 
 
+class RevealDirection(StrEnum):
+    """F5 (illustrated_faceless.md §2/F5, 2026-09-05): the direction a
+    shot's OWN finished picture wipes into view over time - element
+    ANIMATION, not layer compositing. A generated illustration is a
+    single flat PNG (no bar/arrow OBJECT inside it to move, only pixels),
+    and this format has already ruled out per-shot AI image-to-video on
+    cost (Verdict, §2.4's arithmetic), so "a bar growing" or "an arrow
+    drawing itself" can only ever mean the FINISHED graphic progressively
+    revealed out of the shot's own substrate colour - the "wipe" in the
+    plan's own "grow, draw, wipe" phrasing, and the only one of the three
+    actually achievable on a generated still. `NONE` (the default on
+    every shot, mirroring `CameraDirection.NONE`) means no reveal at all
+    - by far the common case, even on this style.
+
+    Two members, not more - the minimum set the plan's own two named
+    examples need: a bar CLIMBING from its own baseline needs its reveal
+    to sweep upward from the bottom of the frame; an arrow or line
+    DRAWING itself needs its reveal to sweep left across the frame (the
+    reading-order default, the same convention `CameraDirection.RIGHT`
+    already carries for `PAN`). A wipe sweeping the other two ways
+    (top-down, right-to-left) has no named use case in this plan and is
+    left unbuilt rather than spun up on spec."""
+
+    NONE = "none"
+    BOTTOM_TO_TOP = "bottom_to_top"
+    LEFT_TO_RIGHT = "left_to_right"
+
+
 class LayerRole(StrEnum):
     """One plane's depth role in a parallax composite (illustrated_
     faceless.md §2.2/F2). F2 uses exactly two, in this order -
@@ -404,6 +432,56 @@ class Shot(BaseModel):
     # `_layers_and_split_screen_are_mutually_exclusive` below for the
     # one thing that IS enforced.
     layers: list[ShotLayer] = Field(default_factory=list)
+    # illustrated_faceless.md F5 (2026-09-05): a progressive reveal of
+    # THIS SHOT'S OWN primary picture - element ANIMATION on a flat
+    # generated still, not a parallax plane. Deliberately NOT on
+    # `ShotLayer`: F2's own layer mechanism exists to separate a picture
+    # into depth planes, and the shots F5 targets (a chart, a diagram - a
+    # "flat graphic... nothing to separate", per this style's own
+    # `parallax` bullet) are exactly the shots this style's fragment
+    # tells the planner to SKIP parallax on. A layer-shaped mechanism
+    # could never reach the shots it was built for, so this sits on the
+    # SHOT itself and acts on the static-image render path
+    # (`app/renderer/slideshow.py`), matching `text_card`/`sfx_cue`'s own
+    # shot-level (not layer-level) shape immediately above.
+    #
+    # Same two-field split as `ShotLayer.enter_on_fragment`/
+    # `enter_offset_s` (F4), extended from a fragment-anchored POINT (a
+    # layer's entry) to a fragment-anchored WINDOW (this shot's own
+    # reveal, start fragment through end fragment) - a reveal has both a
+    # start AND a completion, and F5 clamps both inside the shot's own
+    # duration (see `app/timeline/narration_fit.py::resolve_element_
+    # reveals`), not merely the one instant F4's entry clamps.
+    # `None` (the default) means no reveal at all - by far the common
+    # case, and every shot that predates this field (§3.1).
+    reveal_direction: RevealDirection | None = None
+    # Planner-authored, 1-indexed, INCLUSIVE fragment numbers - the
+    # SAME idiom `ShotPlanOutput.fragment_start`/`fragment_end` and
+    # `ShotLayer.enter_on_fragment` already use, for the identical reason
+    # (`app/planners/fragments.py`'s own thesis: a model can judge WHICH
+    # fragment's words a reveal should track, never predict a duration in
+    # seconds that does not exist until narration is measured). Both
+    # `None` together with `reveal_direction is None` (§3.1 default);
+    # both set together whenever a reveal is requested - enforced below
+    # (`_reveal_fields_are_all_or_nothing`). Range-checked against the
+    # OWNING SHOT's own `fragment_start`/`fragment_end` in the Shot
+    # Planner's own `_make_validator` (not here) - the identical reason
+    # `ShotLayerOutput.enter_on_fragment`'s own docstring gives: this
+    # schema no longer carries fragment numbers by the time it exists.
+    reveal_start_fragment: int | None = None
+    reveal_end_fragment: int | None = None
+    # The RESOLVED half of the pair above: seconds from this shot's own
+    # start at which the reveal begins, and how many seconds it takes to
+    # complete - both fitted to measured narration at the SAME seam
+    # `Shot.duration_s` itself is fitted at
+    # (`app/timeline/narration_fit.py::resolve_element_reveals`), never
+    # at render time (§4.1/R2). Default `0.0`/`0.0` on every shot that
+    # predates this field and every shot with no reveal, mirroring
+    # `enter_offset_s`'s own "0.0 = present from the start" default -
+    # here, "0.0 = nothing to reveal" (the renderer never reads either
+    # field unless `reveal_direction is not None`).
+    reveal_start_offset_s: float = 0.0
+    reveal_duration_s: float = 0.0
 
     @model_validator(mode="after")
     def _layers_and_split_screen_are_mutually_exclusive(self) -> Shot:
@@ -449,6 +527,63 @@ class Shot(BaseModel):
                     "stands on, and fading it in would mean fading in from "
                     "nothing"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _reveal_fields_are_all_or_nothing(self) -> Shot:
+        """F5 (illustrated_faceless.md, 2026-09-05): `reveal_direction`,
+        `reveal_start_fragment`, and `reveal_end_fragment` describe ONE
+        creative decision and must arrive together or not at all -
+        enforced here (not only in the Shot Planner's own
+        `_make_validator`) for the same "a Timeline is also read back
+        from storage" reason `_background_layer_never_carries_an_entry`
+        above already gives. The RANGE check (does the window fall
+        inside this shot's own fragment_start/fragment_end) cannot live
+        here - by the time a domain `Shot` exists, fragment numbers have
+        already been converted into `narration_span`, the identical
+        reason `enter_on_fragment` is not range-checked at this level
+        either."""
+        fields_set = (
+            self.reveal_direction is not None,
+            self.reveal_start_fragment is not None,
+            self.reveal_end_fragment is not None,
+        )
+        if len(set(fields_set)) != 1:
+            raise ValueError(
+                "reveal_direction/reveal_start_fragment/reveal_end_fragment "
+                "(illustrated_faceless.md F5) must all be set or all be None - "
+                "a reveal is one creative decision, not three independent ones"
+            )
+        if (
+            self.reveal_start_fragment is not None
+            and self.reveal_end_fragment is not None
+            and self.reveal_end_fragment < self.reveal_start_fragment
+        ):
+            raise ValueError(
+                "reveal_end_fragment must be >= reveal_start_fragment "
+                "(illustrated_faceless.md F5)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reveal_requires_static_camera(self) -> Shot:
+        """F5 (illustrated_faceless.md, 2026-09-05): a reveal wipes this
+        shot's own picture into view over time - it IS this shot's
+        motion. A moving camera on top of it would need the wipe's mask
+        to track a `zoompan`/`crop` expression that itself changes every
+        frame, which is unbuilt and unverified (see the plan's own F5
+        log entry for why this was refused rather than attempted).
+        Refusing the combination outright matches this schema's own
+        precedent of refusing rather than silently reconciling two
+        compositing ideas that were never designed to agree
+        (`_layers_and_split_screen_are_mutually_exclusive` above)."""
+        if self.reveal_direction is not None and self.camera.movement != CameraMovement.STATIC:
+            raise ValueError(
+                "a shot with reveal_direction set must use camera.movement="
+                "static (illustrated_faceless.md F5): a reveal is this shot's "
+                "own motion, and a moving camera on top of it is refused, not "
+                f"composited - got movement={self.camera.movement.value}"
+            )
         return self
 
 

@@ -49,6 +49,7 @@ from app.schemas.timeline import (
     CreativeContext,
     Framing,
     LayerRole,
+    RevealDirection,
     Scene,
     Shot,
     ShotLayer,
@@ -583,6 +584,82 @@ def _cap_layer_entries(planned_scenes: list[Scene], *, min_gap: int) -> list[Sce
     return out
 
 
+def _cap_element_reveals(planned_scenes: list[Scene], *, min_gap: int) -> list[Scene]:
+    """F5's own project-wide rate cap (illustrated_faceless.md §2/F5),
+    same structural-blindness shape as `_cap_layer_entries` immediately
+    above (a minimum-shot-GAP between kept occurrences): the Shot
+    Planner is called once per scene and cannot see whether another
+    scene already reached for a reveal.
+
+    Argued as NEEDED, unlike a first instinct to skip it because "chart
+    shots are naturally rare": a layer entry is already gated behind the
+    rarer `parallax` movement (itself capped to roughly one shot in
+    four), so F4 inherited an upstream scarcity a reveal has no
+    equivalent of - `reveal_direction` attaches to a plain `static` shot,
+    the single most common camera movement in this style. Several
+    unrelated scenes could each independently decide "my one chart shot
+    earns a reveal" with no shared visibility into how many other scenes
+    made the identical choice, which is exactly the blindness every
+    sibling cap in this module already exists to correct - there is
+    nothing structurally different about this device that would make the
+    blindness stop applying.
+
+    Unlike `_cap_parallax_layers`, this is a NARRATIVE-frequency cap, not
+    a cost one: a reveal adds no new generation and no new asset - the
+    shot's own single picture is already priced. Clears only the reveal
+    (`reveal_direction`/`reveal_start_fragment`/`reveal_end_fragment`
+    reset to `None`) - the shot and its picture are untouched; it simply
+    renders as a plain static shot instead of a wipe, the same graceful,
+    silently-corrected-and-logged degrade every sibling cap already uses
+    (style_extensions.md §2.7)."""
+    if min_gap <= 0:
+        return planned_scenes
+
+    flat: list[Shot] = [shot for scene in planned_scenes for shot in scene.shots]
+    original = [shot.reveal_direction is not None for shot in flat]
+    decisions = list(original)
+
+    shots_since_kept: int | None = None  # None = no reveal kept yet
+    kept = 0
+    cleared = 0
+    for i, has_reveal in enumerate(original):
+        if not has_reveal:
+            if shots_since_kept is not None:
+                shots_since_kept += 1
+            continue
+        if shots_since_kept is None or shots_since_kept >= min_gap:
+            kept += 1
+            shots_since_kept = 0
+        else:
+            decisions[i] = False
+            cleared += 1
+            shots_since_kept += 1
+
+    if cleared:
+        logger.warning(
+            "shot_planner.element_reveals_too_dense_trimmed",
+            extra={"kept": kept, "cleared": cleared, "min_gap": min_gap},
+        )
+
+    out: list[Scene] = []
+    idx = 0
+    for scene in planned_scenes:
+        new_shots: list[Shot] = []
+        for shot in scene.shots:
+            if original[idx] and not decisions[idx]:
+                shot = shot.model_copy(
+                    update={
+                        "reveal_direction": None,
+                        "reveal_start_fragment": None,
+                        "reveal_end_fragment": None,
+                    }
+                )
+            new_shots.append(shot)
+            idx += 1
+        out.append(scene.model_copy(update={"shots": new_shots}))
+    return out
+
+
 def _snap_fragment_boundaries(
     shots: list[ShotPlanOutput], fragment_count: int, *, scene_id: str
 ) -> None:
@@ -866,6 +943,46 @@ def _make_validator(
                     f"shot {s.id}: layers is only for parallax, got "
                     f"{s.camera.movement.value} with {len(s.layers)} layer(s)"
                 )
+            # F5 (illustrated_faceless.md §2/F5): checked here, same shape
+            # as the is_parallax block above - a reveal's fragment window
+            # can only be range-checked where this shot's own
+            # fragment_start/fragment_end are already in scope.
+            has_reveal = s.reveal_direction != RevealDirection.NONE
+            if has_reveal:
+                if s.camera.movement != CameraMovement.STATIC:
+                    violations.append(
+                        f"shot {s.id}: reveal_direction={s.reveal_direction.value} "
+                        "needs camera.movement=static (illustrated_faceless.md F5) "
+                        "- a reveal IS this shot's motion, and a moving camera on "
+                        f"top of it is refused, got {s.camera.movement.value}"
+                    )
+                if s.reveal_start_fragment == 0 or s.reveal_end_fragment == 0:
+                    violations.append(
+                        f"shot {s.id}: reveal_direction={s.reveal_direction.value} "
+                        "needs both reveal_start_fragment and reveal_end_fragment "
+                        "set (non-zero)"
+                    )
+                elif s.reveal_end_fragment < s.reveal_start_fragment:
+                    violations.append(
+                        f"shot {s.id}: reveal_end_fragment ({s.reveal_end_fragment}) "
+                        f"must be >= reveal_start_fragment ({s.reveal_start_fragment})"
+                    )
+                elif not (
+                    s.fragment_start <= s.reveal_start_fragment
+                    and s.reveal_end_fragment <= s.fragment_end
+                ):
+                    violations.append(
+                        f"shot {s.id}: reveal fragment range "
+                        f"[{s.reveal_start_fragment}, {s.reveal_end_fragment}] must "
+                        f"fall within this shot's own fragment range "
+                        f"[{s.fragment_start}, {s.fragment_end}] - a reveal cannot "
+                        "track words the shot does not cover"
+                    )
+            elif s.reveal_start_fragment != 0 or s.reveal_end_fragment != 0:
+                violations.append(
+                    f"shot {s.id}: reveal_start_fragment/reveal_end_fragment must "
+                    "be 0 when reveal_direction is none"
+                )
             # A5 (long_form_direction.md §3): vertical pan only makes
             # sense on a landscape canvas - a tall subject on a wide
             # frame. Hard-fail (not a silent downgrade like
@@ -984,6 +1101,21 @@ def _to_domain_shot(
             )
             for layer in s.layers
         ],
+        # illustrated_faceless.md F5: `RevealDirection.NONE` -> `None`,
+        # the same required-sentinel-to-optional normalisation
+        # `text_card`/`sfx_cue`/`enter_on_fragment` already use above -
+        # `_make_validator`'s F5 block already guarantees the fragment
+        # pair is `0`/`0` exactly when `reveal_direction` is `NONE`, so
+        # the three `or None`/ternary conversions below always agree.
+        reveal_direction=(
+            None if s.reveal_direction is RevealDirection.NONE else s.reveal_direction
+        ),
+        reveal_start_fragment=s.reveal_start_fragment or None,
+        reveal_end_fragment=s.reveal_end_fragment or None,
+        # NOT resolved here - stays at the schema default (0.0/0.0) until
+        # `app/timeline/narration_fit.py::resolve_element_reveals` fits it
+        # to measured narration, the same seam `duration_s`/`enter_offset_s`
+        # are themselves fitted at.
     )
 
 
@@ -1116,6 +1248,11 @@ class ShotPlanner:
         # under budget on layer COUNT while still using an entry on every
         # single parallax shot it planned.
         capped = _cap_layer_entries(capped, min_gap=settings.layer_entry_min_shot_gap)
+        # F5 (illustrated_faceless.md §2/F5): same class of pass again,
+        # over the RATE of element reveals specifically - independent of
+        # every cap above (a reveal is shot-level, not layer-level, and
+        # attaches to `static` shots rather than `parallax` ones).
+        capped = _cap_element_reveals(capped, min_gap=settings.element_reveal_min_shot_gap)
         # A7 (long_form_direction.md §3): a chapter card is A4's fragment
         # instructing the model to put it on an act-opening scene's FIRST
         # shot - so identify one by shot id, not a new Shot field. Reuse

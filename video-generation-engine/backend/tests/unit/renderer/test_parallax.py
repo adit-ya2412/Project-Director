@@ -30,6 +30,7 @@ from app.renderer.parallax import (
     layer_input_chain,
     oversized_size,
     sample_key_colour,
+    sample_substrate_colour,
     validate_two_layer_shot,
 )
 from app.schemas.timeline import LayerRole, ShotLayer
@@ -75,6 +76,24 @@ def test_drift_expressions_are_deterministic_in_t_only():
 def test_base_canvas_filter_matches_the_probes_shape():
     fragment = base_canvas_filter(width=720, height=1280, fps=30, duration_s=5.0)
     assert fragment == "color=c=0x101418:s=720x1280:r=30:d=5.0[base]"
+
+
+def test_base_canvas_filter_label_defaults_to_base_byte_identical():
+    """F5 (illustrated_faceless.md §2/F5): the new `label` parameter must
+    not change any pre-F5 call site's output - every one of them omits
+    it."""
+    fragment = base_canvas_filter(width=720, height=1280, fps=30, duration_s=5.0, color="0xAABBCC")
+    assert fragment == "color=c=0xAABBCC:s=720x1280:r=30:d=5.0[base]"
+
+
+def test_base_canvas_filter_label_is_namespaceable():
+    """F5's own reuse from `slideshow.py`: a multi-shot filter graph
+    needs each shot's own substrate canvas namespaced, or two reveal
+    shots in the same graph would collide on `[base]`."""
+    fragment = base_canvas_filter(
+        width=720, height=1280, fps=30, duration_s=5.0, color="0xEADECD", label="n3_rvbase"
+    )
+    assert fragment == "color=c=0xEADECD:s=720x1280:r=30:d=5.0[n3_rvbase]"
 
 
 def test_layer_input_chain_unkeyed():
@@ -446,6 +465,51 @@ def test_sample_key_colour_handles_the_smallest_legal_image_without_crashing():
     are never this small but a synthetic/test image legitimately can be."""
     data = _png_bytes(1, 1, (5, 5, 5))
     assert sample_key_colour(data) == "0x050505"
+
+
+# ---------------------------------------------------------------------------
+# Substrate sampling (F5, illustrated_faceless.md §2/F5) - SAMPLED from the
+# delivered image's own four corners, never assumed (§8.2's palette-drift
+# finding applies here exactly as it does to sample_key_colour's own key).
+# ---------------------------------------------------------------------------
+
+
+def test_sample_substrate_colour_reads_the_delivered_corners():
+    """Mirrors `test_sample_key_colour_reads_the_top_strip_not_the_
+    requested_colour` - a background that intentionally differs from any
+    'requested' constant, proving the read is off the delivered bytes."""
+    delivered = (0xEA, 0xDE, 0xCD)  # a measured paper-margin colour (§8.1)
+    data = _png_bytes(80, 100, delivered)
+    assert sample_substrate_colour(data) == "0xEADECD"
+
+
+def test_sample_substrate_colour_ignores_ink_touching_one_edge():
+    """The four-corner + median discipline: ink hard against ONE edge
+    (an axis line at the bottom, say) must not pull the sampled colour
+    away from the paper - unlike `sample_key_colour`'s single top strip,
+    which has no such robustness against a subject touching a DIFFERENT
+    edge than the one it samples."""
+    substrate = (0xF5, 0xF0, 0xE6)
+    data = _png_bytes(120, 120, substrate)
+    image = Image.open(io.BytesIO(data))
+    # A dark "axis line" band hard against the bottom edge only.
+    for x in range(0, 120):
+        for y in range(112, 120):
+            image.putpixel((x, y), (10, 10, 10))
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    data = buf.getvalue()
+    assert sample_substrate_colour(data) == "0xF5F0E6"
+
+
+def test_sample_substrate_colour_is_deterministic():
+    data = _png_bytes(64, 64, (0x11, 0x22, 0x33))
+    assert sample_substrate_colour(data) == sample_substrate_colour(data)
+
+
+def test_sample_substrate_colour_handles_the_smallest_legal_image_without_crashing():
+    data = _png_bytes(1, 1, (5, 5, 5))
+    assert sample_substrate_colour(data) == "0x050505"
 
 
 # ---------------------------------------------------------------------------
