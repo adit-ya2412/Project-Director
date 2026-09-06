@@ -228,18 +228,20 @@ def _progress_etag_response(payload: dict, request: Request) -> JSONResponse | R
     return JSONResponse(payload, headers=headers)
 
 
-async def _shot_progress_entry(
-    session: AsyncSession,
-    *,
-    scene,
-    shot,
-    binding,
-    locked: bool,
-    start_times: dict,
-) -> dict:
+async def _resolved_media_detail(
+    session: AsyncSession, *, asset_id, clip_id
+) -> tuple[dict | None, dict | None]:
+    """`asset_id` wins over `clip_id`, mirrored from `_resolve_bound_media_
+    path` below - the same rule, built into the JSON shape `/progress`
+    hands the gate instead of a filesystem path. Shared between the
+    primary and secondary (P3a) halves of `_shot_progress_entry` because
+    they build this identically for whichever pair of ids they're given
+    (R1: one rule, one place - two independent copies of "asset_id wins,
+    then clip_id, then neither" would drift the moment one of them grew a
+    field the other didn't)."""
     asset_detail = None
-    if binding.asset_id is not None:
-        asset = await session.get(AssetModel, binding.asset_id)
+    if asset_id is not None:
+        asset = await session.get(AssetModel, asset_id)
         if asset is not None:
             asset_detail = {
                 "provider": asset.provider,
@@ -249,8 +251,8 @@ async def _shot_progress_entry(
                 "local_path": asset.local_path,
             }
     clip_detail = None
-    if binding.clip_id is not None:
-        clip = await session.get(GeneratedClipModel, binding.clip_id)
+    if clip_id is not None:
+        clip = await session.get(GeneratedClipModel, clip_id)
         if clip is not None:
             clip_detail = {
                 "provider": clip.provider,
@@ -258,10 +260,78 @@ async def _shot_progress_entry(
                 "status": clip.status,
                 "local_path": clip.local_path,
             }
+    return asset_detail, clip_detail
+
+
+async def _shot_progress_entry(
+    session: AsyncSession,
+    *,
+    scene,
+    shot,
+    binding,
+    locked: bool,
+    start_times: dict,
+) -> dict:
+    asset_detail, clip_detail = await _resolved_media_detail(
+        session, asset_id=binding.asset_id, clip_id=binding.clip_id
+    )
     says = None
     if shot.narration_span is not None:
         start_char, end_char = shot.narration_span
         says = scene.narration_text[start_char:end_char]
+
+    # P3a (docs/plans/gate_panel_overrides.md): `panel=secondary` has
+    # worked server-side since R16 (`override_shot_asset`/`get_shot_asset`
+    # both accept it, 400ing unless `camera.movement == SPLIT_FRAME`), but
+    # this payload never said a shot WAS split_frame, let alone anything
+    # about its bottom panel - so the gate had no way to know a second
+    # image existed, and every hand-supplied split-screen shot has shipped
+    # with one provider on top and fal.ai on the bottom, mismatched inside
+    # a single frame (measured, happening "fairly often").
+    #
+    # `secondary` is `None` for every non-split shot - the frontend's
+    # "this shot has no bottom panel at all" signal - and an OBJECT for
+    # every `split_frame` shot regardless of whether that panel has
+    # resolved yet: its own `asset`/`clip` are `None` while unresolved and
+    # `state`/`last_error` say why, exactly the "distinguish absent from
+    # unresolved" property the gate needs to decide whether to show a
+    # spinner, an error, or an upload slot. One existence check
+    # (`shot.secondary != null`) is enough to gate rendering the second
+    # slot - matching, rather than duplicating, `_OVERRIDE_PANELS`'s own
+    # SPLIT_FRAME-only gate for `panel=secondary` above, so "can this
+    # shot's bottom panel be touched" cannot drift between the two halves
+    # of this file.
+    #
+    # Nested under one key instead of four more flat `secondary_*` entries
+    # beside `state`/`last_error`/`asset`/`clip` above: it mirrors the
+    # grouping those four already have, and the frontend gets the single
+    # existence check above instead of four separate `!= null` reads that
+    # could disagree with each other.
+    #
+    # READ THIS BEFORE WRITING THE FRONTEND. A12 (2026-09-02) added
+    # `sfx_cue` to the frontend `Shot` type and rendered a row for it at
+    # the review gate, but never added it HERE - so `shot.sfx_cue` was
+    # always `undefined` in the browser, the row silently never appeared,
+    # and the TypeScript build still passed: TypeScript types describe the
+    # API, they do not verify it. Do not repeat that for `secondary` - the
+    # payload field and the frontend `Shot` type both have to exist, and a
+    # test asserting the PAYLOAD (not just the type) carries this field is
+    # what would have caught A12's mistake.
+    secondary = None
+    if shot.camera.movement == CameraMovement.SPLIT_FRAME:
+        secondary_asset_detail, secondary_clip_detail = await _resolved_media_detail(
+            session,
+            asset_id=binding.secondary_asset_id,
+            clip_id=binding.secondary_clip_id,
+        )
+        secondary = {
+            "prompt": shot.secondary_prompt,
+            "state": binding.secondary_state,
+            "last_error": binding.secondary_last_error,
+            "asset": secondary_asset_detail,
+            "clip": secondary_clip_detail,
+        }
+
     return {
         "shot_id": binding.shot_id,
         "scene_id": scene.id,
@@ -277,6 +347,12 @@ async def _shot_progress_entry(
         "intent": shot.intent,
         "duration_s": shot.duration_s,
         "starts_at_s": start_times.get(shot.id),
+        # Emitted for every shot, not only split_frame ones - cheap, and
+        # the gap this closes (nothing here named the shot's own camera
+        # movement at all) is bigger than split-screen alone; a future
+        # panel-shaped movement gets this for free.
+        "camera_movement": shot.camera.movement,
+        "secondary": secondary,
         # A12 added the cue to the frontend `Shot` type and rendered a row
         # for it at the review gate, but never here - so `shot.sfx_cue` was
         # always `undefined` in the browser and the row silently never

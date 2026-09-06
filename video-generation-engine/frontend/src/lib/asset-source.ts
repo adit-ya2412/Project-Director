@@ -6,12 +6,19 @@
  * `public_domain` both can be served by either plain Wikimedia Commons
  * search or the entity-specific Wikipedia lookup — see resolve_assets.py).
  */
-import type { AssetSource, ShotProgress } from './types'
+import type { AssetSource, ShotAssetDetail, ShotClipDetail, ShotProgress } from './types'
 
-export function shotAssetSource(shot: ShotProgress): AssetSource {
-  if (shot.clip) return 'generated'
-  if (shot.asset) {
-    switch (shot.asset.provider) {
+/** The classification rule itself, independent of which panel it's
+ * fed — P3a needs the exact same rule for a split_frame shot's bottom
+ * panel (`shot.secondary.asset`/`.clip`), and a second copy of this
+ * switch would be exactly the kind of drift R1 warns about. */
+export function assetSourceFromDetail(
+  asset: ShotAssetDetail | null,
+  clip: ShotClipDetail | null,
+): AssetSource {
+  if (clip) return 'generated'
+  if (asset) {
+    switch (asset.provider) {
       case 'project_assets':
         return 'uploaded'
       case 'wikipedia_entity':
@@ -24,6 +31,10 @@ export function shotAssetSource(shot: ShotProgress): AssetSource {
     }
   }
   return 'unknown'
+}
+
+export function shotAssetSource(shot: ShotProgress): AssetSource {
+  return assetSourceFromDetail(shot.asset, shot.clip)
 }
 
 export const ASSET_SOURCE_LABEL: Record<AssetSource, string> = {

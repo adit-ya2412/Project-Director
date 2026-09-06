@@ -214,11 +214,15 @@ export function useOverrideShot(projectId: string) {
       shotId,
       file,
       description,
+      panel,
     }: {
       shotId: string;
       file: File;
       description?: string;
-    }) => api.overrideShot(projectId, shotId, file, description),
+      // P3a: omitted means `"primary"` (api.overrideShot's own default) —
+      // every call site that predates split-screen support is unaffected.
+      panel?: "primary" | "secondary";
+    }) => api.overrideShot(projectId, shotId, file, description, panel),
     onSettled: () => invalidateAfterTrigger(qc, projectId),
   });
 }

@@ -35,7 +35,7 @@ import {
 } from "@/lib/api";
 import { formatCostCents, formatDuration } from "@/lib/format";
 import { translateError } from "@/lib/errors";
-import { shotAssetSource } from "@/lib/asset-source";
+import { assetSourceFromDetail } from "@/lib/asset-source";
 import { CAMERA_LABEL, TRANSITION_LABEL } from "@/lib/styles";
 import { AssetSourceBadge } from "@/components/AssetSourceBadge";
 import { ResolutionWarningBadge } from "@/components/ResolutionWarning";
@@ -59,8 +59,17 @@ import {
   type Camera,
   type SceneProgress,
   type Shot,
+  type ShotAssetDetail,
+  type ShotClipDetail,
   type ShotProgress,
 } from "@/lib/types";
+
+// P3a: which half of a `split_frame` shot a control acts on. Every OTHER
+// shot only ever has a `"primary"` — this union exists so a caller can
+// never accidentally construct `"secondary"` for a shot whose backend
+// binding has no such column meaning anything (`_OVERRIDE_PANELS`,
+// `app/api/projects.py`, 400s exactly that case).
+type Panel = "primary" | "secondary";
 
 // Mirrors `_TERMINAL_SHOT_STATES` in `app/api/projects.py` exactly — a
 // shot counts as filled when search found it, a human overrode it, or it
@@ -72,6 +81,19 @@ const TERMINAL_STATES = new Set(["resolved", "generated"]);
 
 function isFilled(shot: ShotProgress): boolean {
   return TERMINAL_STATES.has(shot.state);
+}
+
+/** P3a: the same "filled" check as `isFilled`, but for whichever panel a
+ * control actually targets — the override dialog's own copy ("replaces
+ * the current image" vs "locks the shot") has to describe the panel
+ * being uploaded to, not the shot's primary state, or a bottom-panel
+ * upload on a shot whose TOP panel already resolved would wrongly say
+ * "replaces" for a bottom panel that has nothing yet. */
+function isPanelFilled(shot: ShotProgress, panel: Panel): boolean {
+  if (panel === "secondary") {
+    return !!shot.secondary?.state && TERMINAL_STATES.has(shot.secondary.state);
+  }
+  return isFilled(shot);
 }
 
 function GenerateDialog({
@@ -128,12 +150,24 @@ function GenerateDialog({
 
 function ShotImage({
   projectId,
-  shot,
+  shotId,
+  panel,
+  asset,
+  clip,
+  state,
   camera,
   onExpand,
 }: {
   projectId: string;
-  shot: ShotProgress;
+  shotId: string;
+  // P3a: which panel this instance renders — `"primary"` renders and
+  // behaves exactly as this component always has (same URL, same
+  // props); `"secondary"` is new and only ever passed for a split_frame
+  // shot's bottom panel.
+  panel: Panel;
+  asset: ShotAssetDetail | null;
+  clip: ShotClipDetail | null;
+  state: string | null;
   camera: Camera | undefined;
   onExpand: () => void;
 }) {
@@ -145,8 +179,8 @@ function ShotImage({
     width: number;
     height: number;
   } | null>(null);
-  const source = shotAssetSource(shot);
-  const hasImage = (shot.asset || shot.clip) && !errored;
+  const source = assetSourceFromDetail(asset, clip);
+  const hasImage = (asset || clip) && !errored;
   // `shotAssetUrl` is the same URL string before and after an
   // override/regenerate — an already-mounted `<img>` has no reason to
   // re-request it, so the browser just keeps showing the old bytes it
@@ -154,31 +188,38 @@ function ShotImage({
   // revalidation on a NEW request; it does nothing if no request is ever
   // made). Keying on the bound asset/clip's own path forces React to
   // unmount and remount the element whenever the actual file changes.
-  const mediaVersion =
-    shot.asset?.local_path ?? shot.clip?.local_path ?? shot.state;
+  const mediaVersion = asset?.local_path ?? clip?.local_path ?? state;
 
   if (!hasImage) {
     return (
       <div className={`flex ${frameAspectClass(canvasWidth, canvasHeight)} w-36 shrink-0 flex-col items-center justify-center gap-1.5 rounded-md border border-dashed border-warning/40 bg-warning/5 p-2 text-center`}>
         <Sparkles className="h-5 w-5 text-warning" />
         <span className="text-xs text-warning">
-          {shot.state === "pending" ? "Still searching…" : "No picture yet"}
+          {state === "pending" || state == null
+            ? "Still searching…"
+            : "No picture yet"}
         </span>
       </div>
     );
   }
 
+  // P3a: `/clip` (the endpoint that actually plays a bound motion clip)
+  // has no `panel` param yet — see `ImageLightbox`'s own comment. A
+  // secondary panel bound to a clip is real and playable server-side via
+  // `ffprobe`/`ffmpeg` directly, just not through this frontend today, so
+  // the "click to play" affordance is only honest for the primary.
+  const isPlayableClip = panel === "primary" && Boolean(clip);
   return (
     <div className="w-36 shrink-0 space-y-1">
       <button
         type="button"
         onClick={onExpand}
         className="block cursor-zoom-in rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        aria-label={shot.clip ? "Play clip" : "View larger image"}
+        aria-label={isPlayableClip ? "Play clip" : "View larger image"}
       >
         <img
           key={mediaVersion}
-          src={shotAssetUrl(projectId, shot.shot_id)}
+          src={shotAssetUrl(projectId, shotId, panel)}
           alt=""
           className={`${frameAspectClass(canvasWidth, canvasHeight)} w-36 rounded-md border border-border object-cover transition-opacity hover:opacity-90`}
           onError={() => setErrored(true)}
@@ -191,7 +232,7 @@ function ShotImage({
           }}
         />
       </button>
-      {shot.clip && (
+      {isPlayableClip && (
         <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
           <Film className="h-3 w-3" /> Motion clip — click to play
         </span>
@@ -213,24 +254,45 @@ function ShotImage({
 
 function ImageLightbox({
   projectId,
-  shot,
+  target,
   open,
   onOpenChange,
 }: {
   projectId: string;
-  shot: ShotProgress | null;
+  target: { shot: ShotProgress; panel: Panel } | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const isClip = Boolean(shot?.clip);
+  const shot = target?.shot ?? null;
+  const panel = target?.panel ?? "primary";
+  const media =
+    panel === "secondary"
+      ? {
+          asset: shot?.secondary?.asset ?? null,
+          clip: shot?.secondary?.clip ?? null,
+          state: shot?.secondary?.state ?? null,
+        }
+      : { asset: shot?.asset ?? null, clip: shot?.clip ?? null, state: shot?.state ?? null };
+  // P3a: `GET .../clip` (the endpoint that streams REAL playable video
+  // bytes, R10) has no `panel` param on the backend today —
+  // `get_shot_clip` always resolves the PRIMARY binding
+  // (`_resolve_bound_media_path(session, binding)`, no `panel=`
+  // forwarded). Extending it is a backend change this frontend-only
+  // slice does not make, so a motion clip bound to the BOTTOM panel is
+  // shown as `/asset`'s extracted still frame (which `get_shot_asset`
+  // already does for any video-typed panel) rather than played — correct
+  // and never a dead end, just less rich than the primary's own lightbox
+  // until `/clip` learns `panel` too (a natural follow-up, not part of
+  // this slice's brief).
+  const isPlayableClip = panel === "primary" && Boolean(media.clip);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl border-none bg-transparent p-0 shadow-none">
         {shot && (
           <div className="space-y-2">
-            {isClip ? (
+            {isPlayableClip ? (
               <video
-                key={shot.clip?.local_path ?? shot.shot_id}
+                key={media.clip?.local_path ?? shot.shot_id}
                 src={shotClipUrl(projectId, shot.shot_id)}
                 controls
                 autoPlay
@@ -238,10 +300,8 @@ function ImageLightbox({
               />
             ) : (
               <img
-                key={
-                  shot.asset?.local_path ?? shot.clip?.local_path ?? shot.state
-                }
-                src={shotAssetUrl(projectId, shot.shot_id)}
+                key={media.asset?.local_path ?? media.clip?.local_path ?? media.state}
+                src={shotAssetUrl(projectId, shot.shot_id, panel)}
                 alt=""
                 className="mx-auto max-h-[80vh] w-auto rounded-md border border-border object-contain"
               />
@@ -369,8 +429,8 @@ function SceneExpandedShots({
   sceneId: string;
   planByShot: Map<string, Shot>;
   videoPending: ReadonlySet<string>;
-  onExpand: (shot: ShotProgress) => void;
-  onOverride: (shot: ShotProgress) => void;
+  onExpand: (shot: ShotProgress, panel: Panel) => void;
+  onOverride: (shot: ShotProgress, panel: Panel) => void;
   onGenerate: (shot: ShotProgress) => void;
   onGenerateVideo: (shot: ShotProgress) => void;
   onClearSfxCue: (shot: ShotProgress) => void;
@@ -389,8 +449,8 @@ function SceneExpandedShots({
             shot={shot}
             plan={planByShot.get(shot.shot_id)}
             videoPending={videoPending.has(shot.shot_id)}
-            onExpand={() => onExpand(shot)}
-            onOverride={() => onOverride(shot)}
+            onExpand={(panel) => onExpand(shot, panel)}
+            onOverride={(panel) => onOverride(shot, panel)}
             onGenerate={() => onGenerate(shot)}
             onGenerateVideo={() => onGenerateVideo(shot)}
             onClearSfxCue={() => onClearSfxCue(shot)}
@@ -399,6 +459,80 @@ function SceneExpandedShots({
         </li>
       ))}
     </ul>
+  );
+}
+
+/** P3a: a `split_frame` shot's bottom panel, additive-only — rendered
+ * exclusively when `shot.secondary` is non-null, so it can never appear
+ * (or be reachable) for the overwhelming majority of shots. Deliberately
+ * a separate block from `ShotCard`'s existing body rather than a
+ * generalised "N panels" loop over that body: the primary keeps the
+ * generate/regenerate-video controls this panel does not get (P3a is
+ * scoped to upload only, matching what the backend's `panel` vocabulary
+ * accepts today — `POST .../generate` has no `panel` param), and folding
+ * both into one shape would either invent generate-for-secondary (out of
+ * scope, no backend support) or hide that asymmetry behind a prop nobody
+ * reading `ShotCard` would notice. */
+function SecondaryPanelBlock({
+  projectId,
+  shot,
+  camera,
+  onExpand,
+  onOverride,
+}: {
+  projectId: string;
+  shot: ShotProgress;
+  camera: Camera | undefined;
+  onExpand: () => void;
+  onOverride: () => void;
+}) {
+  const secondary = shot.secondary;
+  if (!secondary) return null;
+  const source = assetSourceFromDetail(secondary.asset, secondary.clip);
+  const filled =
+    secondary.state != null && TERMINAL_STATES.has(secondary.state);
+  const flag = translateError(secondary.last_error);
+  return (
+    <div className="flex gap-4 border-t border-border pt-3">
+      <ShotImage
+        projectId={projectId}
+        shotId={shot.shot_id}
+        panel="secondary"
+        asset={secondary.asset}
+        clip={secondary.clip}
+        state={secondary.state}
+        camera={camera}
+        onExpand={onExpand}
+      />
+      <div className="min-w-0 flex-1 space-y-1.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-muted-foreground">
+            Bottom panel
+          </span>
+          {filled && <AssetSourceBadge source={source} />}
+          {!filled && secondary.state !== "failed" && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
+              {secondary.state === "pending" || secondary.state == null
+                ? "Still searching"
+                : "Headed for generation"}
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground">{secondary.prompt}</p>
+        {flag && (
+          <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs text-warning-foreground/90">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+            <span>{flag.headline}</span>
+          </div>
+        )}
+        <div className="flex flex-wrap gap-2 pt-1">
+          <Button variant="outline" size="sm" onClick={onOverride}>
+            <ImagePlus className="h-3.5 w-3.5" />
+            {filled ? "Replace bottom panel" : "Upload bottom panel"}
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -418,14 +552,14 @@ function ShotCard({
   shot: ShotProgress;
   plan: Shot | undefined;
   videoPending: boolean;
-  onExpand: () => void;
-  onOverride: () => void;
+  onExpand: (panel: Panel) => void;
+  onOverride: (panel: Panel) => void;
   onGenerate: () => void;
   onGenerateVideo: () => void;
   onClearSfxCue: () => void;
   clearingSfxCue: boolean;
 }) {
-  const source = shotAssetSource(shot);
+  const source = assetSourceFromDetail(shot.asset, shot.clip);
   const flag = translateError(shot.last_error);
   const filled = isFilled(shot);
   const camera = plan?.camera;
@@ -440,91 +574,106 @@ function ShotCard({
     textCard ? `text card: “${textCard}”` : null,
   ].filter(Boolean);
   return (
-    <Card className="flex gap-4 p-3">
-      <ShotImage
-        projectId={projectId}
-        shot={shot}
-        camera={camera}
-        onExpand={onExpand}
-      />
-      <div className="min-w-0 flex-1 space-y-1.5">
-        <div className="flex flex-wrap items-center gap-2">
-          {filled && <AssetSourceBadge source={source} />}
-          {!filled && shot.state !== "failed" && (
-            <span className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
-              {shot.state === "pending"
-                ? "Still searching"
-                : "Headed for generation"}
+    <Card className="space-y-3 p-3">
+      <div className="flex gap-4">
+        <ShotImage
+          projectId={projectId}
+          shotId={shot.shot_id}
+          panel="primary"
+          asset={shot.asset}
+          clip={shot.clip}
+          state={shot.state}
+          camera={camera}
+          onExpand={() => onExpand("primary")}
+        />
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <div className="flex flex-wrap items-center gap-2">
+            {filled && <AssetSourceBadge source={source} />}
+            {!filled && shot.state !== "failed" && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
+                {shot.state === "pending"
+                  ? "Still searching"
+                  : "Headed for generation"}
+              </span>
+            )}
+            {shot.locked && (
+              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                <Lock className="h-3 w-3" /> Locked by you
+              </span>
+            )}
+            <span className="text-xs text-muted-foreground">
+              {formatDuration(shot.starts_at_s)}–
+              {formatDuration((shot.starts_at_s ?? 0) + shot.duration_s)} (
+              {shot.duration_s.toFixed(1)}s)
             </span>
+          </div>
+          {shot.says && <p className="text-sm text-foreground">"{shot.says}"</p>}
+          <p className="text-xs text-muted-foreground">
+            <span className="font-medium">{shot.intent}</span> — {shot.prompt}
+          </p>
+          {planBits.length > 0 && (
+            <p className="text-xs text-muted-foreground">{planBits.join(" · ")}</p>
           )}
-          {shot.locked && (
-            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-              <Lock className="h-3 w-3" /> Locked by you
-            </span>
+          {sfxCue && (
+            <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2 py-1.5 text-xs">
+              <Volume2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 text-muted-foreground">
+                Sound effect (~6¢ when approved): “{sfxCue}”
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 shrink-0 px-2 text-xs"
+                onClick={onClearSfxCue}
+                disabled={clearingSfxCue}
+              >
+                <VolumeX className="h-3.5 w-3.5" />
+                {clearingSfxCue ? "Clearing…" : "Clear"}
+              </Button>
+            </div>
           )}
-          <span className="text-xs text-muted-foreground">
-            {formatDuration(shot.starts_at_s)}–
-            {formatDuration((shot.starts_at_s ?? 0) + shot.duration_s)} (
-            {shot.duration_s.toFixed(1)}s)
-          </span>
-        </div>
-        {shot.says && <p className="text-sm text-foreground">"{shot.says}"</p>}
-        <p className="text-xs text-muted-foreground">
-          <span className="font-medium">{shot.intent}</span> — {shot.prompt}
-        </p>
-        {planBits.length > 0 && (
-          <p className="text-xs text-muted-foreground">{planBits.join(" · ")}</p>
-        )}
-        {sfxCue && (
-          <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2 py-1.5 text-xs">
-            <Volume2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-            <span className="min-w-0 flex-1 text-muted-foreground">
-              Sound effect (~6¢ when approved): “{sfxCue}”
-            </span>
+
+          {flag && (
+            <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs text-warning-foreground/90">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+              <span>{flag.headline}</span>
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2 pt-1">
+            <Button variant="outline" size="sm" onClick={() => onOverride("primary")}>
+              <ImagePlus className="h-3.5 w-3.5" />
+              {filled ? "Replace image" : "Upload your own"}
+            </Button>
+            <Button variant="outline" size="sm" onClick={onGenerate}>
+              <RefreshCw className="h-3.5 w-3.5" />
+              {filled ? "Edit prompt & regenerate" : "Generate now"}
+            </Button>
             <Button
-              variant="ghost"
+              variant="outline"
               size="sm"
-              className="h-6 shrink-0 px-2 text-xs"
-              onClick={onClearSfxCue}
-              disabled={clearingSfxCue}
+              onClick={onGenerateVideo}
+              disabled={!filled || videoPending}
             >
-              <VolumeX className="h-3.5 w-3.5" />
-              {clearingSfxCue ? "Clearing…" : "Clear"}
+              <Film className="h-3.5 w-3.5" />
+              {videoPending
+                ? "Generating video…"
+                : shot.clip
+                  ? "Regenerate video"
+                  : "Generate video"}
             </Button>
           </div>
-        )}
-
-        {flag && (
-          <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs text-warning-foreground/90">
-            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
-            <span>{flag.headline}</span>
-          </div>
-        )}
-
-        <div className="flex flex-wrap gap-2 pt-1">
-          <Button variant="outline" size="sm" onClick={onOverride}>
-            <ImagePlus className="h-3.5 w-3.5" />
-            {filled ? "Replace image" : "Upload your own"}
-          </Button>
-          <Button variant="outline" size="sm" onClick={onGenerate}>
-            <RefreshCw className="h-3.5 w-3.5" />
-            {filled ? "Edit prompt & regenerate" : "Generate now"}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onGenerateVideo}
-            disabled={!filled || videoPending}
-          >
-            <Film className="h-3.5 w-3.5" />
-            {videoPending
-              ? "Generating video…"
-              : shot.clip
-                ? "Regenerate video"
-                : "Generate video"}
-          </Button>
         </div>
       </div>
+      {shot.secondary && (
+        <SecondaryPanelBlock
+          projectId={projectId}
+          shot={shot}
+          camera={camera}
+          onExpand={() => onExpand("secondary")}
+          onOverride={() => onOverride("secondary")}
+        />
+      )}
     </Card>
   );
 }
@@ -556,9 +705,9 @@ export function AssetReviewGate() {
   const generateVideo = useGenerateShotVideo(projectId ?? "");
   const regenerateFailed = useRegenerateFailedInScene(projectId ?? "");
   const clearSfxCue = useClearShotSfxCue(projectId ?? "");
-  const [overrideTarget, setOverrideTarget] = useState<ShotProgress | null>(
-    null,
-  );
+  const [overrideTarget, setOverrideTarget] = useState<
+    { shot: ShotProgress; panel: Panel } | null
+  >(null);
   const [generateTarget, setGenerateTarget] = useState<ShotProgress | null>(
     null,
   );
@@ -566,9 +715,9 @@ export function AssetReviewGate() {
   const [videoPending, setVideoPending] = useState<Set<string>>(
     () => new Set(),
   );
-  const [lightboxTarget, setLightboxTarget] = useState<ShotProgress | null>(
-    null,
-  );
+  const [lightboxTarget, setLightboxTarget] = useState<
+    { shot: ShotProgress; panel: Panel } | null
+  >(null);
   const [confirmKind, setConfirmKind] = useState<
     "spend" | "remaining" | "scene" | "regenerate" | null
   >(null);
@@ -810,14 +959,18 @@ export function AssetReviewGate() {
     shotId: string,
     file: File,
     description: string,
+    panel: Panel,
   ) {
     overrideShot.mutate(
-      { shotId, file, description: description || undefined },
+      { shotId, file, description: description || undefined, panel },
       {
         onSuccess: () => {
           toast({
             title: "Image saved",
-            description: "This shot is locked to your image.",
+            description:
+              panel === "secondary"
+                ? "This shot's bottom panel is locked to your image."
+                : "This shot is locked to your image.",
             variant: "success",
           });
           setOverrideTarget(null);
@@ -1090,8 +1243,8 @@ export function AssetReviewGate() {
                       sceneId={scene.id}
                       planByShot={planByShot}
                       videoPending={videoPending}
-                      onExpand={setLightboxTarget}
-                      onOverride={setOverrideTarget}
+                      onExpand={(shot, panel) => setLightboxTarget({ shot, panel })}
+                      onOverride={(shot, panel) => setOverrideTarget({ shot, panel })}
                       onGenerate={setGenerateTarget}
                       onGenerateVideo={setVideoTarget}
                       onClearSfxCue={handleClearSfxCue}
@@ -1116,8 +1269,8 @@ export function AssetReviewGate() {
                 shot={shot}
                 plan={planByShot.get(shot.shot_id)}
                 videoPending={videoPending.has(shot.shot_id)}
-                onExpand={() => setLightboxTarget(shot)}
-                onOverride={() => setOverrideTarget(shot)}
+                onExpand={(panel) => setLightboxTarget({ shot, panel })}
+                onOverride={(panel) => setOverrideTarget({ shot, panel })}
                 onGenerate={() => setGenerateTarget(shot)}
                 onGenerateVideo={() => setVideoTarget(shot)}
                 onClearSfxCue={() => handleClearSfxCue(shot)}
@@ -1291,16 +1444,36 @@ export function AssetReviewGate() {
         <OverrideDialog
           open={!!overrideTarget}
           onOpenChange={(o) => !o && setOverrideTarget(null)}
-          title="Supply this shot's image"
-          description={
-            isFilled(overrideTarget)
-              ? "This replaces the current image. It's free and instant."
-              : "This locks the shot to your image — generation never runs for it, so it costs nothing."
+          // P3a: a split_frame shot's title/copy names which panel is
+          // being supplied; every other shot's copy is BYTE-IDENTICAL to
+          // before this change (`overrideTarget.shot.secondary` is only
+          // non-null for a split_frame shot — see `ShotSecondaryPanel`'s
+          // own docstring in lib/types.ts).
+          title={
+            overrideTarget.shot.secondary
+              ? overrideTarget.panel === "secondary"
+                ? "Supply this shot's bottom panel"
+                : "Supply this shot's top panel"
+              : "Supply this shot's image"
           }
-          camera={planByShot.get(overrideTarget.shot_id)?.camera}
+          description={
+            overrideTarget.shot.secondary
+              ? isPanelFilled(overrideTarget.shot, overrideTarget.panel)
+                ? "This replaces this panel's current image. It's free and instant."
+                : "This locks this panel to your image — generation never runs for it, so it costs nothing."
+              : isFilled(overrideTarget.shot)
+                ? "This replaces the current image. It's free and instant."
+                : "This locks the shot to your image — generation never runs for it, so it costs nothing."
+          }
+          camera={planByShot.get(overrideTarget.shot.shot_id)?.camera}
           isPending={overrideShot.isPending}
           onSubmit={(file, description) =>
-            handleOverrideSubmit(overrideTarget.shot_id, file, description)
+            handleOverrideSubmit(
+              overrideTarget.shot.shot_id,
+              file,
+              description,
+              overrideTarget.panel,
+            )
           }
         />
       )}
@@ -1347,7 +1520,7 @@ export function AssetReviewGate() {
 
       <ImageLightbox
         projectId={projectId}
-        shot={lightboxTarget}
+        target={lightboxTarget}
         open={!!lightboxTarget}
         onOpenChange={(o) => !o && setLightboxTarget(null)}
       />

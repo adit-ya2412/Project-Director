@@ -273,6 +273,23 @@ export interface ShotClipDetail {
   error?: string | null;
 }
 
+/** P3a (docs/plans/gate_panel_overrides.md): the split-screen BOTTOM
+ * panel — `null` for every shot that isn't `camera_movement ===
+ * "split_frame"`, an object otherwise, regardless of whether that panel
+ * has resolved yet (`asset`/`clip` are `null` while unresolved,
+ * `state`/`last_error` say why). That presence/absence split is the
+ * signal to use, not `asset`/`clip` being non-null — a split_frame shot
+ * with an unresolved bottom panel is NOT the same as a shot with no
+ * bottom panel at all. Mirrors `ShotAssetDetail`/`ShotClipDetail`'s own
+ * shape rather than inventing a different one for the second panel. */
+export interface ShotSecondaryPanel {
+  prompt: string;
+  state: ShotBindingState | null;
+  last_error: string | null;
+  asset: ShotAssetDetail | null;
+  clip: ShotClipDetail | null;
+}
+
 export interface ShotProgress {
   shot_id: string;
   scene_id?: string;
@@ -288,6 +305,11 @@ export interface ShotProgress {
   intent: string;
   duration_s: number;
   starts_at_s: number | null;
+  // Emitted for every shot (backend `_shot_progress_entry`) — the field
+  // this payload was missing entirely before P3a, so nothing here could
+  // even say a shot was `split_frame`.
+  camera_movement: string;
+  secondary: ShotSecondaryPanel | null;
 }
 
 /** F3: frontend rendering decision only. The backend always uses

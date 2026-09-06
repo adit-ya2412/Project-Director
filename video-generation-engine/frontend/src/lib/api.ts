@@ -319,16 +319,25 @@ export function renderDraft(projectId: string): Promise<{
 
 // -- Human corrections --------------------------------------------------
 
+/** P3a: `panel` defaults to `"primary"` so every call site that predates
+ * split-screen support keeps posting exactly where it always did — only
+ * a caller that explicitly knows about a shot's bottom panel ever passes
+ * `"secondary"`. The backend 400s `panel=secondary` on any shot whose
+ * `camera.movement !== "split_frame"` (`_OVERRIDE_PANELS`,
+ * `app/api/projects.py`), so this is never a silent no-op on the wrong
+ * shot — a caller that gets it wrong finds out immediately. */
 export function overrideShot(
   projectId: string,
   shotId: string,
   file: File,
   description?: string,
+  panel: "primary" | "secondary" = "primary",
 ): Promise<WorkflowTriggerResult> {
   const form = new FormData();
   form.append("file", file);
   if (description) form.append("description", description);
-  return request(`/projects/${projectId}/shots/${shotId}/override`, {
+  const q = panel === "secondary" ? "?panel=secondary" : "";
+  return request(`/projects/${projectId}/shots/${shotId}/override${q}`, {
     method: "POST",
     body: form,
   });
@@ -462,8 +471,21 @@ export function pollShotVideo(
 // agreed contract regardless — plain <img src=...> URLs, no fetch wrapper
 // needed since these return raw bytes, not JSON.
 
-export function shotAssetUrl(projectId: string, shotId: string): string {
-  return `${API_BASE}/projects/${projectId}/shots/${shotId}/asset`;
+/** P3a: `panel` defaults to `"primary"`, so the URL every existing caller
+ * builds is byte-identical to before — only a caller rendering a
+ * `split_frame` shot's bottom panel ever passes `"secondary"`. Still
+ * `Cache-Control: no-cache` either way (see `get_shot_asset`'s own
+ * docstring) — the querystring makes the two panels distinct URLs, but
+ * an override still rebinds the SAME url to different bytes, so the
+ * no-cache/revalidate discipline matters exactly as much per-panel as it
+ * always has per-shot. */
+export function shotAssetUrl(
+  projectId: string,
+  shotId: string,
+  panel: "primary" | "secondary" = "primary",
+): string {
+  const q = panel === "secondary" ? "?panel=secondary" : "";
+  return `${API_BASE}/projects/${projectId}/shots/${shotId}/asset${q}`;
 }
 
 export function projectThumbnailUrl(projectId: string): string {
