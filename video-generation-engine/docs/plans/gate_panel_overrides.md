@@ -1,6 +1,10 @@
 # Plan: every image a shot uses is visible and replaceable at the gate
 
-Status: PROPOSED, 2026-09-06. Nothing built.
+Status, 2026-09-07: **P3a BUILT** (commit `6dac690`). P0, P1, P2, P3b, P4
+still to build. Provider choice settled — see §7.
+
+Section order note: §7 (external sourcing, measured) sits before §6
+(implementation log) because the log grows downward and §7 is reference.
 
 Written to be handed to a coding agent. Slices are ordered and the order
 matters: **P0 and P3a each ship alone and each fix a live problem**, before
@@ -138,9 +142,23 @@ them until P1.
   creative_context, frame=frame)`; find the primary's equivalent and reuse it.
   (R1: one rule, one place — a second copy of prompt construction WILL drift.)
 - Format: plain text, copyable in one gesture. Not JSON unless the user asks.
+- **Each exported prompt MUST state the aspect ratio and orientation in
+  words.** Measured 2026-09-06 and non-obvious: the real pipeline sends size
+  as an API parameter (`image_size: {width: 778, height: 1383}`) that does
+  not exist when a human pastes prompt text into a chat UI. With no
+  orientation in the words, providers guess — Grok returned 784x1168 (2:3),
+  Qwen returned 1664x928 (landscape) for a 9:16 film. Adding
+  `Vertical portrait image, 9:16 aspect ratio, much taller than it is wide`
+  did **not** fix Qwen (it ignored the text and needed its UI aspect
+  setting), so the export should ALSO tell the user to set the provider's own
+  aspect control. State both; rely on neither alone.
+- Include the substrate/no-text guidance the shipped prompts are missing
+  (see §7.3) if that gap has not been closed by then.
 
-**Done when:** a 41-shot project yields 61 prompts in order, and each one is
-byte-identical to what generation would send. Test that identity directly.
+**Done when:** a 41-shot project yields 61 prompts in order, each
+byte-identical to what generation would send apart from the added
+orientation preamble, and the export names the target pixel size. Test the
+prompt-body identity directly.
 
 ### P3a — Frontend: show both panels of a split-screen shot
 
@@ -177,9 +195,26 @@ Extend the override endpoint's panel vocabulary to name a layer plane.
   `Shot.layers`.
 - Write bytes as a completed `GeneratedClip` under the computed
   `layer_prompt_hash` (§2), reusing the generation path's storage helper.
-- **Apply `center_crop_to_canvas` on upload for every panel**, including the
-  existing `primary`/`secondary`. This is a behaviour change to a shipped
-  path (see §4.4) and belongs here, not in a later slice.
+- **Fit every upload to the canvas, for every panel** including the existing
+  `primary`/`secondary`. This is a behaviour change to a shipped path (see
+  §4.4) and belongs here, not a later slice.
+
+  > **CORRECTION, 2026-09-06.** An earlier version of this bullet said
+  > "apply `center_crop_to_canvas` on upload". **That is wrong and would
+  > destroy uploads.** That function takes a literal canvas-sized window
+  > from the centre and never scales — correct for the generation path,
+  > which requests only ~8% over canvas, and catastrophic for an arbitrary
+  > upload. Measured: Qwen delivers 1536x2688, and a literal 720x1280
+  > centre window covers 47% of that frame and landed entirely on the
+  > subject's shirt — 2 of 5 planes keyed at all.
+  >
+  > The correct policy is **scale to COVER `canvas x (1 +
+  > substrate_crop_oversize_fraction)`, aspect preserved, then hand those
+  > bytes to `center_crop_to_canvas`.** Measured 2026-09-06 against real
+  > Qwen output: 5/5 planes pass the key guard with this, 2/5 without. The
+  > existing 8% constant is already the right margin — it trims a
+  > provider-drawn paper edge exactly as it does for fal.ai. No new
+  > constant, no new sampler.
 
 **Done when:** uploading to `layer:1` of a parallax shot causes the next
 render to composite that image as the subject plane, proven without a paid
@@ -314,6 +349,124 @@ constants.
    Enforcing means tracking which provider supplied each image, which nothing
    currently records. Advising is a sentence of UI copy. Start with advising;
    revisit only if mixing actually happens in practice.
+
+---
+
+## 7. External sourcing — what was measured, 2026-09-06
+
+The whole point of this plan is that the user generates images in a provider
+whose quota they already pay for and uploads them. Three providers were tested
+against `illustrated_risograph` subject planes, using the production
+`sample_key_colour` / `keyed_fraction` / `keyed_scatter_fraction` and the
+production compositor. Guards: keyed fraction 0.15–0.95, scatter < 0.0007.
+
+### 7.1 Verdict: Grok is the pick
+
+| | Grok | Gemini | Qwen |
+|---|---|---|---|
+| Watermark | yes — but see 7.2 | yes | no |
+| Aspect delivered | 784x1168 (2:3) | — | 1664x928 landscape; 1536x2688 once its UI aspect was set |
+| Paper edge artefact | none | — | yes, 3/5 even after a corrected prompt |
+| Key result | **9/10 pass** | — | 5/5 pass with the §P1 fit policy |
+| Risograph fidelity | **best of the three** | — | drifts to ink sketch / graded photo, inconsistent between images |
+| Faceless rule | held for "seen from behind" only | — | same |
+
+**Chosen: Grok.** Its key measurements were clean, it produced no substrate
+edge, and its risograph rendering was the most faithful. Qwen's fatal flaw is
+not the key — it is that the SAME world token came back as a bold ink
+illustration in one image and a graded photograph in another, which is the
+incoherence this whole exercise exists to remove, merely relocated from "two
+providers" to "one inconsistent provider".
+
+**Not tested, deliberately** (the user called a halt to probing 2026-09-07):
+Grok background planes, and whether Grok holds one medium across ~60 images.
+The second is the real risk and it is unmeasured. If a film comes back
+visibly mixed, that is where to look first.
+
+### 7.2 The watermark is NOT a blocker — an earlier claim here was wrong
+
+Recorded because the reasoning error is instructive. It was measured that
+~12% of Grok's watermark pixels **survive the chroma key** (the mark is a
+semi-transparent light logo, so it shifts the magenta outside the 0.06
+`colorkey` tolerance). That measurement is correct. The conclusion drawn from
+it — that the mark therefore lands in the finished frame — was **not**, and
+was asserted before following the bytes through to the composite.
+
+Two later stages remove it, verified on a real composite at t=0, t=2s and
+t=3.9s of a 4s shot (`tmp/key-samples/watermark-demo/`):
+
+1. the substrate crop trims the outer margin before anything is persisted;
+2. a parallax plane is scaled to **1.2x** and hangs 72px off each side and
+   128px off top/bottom (the "scale must COVER the output" rule that stops
+   drift exposing an edge), so a corner mark sits outside the canvas.
+
+**The caveat that keeps this from being a design guarantee:** it works
+because Grok delivers 2:3, and forcing that into 9:16 crops ~104px per side.
+If Grok ever delivers native 9:16, the crop shrinks to 29px per side and a
+mark ~10% in from the bottom **would** survive on plain, non-parallax shots,
+which get no 1.2x overscale. So: currently removed by the aspect mismatch and
+the crop, not by design. Re-check if Grok's output size changes.
+
+**Lesson worth keeping:** surviving the chroma key and appearing in the frame
+are different questions. Follow the bytes to the composite before calling
+something a blocker.
+
+### 7.3 A production gap this exposed, unrelated to uploads
+
+**There is no "no text" instruction anywhere in the shipped prompts** —
+not `shot_planner_styles/illustrated_risograph.md`, not
+`prompts/director/generation_only.md`, not the prompt construction in
+`resolve_assets.py`. `grep -rn "no text\|lettering\|watermark" app/prompts/`
+returns nothing.
+
+The F1 microtest probe DID carry one (`No text, no lettering, no numbers, no
+watermark`); production never got it. And the Director's figure block
+actively invites text by specifying "a workplace ID badge" — Grok duly wrote
+`RAHUL / GURGAON MNC` plus a barcode on it.
+
+Seedream appears less eager to render legible lettering, which is why this has
+not bitten yet. That is luck, not design. **Worth fixing in the style
+fragment regardless of which provider the user picks**, and it is cheap.
+Positive framing, per §1.3: "every badge, label and screen is blank and
+unmarked", not "no text".
+
+### 7.4 `sample_key_colour` is fragile for uploads
+
+It takes the median of a **24px strip at the very top** of the image
+(`app/renderer/parallax.py`). Correct for the generation path, where the
+oversize crop has already removed any margin. For an upload with a
+provider-drawn paper edge, the strip is paper: Qwen round 1 sampled
+`0xF8F5E4` (cream) and **10/10 images failed the key**, despite the magenta
+underneath being flat and excellent.
+
+Two fixes were measured, and the cheap one is enough:
+
+- **Sample inset ~8% from the edges** — recovered 5/5. But it fixes only the
+  key; the cream edge stays in the image, unkeyed, and would composite over
+  the background as a visible frame.
+- **The §P1 fit policy (scale-to-cover at the 8% oversize, then crop)** —
+  also 5/5, and it removes the edge as well. **Prefer this.** No change to
+  `sample_key_colour` needed.
+
+### 7.5 One more gap, found while building P3a
+
+`_unfilled_shot_ids` (`app/api/projects.py`) — the guard that decides whether
+the approval gate will let a project through — reads only `binding.state`,
+never `binding.secondary_state`. **A split-screen shot counts as "ready" when
+only its top panel is filled.** So a user who hand-supplies top panels can
+approve, and the bottom panels then generate from fal.ai post-approval:
+mismatched, and charged, which is the exact outcome this plan exists to
+prevent.
+
+Not fixed with P3a because it changes approval-gate behaviour — it would
+start blocking approvals that currently pass, including on projects already
+mid-flight. Needs the user's say-so. Small change when wanted.
+
+Two smaller ones, both only matter when a split panel is bound to VIDEO
+rather than a still: `GET /clip` takes no `panel` parameter, so a
+bottom-panel clip shows as a still rather than playing; and the video
+thumbnail cache path is keyed on shot alone, so two video-bound panels on one
+split shot would collide.
 
 ---
 
