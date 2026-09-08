@@ -283,6 +283,45 @@ export async function getProgress(
   return body;
 }
 
+// -- Prompt export (P0, gate_panel_overrides.md) --------------------------
+//
+// The user's real cost-saving workflow (§1 of the plan): copy a shot's
+// prompt off this gate, generate it for free in a provider whose quota
+// they already pay for (Grok), and upload the result via `overrideShot`
+// instead of paying fal.ai per image. On a 41-shot film that was 61
+// one-at-a-time copies, and the 20 parallax layer prompts were never shown
+// here at all — this is the "every prompt, one action" escape hatch.
+// Plain text, not JSON: the destination is a paste box in someone else's
+// chat UI, never code (see `app/assets/prompt_export.py`'s own docstring).
+
+/** Raw URL for the export, used directly as an `<a download>` target — the
+ * browser's own save-file flow handles it, and the backend already sets
+ * `Content-Disposition: attachment` so even a bare navigation downloads
+ * rather than rendering a page of prompt text. */
+export function promptExportUrl(projectId: string): string {
+  return `${API_BASE}/projects/${projectId}/prompts/export`;
+}
+
+/** Same endpoint, fetched as text for the "copy everything" gesture — a
+ * plain `<a>` can trigger a save-file dialog but cannot populate the
+ * clipboard, so copying needs its own request. Not `request<T>()` above:
+ * that helper always calls `res.json()`, and this response is
+ * `text/plain`. */
+export async function fetchPromptExportText(projectId: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/projects/${projectId}/prompts/export`);
+  if (!res.ok) {
+    let detail: unknown;
+    try {
+      const body = await res.json();
+      detail = body?.detail ?? body;
+    } catch {
+      detail = await res.text().catch(() => res.statusText);
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return res.text();
+}
+
 export function getSceneShots(
   projectId: string,
   sceneId: string,

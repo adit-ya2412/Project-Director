@@ -4,6 +4,8 @@ import {
   AlertTriangle,
   CheckCircle2,
   ChevronRight,
+  Copy,
+  Download,
   Film,
   ImagePlus,
   Lock,
@@ -31,6 +33,8 @@ import {
   shotClipUrl,
   draftVideoUrl,
   pollShotVideo,
+  promptExportUrl,
+  fetchPromptExportText,
   ApiError,
 } from "@/lib/api";
 import { formatCostCents, formatDuration } from "@/lib/format";
@@ -678,6 +682,70 @@ function ShotCard({
   );
 }
 
+/**
+ * P0 (docs/plans/gate_panel_overrides.md): the bulk escape hatch for §1's
+ * measured workflow — copy a prompt, generate it for free in a provider
+ * whose quota is already paid for (Grok), upload the result via the
+ * override button above instead of paying fal.ai. That workflow already
+ * existed per-shot; on a 41-shot film it was 61 one-at-a-time copies, and
+ * the parallax layer prompts (`layer_styled_prompt`) were never shown in
+ * this UI at all. Two actions, not one, because they serve different
+ * gestures: "Copy all" is the one-click paste-everywhere case (a single
+ * clipboard write, matching the existing `CopyButton` idiom elsewhere in
+ * this app, just fetched first since the text lives on the server);
+ * "Download .txt" is a plain `<a download>` (no JS, no fetch) for
+ * actually working through 60+ prompts in an editor rather than holding
+ * them all in one clipboard entry at once.
+ */
+function ExportPromptsButton({ projectId }: { projectId: string }) {
+  const { toast } = useToast();
+  const [copying, setCopying] = useState(false);
+
+  async function handleCopyAll() {
+    setCopying(true);
+    try {
+      const text = await fetchPromptExportText(projectId);
+      await navigator.clipboard.writeText(text);
+      toast({
+        title: "Prompts copied",
+        description:
+          "Every image prompt for this project is on your clipboard, in order. Also set your image provider's own aspect-ratio control — the words alone did not hold for every provider tested.",
+        variant: "success",
+      });
+    } catch (err) {
+      toast({
+        title: "Could not copy prompts",
+        description:
+          err instanceof ApiError ? String(err.detail) : "Try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setCopying(false);
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-1">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={handleCopyAll}
+        disabled={copying}
+      >
+        <Copy className="h-3.5 w-3.5" />
+        {copying ? "Copying…" : "Copy all prompts"}
+      </Button>
+      <Button type="button" variant="outline" size="sm" asChild>
+        <a href={promptExportUrl(projectId)} download>
+          <Download className="h-3.5 w-3.5" />
+          Download .txt
+        </a>
+      </Button>
+    </div>
+  );
+}
+
 export function AssetReviewGate() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
@@ -1127,19 +1195,22 @@ export function AssetReviewGate() {
             )}
           </p>
         </div>
-        {!isBackstop && (
-          <Button
-            size="lg"
-            onClick={handleApprove}
-            disabled={!canApprove}
-            variant={
-              grouped && remainingScenes.length > 0 ? "secondary" : "default"
-            }
-          >
-            <CheckCircle2 className="h-4 w-4" />
-            {approveButtonLabel}
-          </Button>
-        )}
+        <div className="flex items-center gap-2">
+          <ExportPromptsButton projectId={projectId} />
+          {!isBackstop && (
+            <Button
+              size="lg"
+              onClick={handleApprove}
+              disabled={!canApprove}
+              variant={
+                grouped && remainingScenes.length > 0 ? "secondary" : "default"
+              }
+            >
+              <CheckCircle2 className="h-4 w-4" />
+              {approveButtonLabel}
+            </Button>
+          )}
+        </div>
       </div>
 
       {!isBackstop && (

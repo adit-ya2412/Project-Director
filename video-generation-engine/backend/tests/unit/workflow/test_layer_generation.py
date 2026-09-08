@@ -41,7 +41,7 @@ def test_layer_prompt_replaces_the_shots_own_prompt_not_appends_to_it():
 
 
 def test_layer_prompt_gets_the_same_visual_style_and_landscape_treatment():
-    """The layer goes through the IDENTICAL `_styled_prompt` pipeline a
+    """The layer goes through the IDENTICAL `styled_prompt` pipeline a
     shot's own prompt does - the visual_style cap and the landscape
     suffix both apply."""
     shot = _shot("a quiet room")

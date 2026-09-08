@@ -102,6 +102,7 @@ from app.assets.focal import (
 )
 from app.assets.focal_check import locate_subject_focal
 from app.assets.music_upload import music_upload_warnings
+from app.assets.prompt_export import build_prompt_export_entries, render_prompt_export_text
 from app.assets.sfx_levels import measure_peak_dbfs
 from app.assets.sfx_override import apply_sfx_clip_override
 from app.assets.thumbnails import (
@@ -1130,6 +1131,43 @@ async def get_timeline(
     return active
 
 
+@router.get("/{project_id}/prompts/export")
+async def export_prompts(
+    project_id: str,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+) -> Response:
+    """P0 (docs/plans/gate_panel_overrides.md): every image prompt the
+    active timeline will ever ask a provider for, as one plain-text blob a
+    human can paste into a provider whose quota they already pay for
+    (§1's measured workflow - copy a prompt, generate it in Grok, upload
+    via `override_shot_asset` instead of paying fal.ai). See
+    `app/assets/prompt_export.py`'s own module docstring for the full
+    reasoning - in short, every prompt here is built by calling the exact
+    same `styled_prompt`/`layer_styled_prompt` functions
+    `resolve_assets_generate` itself calls (R1), never a re-derivation,
+    and layer prompts are included even though P0 does not make them
+    uploadable (P1 does) - the user can already generate them by hand,
+    they just had no way to see them before this endpoint existed.
+
+    `Content-Disposition: attachment` so a direct navigation (or the
+    frontend's own `<a download>`) saves a `.txt` file instead of
+    rendering a page of prompt text in the browser; a caller that fetches
+    this for the "copy everything to the clipboard" gesture reads the same
+    bytes and simply ignores the header."""
+    project = await _get_project_or_404(project_id, repo)
+    timeline = await timeline_service.get_active(project_id)
+    if timeline is None:
+        raise HTTPException(status_code=404, detail="no timeline generated yet")
+    entries = build_prompt_export_entries(timeline)
+    text = render_prompt_export_text(timeline, entries, project_name=project.name)
+    return Response(
+        content=text,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{project_id}-prompts.txt"'},
+    )
+
+
 @router.post("/{project_id}/render", status_code=202, response_model=WorkflowTriggerResult)
 async def render_project(
     project_id: str,
@@ -2051,7 +2089,7 @@ async def generate_shot_image(
     else) - BEFORE anything is generated; the freshly generated clip is
     then bound at THIS new version, not the one the request started
     against. The stored `shot.prompt` is the RAW edited text, exactly as
-    a planner's own prompt is stored - `_styled_prompt` (inside
+    a planner's own prompt is stored - `styled_prompt` (inside
     `generate_image_real`) still layers `creative_context.visual_style`
     on top at generation time for a human-edited prompt exactly as it
     does for a planner-written one, so a human edit does not skip the

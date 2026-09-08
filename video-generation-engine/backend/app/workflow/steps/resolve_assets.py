@@ -265,7 +265,7 @@ def _project_seed(project_id: str) -> int:
 
 
 # FIXED 2026-08-18 (A8's bake-off, motion_new_styles_and_long_form_videos.md):
-# see `_styled_prompt`'s own docstring for the failure this bounds.
+# see `styled_prompt`'s own docstring for the failure this bounds.
 _MAX_VISUAL_STYLE_WORDS = 15
 
 
@@ -284,13 +284,24 @@ def generation_prompt_hash(*parts: object, width: int, height: int) -> str:
     return hashlib.sha256(digest.encode()).hexdigest()
 
 
-def _styled_prompt(
+def styled_prompt(
     shot: Shot,
     creative_context: CreativeContext,
     *,
     frame: RenderFormat | None = None,
 ) -> str:
-    """`creative_context.visual_style` describes the WHOLE video's visual
+    """Renamed from `_styled_prompt` (P0, docs/plans/gate_panel_overrides.md,
+    2026-09-08) so `app/assets/prompt_export.py` can call the exact same
+    function the generation path calls, rather than re-deriving a shot's
+    prompt a second time (R1). No other production module had ever
+    imported a private, underscore-led name across a module boundary
+    before this - `layer_styled_prompt` below is the sibling that already
+    took this same step for the identical reason (`render.py`'s own
+    render-time lookup needs it) - so exposing this one properly, rather
+    than adding the first such private cross-module import, keeps that
+    convention intact.
+
+    `creative_context.visual_style` describes the WHOLE video's visual
     arc (ADR-010), often as an explicit multi-part sequence - the real
     m8_test_project's own value reads "black-and-white WWII coal
     mines... THEN muted-color South African refinery... ENDING WITH
@@ -364,7 +375,7 @@ async def generate_image_real(
     # any substrate margin back off before persisting - a RETRIEVAL_LADDER
     # style gets `frame` back unchanged (byte-identical to before F1a).
     request_frame = resolve_generation_request_format(style, frame)
-    prompt = _styled_prompt(shot, creative_context, frame=frame)
+    prompt = styled_prompt(shot, creative_context, frame=frame)
     clip, cache_hit = await _generate_image_once(
         shot,
         base_prompt=prompt,
@@ -536,7 +547,7 @@ def layer_styled_prompt(
     frame: RenderFormat | None = None,
 ) -> str:
     """F2b (illustrated_faceless.md §8.5, 2026-09-05): a layer's own
-    styled prompt, through the IDENTICAL pipeline (`_styled_prompt`) a
+    styled prompt, through the IDENTICAL pipeline (`styled_prompt`) a
     shot's own primary prompt already gets - the `visual_style`
     truncation (the collage bug that function's own docstring measures)
     and the landscape suffix both apply to a layer exactly as they do to
@@ -547,7 +558,7 @@ def layer_styled_prompt(
     `ResolveAssetsStep`'s own secondary-panel resolution already uses,
     not a parallel implementation."""
     layer_shot = shot.model_copy(update={"prompt": layer.prompt})
-    return _styled_prompt(layer_shot, creative_context, frame=frame)
+    return styled_prompt(layer_shot, creative_context, frame=frame)
 
 
 def _layer_seed(project_seed: int, layer_index: int) -> int:
@@ -891,7 +902,7 @@ async def submit_video_generation(
     A6's own note in the plan for why that is unremarkable, not a design
     smell)."""
     frame = resolve_render_format(style, frame_aspect=frame_aspect)
-    prompt = _styled_prompt(shot, creative_context, frame=frame)
+    prompt = styled_prompt(shot, creative_context, frame=frame)
     prompt_hash = generation_prompt_hash(
         prompt, settings.fal_video_model, width=frame.width, height=frame.height
     )
@@ -2009,7 +2020,7 @@ class ResolveAssetsStep:
     ) -> None:
         # Superseded by module-level `generate_image_real` above, which
         # `_resolve_one_real` now calls instead. Kept, unwired, not deleted.
-        prompt = _styled_prompt(shot, creative_context)
+        prompt = styled_prompt(shot, creative_context)
         clip = await self._generate_checked_image(
             shot,
             base_prompt=prompt,

@@ -1,4 +1,4 @@
-"""`app/workflow/steps/resolve_assets.py::_styled_prompt` - pure string
+"""`app/workflow/steps/resolve_assets.py::styled_prompt` - pure string
 logic, no ffmpeg/DB needed. The real collage failure this caps against
 was found and verified against real Seedream generations during A8's
 bake-off (motion_new_styles_and_long_form_videos.md, 2026-08-18) - see
@@ -8,7 +8,7 @@ this one (a mechanical word cap) is what actually worked.
 
 from app.schemas.timeline import CreativeContext, Shot, ShotIntent
 from app.script.styles import RenderFormat
-from app.workflow.steps.resolve_assets import _MAX_VISUAL_STYLE_WORDS, _styled_prompt
+from app.workflow.steps.resolve_assets import _MAX_VISUAL_STYLE_WORDS, styled_prompt
 
 
 def _shot(prompt: str = "a coal mine") -> Shot:
@@ -16,12 +16,12 @@ def _shot(prompt: str = "a coal mine") -> Shot:
 
 
 def test_no_visual_style_leaves_the_prompt_untouched():
-    assert _styled_prompt(_shot(), CreativeContext()) == "a coal mine"
+    assert styled_prompt(_shot(), CreativeContext()) == "a coal mine"
 
 
 def test_a_short_visual_style_is_appended_in_full():
     cc = CreativeContext(visual_style="1940s archival, desaturated")
-    assert _styled_prompt(_shot(), cc) == "a coal mine, 1940s archival, desaturated"
+    assert styled_prompt(_shot(), cc) == "a coal mine, 1940s archival, desaturated"
 
 
 def test_a_long_multi_era_visual_style_is_capped_to_the_first_n_words():
@@ -37,7 +37,7 @@ def test_a_long_multi_era_visual_style_is_capped_to_the_first_n_words():
         "muted-color South African refinery and Sasol archive imagery, ending with "
         "contemporary energy infrastructure and emissions-aware coal imagery."
     )
-    result = _styled_prompt(_shot(), CreativeContext(visual_style=long_style))
+    result = styled_prompt(_shot(), CreativeContext(visual_style=long_style))
 
     appended = result.removeprefix("a coal mine, ")
     assert len(appended.split()) == _MAX_VISUAL_STYLE_WORDS
@@ -53,7 +53,7 @@ def test_the_cap_is_a_word_count_not_a_character_count():
     cut mid-word and could still leave `visual_style`'s own last visible
     word truncated/garbled in the actual prompt sent to the model."""
     cc = CreativeContext(visual_style=" ".join(f"word{i}" for i in range(50)))
-    result = _styled_prompt(_shot(), cc)
+    result = styled_prompt(_shot(), cc)
     appended = result.removeprefix("a coal mine, ")
     words = appended.split()
     assert len(words) == _MAX_VISUAL_STYLE_WORDS
@@ -62,11 +62,11 @@ def test_the_cap_is_a_word_count_not_a_character_count():
 
 def test_landscape_frame_appends_a_composition_line():
     cc = CreativeContext(visual_style="archival")
-    result = _styled_prompt(
+    result = styled_prompt(
         _shot(), cc, frame=RenderFormat(width=1280, height=720)
     )
     assert result.endswith("Composed for a landscape 16:9 frame.")
-    portrait = _styled_prompt(
+    portrait = styled_prompt(
         _shot(), cc, frame=RenderFormat(width=720, height=1280)
     )
     assert "Composed for" not in portrait
