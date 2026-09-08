@@ -100,7 +100,12 @@ from typing import Any
 
 from app.core.logging import get_logger
 from app.renderer.captions import MIN_CUE_DURATION_S
-from app.renderer.slideshow import RenderSettings, probe_duration_seconds, run_ffmpeg
+from app.renderer.slideshow import (
+    RenderSettings,
+    filter_graph_file_flag,
+    probe_duration_seconds,
+    run_ffmpeg,
+)
 
 logger = get_logger(__name__)
 
@@ -707,6 +712,33 @@ async def build_ducked_bed_segments(
     fade_seconds = min(_FADE_SECONDS, video_duration / 2)
     fade_out_start = max(video_duration - fade_seconds, 0.0)
     chain = _volume_chain_segments(segments, bed_gain_db=bed_gain_db)
+    graph = (
+        f"[0:a]atrim=0:{video_duration:.3f},asetpts=PTS-STARTPTS,{chain},"
+        f"afade=t=in:st=0:d={fade_seconds:.3f},"
+        f"afade=t=out:st={fade_out_start:.3f}:d={fade_seconds:.3f}[aout]"
+    )
+
+    # The graph is handed to ffmpeg in a FILE, not on argv, because it
+    # grows with the film: `_volume_chain_segments` emits one
+    # `volume=...:enable='between(t\,a\,b)'` clause (~54 chars) per duck
+    # segment, and segment count scales with narration intervals plus
+    # diegetic cue windows. Measured 2026-09-08 on a 5-act/29-scene/
+    # 86-shot Hindi render: 81 narration intervals + 8 effect windows =
+    # 626 segments = ~34k characters of argv, which overran Windows'
+    # 32,767-char CreateProcess limit and raised `[WinError 206] The
+    # filename or extension is too long` before ffmpeg ever started. The
+    # message names a filename; the cause is total argv length.
+    #
+    # Same mechanism `slideshow.py` already uses for its own per-shot
+    # graphs, via the same `filter_graph_file_flag` probe (`-/filter_
+    # complex` on ffmpeg >= 7, `-filter_complex_script` before it), so
+    # there is one answer to "how does a filtergraph reach ffmpeg here"
+    # rather than two. Sits next to the ducked-bed .m4a it describes and
+    # is left in place like that intermediate is; nothing globs the
+    # renders dir (the only content-hash globs are over music/ and sfx/).
+    script_path = output_path.parent / f"{output_path.stem}.filter"
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(graph, encoding="utf-8")
 
     args = [
         settings.ffmpeg_binary,
@@ -715,10 +747,8 @@ async def build_ducked_bed_segments(
         "-1",
         "-i",
         str(music_path),
-        "-filter_complex",
-        f"[0:a]atrim=0:{video_duration:.3f},asetpts=PTS-STARTPTS,{chain},"
-        f"afade=t=in:st=0:d={fade_seconds:.3f},"
-        f"afade=t=out:st={fade_out_start:.3f}:d={fade_seconds:.3f}[aout]",
+        filter_graph_file_flag(settings.ffmpeg_binary),
+        str(script_path),
         "-map",
         "[aout]",
         "-c:a",
