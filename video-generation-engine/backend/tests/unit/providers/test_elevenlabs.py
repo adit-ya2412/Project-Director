@@ -233,11 +233,22 @@ async def test_synthesize_raises_permanent_error_on_missing_alignment(monkeypatc
         await provider.synthesize(_REQUEST)
 
 
-def test_tts_request_character_limit_matches_published_model_caps():
-    assert tts_request_character_limit("eleven_v3") == 5000
+def test_tts_request_character_limit_matches_model_caps():
+    # Published caps for every model EXCEPT eleven_v3, whose published
+    # 5000 truncates in practice - see the measurement recorded above
+    # `_TTS_CHAR_LIMIT_BY_MODEL`. This assertion is the guard against
+    # that value being "fixed" back to the documented one.
+    assert tts_request_character_limit("eleven_v3") == 3000
     assert tts_request_character_limit("eleven_multilingual_v2") == 10000
     assert tts_request_character_limit("eleven_flash_v2_5") == 40000
-    assert tts_request_character_limit("unknown_model") == 5000
+    assert tts_request_character_limit("unknown_model") == 3000
+
+
+def test_v3_cap_leaves_headroom_under_the_measured_truncation_cliff():
+    # 2026-09-08: a 4,679-char v3 request truncated at ~4,496 chars.
+    # Two batches at the cap must both stay clear of that, or the cap
+    # is decorative.
+    assert tts_request_character_limit("eleven_v3") < 4496
 
 
 def test_content_hash_is_stable_and_sensitive_to_every_input():

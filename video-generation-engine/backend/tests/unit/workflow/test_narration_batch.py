@@ -17,6 +17,7 @@ from app.timeline.narration_batch import (
     NarrationBatchMember,
     join_batch_text,
     plan_tts_batches,
+    reject_truncated_alignment,
     split_batched_alignment,
 )
 
@@ -150,6 +151,95 @@ def test_split_rejects_empty_scene_text():
     alignment = _uniform_alignment("Hi\n", chars_per_second=10.0)
     with pytest.raises(PermanentError, match="empty narration_text"):
         split_batched_alignment(alignment, members)
+
+
+# --- reject_truncated_alignment -------------------------------------
+#
+# Thresholds here are not invented: they come from measuring all 678
+# narration rows across 33 projects on 2026-09-08. Legitimate terminal
+# zero-duration runs exist (98 rows), are at most 3 characters long, and
+# consist ONLY of '\n' and '।'. None has ever contained an alphanumeric
+# character - which is why "a word got no audio" is the rule rather than
+# a run-length threshold.
+
+
+def _truncate_after(alignment: dict, spoken: int) -> dict:
+    """Pin every character from `spoken` onward to the instant the audio
+    stopped - exactly what ElevenLabs returned for the incident."""
+    end = alignment["character_end_times_seconds"][spoken - 1]
+    n = len(alignment["characters"])
+    return {
+        "characters": list(alignment["characters"]),
+        "character_start_times_seconds": (
+            alignment["character_start_times_seconds"][:spoken] + [end] * (n - spoken)
+        ),
+        "character_end_times_seconds": (
+            alignment["character_end_times_seconds"][:spoken] + [end] * (n - spoken)
+        ),
+    }
+
+
+def test_truncation_guard_accepts_a_healthy_alignment():
+    reject_truncated_alignment(_uniform_alignment("Hello there."), request_label="sc_01")
+
+
+def test_truncation_guard_accepts_trailing_unspoken_newline_and_full_stop():
+    """The measured legitimate case: up to 3 trailing '\\n'/'।' with no
+    audio. 98 of 678 real rows look like this - rejecting them would
+    block renders that are completely fine."""
+    for tail in ("\n", "\n\n", "।", "।\n\n"):
+        text = "पहला वाक्य" + tail
+        alignment = _uniform_alignment(text)
+        pinned = _truncate_after(alignment, len(text) - len(tail))
+        reject_truncated_alignment(pinned, request_label="sc_01")
+
+
+def test_truncation_guard_rejects_audio_that_stopped_mid_text():
+    text = "Plato का बाज़ार में बिकना, या उसकी आख़िरी सांस की सच्चाई?"
+    pinned = _truncate_after(_uniform_alignment(text), 8)
+    with pytest.raises(PermanentError, match="ended before its text did"):
+        reject_truncated_alignment(pinned, request_label="sc_06")
+
+
+def test_truncation_guard_rejects_a_short_clip_a_length_threshold_would_miss():
+    """Four unspoken characters - under the longest LEGITIMATE run this
+    system has ever stored would-be threshold, but they are word
+    characters, so the audio really did stop early."""
+    text = "hello world"
+    pinned = _truncate_after(_uniform_alignment(text), len(text) - 4)
+    with pytest.raises(PermanentError, match="ended before its text did"):
+        reject_truncated_alignment(pinned, request_label="sc_01")
+
+
+def test_truncation_guard_names_the_cap_to_lower():
+    text = "abcdefghij"
+    pinned = _truncate_after(_uniform_alignment(text), 3)
+    with pytest.raises(PermanentError, match="_TTS_CHAR_LIMIT_BY_MODEL"):
+        reject_truncated_alignment(pinned, request_label="batch sc_01..sc_09")
+
+
+def test_truncation_guard_defers_shape_errors_to_the_better_reporters():
+    """Malformed/empty shapes are reported with real context by
+    `split_batched_alignment` and `SceneAlignment.from_raw`; this guard
+    must not pre-empt them with a worse message."""
+    reject_truncated_alignment(
+        {
+            "characters": [],
+            "character_start_times_seconds": [],
+            "character_end_times_seconds": [],
+        },
+        request_label="sc_01",
+    )
+    reject_truncated_alignment(
+        {
+            "characters": ["a", "b"],
+            "character_start_times_seconds": [0.0],
+            "character_end_times_seconds": [0.1],
+        },
+        request_label="sc_01",
+    )
+    with pytest.raises(PermanentError, match="malformed narration alignment"):
+        reject_truncated_alignment({"characters": ["a"]}, request_label="sc_01")
 
 
 async def test_fake_provider_alignment_splits_back_to_scene_text():

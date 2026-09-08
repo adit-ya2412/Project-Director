@@ -47,13 +47,39 @@ _API_BASE_URL = "https://api.elevenlabs.io"
 # eleven_v3). 60s was enough per-scene and too tight for a batch.
 _REQUEST_TIMEOUT_S = 300.0
 
-# Published API per-request caps
-# (https://elevenlabs.io/docs/overview/models, checked 2026-08-29).
-# RV-Q10 packs contiguous scenes until this many characters; a single
-# scene that is itself over the cap is still sent as one request, same
-# as the pre-batch path. Unknown models use the conservative v3 cap.
+# Per-request character caps. RV-Q10 packs contiguous scenes until this
+# many characters; a single scene that is itself over the cap is still
+# sent as one request, same as the pre-batch path. Unknown models use
+# the conservative v3 cap.
+#
+# These are the PUBLISHED caps
+# (https://elevenlabs.io/docs/overview/models, checked 2026-08-29)
+# EXCEPT eleven_v3, which is deliberately below its published 5000 -
+# do not "correct" it back by re-reading the docs.
+#
+# Measured 2026-09-08, project 3ad7d0ca ("plato uncovered", 29 Hindi
+# scenes): a 4,679-character eleven_v3 request came back with audio that
+# simply stopped ~4,496 characters in, twice, under two different voices
+# (3AMU7jXQ and wlnkE6bN). Both times the last scene's final 183-184
+# characters were pinned to the instant the audio ended - a silent
+# truncation, since /with-timestamps still returns every character it
+# was asked about. The two runs' audio differed by 17 seconds (352s vs
+# 369s) but cut at the SAME character position, which is what rules out
+# an audio-duration ceiling and points at a text-length one. ElevenLabs'
+# own guidance for v3 is <=3000, so that is what this uses: at 3000 a
+# 4,679-character film becomes two requests of 2,909 + 1,769, both with
+# ~1,600 characters of headroom under the observed cliff.
+#
+# Cost is unaffected (billing is per character, not per request) and so
+# is every cached row: the cap is not part of
+# `compute_narration_content_hash`, so lowering it re-synthesises
+# nothing. What it does cost is one extra voice seam per extra batch -
+# the very discontinuity RV-Q10 exists to remove - so do not lower it
+# further without a reason. `reject_truncated_alignment` is the backstop
+# if the cliff ever moves (it may well be language-dependent: Devanagari
+# is multi-byte and the model may not be counting Python `len`).
 _TTS_CHAR_LIMIT_BY_MODEL = {
-    "eleven_v3": 5000,
+    "eleven_v3": 3000,
     "eleven_multilingual_v2": 10000,
     "eleven_multilingual_v1": 10000,
     "eleven_flash_v2_5": 40000,
@@ -61,7 +87,7 @@ _TTS_CHAR_LIMIT_BY_MODEL = {
     "eleven_turbo_v2_5": 40000,
     "eleven_turbo_v2": 30000,
 }
-_TTS_CHAR_LIMIT_DEFAULT = 5000
+_TTS_CHAR_LIMIT_DEFAULT = 3000
 
 
 # Live-checked 2026-08-20 against POST .../with-timestamps on

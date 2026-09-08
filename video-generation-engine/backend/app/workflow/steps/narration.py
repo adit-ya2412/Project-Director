@@ -128,6 +128,7 @@ from app.timeline.narration_batch import (
     SceneNarrationSlice,
     join_batch_text,
     plan_tts_batches,
+    reject_truncated_alignment,
     split_batched_alignment,
 )
 from app.timeline.narration_fit import (
@@ -436,6 +437,20 @@ class NarrationStep:
                         canonical_narration_speed(speed),
                         ffmpeg_binary=settings.ffmpeg_binary,
                     )
+                # Before EITHER path persists anything: a request the
+                # provider silently truncated must not reach a DB row or
+                # a sidecar, or it becomes a permanent cache hit that
+                # every retry re-reads. Covers the solo path too, which
+                # never goes through `split_batched_alignment`.
+                reject_truncated_alignment(
+                    alignment,
+                    request_label=(
+                        job.scene_id
+                        if len(job.members) == 1
+                        else f"batch {job.members[0].scene_id}..{job.members[-1].scene_id}"
+                    ),
+                )
+
                 if len(job.members) == 1:
                     # A genuine, single ElevenLabs response - real MP3
                     # bytes (or DRY_RUN's fake stand-in), never re-encoded.

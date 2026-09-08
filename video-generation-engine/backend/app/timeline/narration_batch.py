@@ -52,6 +52,11 @@ from app.core.errors import PermanentError
 
 NARRATION_BATCH_JOINER = "\n"
 
+# Float slop for "this character was given no audio at all". The real
+# data is exactly equal (`start == end`), not merely close; the epsilon
+# only guards against a provider one day emitting 1e-17 instead of 0.
+_ZERO_ADVANCE_EPS = 1e-9
+
 
 @dataclass(frozen=True)
 class NarrationBatchMember:
@@ -130,6 +135,80 @@ def plan_tts_batches(
         current_len += extra
     flush()
     return batches
+
+
+def reject_truncated_alignment(alignment: dict, *, request_label: str) -> None:
+    """Raise if the provider's AUDIO ran out before its TEXT did.
+
+    Applies to any TTS response, batched or solo - so it is called once
+    in `NarrationStep.submit`, before either path persists anything.
+    That placement is the point: a truncated response used to be written
+    to the `narration` row AND its `.alignment.json` sidecar before
+    anything noticed, which made it a permanent cache hit that every
+    retry re-read (and `_restore_row_from_disk` rebuilt from disk even
+    after the row was deleted by hand). Validating before `_persist_
+    slice` is what makes a retry actually retry.
+
+    ## The signature, and why it is not a length threshold
+
+    A truncated `/with-timestamps` response still returns EVERY
+    character it was asked about - the text matches perfectly, which is
+    why `split_batched_alignment`'s own text-equality check passes it.
+    What it stops doing is advancing time: the overflow characters are
+    all pinned to the instant the audio actually ended, i.e. given zero
+    duration. The alignment's end time therefore still agrees exactly
+    with the audio file's real duration, so comparing those two cannot
+    detect this (measured: across 678 rows only one disagreed by >0.5s,
+    and that one had audio LONGER than its alignment - trailing
+    silence, the opposite problem).
+
+    A trailing run of zero-duration characters is NOT by itself a fault.
+    Measured 2026-09-08 over all 678 narration rows in 33 projects:
+    98 rows legitimately end in one, the longest is 3 characters, and
+    every single one consists only of '\\n' (x122) and '।' (x4) - a
+    newline or a full stop the voice simply does not pronounce. Not one
+    legitimate run contains an alphanumeric character.
+
+    So the fault is not "how many characters got no audio" but "did a
+    WORD get no audio". That distinction is what makes this safe to
+    raise on (zero false positives against every alignment this system
+    has ever stored) while still catching a truncation of any size - a
+    four-character clip that swallows part of a word is rejected, where
+    a bare run-length threshold would have to let it through. The
+    incident that prompted this had 183-184 unspoken characters
+    including whole words.
+    """
+    try:
+        chars = [str(c) for c in alignment["characters"]]
+        starts = [float(t) for t in alignment["character_start_times_seconds"]]
+        ends = [float(t) for t in alignment["character_end_times_seconds"]]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PermanentError(f"malformed narration alignment: {exc}") from exc
+    if not chars or not (len(chars) == len(starts) == len(ends)):
+        # Shape problems are already reported, with better context, by
+        # `split_batched_alignment` and `SceneAlignment.from_raw`.
+        return
+
+    silent = 0
+    for index in range(len(chars) - 1, -1, -1):
+        if ends[index] - starts[index] > _ZERO_ADVANCE_EPS:
+            break
+        silent += 1
+    if not silent:
+        return
+
+    tail = "".join(chars[len(chars) - silent :])
+    unspoken_words = sum(1 for c in tail if c.isalnum())
+    if not unspoken_words:
+        return
+
+    raise PermanentError(
+        f"narration audio for {request_label} ended before its text did: the last {silent} "
+        f"character(s) of the request carry no audio at all ({unspoken_words} of them "
+        f"word characters), tail {tail!r}. The provider truncated this request - it is too "
+        "long for the model, so lower that model's cap in "
+        "`app.providers.elevenlabs._TTS_CHAR_LIMIT_BY_MODEL` rather than retrying it."
+    )
 
 
 def split_batched_alignment(
