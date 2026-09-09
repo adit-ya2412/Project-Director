@@ -75,6 +75,7 @@ and their disposition are below.
 | **K11** device renderers (stamp, counter) | **implemented 2026-09-09; two render-found defects fixed same day** — stamp + counter renderers; unblocks K9. The counter band is now content-derived (its type overflowed a hardcoded 420 by 118px, measured) and `treatment="dark"` gained the light halo it never had |
 | **K8** data graphics | **not started** |
 | **K12** planner authors `picture_is_graphic` | **implemented and reviewed 2026-09-09** (`23f83e9`) — Shot Planner authors required `ShotPlanOutput.picture_is_graphic` (no default) and maps it onto `Shot`. Live re-plan: data shot True, ordinary shots False. K3 already enforces. K8 unblocked on the signal, not yet implemented |
+| **K13** the counter has no reachable input | **not started, ADDED 2026-09-09, BLOCKING** — number-stating shots are planned as graphics, K3 rule 2 forbids cues there, so the counter is unreachable. First real reel produced 0 counters from 3 spoken numbers. Recommended fix: stop the Shot Planner making number shots into graphics (option B) |
 
 **Why shipping the pivot first worked without K6.** The pivot is the one
 device whose weight comes from its slab rather than its font, so a
@@ -1005,6 +1006,70 @@ flag describes what the planner INTENDED to acquire. A Pexels search
 result or a human upload via override was never described by the planner,
 so the flag cannot speak for those. Vision classification stays the only
 complete answer if that ever matters.
+
+### K13 — The counter has a renderer and no reachable input  **(ADDED 2026-09-09, BLOCKING)**
+
+Found by the first real end-to-end reel (`nexon-reel2-test`,
+`0c23acfd`, 2026-09-09). A 24.63s `retention_fast` reel whose script
+states three numbers out loud produced **zero counters**.
+
+**The collision.** Every shot whose narration states a number was
+planned as an infographic, so K12's flag went True on exactly those
+shots:
+
+| shot | narration | `picture_is_graphic` |
+|---|---|---|
+| `sc_02_sh_01` | *Safety rating mein **paanch** stars / Price bhi **das lakh** se kam* | True |
+| `sc_03_sh_01` | *har mahine **bees hazaar** se zyada bikti hai* | True |
+
+`planners/emphasis/planner.py` passes `picture_is_graphic` to K9 per
+shot and `prompts/emphasis/v1.md` tells it those shots cannot carry a
+cue, so K9 correctly declined to author there. K3 rule 2 would have
+dropped them anyway. The result is structural, not stochastic:
+
+**A counter needs a shot that states a number AND is not a graphic. The
+Shot Planner reliably turns number-stating shots into graphics. So the
+counter is close to unreachable, on every reel.**
+
+K11 built the counter renderer and proved it draws. Decision 8
+sequenced `correction`/`meter`/`comparison` behind renderers. Nobody
+noticed the counter had the opposite problem — a live renderer with no
+reachable input. It is also the device the user singled out as the one
+that made the spike work ("the numbers that increase upto 2000").
+
+**Two ways to fix it, and they are not equivalent.**
+
+*Option A — exempt a slabbed counter from rule 2.* Allow a counter on a
+graphic shot when its treatment is `slab`. Rule 2's original reason was
+the spike's 4.3s failure, which was BARE type over a busy infographic;
+K4's slab exists precisely to give type its own ground, and
+`retention_fast` forces it. Cheap. But it puts an animated number on
+top of a picture of that same number, which is duplication, and the
+plate underneath is an AI-generated chart nobody asked for.
+
+*Option B (RECOMMENDED) — stop the Shot Planner making number shots
+into graphics.* Teach `prompts/shot_planner/v1.md` that a shot whose
+narration states a figure should depict a SCENE, because the counter
+will animate the figure over it. The plan's own evidence points here:
+the spike's AI-generated "2 lakh sold" infographic was the **4.3s
+FAILURE**, and the data-graphics honesty section already treats
+AI-authored data pictures as close to forgery. An animated number over
+a real photograph is both the honest option and the one that was
+watched and worked. It resolves the collision at the source, and the
+counter stops being unreachable rather than being excused past a rule.
+
+Option B does NOT make K12 wrong. The flag is still needed for K8 and
+for genuinely graphic material (a real archival chart, a document of
+figures). B narrows what the planner CHOOSES to depict when narration
+states a figure; it does not narrow what the flag means.
+
+**Sequencing.** BLOCKING: do not spend generation money on a
+`retention_fast` reel until this is fixed, because the reel cannot
+contain its strongest device. Also note a fixed pipeline cannot be
+verified on an existing project — `0c23acfd` is `narration_locked` with
+`emphasis_pass_attempted=True`, so it can never be re-authored. Verify
+on a NEW project.
+
 
 ---
 
@@ -2486,6 +2551,67 @@ This section is an implementation diary, not a design change. Earlier sections a
 - files: `backend/app/timeline/emphasis_rules.py`, `backend/tests/unit/timeline/test_emphasis_rules.py`, this plan (K3 status row, K3 section one-liner, guardrail 1, the 21:20 "not done" line, this entry). Probe in `tmp/` (gitignored, throwaway).
 - next: nothing. No commit, no `git add`, no push. Working tree left dirty for review. Stopping.
 
+---
 
+## Work log — first real end-to-end reel (2026-09-09)
 
+### 18:05 — the reel that found K13
+
+- did: ran the FULL `DEFAULT_PIPELINE` on a fresh `retention_fast`
+  project for the first time with K9 in it. Everything before this was
+  component-level: pixel samples, cue tables, luma figures, overlays on
+  transparency. Nobody had watched a finished reel, and the original
+  complaint this whole plan answers was "the video is boring".
+- setup: dedicated backend on 127.0.0.1:8001 started with
+  `BURN_CAPTIONS=false` (env vars beat `.env`; verified
+  `settings.burn_captions` False with the override and True without),
+  so `.env` and the user's own server were untouched. Not dry-run --
+  a dry-run pass stamps `emphasis_pass_attempted` and would lock the
+  project out of the LLM pass permanently.
+- found: **three consecutive failures at `generate_timeline`**, all
+  identical: `shot durations sum to 3.5s, expected close to the
+  scene's 6.0s (tolerance 1.2s)`. Root cause is upstream of this whole
+  plan and worth recording: `retention_fast` caps a shot at 3.5s, the
+  tolerance is 1.2s, and the Shot Planner anchors one shot per
+  fragment -- so **a single-sentence scene longer than 4.7s cannot be
+  planned.** It emits one 3.5s shot and fails. The Scene Planner has
+  no knowledge of that constraint and produces impossible scenes some
+  fraction of the time.
+- found: retrying is USELESS and I wasted two attempts learning it.
+  The scene plan is PERSISTED, so a re-trigger re-runs the Shot
+  Planner against the same impossible scene and fails identically,
+  forever. A user hitting this in the app has a permanently stuck
+  project and a retry button that cannot ever work. Not this plan's
+  bug; worth its own writeup.
+- did: rewrote the same script as 12 short sentences (longest 53
+  chars) instead of 6 long ones, so no scene can be a long
+  single-fragment block. Planned first time: 7 scenes, 12 shots,
+  24.63s.
+- measured, and this is the reel:
+
+  | | |
+  |---|---|
+  | cues authored by K9 | 4 = 9.74/min |
+  | cues after K3 | 3 = **7.31/min** (below the 8-12 band) |
+  | K3 drop | `service centre` stamp, `min_gap` |
+  | cues | `Tata Nexon` stamp / `लेकिन` pivot (reg hi, on the real turn) / `Parts` stamp |
+  | counters | **ZERO**, from three spoken numbers -- see K13 |
+  | palette authored | `#B6FF00` accent, `#003F46` pivot ground |
+  | graphic shots flagged | 4 of 12 |
+  | spend | 4c planning; generation NOT run |
+
+- worked, on a script nothing had been tuned against: the brand got
+  stamped (`c1ee501`'s stamp-preference fix, third fresh confirmation);
+  the pivot landed on the real turn with register `hi`; K12 flagged
+  four graphic shots sensibly; and the authored `#003F46` passed
+  `PIVOT_GROUND_MAX_LUMA` silently in production, which is the
+  guardrail doing its job hours after it landed.
+- `offset_s` is 0.0 on all three cues and that is CORRECT, not
+  unresolved: each cue's anchor word is the first word of its shot.
+- decided: STOP before generation (user's call, and right). The reel
+  cannot contain its strongest device, so $1.06 of image generation
+  would buy a known-degraded artifact. K13 first.
+- next: K13 option B -- and it needs the user's confirmation before an
+  agent executes, because A and B are not equivalent and the choice is
+  editorial, not mechanical.
 
