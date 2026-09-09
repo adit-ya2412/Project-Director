@@ -23,10 +23,11 @@ Rule order (logged as `rule` on each drop):
 3. `values_citation` — every `values[]` entry must cite a fragment
    whose narration text states that number, written as digits
    (`200000`, `2,00,000`), as digits plus a scale word (`2 lakh`,
-   `2.5 lakh`), or spelled out in Hindi or English (`दो लाख`,
-   `two lakh`, `पाँच`). One failure drops the whole cue (a chart with
-   no citable anchor is dropped). Empty `values` (a pivot, a stamp) is
-   not a citation failure.
+   `2.5 lakh`), or spelled out in Devanagari Hindi (`दो लाख`, `पाँच`),
+   in ROMANISED Hindi (`do lakh`, `das lakh`, `paanch`) or in English
+   (`two lakh`, `five stars`). One failure drops the whole cue (a
+   chart with no citable anchor is dropped). Empty `values` (a pivot,
+   a stamp) is not a citation failure.
 
    What a `values_citation` drop DOES and does NOT prove, because the
    log line gets read as an accusation: a kept cue proves only that
@@ -34,13 +35,25 @@ Rule order (logged as `rule` on each drop):
    this module implements — not that the fragment is about it, and
    not that the number is true. A drop proves only that THIS matcher
    could not find it. It is not evidence the model invented a number.
-   The matcher is deliberately lenient and still incomplete: Hindi
-   multi-word numerals are read (`दो हजार छब्बीस` == 2026, by
-   `caption_romanizer.numerals`), but English compounds are not
-   (`twenty five lakh`), and neither are ordinals, fractions, ranges
-   or percentages-of — so real narration can state a value in a form
-   that still drops. Widen the matcher when that is measured; do not
-   read the rule as a hallucination detector.
+   The matcher is deliberately lenient and still incomplete. READ:
+   Devanagari multi-word numerals (`दो हजार छब्बीस` == 2026, by
+   `caption_romanizer.numerals`), and romanised units alone or as the
+   coefficient of the `lakh`/`crore` tier. NOT READ, each for a
+   reason: English compounds (`twenty five lakh`); ordinals,
+   fractions, ranges and percentages-of; romanised `sau`/`hazaar`
+   (`do hazaar chhabbis`, `unnis sau ikatees` — Hindi puts the
+   remainder after those tiers, so a two-token read states 2000 or
+   1900, a number the narration did NOT say); a romanised spelling
+   that collides with an ordinary English word unless a scale word
+   sits next to it (`do lakh` is 200000, `I do think` is nothing);
+   `so` for `सौ` at all, since "do so" is ordinary English and 200
+   would be a FORGED citation; and a bare scale word carrying no
+   coefficient (`lakh` on its own). Everything withheld here is
+   withheld because reading it could invent a number rather than
+   miss one. So real narration can state a value in a form that
+   still drops. Widen the matcher when that is measured — and never
+   in a way that can forge; do not read the rule as a hallucination
+   detector.
 4. At most one cue per shot — structural (`Shot.emphasis_cue` is
    optional, not a list). Nothing to enforce here.
 5. `min_gap` — density. A cue fewer than `min_shot_gap` shots after
@@ -67,6 +80,7 @@ system would drift. Safe zones are render-time / K4-adjacent.
 from __future__ import annotations
 
 import re
+from typing import NamedTuple
 
 from app.core.logging import get_logger
 from app.planners.caption_romanizer import numerals
@@ -143,6 +157,167 @@ _EN_NUMBER_WORDS: dict[str, int] = {
     "eighty": 80,
     "ninety": 90,
 }
+
+# Romanised Hindi number words, as SPELLINGS ONLY. Reviewed
+# 2026-09-09 (one transliteration layer under the first review): this
+# pipeline's narration is Hinglish written in LATIN script — the live
+# K9 script says `2025 mein 2 lakh models bikhe` and `Safety rating
+# mein paanch stars` — so a romanised numeral is the most likely of
+# the three forms, and it was the one form the matcher could not read.
+# `do lakh` / `das lakh` / `paanch stars` all dropped with
+# `rule=values_citation` while their Devanagari and English twins were
+# cited.
+#
+# No romanised numeral table existed anywhere in the backend to reuse:
+# `caption_romanizer.numerals` is Devanagari-keyed, and the Latin side
+# of that pass is produced per-scene by the LLM (plain 1:1
+# transliteration, prompt `caption_romanizer/v1.md`) and never stored
+# as a table. So the spellings below are new — but the VALUES are not
+# retyped: each entry maps a Latin spelling to the Devanagari word it
+# transliterates, and the integer (and whether the word is a scale)
+# comes from `numerals.word_value` / `numerals.is_multiplier`. That
+# module stays the single source of truth for what a Hindi number word
+# means; a spelling here that does not resolve raises at import rather
+# than silently reading as nothing (see `_roman_tables`).
+#
+# Coverage is what a 30-45s reel actually says: 1-10, the round-ish
+# larger units a counter cites (20, 25, 30, 40, 50) and the four
+# scales. Transliteration has no standard, so plausible variants sit
+# side by side (`paanch`/`paach`, `hazaar`/`hajaar`/`hazar`).
+_ROMAN_TO_DEVANAGARI: dict[str, str] = {
+    "ek": "एक",
+    "do": "दो",
+    "doh": "दो",
+    "teen": "तीन",
+    "tin": "तीन",
+    "chaar": "चार",
+    "char": "चार",
+    "paanch": "पाँच",
+    "paach": "पाँच",
+    "panch": "पांच",
+    "chhah": "छह",
+    "chhe": "छह",
+    "chheh": "छह",
+    "che": "छह",
+    "chah": "छह",
+    "saat": "सात",
+    "sat": "सात",
+    "sath": "सात",
+    "aath": "आठ",
+    "ath": "आठ",
+    "nau": "नौ",
+    "nao": "नौ",
+    "das": "दस",
+    "dus": "दस",
+    "bees": "बीस",
+    "bis": "बीस",
+    "pachees": "पच्चीस",
+    "pachchees": "पच्चीस",
+    "pacchis": "पच्चीस",
+    "tees": "तीस",
+    "tis": "तीस",
+    "chalees": "चालीस",
+    "chalis": "चालीस",
+    "pachaas": "पचास",
+    "pachas": "पचास",
+    "karod": "करोड़",
+    "karor": "करोड़",
+    "karore": "करोड़",
+    # `lakh`/`lac`/`crore` are already read as scale words on the
+    # English side above; they are the same Latin token either way.
+    #
+    # `sau` (सौ) and `hazaar` (हजार) are DELIBERATELY ABSENT, and this
+    # was measured, not assumed. Hindi puts a numeral's remainder AFTER
+    # those two tiers — `do hazaar chhabbis` is 2026, `unnis sau
+    # ikatees` is 1931, and reels say years constantly — so a
+    # coefficient+scale pair reads the wrong number off them (2000,
+    # 1900) unless the remainder word is also in the table. Devanagari
+    # is safe there only because §11's run parser consumes a whole run
+    # and refuses a partial merge; a Latin table cannot be closed the
+    # same way (`chhabbis`/`chhabis`/`chabbis` are all plausible), so
+    # ANY missing spelling would silently forge a number the narration
+    # did not state. The first draft of this table included both tiers
+    # and the probe caught exactly that: `do hazaar chhabbis` cited
+    # 2000. `lakh`/`crore` do not carry this risk in practice — a reel
+    # says "do lakh", not "do lakh pachaas hazaar" — and their pair
+    # reading is the same lenience the English side has shipped since
+    # the first review. So `das hazaar` and `unnis sau ikatees` stay
+    # UNCOVERED (they drop), which is the fail-safe direction.
+}
+
+# The defence against the thing that would make this fix WORSE than
+# the gap it closes. Several natural transliterations are also ordinary
+# words: `do` and `so` are English, `char` is English, `tin`/`teen`/
+# `bees`/`tees`/`sat` are English, `sath` is Hindi साथ ("with"), `chah`
+# is चाह ("desire"), `che`/`nao` are ordinary words elsewhere. Reading
+# "I do think" as the number 2 would CREATE a citation the narration
+# never made — silently certifying a number, which is strictly worse
+# than the drop this change removes, because honesty is the entire
+# point of the rule.
+#
+# The guard: a colliding spelling is read ONLY as the coefficient of an
+# immediately following scale word. `do lakh` is 200000; `do` alone,
+# next to any ordinary word, states nothing. This costs nothing that
+# works today (every romanised reading dropped before this change) and
+# it is the case that actually occurs — a reel says "do lakh", not a
+# bare "do" as a counter. `sau` is safe unguarded, but `so` for सौ is
+# NOT IN THE TABLE AT ALL and must not be added: the guard above is a
+# preceding/following-coefficient rule, and "I do so" would satisfy it
+# and forge 200. A number small enough to say bare is spelled
+# unambiguously anyway (`paanch`, `chaar`, `das`).
+_ROMAN_NEEDS_SCALE: frozenset[str] = frozenset(
+    {
+        "do",
+        "doh",
+        "teen",
+        "tin",
+        "char",
+        "panch",
+        "che",
+        "chah",
+        "sat",
+        "sath",
+        "ath",
+        "nao",
+        "bees",
+        "bis",
+        "tees",
+        "tis",
+    }
+)
+
+
+def _roman_tables() -> tuple[dict[str, int], dict[str, int]]:
+    """Split `_ROMAN_TO_DEVANAGARI` into unit words and scale words.
+
+    Values are looked up, never declared here. A spelling whose
+    Devanagari side is not in `numerals.TABLE` (a typo, or a respelling
+    on that side) raises at import: the failure is deterministic, so it
+    cannot ship past one test run, whereas a silent skip would quietly
+    narrow the matcher again.
+    """
+    words: dict[str, int] = {}
+    scales: dict[str, int] = {}
+    for roman, devanagari in _ROMAN_TO_DEVANAGARI.items():
+        value = numerals.word_value(devanagari)
+        if value is None:
+            raise RuntimeError(
+                f"emphasis_rules: {roman!r} maps to {devanagari!r}, which is not "
+                "a word in caption_romanizer.numerals.TABLE"
+            )
+        if numerals.is_multiplier(devanagari):
+            scales[roman] = value
+        else:
+            words[roman] = value
+    return words, scales
+
+
+_ROMAN_NUMBER_WORDS, _ROMAN_SCALE_WORDS = _roman_tables()
+
+# Punctuation on either end of an already-Latin token (`Do`, `lakh.`,
+# `"paanch`). Stripped before the romanised lookup only — the number
+# readers below keep using `_TOKEN_SPLIT_RE`.
+_LATIN_EDGE_PUNCT_RE = re.compile(r"^[^0-9A-Za-z]+|[^0-9A-Za-z]+$")
 
 # Token boundaries for number reading. A NEGATIVE class on purpose:
 # `\w` and `[^\W\d_]` both exclude Devanagari matras and the nukta
@@ -247,9 +422,11 @@ def _fragment_contains_value(text: str, value: int) -> bool:
 
     Two readings, in order: the digits of `value` (allowing Indian /
     Western grouping), then every number the text spells out — digits,
-    decimals and number words in Hindi or English, alone or as the
-    coefficient of a scale word. See the module docstring for what a
-    False here does and does not prove.
+    decimals and number words in Devanagari Hindi, romanised Hindi or
+    English, alone or as the coefficient of a scale word. See the module
+    docstring for what a False here does and does not prove, and for the
+    readings that are deliberately withheld so that this function can
+    never certify a number the fragment did not state.
     """
     target = abs(value)
     digits = str(target)
@@ -274,24 +451,53 @@ def _number_tokens(text: str) -> list[str]:
     return tokens
 
 
-def _token_number(token: str) -> float | None:
+class _Reading(NamedTuple):
+    """How one token may be read as a number.
+
+    `is_scale` — the token IS a multiplier (`lakh`, `सौ`), so on its own
+    it states nothing; it needs a coefficient.
+    `needs_scale` — the token is a romanised spelling that collides with
+    an ordinary word (`do`, `char`), so it is read only when a scale
+    word follows it. See `_ROMAN_NEEDS_SCALE`.
+    """
+
+    value: float
+    is_scale: bool
+    needs_scale: bool
+
+
+def _token_reading(token: str) -> _Reading | None:
     """A numeral (`2`, `2.5`) or a spelled-out number word, or None."""
     if _NUMERIC_RE.fullmatch(token):
-        return float(token)
+        return _Reading(float(token), is_scale=False, needs_scale=False)
     lowered = token.lower()
     if lowered in _EN_NUMBER_WORDS:
-        return float(_EN_NUMBER_WORDS[lowered])
+        return _Reading(float(_EN_NUMBER_WORDS[lowered]), is_scale=False, needs_scale=False)
     if lowered in _EN_SCALE_WORDS:
-        return float(_EN_SCALE_WORDS[lowered])
+        return _Reading(float(_EN_SCALE_WORDS[lowered]), is_scale=True, needs_scale=False)
+    stripped = _LATIN_EDGE_PUNCT_RE.sub("", lowered)
+    if stripped in _ROMAN_SCALE_WORDS:
+        return _Reading(float(_ROMAN_SCALE_WORDS[stripped]), is_scale=True, needs_scale=False)
+    if stripped in _ROMAN_NUMBER_WORDS:
+        return _Reading(
+            float(_ROMAN_NUMBER_WORDS[stripped]),
+            is_scale=False,
+            needs_scale=stripped in _ROMAN_NEEDS_SCALE,
+        )
     hindi = numerals.word_value(token)
-    return None if hindi is None else float(hindi)
+    if hindi is None:
+        return None
+    return _Reading(float(hindi), is_scale=numerals.is_multiplier(token), needs_scale=False)
 
 
 def _scale_value(token: str) -> int | None:
-    """The multiplier a token names (`lakh`, `लाख`, `crore`), or None."""
+    """The multiplier a token names (`lakh`, `लाख`, `hazaar`), or None."""
     lowered = token.lower()
     if lowered in _EN_SCALE_WORDS:
         return _EN_SCALE_WORDS[lowered]
+    stripped = _LATIN_EDGE_PUNCT_RE.sub("", lowered)
+    if stripped in _ROMAN_SCALE_WORDS:
+        return _ROMAN_SCALE_WORDS[stripped]
     if numerals.is_multiplier(token):
         return numerals.word_value(token)
     return None
@@ -301,9 +507,12 @@ def _stated_numbers(text: str) -> set[int]:
     """Every integer `text` states, reading left to right.
 
     A number word or numeral immediately followed by a scale word is
-    read as one value and the pair is CONSUMED: `दो लाख` yields 200000
-    only — not 2 and not 100000, so citing the coefficient or the scale
-    alone still drops. Non-integral products (`2.5 thousand` -> 2500 is
+    read as one value and the pair is CONSUMED: `दो लाख` and `do lakh`
+    yield 200000 only — not 2 and not 100000, so citing the coefficient
+    or the scale alone still drops. A scale word with no coefficient at
+    all (`lakh` on its own) states nothing either, for the same reason:
+    the rule certifies the number a fragment SAYS, and a bare unit is
+    not that number. Non-integral products (`2.5 thousand` -> 2500 is
     fine, `1.5 hundred` -> 150 is fine, a fraction that does not land on
     an integer is not) are ignored rather than rounded.
     """
@@ -312,6 +521,12 @@ def _stated_numbers(text: str) -> set[int]:
     # refuses an ambiguous run rather than guessing — not re-derived
     # here. Its words are then WITHHELD from the pair reader below, so
     # `दो हजार छब्बीस` states 2026 and not also 2000 or 26.
+    #
+    # There is no romanised equivalent of this run parser and there
+    # deliberately is not one: it works because its table is CLOSED,
+    # and Latin spellings are not (see `_ROMAN_TO_DEVANAGARI` on why
+    # `sau`/`hazaar` are absent). Romanised text is read one token at a
+    # time by the pair reader below.
     words = text.split()
     runs = numerals.find_numeral_runs(words)
     stated: set[int] = {run.value for run in runs}
@@ -319,19 +534,19 @@ def _stated_numbers(text: str) -> set[int]:
     tokens = _number_tokens(" ".join(w for i, w in enumerate(words) if i not in consumed))
     i = 0
     while i < len(tokens):
-        coefficient = _token_number(tokens[i])
-        if coefficient is None:
+        reading = _token_reading(tokens[i])
+        if reading is None:
             i += 1
             continue
         scale = _scale_value(tokens[i + 1]) if i + 1 < len(tokens) else None
         if scale is not None:
-            product = coefficient * scale
+            product = reading.value * scale
             if product.is_integer():
                 stated.add(int(product))
             i += 2
             continue
-        if coefficient.is_integer():
-            stated.add(int(coefficient))
+        if not reading.is_scale and not reading.needs_scale and reading.value.is_integer():
+            stated.add(int(reading.value))
         i += 1
     return stated
 

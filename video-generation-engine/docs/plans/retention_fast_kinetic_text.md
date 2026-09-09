@@ -68,7 +68,7 @@ and their disposition are below.
 | **K10** pivot detection | **done** — `timeline/pivot.py`, lexical, one per reel |
 | **K7** compositor seam | **proven end-to-end 2026-09-09** — `renderer/compositor.py` + props-driven `Pivot.tsx`/`Emphasis.tsx`. Fingerprint hooks (`emphasis_cue_hash`, `emphasis_font_hash`) are in and correctly separate from `cue_list_hash` |
 | **K9** emphasis pass | **implemented 2026-09-09; one of two review findings fixed and measured, the other measured and NOT reproduced** — whole-film LLM call authors `pivot`/`stamp`/`counter` plus the palette pair; K3 still enforces; lexical `attach_pivot_cue` is the pivot backstop. Stamps now prefer concrete nouns and the brand reaches the screen (3 of 5 live runs vs 0 of 2 before). Density: no prompt wording raised the delivered rate above the 8.51/min floor across 5 live runs; the binding number is `_build_user_content`'s `Target cue count`, not prose. See the 21:0x log entries |
-| **K3** enforcement rules | **implemented 2026-09-09, reviewed and the three findings fixed same day** — shared pass in `app/timeline/emphasis_rules.py`; `text_card` rule moved out of `pivot.py`; graphic signal is planner-authored `Shot.picture_is_graphic` (option 1). Safe-zone geometry deferred (no plate at authoring time). Review applied: `min_shot_gap` is an index distance (the off-by-one made the effective gap 4, measured 8.57/min instead of the band's 12.00/min); the citation matcher now reads spelled-out Hindi/English numbers and decimals, reusing `caption_romanizer.numerals`; the call site's two knobs are pinned by a step-level test |
+| **K3** enforcement rules | **implemented 2026-09-09, reviewed and the three findings fixed same day** — shared pass in `app/timeline/emphasis_rules.py`; `text_card` rule moved out of `pivot.py`; graphic signal is planner-authored `Shot.picture_is_graphic` (option 1). Safe-zone geometry deferred (no plate at authoring time). Review applied: `min_shot_gap` is an index distance (the off-by-one made the effective gap 4, measured 8.57/min instead of the band's 12.00/min); the citation matcher now reads spelled-out Devanagari-Hindi/English numbers and decimals, reusing `caption_romanizer.numerals`, plus romanised Hindi (added 2026-09-09, guarded against English-word collisions); the call site's two knobs are pinned by a step-level test |
 | **K4** contrast adaptation | **done 2026-09-09, reviewed same day** — render-time plate luma → light/dark/slab on OverlayCue. Slab default for retention_fast. The bright `2025` plate is never `light`. Review applied: band box is now Python-authoritative and travels through the props; `LIGHT_MAX_LUMA` 90 → 105 on six measured plates; the measurement is kept and logged under the slab policy; one decode per plate |
 | **K5** palette resolution | **implemented and reviewed 2026-09-09** (`4a8c00a`) — scenario A, planner-authored and recorded on the timeline (decision 7). The accent and the pivot ground are palette; white/ink stay K4's contrast treatments | Review: one finding, a near-white `pivot_ground` renders invisible white-on-white; fixed separately. Only the channel and band rungs are reachable today — see K5's task section.
 | **K6** reach the vendored Bold | **done 2026-09-09** — was never a download |
@@ -321,9 +321,10 @@ deserves.
 **1. Every chart must be anchored by a cited value.** At least one value
 carries `cited_fragment`, and code verifies that the fragment's narration
 text STATES that number — as digits (`200000`, `2,00,000`), as digits
-plus a scale word (`2 lakh`, `2.5 lakh`), or spelled out in Hindi or
-English (`दो लाख`, `two lakh`, `दो हजार छब्बीस`, `पाँच`). A chart made
-entirely of inferred numbers is rejected. In the SUV case `2,00,000` is
+plus a scale word (`2 lakh`, `2.5 lakh`), or spelled out in Devanagari
+Hindi (`दो लाख`, `दो हजार छब्बीस`, `पाँच`), in romanised Hindi (`do
+lakh`, `das lakh`, `paanch`) or in English (`two lakh`, `five stars`).
+A chart made entirely of inferred numbers is rejected. In the SUV case `2,00,000` is
 the anchor and the five earlier years are inferred.
 
 Be precise about what that check proves, because the drop is logged as
@@ -336,10 +337,20 @@ readings `emphasis_rules._fragment_contains_value` implements: not that
 the sentence is about it, and not that the number is true. A DROPPED
 value proves only that THIS matcher could not find it — it is not
 evidence the model invented a number. The matcher is deliberately
-lenient and still incomplete (English compounds like `twenty five
-lakh`, ordinals, fractions, ranges and percentages-of are not read), so
-widen it when a real miss is measured rather than treating it as a
-hallucination detector.
+lenient and still incomplete, and every gap in it is on the side of
+dropping rather than forging. Not read: English compounds (`twenty five
+lakh`); ordinals, fractions, ranges and percentages-of; the romanised
+`sau`/`hazaar` tier (`do hazaar chhabbis`, `unnis sau ikatees` — Hindi
+puts the remainder AFTER those tiers, so a two-token read would state
+2000 or 1900, numbers the narration did not say, and no closed Latin
+table exists to parse the whole run the way `caption_romanizer.numerals`
+parses the Devanagari one); a romanised spelling that collides with an
+ordinary English word, unless a scale word sits beside it (`do lakh` is
+200000, `I do think` is nothing); `so` for `सौ` at all, because "do so"
+is ordinary English and 200 would be a FORGED citation; and a bare scale
+word carrying no coefficient (`lakh` alone). Widen it when a real miss
+is measured — never in a way that can invent a citation — rather than
+treating it as a hallucination detector.
 
 **2. Inferred values must LOOK inferred, on frame.** This is a rendering
 requirement, not a data field. Stated values render solid; inferred ones
@@ -477,7 +488,7 @@ fragment indices, at the same seam `reconcile_spoken_durations` occupies.
 Do not build a second timing path.
 
 ### K3 — Enforcement pass (the fixed rules)
-**Status (2026-09-09): implemented, then reviewed and the three review findings fixed the same day.** Shared pass in `emphasis_rules.py`; graphic rule unblocked via planner-authored `Shot.picture_is_graphic`. Density is an INDEX distance (gap 3 keeps shots 0, 3, 6, …), values citation reads spelled-out numbers in Hindi and English, and the step's two band knobs are pinned against a silent swap.
+**Status (2026-09-09): implemented, then reviewed and the three review findings fixed the same day.** Shared pass in `emphasis_rules.py`; graphic rule unblocked via planner-authored `Shot.picture_is_graphic`. Density is an INDEX distance (gap 3 keeps shots 0, 3, 6, …), values citation reads spelled-out numbers in Devanagari Hindi, romanised Hindi and English (romanised added 2026-09-09 — it is the script this pipeline's narration is actually written in; colliding spellings like `do`/`char` are read only next to a scale word, and `so`/`sau`/`hazaar` are not read at all, because forging a citation is worse than missing one), and the step's two band knobs are pinned against a silent swap.
 In code AFTER the planner returns, same discipline as
 `resolve_picture_path` and the same shape as the project-wide text-card
 spacing pass:
@@ -2450,9 +2461,30 @@ One of the two review findings is fixed and proved; the other is a real symptom 
 - `verify_k9.py` names its project `k9-emphasis-live`, with no `-test` suffix, so it does not match the standing purge convention. The new driver uses `k9-prompt-fix-test`. Unrelated leaked `*-test` rows (many `shot-planner-test`, `asset-planner-test`, one `k7-pivot-test`) are still in the shared DB; not touched here.
 - Cost: seven live planning calls, roughly 7 cents.
 
-**Not done (out of slice):** any change to K3, the `retention_fast` band knobs, `emphasis_max_cues_per_minute`, `EmphasisDevice`, or the planner schema. No Remotion render (no stamp came close to overflowing its band — longest was `Hyundai Creta`, and the counter band is content-derived since K11). No widening of the `values_citation` matcher to romanised Hindi numerals.
+**Not done (out of slice):** any change to K3, the `retention_fast` band knobs, `emphasis_max_cues_per_minute`, `EmphasisDevice`, or the planner schema. No Remotion render (no stamp came close to overflowing its band — longest was `Hyundai Creta`, and the counter band is content-derived since K11). No widening of the `values_citation` matcher to romanised Hindi numerals — done at 22:10 below.
 
 No commit, no `git add`, no push. Working tree left dirty for review. Stopping.
+
+---
+
+## Work log — K3 citation matcher reads romanised Hindi (2026-09-09)
+
+This section is an implementation diary, not a design change. Earlier sections above stay authoritative. Append only; never rewrite prior log entries.
+
+### 22:10 — romanised Hindi in the values-citation matcher
+
+- decided: close the gap the 21:05 entry recorded. `_fragment_contains_value` read a cited number as digits, as Devanagari words and as English words, but not as **romanised** Hindi — and this pipeline's narration is Hinglish written in Latin script, so romanised is the most likely of the three. The live K9 script says `2025 mein 2 lakh models bikhe` and `Safety rating mein paanch stars`; `do lakh` / `Do lakh.` / `das lakh` / `paanch stars` all dropped with `rule=values_citation`, which reads in the log as "the model invented a number". Same failure mode as the original finding, one transliteration layer deeper. Scope: the matcher only — no density change, no band knobs, no prompt, nothing under `app/planners/emphasis/`.
+- found: **no romanised numeral table exists anywhere in the backend to reuse.** `caption_romanizer/numerals.py` is Devanagari-keyed (0–99 plus `सौ`/`हजार`/`लाख`/`करोड़`, nukta variants), and the Latin side of that pass is produced per scene by the LLM as plain 1:1 transliteration (`prompts/caption_romanizer/v1.md`) and never stored as a table — grep for `paanch|panch|hazaar|karod|pachaas` across `backend/` hits only that module's own comments, its two test files and rendered `.ass` captions in `storage/`. So the spellings had to be new. The VALUES did not: `_ROMAN_TO_DEVANAGARI` maps each Latin spelling to the Devanagari word it transliterates, and `_roman_tables()` derives the integer and the is-it-a-scale answer from `numerals.word_value` / `numerals.is_multiplier`, raising at import if a spelling's Devanagari side is not in `numerals.TABLE`. That module stays the single source of truth for what a Hindi number word means, and a respelling there cannot silently narrow this matcher.
+- decided: **the collision guard, which is the whole risk of this change.** Several natural transliterations are ordinary words: `do`/`so`/`char`/`tin`/`teen`/`bees`/`tees`/`sat` are English, `sath` is साथ ("with"), `chah` is चाह ("desire"). Reading "I do think" as 2 would CERTIFY a number the narration never said — strictly worse than the drop being removed, because `rule=values_citation` is only ever logged on a DROP, so a forged match is invisible. Guard: a colliding spelling is read ONLY as the coefficient of an immediately following scale word (`do lakh` == 200000; a bare `do` states nothing). That costs nothing that works today — every romanised reading dropped before this change — and it is the form reels actually use. Unambiguous spellings (`paanch`, `chaar`, `das`, `dus`, `saat`, `aath`, `nau`, `pachaas`) are read bare.
+- decided: `so` for `सौ` is **not in the table at all**, and must not be added. The guard above is "a scale word must sit next to it", and `do so` satisfies it — "I do so think" would forge 200. `sau` is spelled unambiguously when a reel means 100.
+- found: **the first draft was wrong and the probe caught it.** It also mapped `sau`/`hazaar` and ran `numerals.find_numeral_runs` a second time over a Devanagari shadow of the words, to read `do hazaar chhabbis` == 2026. Measured result: `do hazaar chhabbis` cited **2000** — Hindi puts a numeral's remainder AFTER those two tiers, and `chhabbis` was not in the table, so the run parsed short and forged a number the narration did not state. Devanagari is safe there only because §11's parser consumes a whole run and refuses a partial merge; a Latin table cannot be closed the same way (`chhabbis`/`chhabis`/`chabbis` are all plausible), so ANY missing spelling fails open. Both the `sau`/`hazaar` tier and the shadow-run reading were removed. `do hazaar chhabbis` == 2026, `unnis sau ikatees` == 1931 and `das hazaar` == 10000 are therefore UNCOVERED and drop, which is the fail-safe direction — and 2000 / 1900 / 43000 are now pinned as drops so nothing re-opens it. The `lakh`/`crore` tier keeps its pair reading: a reel says "do lakh", and that reading is the same lenience the English side has shipped since the first review.
+- found: two pre-existing leaks in the shipped matcher, both closed by one tightening. A scale word with no coefficient stated its own value, so `lakh ka sawaal hai.` CITED 100000 — and worse, `do lakh SUVs bik gayi.` also CITED 100000, because the reader fell through the then-unknown `do` and read `lakh` alone. A bare unit is not the number, so `_Reading` now carries `is_scale` and a scale word states a value only as part of a pair (`hundred thousand` == 100000 still reads; `2.5 lakh` unchanged).
+- measured: `tmp/k3_roman_citation_probe.py` (throwaway, gitignored) runs the real `_fragment_contains_value` beside a verbatim copy of the `c1ee501` matcher. 34 rows, **0 negative leaks, 0 unmet positives**. DROPPED → CITED: `do lakh SUVs bik gayi.`/200000, `Do lakh. Yeh number bada hai.`/200000, `das lakh se kam price.`/1000000, `paanch stars mila.`/5, `paanch karod views.`/50000000, and both live K9 sentences — `Safety rating mein paanch stars`/5 (`2025 mein 2 lakh models bikhe`/200000 already worked). Unchanged CITED: `2 lakh`, `दो लाख`, `two lakh`, `five stars`, `पाँच stars`. Still DROPPED: `I do think so, it is fine.` against 2 AND against 100, `Woh do so ka matlab samjha.`/200, `The char marks…`/4, `The bees were loud…`/20, `Woh mere sath thi.`/7, `nice car, no figure here.`/200000, `do SUVs bik gayi.`/200000, `do lakh`/2, `das lakh`/10, `paanch stars`/500000, `saal 2025 mein.`/202, `do hazaar chhabbis`/2000 and /26, `unnis sau ikatees`/1900, `43 hazaar 391 rupaye.`/43000. TIGHTENED (cited before, drops now): `lakh ka sawaal hai.`/100000 and `do lakh SUVs bik gayi.`/100000.
+- did: updated the module docstring's rule 3 and this plan's guardrail 1 (plus the K3 status row and section one-liner) to list the readings now implemented AND what stays uncovered, with the reason each thing is withheld — every gap is on the side of dropping rather than forging.
+- tests: `tests/unit/timeline/test_emphasis_rules.py` — the newly-cited rows (including both live K9 sentences and `chaar jobs karni padin.`/4) plus every negative above, in a dedicated `test_romanised_collisions_with_ordinary_words_are_never_cited` whose docstring says why it must not be weakened, and a table-integrity test that every romanised spelling resolves through `caption_romanizer.numerals` and that `so`/`sau`/`hazaar` are absent on purpose. Existing behaviour kept: empty `values`, one miss dropping the whole cue, an out-of-range `cited_fragment`, and a value stated nowhere. `python -m pytest tests/unit -q` → **1456 passed, 6 failed** in 111.83s. Baseline was 1429 passed / 6 failed; the same 6 are pre-existing (5 in `test_sfx_overlays_diegetic.py`, 1 in `test_director_planner.py::test_every_attempt_is_recorded_as_an_llm_call`) and were not touched. +27 tests, no new failure.
+- ruff: `python -m ruff check app/timeline/emphasis_rules.py tests/unit/timeline/test_emphasis_rules.py ../tmp/k3_roman_citation_probe.py` → **All checks passed!** No formatter run.
+- files: `backend/app/timeline/emphasis_rules.py`, `backend/tests/unit/timeline/test_emphasis_rules.py`, this plan (K3 status row, K3 section one-liner, guardrail 1, the 21:20 "not done" line, this entry). Probe in `tmp/` (gitignored, throwaway).
+- next: nothing. No commit, no `git add`, no push. Working tree left dirty for review. Stopping.
 
 
 

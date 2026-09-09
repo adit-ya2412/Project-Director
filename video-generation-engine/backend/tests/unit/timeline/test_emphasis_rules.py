@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
+from app.planners.caption_romanizer import numerals
 from app.schemas.timeline import (
     EmphasisCue,
     EmphasisDevice,
@@ -22,7 +23,14 @@ from app.script.styles import (
     resolve_emphasis_min_shot_gap,
 )
 from app.timeline.duration import compute_timeline_duration
-from app.timeline.emphasis_rules import enforce_emphasis_rules, shot_blocks_emphasis_cue
+from app.timeline.emphasis_rules import (
+    _ROMAN_NEEDS_SCALE,
+    _ROMAN_NUMBER_WORDS,
+    _ROMAN_SCALE_WORDS,
+    _ROMAN_TO_DEVANAGARI,
+    enforce_emphasis_rules,
+    shot_blocks_emphasis_cue,
+)
 from app.timeline.pivot import attach_pivot_cue, detect_pivot
 
 
@@ -207,6 +215,19 @@ def test_counter_citable_value_is_kept(narration: str):
         ("two lakh SUVs sold.", 200_000),
         ("five crore views.", 50_000_000),
         ("ten thousand bookings.", 10_000),
+        # Romanised Hindi — the form this pipeline's narration actually
+        # uses (reviewed 2026-09-09, one transliteration layer under the
+        # first review). Bare unit, and unit as the coefficient of the
+        # lakh/crore tier.
+        ("do lakh SUVs bik gayi.", 200_000),
+        ("Do lakh. Yeh number bada hai.", 200_000),
+        ("das lakh se kam price.", 1_000_000),
+        ("paanch stars mila.", 5),
+        ("paanch karod views.", 50_000_000),
+        ("chaar jobs karni padin.", 4),
+        # the two real sentences from the live K9 script
+        ("2025 mein 2 lakh models bikhe", 200_000),
+        ("Safety rating mein paanch stars", 5),
         # decimal coefficient
         ("2.5 lakh cars.", 250_000),
         # multi-word Hindi numeral, parsed by `caption_romanizer.numerals`
@@ -244,6 +265,27 @@ def test_spelled_out_and_decimal_values_are_cited(narration: str, value: int):
         # other direction — a merged run reported as a partial number)
         ("दो हजार छब्बीस में launch.", 2_000),
         ("दो हजार छब्बीस में launch.", 26),
+        # the romanised twins of the two rows above (2026-09-09): the
+        # `sau`/`hazaar` tier is not read at all, precisely so that a
+        # remainder the Latin table does not know cannot be silently
+        # dropped off the number — `do hazaar chhabbis` is 2026, and
+        # citing 2000 for it would be a forged citation, not a lenience
+        ("do hazaar chhabbis mein launch hui.", 2_000),
+        ("unnis sau ikatees mein janm hua.", 1_900),
+        ("43 hazaar 391 rupaye.", 43_000),
+        ("do hazaar chhabbis mein launch hui.", 26),
+        # a romanised coefficient with no scale beside it
+        ("do SUVs bik gayi.", 200_000),
+        ("das lakh se kam price.", 10),
+        ("paanch stars mila.", 500_000),
+        # a bare scale word carries no coefficient, so it states nothing
+        # — before this was measured, `lakh ka sawaal` cited 100000, and
+        # so did `do lakh` (the reader fell through the unknown `do` and
+        # read `lakh` alone)
+        ("lakh ka sawaal hai.", 100_000),
+        ("do lakh SUVs bik gayi.", 100_000),
+        # digits are still bounded: `2025` does not state `202`
+        ("saal 2025 mein.", 202),
     ],
 )
 def test_the_rule_still_has_teeth_on_a_genuine_miss(narration: str, value: int):
@@ -257,6 +299,69 @@ def test_the_rule_still_has_teeth_on_a_genuine_miss(narration: str, value: int):
     )
     out = _enforce(_timeline([shot], narration_text=narration))
     assert out.all_shots()[0].emphasis_cue is None
+
+
+@pytest.mark.parametrize(
+    ("narration", "value"),
+    [
+        # `do` is English "do" and `so` is English "so" — a matcher that
+        # read this sentence as 2 or as 100 would CERTIFY a number the
+        # narration never stated, which is worse than the drop the
+        # romanised reading removes, because honesty is the whole point
+        # of the rule. `so` for सौ is not in the table at all: the guard
+        # for a colliding spelling is "a scale word must sit next to
+        # it", and `do so` would satisfy it.
+        ("I do think so, it is fine.", 2),
+        ("I do think so, it is fine.", 100),
+        ("Woh do so ka matlab samjha.", 200),
+        # ordinary English words that are also transliterations
+        ("The char marks on the wood were deep.", 4),
+        ("The bees were loud that afternoon.", 20),
+        ("She sat on the tin roof.", 7),
+        ("She sat on the tin roof.", 3),
+        # `sath` is साथ, "with", far more often than सात, "seven"
+        ("Woh mere sath thi.", 7),
+    ],
+)
+def test_romanised_collisions_with_ordinary_words_are_never_cited(narration: str, value: int):
+    """The half of the romanised fix that matters most.
+
+    Reviewed 2026-09-09. Do not weaken or delete these: a false CITATION
+    silently certifies a number as spoken, and the log line
+    `rule=values_citation` only ever appears when a cue is DROPPED — a
+    forged match is invisible. A drop is recoverable; a forgery is not.
+    """
+    shot = _shot(
+        emphasis_cue=_counter(value, cited_fragment=1),
+        narration_span=(0, len(narration)),
+    )
+    out = _enforce(_timeline([shot], narration_text=narration))
+    assert out.all_shots()[0].emphasis_cue is None
+
+
+def test_every_romanised_spelling_resolves_through_caption_numerals():
+    """The romanised table declares SPELLINGS; the values come from
+    `caption_romanizer.numerals`, which stays the single source of truth
+    for what a Hindi number word means. `_roman_tables` raises at import
+    if a spelling's Devanagari side is not in that table — this pins the
+    reuse so a respelling there cannot quietly narrow the matcher.
+    """
+    assert _ROMAN_TO_DEVANAGARI
+    for roman, devanagari in _ROMAN_TO_DEVANAGARI.items():
+        assert numerals.word_value(devanagari) is not None, roman
+    assert _ROMAN_NUMBER_WORDS["paanch"] == numerals.word_value("पाँच") == 5
+    assert _ROMAN_NUMBER_WORDS["das"] == numerals.word_value("दस") == 10
+    assert _ROMAN_SCALE_WORDS["karod"] == numerals.word_value("करोड़") == 10_000_000
+    # Every guarded spelling must BE a spelling in the table. An entry
+    # here that the table does not carry is a dead guard, which means
+    # the table's real spelling of that colliding word is being read
+    # bare — the forging risk, not a coverage one.
+    assert set(_ROMAN_TO_DEVANAGARI) >= _ROMAN_NEEDS_SCALE
+    # Absent on purpose, measured: `so` would forge 200 out of "do so",
+    # and the `sau`/`hazaar` tier reads years short (`do hazaar
+    # chhabbis` -> 2000).
+    for withheld in ("so", "sau", "hazaar", "hajaar", "hazar"):
+        assert withheld not in _ROMAN_TO_DEVANAGARI
 
 
 def test_an_out_of_range_cited_fragment_is_a_miss():
