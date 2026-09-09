@@ -70,11 +70,11 @@ and their disposition are below.
 | **K9** emphasis pass | **stub** — `steps/emphasis_pass.py` exists and is style-gated, but runs only pivot detection. The LLM pass is not written |
 | **K3** enforcement rules | **implemented 2026-09-09, reviewed and the three findings fixed same day** — shared pass in `app/timeline/emphasis_rules.py`; `text_card` rule moved out of `pivot.py`; graphic signal is planner-authored `Shot.picture_is_graphic` (option 1). Safe-zone geometry deferred (no plate at authoring time). Review applied: `min_shot_gap` is an index distance (the off-by-one made the effective gap 4, measured 8.57/min instead of the band's 12.00/min); the citation matcher now reads spelled-out Hindi/English numbers and decimals, reusing `caption_romanizer.numerals`; the call site's two knobs are pinned by a step-level test |
 | **K4** contrast adaptation | **done 2026-09-09, reviewed same day** — render-time plate luma → light/dark/slab on OverlayCue. Slab default for retention_fast. The bright `2025` plate is never `light`. Review applied: band box is now Python-authoritative and travels through the props; `LIGHT_MAX_LUMA` 90 → 105 on six measured plates; the measurement is kept and logged under the slab policy; one decode per plate |
-| **K5** palette resolution | **not started** (the commit says so explicitly) |
+| **K5** palette resolution | **not started; decision recorded 2026-09-09** — scenario A, planner-authored and recorded on the timeline (decision 7). The accent and the pivot ground are palette; white/ink stay K4's contrast treatments |
 | **K6** reach the vendored Bold | **done 2026-09-09** — was never a download |
 | **K11** device renderers (stamp, counter) | **implemented 2026-09-09; two render-found defects fixed same day** — stamp + counter renderers; unblocks K9. The counter band is now content-derived (its type overflowed a hardcoded 420 by 118px, measured) and `treatment="dark"` gained the light halo it never had |
 | **K8** data graphics | **not started** |
-| **K12** planner authors `picture_is_graphic` | **not started, ADDED 2026-09-09** — K3's rule 2 is unreachable until this lands, and K8 is blocked behind it. Shot Planner, because it is what authors `Shot.prompt` |
+| **K12** planner authors `picture_is_graphic` | **implemented 2026-09-09, awaiting review** — Shot Planner authors required `ShotPlanOutput.picture_is_graphic` (no default) and maps it onto `Shot`. Live re-plan: data shot True, ordinary shots False. K3 already enforces. K8 unblocked on the signal, not yet implemented |
 
 **Why shipping the pivot first worked without K6.** The pivot is the one
 device whose weight comes from its slab rather than its font, so a
@@ -685,11 +685,42 @@ A render must not fail because a shot resolved to a motion clip, and an
 unmeasured plate must never default to `light` — that is the 2025 bug in
 another costume.
 
-### K5 — Palette resolution
-Precedence: `human override > per-project (LLM or derived) > channel
-default > style band default`. Unset must produce something correct.
-If derived from assets, pick an accent that OPPOSES the film's dominant
-hue — matching makes type sink into the picture.
+### K5 — Palette resolution  **(DECISION RECORDED 2026-09-09: scenario A)**
+Precedence: `human override > per-project planner-authored (recorded) >
+channel default > style band default`. Unset must produce something
+correct — it falls back to the style band default, never to a second
+colour-choosing system.
+
+Authored once by a planner and recorded on the timeline; see decision 7.
+NOT sampled at render time. Whatever chooses the colour should pick an
+accent that OPPOSES the film's dominant hue — matching makes type sink
+into the picture.
+
+**Which colours are actually palette, and which are not.** Measured in
+the tree on 2026-09-09, the three device renderers hold four hexes
+between them:
+
+| hex | name | belongs to |
+|---|---|---|
+| `#FFC300` | amber (`Stamp.tsx`, `Counter.tsx`) | **palette** — the accent, the colour a number or a stressed word is drawn in |
+| `#FF2E2E` | red (`Pivot.tsx`) | **palette** — the pivot band's ground |
+| `#FFFFFF` | white | **not palette** — this is K4's `light` treatment |
+| `#0A0A0B` | ink, and the `rgba(10,10,11,0.88)` slab ground | **not palette** — K4's `dark` and `slab` |
+
+So a palette is at least a pair (accent + pivot ground), not one colour,
+and K5 must not absorb the contrast decisions K4 already owns. Leaving
+white and ink alone is a requirement, not an omission.
+
+**The seam.** The resolved palette reaches the renderers the same way
+`treatment` and `band` already do — resolved in Python, passed through
+props. Never read from inside the compositor, and never a second
+resolution site (RV2 / R1): resolve once, pass the values in.
+
+**What this slice must answer by measurement rather than preference:**
+what a stored timeline with no palette renders as (the fallback must be
+watched, not assumed correct), and whether an authored accent can be
+illegible enough that K4's contrast chooser fights it — an amber-on-amber
+plate is the case to look for.
 
 ### K6 — Reach the Bold that is already vendored  **(CORRECTED 2026-09-09)**
 
@@ -953,8 +984,8 @@ complete answer if that ever matters.
 
 ## Decisions and open questions
 
-All six answered 2026-09-08. Density (5) is defined by a test rather
-than a fixed number - see below.
+All seven answered — six on 2026-09-08, the palette (7) on 2026-09-09.
+Density (5) is defined by a test rather than a fixed number - see below.
 
 **1. Captions — ANSWERED 2026-09-08 (user), then STRENGTHENED.**
 `retention_fast` ships with **no burned captions at all** - not "off when
@@ -1090,6 +1121,41 @@ revisiting it once real charts have been watched.
 variations. A single value over a photograph reads fine and needs no
 panel (proven: `2,00,000+`). A multi-value labelled graphic needs the
 panel, the budget and the measurement. Split them in K8.
+
+**7. Palette resolution — ANSWERED 2026-09-09 (user): scenario A.**
+The per-project palette is **authored once by a planner and recorded on
+the timeline**. It is not sampled from the assets at render time, and it
+is not a channel-wide constant.
+
+Rationale, in the order it matters:
+
+- **"Each video carries its own colours" becomes a recorded fact rather
+  than an emergent side effect.** The reason for wanting a per-video
+  palette at all was that the reels should not all look alike. A recorded
+  field is the only version of that which survives a re-render.
+- **It is where every other creative decision already lives.** Tone,
+  visual style and on-screen register are planner-authored and immutable
+  (I2). A palette is the same kind of statement about the film.
+- **Rendering stays a pure function of the timeline (I5).** Choosing the
+  accent from the pictures at render time would mean swapping a single
+  asset silently changes the type colour of the whole reel, with nothing
+  in the timeline recording why.
+
+**What was rejected, and what survives of it.** Scenario B — derive the
+accent from the film's dominant hue at render time — is rejected as a
+*timing*, not as an idea: "pick an accent that OPPOSES the dominant hue"
+stays good guidance for whatever chooses the colour, the planner
+included. Scenario C (one channel accent for every video) was rejected
+directly. Scenario D (A, falling back to B when unset) was rejected as
+premature: an unset palette falls back to the style band default, which
+is deterministic and already exists, rather than to a second
+colour-choosing system nobody has watched.
+
+**The precedence chain therefore closes** the `(LLM or derived)`
+ambiguity in K5's original line — LLM, recorded:
+`human override > per-project planner-authored (recorded) > channel
+default > style band default`.
+
 
 ---
 
@@ -1966,4 +2032,103 @@ No commit, no `git add`, no push. Working tree left dirty for review. Stopping.
 - ruff: `python -m ruff check app/timeline/emphasis_rules.py app/script/styles.py tests/unit/timeline/test_emphasis_rules.py tests/unit/workflow/test_emphasis_pass_step.py` → **All checks passed!** No formatter was run (the Makefile is `ruff check` only; a `black` / `ruff format` pass reformats unrelated lines).
 - found: nothing in the plan contradicts these three fixes. The gap-3 arithmetic recorded at 17:50 (`1.75 × 3 = 5.25s ≈ 11.4/min`) described the INTENDED index distance all along — the code, not the record, was wrong; the one number that needed correcting is the implication that a fully-authored reel sits at ~11.4/min, when it sits AT the 12.0/min cap (a reel carries the cue at t=0 on top of the intervals).
 - next: report the three measured rates and the before/after rows to the reviewer. No commit, no `git add`, no push; tree left dirty. Probes live in `tmp/` (gitignored) and are throwaway.
+
+---
+
+## Work log — K12 planner authors picture_is_graphic (2026-09-09)
+
+This section is an implementation diary, not a design change. Earlier sections above stay authoritative. Append only; never rewrite prior log entries.
+
+### 18:36 — starting
+
+- read / opened: K12 (~line 915) + K3 graphic-blocker option 1; `planners/shot/schemas.py` (module docstring: OpenAI strict mode, every field required and default-free; `text_card`/`sfx_cue` as the pattern); `planner.py::_to_domain_shot` (~1026); `prompts/shot_planner/v1.md` (`sfx_cue` silent-objects list + Output field list); `prompts/shot_planner_styles/retention_fast.md` (pacing/camera only — no data-moment language); `schemas/timeline.py` `Shot.picture_is_graphic`; every `ShotPlanOutput(` constructor (`test_shot_planner.py` `_shot`, `test_shot_planner_context.py`, `test_shot_planner_parallax_layers.py` `_shot_output`, `test_shot_planner_element_reveal.py` `_shot_output`, `test_shot_text_cards.py` `_shot_output`, `test_generate_timeline_real.py`); threading tests in `test_shot_text_cards.py`.
+- decided: this slice is only the wiring. K3 already owns enforcement. Do not implement K8/K9/vision. Do not invent a second picture taxonomy — keep the flag aligned with the existing `sfx_cue` silent-objects list. Domain `Shot.picture_is_graphic` keeps `= False` (isolation); planner output is a required bool with **no Python default** (a default would drop it from JSON-schema `required` and the model would never be asked).
+- decided: leave `retention_fast.md` alone. The style fragment does not talk about data moments; putting the rule in the base prompt means every style gets the signal (K3/K8 are not retention-only even if kinetic text is).
+- decided: no True+text_card validator. A title card over a chart is a K3 collision on the cue, not on this flag; the plan said not to invent that.
+- files: this plan (this work log)
+- tests: none yet
+- next: schema, then mapping, then prompt, then fixtures + tests
+
+### 18:40 — schema
+
+- decided: `ShotPlanOutput.picture_is_graphic: bool` is required and default-free. The plan's phrase "additive default False" refers to the domain `Shot` field (already `= False` in `timeline.py`); putting a default on the planner output model would drop it from JSON-schema `required` and the model would never emit it.
+- did: added the field after `sfx_cue` (same "required extra field" block as `text_card`/`sfx_cue`; layers/reveal stay the illustrated_faceless block). Updated the domain `Shot.picture_is_graphic` docstring so it no longer says "the Shot Planner / K9 is what should set it" — K12 is that wiring. Noted the Pexels/override limitation on the domain field: the flag describes planner intent, not the acquired still.
+- files: `backend/app/planners/shot/schemas.py`, `backend/app/schemas/timeline.py`
+- tests: not yet
+- next: mapping
+
+### 18:41 — mapping
+
+- decided: `_to_domain_shot` passes `picture_is_graphic=s.picture_is_graphic` as-is, between `text_card` and `sfx_cue`. Do not empty-string-normalise a bool; do not default in the mapper (that would hide a missing planner value). Isolation is the domain default: a stored timeline without the key still loads as False.
+- files: `backend/app/planners/shot/planner.py`
+- tests: not yet
+- next: prompt
+
+### 18:42 — prompt
+
+- decided: one creative bullet + one Output-list bullet in the BASE prompt (`v1.md`), not a style fragment. K3/K8 are not retention-only. `retention_fast.md` has no data-moment language, so adding a graphic-flag note there would be a second taxonomy for one style.
+- decided: keep the `sfx_cue` silent-objects list as the taxonomy. True: chart/graph/diagram/infographic/dashboard/table/document-of-figures/map-that-is-the-data. False: scene/person/product/place/photograph-of-an-object, and the named false-positive (a chart in the background of a scene). A diagram/document that IS the picture is True; a portrait is False.
+- files: `backend/app/prompts/shot_planner/v1.md`
+- tests: not yet
+- next: fixtures + unit tests
+
+### 18:43 — fixtures + tests written
+
+- did: added `picture_is_graphic=False` to every existing `ShotPlanOutput(` constructor so they still construct under the required field. New `test_shot_planner_picture_is_graphic.py`: True threads, False threads, domain Shot without the kwarg is False, stored JSON without the key loads as False, JSON schema has the field in `required` with no default, FakePlanningProvider through `ShotPlanner.plan` namespaces `sc_01_sh_01` True / `sc_01_sh_02` False.
+- files: `backend/tests/unit/planners/test_shot_planner.py`, `test_shot_planner_context.py`, `test_shot_planner_parallax_layers.py`, `test_shot_planner_element_reveal.py`, `test_shot_text_cards.py`, `backend/tests/integration/test_generate_timeline_real.py`, `backend/tests/unit/planners/test_shot_planner_picture_is_graphic.py` (new)
+- tests: running next
+- next: run the shot-planner unit suite, then attempt a live re-plan
+
+### 18:44 — unit tests
+
+- tests: `cd backend`; `..\.venv\Scripts\python.exe -m pytest tests/unit/planners/test_shot_planner.py tests/unit/planners/test_shot_text_cards.py tests/unit/planners/test_shot_planner_parallax_layers.py tests/unit/planners/test_shot_planner_element_reveal.py tests/unit/planners/test_shot_planner_context.py tests/unit/timeline/test_emphasis_cue.py tests/unit/planners/test_shot_planner_picture_is_graphic.py -q` → **70 passed** in 16.51s. (venv lives at repo root, not `backend/.venv`; PowerShell needs `..\.venv\Scripts\python.exe` after `cd backend`.)
+- ruff: `python -m ruff check` on the K12 Python files → **All checks passed.** Pre-existing I001 on `planner.py` import block not touched. Did not ruff the markdown prompt.
+- found: first collection of the new test file failed on a stray trailing `)` — syntax, not logic; removed and re-ran.
+- next: live re-plan
+
+### 18:44 — live re-plan
+
+- checked: `settings.dry_run=False`, `has_openai_key=True`, `planning_model=gpt-5.6-terra`, postgres on localhost (unit tests that create projects already passed). Not printing the key.
+- did: one Shot Planner call, one scene, `render_style=retention_fast`. Script `tmp/k12_replan.py` (gitignored, throwaway). Narration three fragments: (1) `Hyundai Creta dikhti hai har gali mein.` (2) `2025 mein 2 lakh models bikhe.` (3) `But is it actually the safest?`
+- result: **the data shot came back True; the ordinary ones False.** Project `8b09ae2a-59c0-41ca-8e38-fea4c98c0ddd`, scene `sc_01`:
+  - `sc_01_sh_01` `picture_is_graphic=False` prompt: "India 2025 residential street, white Hyundai Creta moving through everyday neighborhood traffic..." covering fragment 1
+  - `sc_01_sh_02` `picture_is_graphic=True` prompt: "clean contemporary automotive sales infographic, single tall bar representing 200,000 Hyundai Creta models sold in India during 2025..." covering fragment 2 (the data line)
+  - `sc_01_sh_03` `picture_is_graphic=False` prompt: "front-facing Hyundai Creta in a dim urban parking setting..." covering fragment 3
+- decided: this is the slice's done-criterion. A green suite alone would not have been evidence.
+- CORRECTED IN REVIEW 2026-09-09: the durable evidence is the two `llm_call` rows on that project, NOT the project row itself. The script calls `ShotPlanner.plan` directly and never persists a timeline, so `timeline_version` for `8b09ae2a` is EMPTY — anyone following the original pointer finds an empty project and concludes the re-plan never ran. Both recorded calls classify `sh_02` (the infographic) True and the two scene shots False.
+- next: finish / summary
+
+### 18:45 — finish / summary
+
+K12 is the wiring. `ShotPlanOutput.picture_is_graphic` is a required bool with no Python default (OpenAI strict mode). `_to_domain_shot` maps it onto `Shot`. The base Shot Planner prompt teaches True vs False against the existing `sfx_cue` silent-objects list. K3 already enforces the flag; this slice only authors it. Live re-plan confirmed the data shot is True and the scene-setting shots are False.
+
+**Limitation (written down, not designed around).** The flag describes what the planner INTENDED to acquire. A Pexels result or a human upload via override was never described by the planner, so the flag cannot speak for those. Vision classification stays the only complete answer if that ever matters.
+
+**Files changed**
+
+- Schema: `backend/app/planners/shot/schemas.py` (`ShotPlanOutput.picture_is_graphic: bool`, required, no default)
+- Mapping: `backend/app/planners/shot/planner.py` (`_to_domain_shot`)
+- Domain docstring: `backend/app/schemas/timeline.py` (`Shot.picture_is_graphic` — K12 is the wiring; Pexels/override limitation noted)
+- Prompt: `backend/app/prompts/shot_planner/v1.md` (creative rule + Output bullet)
+- Fixtures: every existing `ShotPlanOutput(` constructor (`test_shot_planner.py`, `test_shot_planner_context.py`, `test_shot_planner_parallax_layers.py`, `test_shot_planner_element_reveal.py`, `test_shot_text_cards.py`, `test_generate_timeline_real.py`)
+- Tests: `backend/tests/unit/planners/test_shot_planner_picture_is_graphic.py` (new)
+- This plan (K12 status row + this work log)
+
+**Decisions (also in the entries above)**
+
+- Planner output has no default; domain Shot keeps `= False` for isolation.
+- Rule lives in the base prompt, not `retention_fast.md`, so every style gets the signal.
+- No True+text_card validator — a title card over a chart is a K3 cue collision, not this flag.
+- Did not invent a second picture taxonomy.
+
+**Deviations / contradictions found**
+
+- Plan phrase "additive default False" on `ShotPlanOutput` would have dropped the field from JSON-schema `required`. Followed the schema module's own OpenAI strict-mode rule instead; the additive default stays on domain `Shot`.
+- Prompt names "a document of figures" so the `sfx_cue` silent-objects list (`document`) has a True case; not a second taxonomy.
+- venv is at repo root, not `backend/.venv`.
+- Live re-plan left project `8b09ae2a-59c0-41ca-8e38-fea4c98c0ddd` in the local DB as evidence. Throwaway script in `tmp/k12_replan.py` (gitignored).
+
+**Not done (out of slice):** K8 (drawing the chart), K9 LLM emphasis pass, K5 palette, vision classification, Pexels/override reclassification.
+
+No commit, no `git add`, no push. Working tree left dirty for review. Stopping.
 
