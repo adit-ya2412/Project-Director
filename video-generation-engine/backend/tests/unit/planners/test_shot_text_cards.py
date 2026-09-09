@@ -55,6 +55,7 @@ def _shot_output(text_card: str) -> ShotPlanOutput:
         secondary_prompt="",
         text_card=text_card,
         sfx_cue="",
+        picture_is_graphic=False,
         layers=[],
         reveal_direction=RevealDirection.NONE,
         reveal_start_fragment=0,

@@ -496,8 +496,12 @@ class Shot(BaseModel):
     # on a stored timeline cannot start dropping cues. K8 (data
     # graphics) reuses this same signal at the opposite polarity —
     # "is this a data shot? then DRAW it" — and is the higher-value
-    # consumer; this slice only *enforces* it. The Shot Planner / K9
-    # is what should set it.
+    # consumer; K3 only *enforces* it. K12 is the Shot Planner wiring:
+    # `ShotPlanOutput.picture_is_graphic` (required bool, no default)
+    # maps through `_to_domain_shot`. The flag describes what the
+    # planner INTENDED to acquire; a Pexels result or a human upload
+    # via override was never described by the planner, so this field
+    # cannot speak for those.
     picture_is_graphic: bool = False
     # long_form_direction.md A8 (2026-09-01): a planner-authored phrase
     # naming a sound the STORY wants at this shot's start ("faint Geiger

@@ -104,6 +104,15 @@ class ShotPlanOutput(BaseModel):
     # `app/planners/shot/planner.py::_to_domain_shot` empty-string-to-None
     # normalises it, same convention as `text_card` above.
     sfx_cue: str
+    # retention_fast_kinetic_text.md K12: True iff this shot's picture's
+    # job is to DISPLAY INFORMATION (chart/graph/diagram/infographic/
+    # dashboard/table/map-with-data), not to show a scene. False for the
+    # vast majority. Required, no Python default: OpenAI structured-
+    # output strict mode (see this module's docstring) drops a defaulted
+    # field from `required`, and a field the model is never asked for
+    # cannot land on `Shot`. Domain `Shot.picture_is_graphic` already
+    # defaults False so a stored timeline without the field still loads.
+    picture_is_graphic: bool
     # illustrated_faceless.md F2a (2026-09-05): the two planes of a
     # `movement: parallax` shot (background then subject) - `[]` on
     # every other movement (OpenAI strict mode: required, never omitted;

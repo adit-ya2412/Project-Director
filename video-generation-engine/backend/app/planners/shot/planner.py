@@ -1062,6 +1062,11 @@ def _to_domain_shot(
         # Feature B (§4.4): empty string -> None, the persisted model's
         # "no card" shape (`derive_text_card_cues` treats both alike).
         text_card=s.text_card.strip() or None,
+        # K12: planner-authored bool, pass through as-is. Not an
+        # empty-string field; do not default here or a missing planner
+        # value would silently become False (the output model is
+        # required, so this is always a real bool).
+        picture_is_graphic=s.picture_is_graphic,
         # A8 (long_form_direction.md, 2026-09-01): same empty-string-to-
         # None convention as text_card above - `derive_sfx_events` treats
         # both alike ("no cue").

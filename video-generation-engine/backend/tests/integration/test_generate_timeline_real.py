@@ -148,6 +148,7 @@ def _shot_output(scene_id: str, duration_s: float) -> ShotPlannerOutput:
                 secondary_prompt="",
                 text_card="",
                 sfx_cue="",
+                picture_is_graphic=False,
                 layers=[],
                 reveal_direction=RevealDirection.NONE,
                 reveal_start_fragment=0,
