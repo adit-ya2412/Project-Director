@@ -46,7 +46,7 @@ from app.schemas.timeline import (
     Timeline,
 )
 from app.script.styles import resolve_emphasis_hook_s
-from app.timeline.duration import compute_timeline_duration
+from app.timeline.duration import compute_shot_start_times, compute_timeline_duration
 from app.timeline.emphasis_rules import shot_blocks_emphasis_cue
 from app.timeline.pivot import attach_pivot_cue, detect_pivot
 
@@ -59,7 +59,11 @@ PROMPT_VERSION = "v1"
 # sufficient without the hook wording in K14.3.
 _TARGET_CUES_PER_MINUTE = 12.0
 # K14.3 / K14.4: authoring floor inside the hook window. K3 cannot
-# invent cues; this integer is what the model obeys.
+# invent cues; this integer is what the model obeys. Review finding 1:
+# this is the CEILING on that floor, clipped by how many shots actually
+# start inside the window (`_hook_capacity`) — one cue per shot is
+# structural, so asking for more than the hook can hold just kills a
+# cue in enforcement.
 _HOOK_MIN_CUES = 3
 _HOOK_FIRST_CUE_DEADLINE_S = 1.5
 
@@ -117,16 +121,39 @@ def _short(text: str, limit: int = 160) -> str:
     return stripped[: limit - 1] + "…"
 
 
+def _hook_capacity(timeline: Timeline, hook_s: float) -> int:
+    """How many shots actually START inside the hook window.
+
+    Review finding 1: one cue per shot is structural (`Shot.emphasis_cue`
+    is a single optional field), so the hook can physically hold no more
+    cues than it holds shot starts. On the watched reel's shape (2.82s +
+    2.72s openers) shot 2 starts at 5.54s — outside a 5.0s hook — so a
+    floor of 3 asked for a cue that `enforce_emphasis_rules` could never
+    keep, and one authored hook cue died silently.
+
+    Membership is the SAME test as `emphasis_rules._shot_in_hook`:
+    `compute_shot_start_times` and `start < hook_s`. That helper is
+    reused rather than mirrored (RV2 / R1) — a second start-time
+    calculation here would be the drift finding 3 of the earlier review
+    removed from the band geometry.
+    """
+    shots = timeline.all_shots()
+    starts = compute_shot_start_times(shots)
+    return sum(1 for shot in shots if starts[shot.id] < hook_s)
+
+
 def _density_target_line(timeline: Timeline, duration_s: float) -> str:
     """Authoring target string. K14.3 names the hook; K14.4 raises 12.0."""
     total = max(1, round(duration_s / 60.0 * _TARGET_CUES_PER_MINUTE))
     hook_s = resolve_emphasis_hook_s(timeline.metadata.render_style)
-    if hook_s is None or hook_s <= 0:
+    capacity = _hook_capacity(timeline, hook_s) if hook_s is not None else 0
+    if hook_s is None or hook_s <= 0 or capacity <= 0:
         return (
             f"Target cue count: {total} (band 8-12 per minute; one cue per shot; "
             "space them — several shots of rest between cues)."
         )
-    hook_min = min(_HOOK_MIN_CUES, total)
+    # Never ask for more hook cues than the hook can hold (finding 1).
+    hook_min = min(_HOOK_MIN_CUES, capacity, total)
     body = max(0, total - hook_min)
     return (
         f"Target cue count: {total} = at least {hook_min} in the first "
@@ -136,7 +163,9 @@ def _density_target_line(timeline: Timeline, duration_s: float) -> str:
         f"Put the first cue inside ~{_HOOK_FIRST_CUE_DEADLINE_S:.1f}s. "
         f"Inside the hook, consecutive shots may both carry a cue. "
         f"Body uses the remaining {body} with several shots of rest "
-        f"between cues (gap 3). One cue per shot."
+        f"between cues (gap 3). One cue per shot — only {capacity} "
+        f"shot(s) start inside the hook window, so it cannot carry more "
+        f"than {capacity} cue(s)."
     )
 
 

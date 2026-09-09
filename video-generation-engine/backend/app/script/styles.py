@@ -186,6 +186,14 @@ class StylePacingBand:
     # rate cap). Membership is by shot START time via
     # `compute_shot_start_times` (start < hook_s), not shot index.
     # Read through `resolve_emphasis_hook_s`.
+    #
+    # K14 review finding 1: 5.0s is a WINDOW, not a cue budget. How
+    # many cues it can hold is geometry — one cue per shot, so it holds
+    # however many shots start inside it (2 on the watched reel's
+    # 2.82s + 2.72s opening, 3 at ~1.7s cutting). Authoring clips its
+    # hook floor to that count (`planners/emphasis/planner._hook_
+    # capacity`); widening this knob to buy a third hook cue is a
+    # K14.6 decision to make from a watched reel, not from arithmetic.
     emphasis_hook_s: float | None = None
     # Gap applied to cues whose shots start inside the hook. 1 means
     # consecutive hook shots may both keep a cue (`i - last < 1` is

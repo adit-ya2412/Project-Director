@@ -70,6 +70,13 @@ Rule order (logged as `rule` on each drop):
    consecutive hook shots may both keep a cue). Body shots still use
    `min_shot_gap`. Gap 0 would skip the rule under `if gap > 0`;
    gap 1 is the value that lets consecutive indices survive.
+
+   K14 review finding 2: the distance is measured from the last kept
+   cue IN THE SAME REGIME. A body cue counts from the last kept BODY
+   cue, so a hook cue does not push the first body cue away and the
+   hook stops manufacturing a dead zone just past itself. The pivot
+   guarantees are unchanged; a non-pivot yields only to a pivot inside
+   its own regime's gap.
 6. `rate_cap` — optional extra cap in cues/minute. When over, drop
    non-pivot first, film order, reserving a slot for every pivot.
    Never drop a pivot to satisfy the cap.
@@ -614,18 +621,27 @@ def _stated_numbers(text: str) -> set[int]:
 
 
 def _gap_for_shot(
-    shot: Shot,
-    starts: dict[str, float],
     *,
+    in_hook: bool,
     min_shot_gap: int | None,
-    hook_s: float | None,
     hook_min_shot_gap: int | None,
 ) -> int | None:
-    """Gap that applies to a NEW cue on this shot (hook vs body)."""
-    if _shot_in_hook(shot.id, starts, hook_s):
-        if hook_min_shot_gap is not None:
-            return hook_min_shot_gap
+    """Gap that applies to a NEW cue in this regime (hook vs body).
+
+    Takes `in_hook` rather than recomputing membership: `_apply_min_gap`
+    already needs the regime to pick which keeper the gap counts from
+    (review finding 2), so the membership test runs once per cue.
+    """
+    if in_hook and hook_min_shot_gap is not None:
+        return hook_min_shot_gap
     return min_shot_gap
+
+
+class _Keeper(NamedTuple):
+    """The last cue KEPT inside one regime, and whether it was the pivot."""
+
+    index: int
+    is_pivot: bool
 
 
 def _apply_min_gap(
@@ -650,41 +666,57 @@ def _apply_min_gap(
     the hook lets consecutive indices survive (`i - last < 1` is never
     true for two different shots).
 
+    REVIEW FINDING 2 (2026-09-10): each regime counts from its OWN last
+    keeper. Before this, the body gap counted from the last kept cue
+    whatever regime it was in, so a hook cue reached across the boundary
+    and pushed the first body cue away: on the watched reel's shot shape
+    a cue on shot 0 (hook) killed the cue at 5.54s, opening a 6.02s hole
+    immediately after the hook — the same defect K14 exists to remove.
+    Hook membership is `start < hook_s` and shot starts are
+    non-decreasing, so hook shots are a PREFIX of film order: a hook cue
+    can only ever be measured against an earlier hook cue, and the split
+    keeper is well defined rather than two interleaved streams.
+
+    The pivot guarantees are unchanged, and read the same way through
+    the split: a pivot is never dropped; a non-pivot yields only to a
+    pivot inside the SAME regime's gap (a hook cue is never "inside the
+    gap" of a body pivot now, which is the point of the finding — it
+    stops a body pivot from eating the hook); two pivots inside one gap
+    are both kept; a lone pivot is always kept.
+
     Mirrors `_cap_text_cards`: chapter cards there, pivot cues here.
-    Two pivots inside the gap are both kept — never drop a pivot.
     """
-    last_kept_index: int | None = None
-    last_kept_is_pivot = False
+    last_kept: dict[str, _Keeper | None] = {"hook": None, "body": None}
 
     for i, (_scene, shot) in enumerate(film):
         cue = shot.emphasis_cue
         if cue is None:
             continue
 
+        in_hook = _shot_in_hook(shot.id, starts, hook_s)
+        regime = "hook" if in_hook else "body"
+        is_pivot = cue.device is EmphasisDevice.PIVOT
         gap = _gap_for_shot(
-            shot,
-            starts,
+            in_hook=in_hook,
             min_shot_gap=min_shot_gap,
-            hook_s=hook_s,
             hook_min_shot_gap=hook_min_shot_gap,
         )
         if gap is None or gap <= 0:
-            last_kept_index = i
-            last_kept_is_pivot = cue.device is EmphasisDevice.PIVOT
+            last_kept[regime] = _Keeper(i, is_pivot)
             continue
 
-        inside_gap = last_kept_index is not None and i - last_kept_index < gap
-        if cue.device is EmphasisDevice.PIVOT:
-            if inside_gap and not last_kept_is_pivot and last_kept_index is not None:
-                _drop(film[last_kept_index][1], "min_gap")
-            last_kept_index = i
-            last_kept_is_pivot = True
+        keeper = last_kept[regime]
+        inside_gap = keeper is not None and i - keeper.index < gap
+        if is_pivot:
+            if inside_gap and keeper is not None and not keeper.is_pivot:
+                _drop(film[keeper.index][1], "min_gap")
+            last_kept[regime] = _Keeper(i, True)
         elif not inside_gap:
-            last_kept_index = i
-            last_kept_is_pivot = False
+            last_kept[regime] = _Keeper(i, False)
         else:
             # A dropped cue is not a keeper: the gap still runs from the
-            # last KEPT index, so three colliding cues do not ratchet.
+            # last KEPT index in this regime, so three colliding cues do
+            # not ratchet.
             _drop(shot, "min_gap")
 
 

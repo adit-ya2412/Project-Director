@@ -488,8 +488,13 @@ def test_retention_fast_knobs_measure_hook_plus_body_on_a_full_reel():
     """K14 band arithmetic, pinned through the real resolvers.
 
     20 shots x 1.75s = 35.0s. Hook (start < 5.0) is shots 0,1,2; hook
-    gap 1 keeps all three. Body gap 3 from last hook keeper (2) keeps
-    5,8,11,14,17 → 8 cues. Pre-K14 uniform gap 3 kept 7.
+    gap 1 keeps all three. Review finding 2: the body gap counts from
+    the last kept BODY cue, so the first body shot (3, start 5.25) is
+    kept instead of being pushed away by the hook keeper at 2, and the
+    body then runs 6,9,12,15,18 → 9 cues. Body-only cap allows
+    12 * 30/60 = 6 body cues and exactly 6 are kept, so the cap does not
+    bite. Pre-finding-2 this kept 8 (body 5,8,11,14,17); pre-K14 uniform
+    gap 3 kept 7.
     """
     shots = [
         _shot(f"sh_{i:02d}", order=i, duration_s=1.75, emphasis_cue=_cue(text=f"S{i}"))
@@ -504,7 +509,17 @@ def test_retention_fast_knobs_measure_hook_plus_body_on_a_full_reel():
     )
     kept = [shot.id for shot in out.all_shots() if shot.emphasis_cue is not None]
     duration_s = compute_timeline_duration(out.all_shots())
-    assert kept == ["sh_00", "sh_01", "sh_02", "sh_05", "sh_08", "sh_11", "sh_14", "sh_17"]
+    assert kept == [
+        "sh_00",
+        "sh_01",
+        "sh_02",
+        "sh_03",
+        "sh_06",
+        "sh_09",
+        "sh_12",
+        "sh_15",
+        "sh_18",
+    ]
     assert duration_s == pytest.approx(35.0)
     assert resolve_emphasis_hook_s("retention_fast") == 5.0
     assert resolve_emphasis_hook_min_shot_gap("retention_fast") == 1
@@ -532,46 +547,61 @@ def test_hook_gap_1_keeps_three_consecutive_stamps_uniform_gap_3_would_drop():
 
 
 def test_hook_membership_is_by_start_time_not_index():
-    """Short first shot: starts 0 and 1.0 are in a 5s hook; long first
-    shot of 6s: only shot 0 (start 0) is in the hook — shot 1 at 6.0 is
-    body, so adjacent body stamps still drop under gap 3.
+    """Short first shots: starts 0 / 1.0 / 2.0 are all in a 5s hook, so
+    hook gap 1 keeps all three. Long first shot of 6s: only shot 0
+    (start 0) is in the hook — shots 1 and 2 at 6.0 / 7.0 are body, so
+    shot 1 is kept as the FIRST body cue (review finding 2: the hook
+    keeper does not reach across the boundary) and shot 2, one shot
+    after that body keeper, still drops under gap 3. The third cue is
+    what distinguishes the two memberships now.
     """
     short = [
-        _shot("sh_a", order=0, duration_s=1.0, emphasis_cue=_cue(text="A")),
-        _shot("sh_b", order=1, duration_s=1.0, emphasis_cue=_cue(text="B")),
+        _shot(f"sh_{i}", order=i, duration_s=1.0, emphasis_cue=_cue(text=f"S{i}"))
+        for i in range(3)
     ]
     short_starts = compute_shot_start_times(short)
-    assert short_starts == {"sh_a": 0.0, "sh_b": 1.0}
+    assert short_starts == {"sh_0": 0.0, "sh_1": 1.0, "sh_2": 2.0}
     short_out = _enforce(
         _timeline(short),
         min_shot_gap=3,
         hook_s=5.0,
         hook_min_shot_gap=1,
     )
-    assert _cues(short_out) == [EmphasisDevice.STAMP, EmphasisDevice.STAMP]
+    assert _cues(short_out) == [
+        EmphasisDevice.STAMP,
+        EmphasisDevice.STAMP,
+        EmphasisDevice.STAMP,
+    ]
 
     long = [
-        _shot("sh_a", order=0, duration_s=6.0, emphasis_cue=_cue(text="A")),
-        _shot("sh_b", order=1, duration_s=1.0, emphasis_cue=_cue(text="B")),
+        _shot("sh_0", order=0, duration_s=6.0, emphasis_cue=_cue(text="S0")),
+        _shot("sh_1", order=1, duration_s=1.0, emphasis_cue=_cue(text="S1")),
+        _shot("sh_2", order=2, duration_s=1.0, emphasis_cue=_cue(text="S2")),
     ]
     long_starts = compute_shot_start_times(long)
-    assert long_starts == {"sh_a": 0.0, "sh_b": 6.0}
+    assert long_starts == {"sh_0": 0.0, "sh_1": 6.0, "sh_2": 7.0}
     long_out = _enforce(
         _timeline(long),
         min_shot_gap=3,
         hook_s=5.0,
         hook_min_shot_gap=1,
     )
-    assert _cues(long_out) == [EmphasisDevice.STAMP, None]
+    assert _cues(long_out) == [EmphasisDevice.STAMP, EmphasisDevice.STAMP, None]
 
 
-def test_body_adjacent_stamps_after_the_hook_still_drop():
-    """Hook keeps 0,1,2; shot 3 starts at 5.25 (>= 5) and is body — gap 3
-    from last hook keeper drops it.
+def test_body_adjacent_stamps_after_the_first_body_cue_still_drop():
+    """Body gap 3 still applies BETWEEN body cues.
+
+    Hook keeps 0,1,2. Shot 3 (start 5.25) is the first body cue and is
+    kept — review finding 2: the hook keeper at 2 no longer reaches
+    across the boundary. Shots 4 and 5 are one and two shots after that
+    body keeper, so gap 3 still drops them; shot 6 is exactly 3 after
+    and survives. This is the assertion that used to read "shot 3
+    drops"; the teeth (adjacent body cues drop) moved one shot along.
     """
     shots = [
         _shot(f"sh_{i}", order=i, duration_s=1.75, emphasis_cue=_cue(text=f"S{i}"))
-        for i in range(4)
+        for i in range(7)
     ]
     out = _enforce(
         _timeline(shots),
@@ -583,7 +613,10 @@ def test_body_adjacent_stamps_after_the_hook_still_drop():
         EmphasisDevice.STAMP,
         EmphasisDevice.STAMP,
         EmphasisDevice.STAMP,
+        EmphasisDevice.STAMP,
         None,
+        None,
+        EmphasisDevice.STAMP,
     ]
 
 
@@ -644,6 +677,142 @@ def test_body_only_rate_cap_does_not_strip_a_dense_hook():
     whole_kept = [s.id for s in whole_reel.all_shots() if s.emphasis_cue is not None]
     assert len(whole_kept) == 6
     assert len(kept) == 8
+
+
+# The shot shape of the watched `retention_fast` reel (34dd1ee1):
+# 12 shots, 24.68s. Starts 0.00 / 2.82 / 5.54 / 7.15 / 8.84 / 10.65 /
+# 12.75 / 15.16 / 17.09 / 19.13 / 21.09 / 22.92, so a 5.0s hook holds
+# shot starts 0 and 1 only.
+_WATCHED_REEL_DURATIONS = [
+    2.82,
+    2.72,
+    1.61,
+    1.69,
+    1.81,
+    2.10,
+    2.41,
+    1.93,
+    2.04,
+    1.96,
+    1.83,
+    1.76,
+]
+
+
+def _watched_reel(authored: dict[int, EmphasisCue]) -> Timeline:
+    return _timeline(
+        [
+            _shot(
+                f"sh{i:02d}",
+                order=i,
+                duration_s=duration,
+                emphasis_cue=authored.get(i),
+            )
+            for i, duration in enumerate(_WATCHED_REEL_DURATIONS)
+        ],
+        narration_text="hello there. लेकिन there.",
+    )
+
+
+def _kept_ids(timeline: Timeline) -> list[str]:
+    return [shot.id for shot in timeline.all_shots() if shot.emphasis_cue is not None]
+
+
+def test_first_body_cue_survives_a_hook_cue():
+    """Review finding 2, the exact case that exposed it.
+
+    Authored on shots 0 and 2 of the watched reel: shot 2 starts at
+    5.54s, outside the 5.0s hook, and is 2 shots after the hook cue on
+    shot 0. Before the fix the body gap counted from that hook keeper
+    and dropped it, leaving `authored [0,2] -> kept sh00` and a 6.02s
+    hole immediately after the hook. Now the body gap counts from the
+    last kept BODY cue — there is none — so shot 2 is kept.
+    """
+    out = _enforce(
+        _watched_reel({0: _cue(text="A"), 2: _cue(text="B")}),
+        min_shot_gap=3,
+        max_cues_per_minute=12.0,
+        hook_s=5.0,
+        hook_min_shot_gap=1,
+    )
+    assert _kept_ids(out) == ["sh00", "sh02"]
+
+
+def test_hook_cue_is_not_evicted_by_a_pivot_in_the_body():
+    """The pivot still outranks, but only inside its own regime.
+
+    Hook stamps on shots 0 and 1, pivot on shot 2 (first body shot).
+    Before the fix the pivot was "inside the gap" of the hook keeper at
+    1 and evicted it, so a body pivot ate a hook cue. The pivot is still
+    kept; the hook cue is no longer the price.
+    """
+    out = _enforce(
+        _watched_reel({0: _cue(text="A"), 1: _cue(text="B"), 2: _pivot()}),
+        min_shot_gap=3,
+        max_cues_per_minute=12.0,
+        hook_s=5.0,
+        hook_min_shot_gap=1,
+    )
+    assert _kept_ids(out) == ["sh00", "sh01", "sh02"]
+    assert out.all_shots()[2].emphasis_cue is not None
+    assert out.all_shots()[2].emphasis_cue.device is EmphasisDevice.PIVOT
+
+
+def test_body_stamp_still_yields_to_a_body_pivot_inside_the_gap():
+    """Unchanged guarantee: a non-pivot yields to a pivot genuinely
+    inside the gap, now measured between two BODY cues (shots 3 and 4,
+    one apart, both outside the 5.0s hook)."""
+    out = _enforce(
+        _watched_reel({3: _cue(text="A"), 4: _pivot()}),
+        min_shot_gap=3,
+        hook_s=5.0,
+        hook_min_shot_gap=1,
+    )
+    assert _kept_ids(out) == ["sh04"]
+
+
+def test_two_body_pivots_inside_the_gap_are_both_kept():
+    out = _enforce(
+        _watched_reel({3: _pivot(), 4: _pivot()}),
+        min_shot_gap=3,
+        hook_s=5.0,
+        hook_min_shot_gap=1,
+    )
+    assert _kept_ids(out) == ["sh03", "sh04"]
+
+
+def test_lone_late_pivot_survives_hook_and_cap_across_the_boundary():
+    """A lone pivot on the last shot is kept even though it is the only
+    cue in the body and the body-only cap allows fewer than one."""
+    out = _enforce(
+        _watched_reel({11: _pivot()}),
+        min_shot_gap=3,
+        max_cues_per_minute=0.1,
+        hook_s=5.0,
+        hook_min_shot_gap=1,
+    )
+    assert _kept_ids(out) == ["sh11"]
+
+
+def test_hook_capacity_bounds_what_enforcement_can_keep_in_the_hook():
+    """Review finding 1 measured on the watched reel: only two shots
+    start inside a 5.0s hook, so a third authored hook cue lands on a
+    BODY shot (5.54s) and is kept as the first body cue rather than as a
+    third hook cue. Authoring must not ask for three (see
+    `planners/emphasis/planner._hook_capacity`).
+    """
+    reel = _watched_reel({0: _cue(text="A"), 1: _cue(text="B"), 2: _cue(text="C")})
+    starts = compute_shot_start_times(reel.all_shots())
+    in_hook = [shot_id for shot_id, start in starts.items() if start < 5.0]
+    assert in_hook == ["sh00", "sh01"]
+    out = _enforce(
+        reel,
+        min_shot_gap=3,
+        max_cues_per_minute=12.0,
+        hook_s=5.0,
+        hook_min_shot_gap=1,
+    )
+    assert _kept_ids(out) == ["sh00", "sh01", "sh02"]
 
 
 def test_adjacent_stamps_second_dropped_at_min_gap_3():

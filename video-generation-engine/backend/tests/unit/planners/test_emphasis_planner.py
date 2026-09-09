@@ -9,9 +9,11 @@ import pytest
 from pydantic import ValidationError
 
 from app.planners.emphasis.planner import (
-    EmphasisPlanner,
+    _HOOK_MIN_CUES,
     _TARGET_CUES_PER_MINUTE,
+    EmphasisPlanner,
     _build_user_content,
+    _hook_capacity,
     apply_emphasis_plan,
     derive_text_register,
 )
@@ -151,6 +153,57 @@ def test_build_user_content_names_the_hook_and_uses_12_multiplier():
     assert "gap 3" in content
     assert "multiplier 12.0/min" in content
     assert "Target cue count: 2 = at least 2 in the first 5.0s hook + 0 in the body" in content
+
+
+def test_hook_request_never_exceeds_hook_capacity():
+    """Review finding 1: the hook floor is clipped by shot geometry.
+
+    The watched reel's shape — 12 shots, 24.68s, openers of 2.82s and
+    2.72s — puts shot 2 at 5.54s, outside the 5.0s hook, so only TWO
+    shots start inside the window. One cue per shot is structural, so a
+    floor of 3 asked for a hook cue enforcement could never keep. The
+    request is now `min(_HOOK_MIN_CUES, capacity, total)` = 2, the body
+    gets the remaining 3, and the line says what the window can hold.
+    """
+    durations = [2.82, 2.72, 1.61, 1.69, 1.81, 2.10, 2.41, 1.93, 2.04, 1.96, 1.83, 1.76]
+    shots = [
+        Shot(
+            id=f"sc_01_sh_{i:02d}",
+            order=i,
+            intent=ShotIntent.EXPLAIN,
+            duration_s=duration,
+            narration_span=(0, 1),
+            prompt=f"plate {i}",
+        )
+        for i, duration in enumerate(durations)
+    ]
+    timeline = _timeline()
+    timeline.metadata.render_style = "retention_fast"
+    timeline.scenes[0].shots = shots
+    timeline.scenes[0].duration_s = sum(durations)
+
+    assert _hook_capacity(timeline, 5.0) == 2
+    assert _HOOK_MIN_CUES == 3  # the ceiling on the floor, not the floor
+    content = _build_user_content(timeline)
+    # round(24.68 / 60 * 12.0) = 5 total.
+    assert "Target cue count: 5 = at least 2 in the first 5.0s hook + 3 in the body" in content
+    assert "only 2 shot(s) start inside the hook window" in content
+
+
+def test_hook_request_keeps_the_floor_when_the_hook_holds_enough_shots():
+    """Same window, faster cutting: five 1.0s openers put three shot
+    starts inside the 5.0s hook, so the floor of 3 stands."""
+    timeline = _timeline()
+    timeline.metadata.render_style = "retention_fast"
+    for shot in timeline.scenes[0].shots:
+        shot.duration_s = 1.6
+    timeline.scenes[0].duration_s = sum(s.duration_s for s in timeline.scenes[0].shots)
+    # starts 0 / 1.6 / 3.2 / 4.8 / 6.4 → four inside a 5.0s hook.
+    assert _hook_capacity(timeline, 5.0) == 4
+    content = _build_user_content(timeline)
+    # round(8.0 / 60 * 12.0) = 2 total, so the floor clips to the total.
+    assert "at least 2 in the first 5.0s hook" in content
+    assert "only 4 shot(s) start inside the hook window" in content
 
 
 def test_build_user_content_without_hook_keeps_uniform_band_line():

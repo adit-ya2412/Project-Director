@@ -7,6 +7,7 @@ import {
 } from "remotion";
 import { DEVANAGARI } from "./font";
 import type { PivotBandProps } from "./Pivot";
+import { wordDelaySchedule } from "./stampWordTiming";
 
 /**
  * The retention stamp — one stressed word, or a short phrase, punched
@@ -25,7 +26,11 @@ import type { PivotBandProps } from "./Pivot";
  *
  * K14.5: a multi-word `text` (whitespace) staggers WORDS at spike-like
  * delays 0 / 4 / 14 / 24 frames; each word still grapheme-staggers
- * internally. A single word keeps today's grapheme-only path.
+ * internally. A single word keeps today's grapheme-only path. Review
+ * finding 3: those delays are now scheduled against the cue's actual
+ * window (`endFrame - startFrame`) by `wordDelaySchedule`, so a 5th or
+ * 6th word cannot be given an onset the hold never reaches. 1-3 words
+ * at the pinned `STAMP_HOLD_S` are unchanged (0 / 4 / 14).
  *
  * LAYOUT COMES FROM PROPS (review finding 3). Python resolves the box
  * (`stamp_band` in `app/renderer/compositor.py`), measures that exact
@@ -82,16 +87,6 @@ const graphemes = (text: string, locale: string): string[] => {
   if (!Seg) return Array.from(text);
   const seg = new Seg(locale, { granularity: "grapheme" });
   return Array.from(seg.segment(text), (s: { segment: string }) => s.segment);
-};
-
-// Spike Build delays for EVERY / 3rd / SUV (0 / +4 / +14). Fourth word
-// extends by another +10 frames — same step as 4→14.
-const WORD_DELAYS_FRAMES = [0, 4, 14, 24] as const;
-
-const wordDelayFrames = (index: number): number => {
-  if (index < WORD_DELAYS_FRAMES.length) return WORD_DELAYS_FRAMES[index];
-  const last = WORD_DELAYS_FRAMES[WORD_DELAYS_FRAMES.length - 1];
-  return last + (index - (WORD_DELAYS_FRAMES.length - 1)) * 10;
 };
 
 export type StampProps = {
@@ -154,6 +149,9 @@ export const Stamp: React.FC<StampProps> = ({
   // K14.5: whitespace → word onsets; no whitespace → grapheme-only
   // (unchanged single-word path).
   const words = text.trim().length > 0 && /\s/.test(text) ? text.trim().split(/\s+/) : [text];
+  // Review finding 3: the schedule is derived from the window this cue
+  // was actually given, so no word is scheduled past the hold.
+  const wordDelays = wordDelaySchedule(words.length, endFrame - startFrame);
   const isHi = textRegister === "hi";
   const fontFamily = isHi ? `${DEVANAGARI}, sans-serif` : HEAVY;
   const letterSpacing = isHi ? 0 : 4;
@@ -198,7 +196,7 @@ export const Stamp: React.FC<StampProps> = ({
           }}
         >
           {words.map((word, wi) => {
-            const wordDelay = words.length > 1 ? wordDelayFrames(wi) : 0;
+            const wordDelay = words.length > 1 ? (wordDelays[wi] ?? 0) : 0;
             const clusters = graphemes(word, locale);
             return (
               <span key={wi}>
