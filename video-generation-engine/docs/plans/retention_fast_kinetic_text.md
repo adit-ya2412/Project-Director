@@ -70,11 +70,11 @@ and their disposition are below.
 | **K9** emphasis pass | **stub** — `steps/emphasis_pass.py` exists and is style-gated, but runs only pivot detection. The LLM pass is not written |
 | **K3** enforcement rules | **implemented 2026-09-09, reviewed and the three findings fixed same day** — shared pass in `app/timeline/emphasis_rules.py`; `text_card` rule moved out of `pivot.py`; graphic signal is planner-authored `Shot.picture_is_graphic` (option 1). Safe-zone geometry deferred (no plate at authoring time). Review applied: `min_shot_gap` is an index distance (the off-by-one made the effective gap 4, measured 8.57/min instead of the band's 12.00/min); the citation matcher now reads spelled-out Hindi/English numbers and decimals, reusing `caption_romanizer.numerals`; the call site's two knobs are pinned by a step-level test |
 | **K4** contrast adaptation | **done 2026-09-09, reviewed same day** — render-time plate luma → light/dark/slab on OverlayCue. Slab default for retention_fast. The bright `2025` plate is never `light`. Review applied: band box is now Python-authoritative and travels through the props; `LIGHT_MAX_LUMA` 90 → 105 on six measured plates; the measurement is kept and logged under the slab policy; one decode per plate |
-| **K5** palette resolution | **implemented 2026-09-09, awaiting review** — scenario A, planner-authored and recorded on the timeline (decision 7). The accent and the pivot ground are palette; white/ink stay K4's contrast treatments |
+| **K5** palette resolution | **implemented and reviewed 2026-09-09** (`4a8c00a`) — scenario A, planner-authored and recorded on the timeline (decision 7). The accent and the pivot ground are palette; white/ink stay K4's contrast treatments | Review: one finding, a near-white `pivot_ground` renders invisible white-on-white; fixed separately. Only the channel and band rungs are reachable today — see K5's task section.
 | **K6** reach the vendored Bold | **done 2026-09-09** — was never a download |
 | **K11** device renderers (stamp, counter) | **implemented 2026-09-09; two render-found defects fixed same day** — stamp + counter renderers; unblocks K9. The counter band is now content-derived (its type overflowed a hardcoded 420 by 118px, measured) and `treatment="dark"` gained the light halo it never had |
 | **K8** data graphics | **not started** |
-| **K12** planner authors `picture_is_graphic` | **implemented 2026-09-09, awaiting review** — Shot Planner authors required `ShotPlanOutput.picture_is_graphic` (no default) and maps it onto `Shot`. Live re-plan: data shot True, ordinary shots False. K3 already enforces. K8 unblocked on the signal, not yet implemented |
+| **K12** planner authors `picture_is_graphic` | **implemented and reviewed 2026-09-09** (`23f83e9`) — Shot Planner authors required `ShotPlanOutput.picture_is_graphic` (no default) and maps it onto `Shot`. Live re-plan: data shot True, ordinary shots False. K3 already enforces. K8 unblocked on the signal, not yet implemented |
 
 **Why shipping the pivot first worked without K6.** The pivot is the one
 device whose weight comes from its slab rather than its font, so a
@@ -711,6 +711,21 @@ So a palette is at least a pair (accent + pivot ground), not one colour,
 and K5 must not absorb the contrast decisions K4 already owns. Leaving
 white and ink alone is a requirement, not an omission.
 
+**Which rungs are actually reachable (2026-09-09).** Two of the four are
+live; two are aspirational, and nobody should build a route for them
+speculatively:
+
+| rung | reachable today | how |
+|---|---|---|
+| human override | **no** | `emphasis_palette_override` has no API route. `grade_style` — the field this was modelled on — does have one (`api/projects.py`), so the analogy is only half-built. Deliberately NOT built: nothing authors a palette yet, so there is nothing to override. Build it when K9 picks a colour a human wants to change on ONE reel without re-planning |
+| planner-authored | **no** | K9's job. `emphasis_palette` is written by nothing today |
+| channel default | **yes** | `EMPHASIS_ACCENT` / `EMPHASIS_PIVOT_GROUND` in `.env`. `Settings` has no `env_prefix`, so the field names ARE the env var names. This is the knob a one-person channel actually reaches for |
+| style band | **yes** | `retention_fast` records the spike pair |
+
+So K5 changed no output on its own: every reel still resolves to
+amber + red. The slice built the mechanism for per-video colour, not
+per-video colour itself. That arrives with K9.
+
 **The seam.** The resolved palette reaches the renderers the same way
 `treatment` and `band` already do — resolved in Python, passed through
 props. Never read from inside the compositor, and never a second
@@ -984,7 +999,8 @@ complete answer if that ever matters.
 
 ## Decisions and open questions
 
-All seven answered — six on 2026-09-08, the palette (7) on 2026-09-09.
+All eight answered — six on 2026-09-08, the palette (7) and K9's device
+scope (8) on 2026-09-09.
 Density (5) is defined by a test rather than a fixed number - see below.
 
 **1. Captions — ANSWERED 2026-09-08 (user), then STRENGTHENED.**
@@ -1155,6 +1171,40 @@ colour-choosing system nobody has watched.
 ambiguity in K5's original line — LLM, recorded:
 `human override > per-project planner-authored (recorded) > channel
 default > style band default`.
+
+**8. Which devices K9 v1 authors — RESOLVED 2026-09-09 by the tree, not
+by taste: the three that can be drawn.** `pivot`, `stamp`, `counter`.
+
+This closes a contradiction between two documents that both shipped.
+`EmphasisDevice` carries the full six-value set — `stamp`, `counter`,
+`meter`, `comparison`, `correction`, `pivot` — deliberately, so later
+devices do not churn the model, and its own docstring says "other
+devices are ignored until they have a renderer". But the device-set
+section above is headed "all in v1", and `Emphasis.tsx` dispatches
+exactly three: `pivot`, `stamp`, `counter`. An agent reading the
+device-set heading would have K9 author `correction`, `meter` and
+`comparison` cues that pass K3's enforcement, land in the timeline,
+cost tokens, survive into the fingerprint — and never appear on
+screen. Silent, and expensive.
+
+So K9 v1 emits only the three drawable devices. `EmphasisDevice` keeps
+all six; the schema is not narrowed, because a later device must not
+churn stored timelines (the reason the enum was written wide in the
+first place).
+
+**This is sequencing, not a reversal.** `correction` was answered
+directly in decision 2 (option C) and is still wanted. It is behind a
+renderer, not behind a doubt — and it deserves its own watched render
+the way `stamp` and `counter` got one in K11, rather than arriving as a
+side effect of K9 and being seen for the first time in a finished reel.
+Same for `meter` and `comparison`.
+
+**The device-set section's "all in v1" heading is therefore wrong as
+written** and should be read as "all in the v1 *schema*". Corrected
+here rather than by editing that section, because its per-device
+descriptions are still the specification for whoever builds the
+remaining three.
+
 
 
 ---
