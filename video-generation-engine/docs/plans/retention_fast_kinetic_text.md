@@ -69,7 +69,7 @@ and their disposition are below.
 | **K7** compositor seam | **proven end-to-end 2026-09-09** — `renderer/compositor.py` + props-driven `Pivot.tsx`/`Emphasis.tsx`. Fingerprint hooks (`emphasis_cue_hash`, `emphasis_font_hash`) are in and correctly separate from `cue_list_hash` |
 | **K9** emphasis pass | **stub** — `steps/emphasis_pass.py` exists and is style-gated, but runs only pivot detection. The LLM pass is not written |
 | **K3** enforcement rules | **partial** — only the `text_card` exclusion, inline in `pivot.py`. No density cap, no graphic-asset exclusion, no safe zones |
-| **K4** contrast adaptation | **not started** |
+| **K4** contrast adaptation | **done 2026-09-09** — render-time plate luma → light/dark/slab on OverlayCue. Slab default for retention_fast. luma 216 is never `light`. |
 | **K5** palette resolution | **not started** (the commit says so explicitly) |
 | **K6** reach the vendored Bold | **done 2026-09-09** — was never a download |
 | **K8** data graphics | **not started** |
@@ -470,6 +470,7 @@ spacing pass:
   one frame, right at 1.3s and wrong at 4.3s.
 
 ### K4 — Contrast adaptation
+**Status (2026-09-09): implemented.** Render-time plate luma → light/dark/slab on `OverlayCue`. Not a planner field.
 Measure each cue's own plate (mean luma, ideally local luma under the
 cue's box) and choose light type / dark type / slab. Slab is the default
 for this style. This is the task that would have caught `2025`.
@@ -1063,3 +1064,87 @@ Slice is a vertical cut: a `retention_fast` timeline with `lekin` in narration g
 **Not done (out of slice):** stamp/counter/meter/comparison/correction/question rendering, K3 density pass, K4 contrast, K5 palette, K6 Bold, K8 charts, K9 LLM authoring.
 
 Stopping for human review. No push, no PR.
+
+---
+
+## Work log — K4 contrast adaptation (2026-09-09)
+
+This section is an implementation diary, not a design change. Earlier sections above stay authoritative. Append only; never rewrite prior log entries.
+
+### 15:06 — starting
+
+- read / opened: this plan (K4 task, architecture table, the two failures, done-criteria, fingerprint warning, "K4 cannot run at authoring time", K10 work log); `parallax.py::sample_substrate_colour`; `compositor.py` (`OverlayCue`, `collect_pivot_overlay_cues`, `emphasis_cue_content_hash`, `overlay_input_hash`, `_overlay_props`); `render.py` (shot_images populated before fingerprint ~237, overlay collect ~384); `fingerprint.py` emphasis docstring; `timeline.py` EmphasisCue (no treatment); `styles.py` StylePacingBand; `Pivot.tsx` / `Emphasis.tsx`; existing compositor/fingerprint/substrate_crop tests.
+- decided: K4 only. Treatment is code-from-the-plate, on OverlayCue, never on EmphasisCue. Measure at RenderStep after shot_images exist (RV2: one resolved list to fingerprint AND compositor). Pivot drawing stays the red band. No K3/K5/K8/K9, no stamp visuals, no push, no PR.
+- decided: local box for pivot mirrors Pivot.tsx spike numbers (top=380, font=132, pad=18 on 720×1280; full width; band height ≈ font+2*pad; scale like the TSX). Unusable box → frame mean. Unreadable/video plate → unmeasured → slab, never light. No ffmpeg frame-extract.
+- decided: chooser takes `slab_default: bool`. retention_fast opts in via a band field + `resolve_emphasis_slab_default` (R1, like whoosh). Numeric floors live as module constants, not hues. luma 216 must not be `light` even with slab_default=False.
+- files: this plan (K4 status line + this work log)
+- tests: none yet
+- next: pure measurement + chooser module, then OverlayCue/hash/render wiring, then tests
+
+### 15:12 — measurement function
+
+- read / opened: `sample_substrate_colour` (PIL, RGB convert, raise on zero-size); `Pivot.tsx` scale (`SPIKE_TOP * height/1280`, font `* width/720`, pad `* height/1280`).
+- decided: new `app/renderer/emphasis_contrast.py`. Rec. 601 `Y = 0.299R + 0.587G + 0.114B`. `mean_luma` raises on empty/zero-size (never a guessed number). Local box for `device=pivot` is `(0, top, width, top + font + 2*pad)` — on 720×1280 that is `(0, 380, 720, 548)`. Unusable box falls back to frame mean. Video/garbage bytes: log `emphasis_contrast.unmeasured` and return None. No ffmpeg extract.
+- files: `backend/app/renderer/emphasis_contrast.py`
+- tests: not yet run
+- next: chooser thresholds
+
+### 15:13 — chooser thresholds
+
+- decided: `choose_treatment(luma, *, slab_default)`. Unmeasured → slab, never light. `slab_default=True` (retention_fast) → always slab, even when dark/light would be legal — this style's policy, not a "always-slab-until-stamp" workaround; the floors are still real and tested with the policy off. `LIGHT_MAX_LUMA=90` (white type only on a dark plate). `DARK_MIN_LUMA=180` (black type only on a bright plate). Mid band (including ~128) → slab. luma 216 ≥ 180 so `dark` when policy off, `slab` when on, never `light` (white contrast at 216 is 39 units; the floor is well above that). Named constant `SUV_T3_MEAN_LUMA = 216.0`. No hues.
+- decided: knobs: `StylePacingBand.emphasis_slab_default` (False additive default; True only on `retention_fast`) + `resolve_emphasis_slab_default`. Numeric floors stay module constants — they are a measurement fact, not a per-style mix knob. Resolve the bool once in RenderStep (RV2).
+- files: `backend/app/script/styles.py`
+- tests: not yet run
+- next: OverlayCue / hash / render / compositor props
+
+### 15:14 — render / compositor / fingerprint wiring
+
+- decided: `OverlayCue.treatment` default `"slab"`, plus `shot_id` so the chooser can find the plate (not hashed — not a compositor pixel input). `collect_pivot_overlay_cues` still timing-only; `apply_emphasis_treatments` is the one place tests can drive without RenderStep. RenderStep: collect → apply (from `shot_images`, slab policy resolved once) → same list to `emphasis_cue_content_hash` and `render_or_reuse_emphasis_overlay`.
+- decided: `emphasis_cue_content_hash`, `overlay_input_hash`, and `_overlay_props` all include `treatment`. Emphasis.tsx adds the field on props; Pivot drawing is unchanged (the device IS a slab). No `treatment` on planner `EmphasisCue`.
+- files: `backend/app/renderer/compositor.py`, `backend/app/workflow/steps/render.py`, `backend/app/renderer/fingerprint.py` (docstring), `compositor/src/Emphasis.tsx`
+- tests: not yet run
+- next: unit tests
+
+### 15:16 — tests
+
+- files: `backend/tests/unit/renderer/test_emphasis_contrast.py` (new); `test_compositor.py` (treatment hash + collect sets shot_id); `test_fingerprint.py` (docstring); `test_styles.py` (resolver + retention_fast band pin).
+- tests: `cd backend`; venv pytest on `test_emphasis_contrast.py`, `test_compositor.py`, `test_fingerprint.py` → **86 passed** in ~2.7s. Same plus `test_styles.py` → **130 passed**. One false start: a 0×0 PNG cannot be encoded by PIL (`SystemError: tile cannot extend outside image`); dropped that branch and kept empty-bytes → `ValueError`. Gated `tmp/suv_test/fail_2025.png` assertion is skippable; it is not a CI fixture.
+- ruff: UP035 (`Mapping` from `collections.abc`) and I001 (resolver import order) fixed. Pre-existing B905 on `zip()` in `test_styles.py` left alone.
+- next: work-log summary + local commit. No push, no PR.
+
+### 15:19 — finish / summary
+
+K4 is a render-time chooser. After `shot_images` exist, each overlay cue's covering plate is measured (Rec. 601 mean luma, local box under the pivot band) and `treatment` is set on `OverlayCue`. retention_fast always gets slab. luma 216 is never `light`, even with the policy off. Pivot still draws the red band.
+
+**Files changed**
+
+- Measurement + chooser: `backend/app/renderer/emphasis_contrast.py` (new)
+- OverlayCue + hashes + props: `backend/app/renderer/compositor.py`
+- Render RV2: `backend/app/workflow/steps/render.py`
+- Band knob: `backend/app/script/styles.py` (`emphasis_slab_default`, `resolve_emphasis_slab_default`)
+- Fingerprint docstring: `backend/app/renderer/fingerprint.py`
+- Compositor props type: `compositor/src/Emphasis.tsx` (field only; Pivot.tsx untouched)
+- Tests: `backend/tests/unit/renderer/test_emphasis_contrast.py`; `test_compositor.py`; `test_fingerprint.py` (docstring); `backend/tests/unit/script/test_styles.py`
+- This plan (K4 status line + this work log)
+
+**Decisions (also in the entries above)**
+
+- Treatment lives on OverlayCue, never on planner EmphasisCue.
+- Measure at RenderStep, not EmphasisPassStep. One resolved list to fingerprint and compositor.
+- Local box `(0, 380, 720, 548)` on the spike canvas, scaled like Pivot.tsx. Unusable box → frame mean. Unreadable/video → unmeasured → slab.
+- `slab_default=True` always returns slab. Floors (`LIGHT_MAX_LUMA=90`, `DARK_MIN_LUMA=180`) are tested with the policy off so luma 216 → `dark`, not `light`.
+- Numeric floors are module constants, not band fields. Only the slab-default bool is on the band.
+
+**Deviations from the plan**
+
+- None material. `slab_default=True` meaning always-slab (rather than "earn bare type on this style too") is the stronger test the brief asked for, not a workaround. Stamp can later pass `slab_default=False` per-device if we want earned bare type on retention_fast.
+- Did not add `treatment` to `emphasis_cue_content_hash`'s "values" (OverlayCue has no values yet; pivot does not use them).
+- Gated extra assert against `tmp/suv_test/fail_2025.png` when present; CI does not need `tmp/`.
+- Pre-existing ruff B905 in `test_styles.py` not touched.
+
+**Not done (out of slice):** stamp/counter/year visuals, K3 density, K5 palette, K8, K9 LLM, pivot look changes, SFX, pacing.
+
+Stopping for human review. No push, no PR.
+
+
+

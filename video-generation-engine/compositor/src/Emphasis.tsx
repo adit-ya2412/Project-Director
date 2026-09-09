@@ -21,6 +21,10 @@ export type EmphasisCueProps = {
   textRegister: "hi" | "en";
   startFrame: number;
   endFrame: number;
+  // K4: hashed into the overlay input so a treatment change misses
+  // the compositor cache. Pivot drawing ignores this — the device IS
+  // a slab (the red band). Later devices (stamp) will branch on it.
+  treatment: "light" | "dark" | "slab";
 };
 
 export type EmphasisProps = {

@@ -17,6 +17,7 @@ from app.script.styles import (
     frame_aspect_error,
     resolve_constraint_bundle,
     resolve_draft_format,
+    resolve_emphasis_slab_default,
     resolve_generation_request_format,
     resolve_music_gains,
     resolve_narration_speed,
@@ -304,6 +305,18 @@ def test_retention_fast_gates_whoosh_off_and_others_stay_on():
     assert resolve_sfx_whoosh_enabled("no_such_style") is True
 
 
+def test_retention_fast_opts_into_emphasis_slab_default():
+    """K4: only this style's plates swung 93→216 in one hook. Unknown /
+    unset styles do not opt in (additive default)."""
+    assert resolve_emphasis_slab_default("retention_fast") is True
+    assert resolve_emphasis_slab_default("documentary_archival") is False
+    assert resolve_emphasis_slab_default("stillness") is False
+    assert resolve_emphasis_slab_default("archival_montage") is False
+    assert resolve_emphasis_slab_default("illustrated_risograph") is False
+    assert resolve_emphasis_slab_default(None) is False
+    assert resolve_emphasis_slab_default("no_such_style") is False
+
+
 def test_documentary_archival_is_1280x720_and_retention_fast_stays_portrait():
     archival = resolve_render_format("documentary_archival")
     assert (archival.width, archival.height) == (1280, 720)
@@ -549,6 +562,7 @@ def test_existing_four_style_bands_are_byte_for_byte_unchanged():
         whoosh_enabled=False,
         render_width=720,
         render_height=1280,
+        emphasis_slab_default=True,
     )
     assert STYLE_PACING_BANDS["archival_montage"] == StylePacingBand(
         name="archival_montage",

@@ -155,6 +155,14 @@ class StylePacingBand:
     # site - same R1 lesson `resolve_sfx_whoosh_enabled`'s own docstring
     # cites.
     picture_path: PicturePath = PicturePath.RETRIEVAL_LADDER
+    # retention_fast_kinetic_text.md K4: slab is the robust default for
+    # kinetic type on this style (plates swung 93→216 in one hook; white
+    # type on the 216 frame washed out). Bare type is legal only when
+    # this is False AND the plate earns the contrast floor. Read through
+    # `resolve_emphasis_slab_default`, never the band field at a use
+    # site (RV2 / R1). Additive default False: styles with no cues do
+    # not change behaviour.
+    emphasis_slab_default: bool = False
 
     @property
     def max_fragment_duration_s(self) -> float | None:
@@ -217,6 +225,10 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
         whoosh_enabled=False,
         render_width=720,
         render_height=1280,
+        # K4: this style opts into slab-default. Bare type must earn
+        # contrast via the chooser with the policy off; here it never
+        # does. The 2025 year stamp washed out at luma 216.
+        emphasis_slab_default=True,
     ),
     "archival_montage": StylePacingBand(
         # Feature B (style_extensions.md §4.3, decided 2026-08-25):
@@ -417,6 +429,26 @@ def resolve_narration_speed(style: str | None) -> float:
     if band is None:
         return 1.0
     return band.narration_speed
+
+
+def resolve_emphasis_slab_default(style: str | None) -> bool:
+    """Style-owned kinetic-text slab policy (retention_fast_kinetic_text.md K4).
+
+    `True` means the chooser always returns slab, even when the plate
+    would earn light or dark type. Only `retention_fast` opts in.
+
+    Unknown style names resolve to False (there is no band to consult,
+    and no cue system on those styles). An UNSET style resolves through
+    `settings.default_render_style`'s band — same fallback shape as
+    `resolve_sfx_whoosh_enabled`. The numeric contrast floors live in
+    `app.renderer.emphasis_contrast`, not here: they are a measurement
+    fact, not a per-style mix knob. Resolve this bool once in the
+    render caller (RV2) and pass it into the chooser.
+    """
+    band = STYLE_PACING_BANDS.get(style or settings.default_render_style)
+    if band is None:
+        return False
+    return band.emphasis_slab_default
 
 
 def resolve_sfx_whoosh_enabled(style: str | None) -> bool:

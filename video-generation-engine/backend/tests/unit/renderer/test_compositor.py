@@ -1,5 +1,6 @@
 """K7-lite compositor seam. No Chromium — the remotion invoke is stubbed."""
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -59,6 +60,8 @@ def test_collect_pivot_uses_resolved_offset_and_spike_hold():
     assert cue.text == "लेकिन"
     assert cue.text_register == "hi"
     assert cue.offset_s == 0.4
+    assert cue.shot_id == "sh_01"
+    assert cue.treatment == "slab"
     assert cue.start_frame == round(0.4 * 30)
     assert cue.end_frame - cue.start_frame == round(PIVOT_HOLD_S * 30)
     assert PIVOT_HOLD_S == 0.91
@@ -173,3 +176,30 @@ def test_emphasis_cue_content_hash_is_none_when_empty():
         )
     ]
     assert emphasis_cue_content_hash(one) != emphasis_cue_content_hash(shifted)
+
+
+def test_treatment_change_misses_emphasis_and_overlay_hashes():
+    """K4: a plate-driven treatment flip must rerender, not reuse the
+    cached overlay / final.mp4. cue_list_hash remains captions."""
+    font = "abc"
+    base = dict(width=720, height=1280, fps=30, duration_in_frames=90, font_hash=font)
+    slab = OverlayCue(
+        device="pivot",
+        text="लेकिन",
+        text_register="hi",
+        offset_s=0.4,
+        start_frame=12,
+        end_frame=39,
+        shot_id="sh_01",
+        treatment="slab",
+    )
+    light = replace(slab, treatment="light")
+    dark = replace(slab, treatment="dark")
+    assert emphasis_cue_content_hash([slab]) != emphasis_cue_content_hash([light])
+    assert emphasis_cue_content_hash([slab]) != emphasis_cue_content_hash([dark])
+    assert overlay_input_hash(cues=[slab], **base) != overlay_input_hash(
+        cues=[light], **base
+    )
+    assert overlay_input_hash(cues=[slab], **base) != overlay_input_hash(
+        cues=[dark], **base
+    )

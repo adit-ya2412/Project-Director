@@ -320,8 +320,9 @@ def test_cue_list_hash_still_means_captions_not_emphasis():
 
 
 def test_emphasis_cue_hash_change_misses_the_cache():
-    """Resolved offset or text change must re-render; otherwise
-    RenderStep serves the cached video with no kinetic text (R2)."""
+    """Resolved offset, text, or treatment change must re-render;
+    otherwise RenderStep serves the cached video with no kinetic text
+    (or the 2025 washed-out treatment) (R2 / K4)."""
     assert _fingerprint(emphasis_cue_hash="pivot-lekin-0.0") != _fingerprint(
         emphasis_cue_hash="pivot-lekin-1.2"
     )

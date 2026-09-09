@@ -90,6 +90,7 @@ from app.renderer.compositor import (
     emphasis_overlay_filter_fragment,
     render_or_reuse_emphasis_overlay,
 )
+from app.renderer.emphasis_contrast import apply_emphasis_treatments
 from app.renderer.fingerprint import compute_render_fingerprint, get_ffmpeg_version
 from app.renderer.grading import grade_filter_fragment
 from app.renderer.loudness import apply_loudness_target
@@ -125,6 +126,7 @@ from app.repositories.shot_binding_repository import ShotBindingRepository
 from app.schemas.project import ProjectStatus
 from app.schemas.timeline import SfxKind, Timeline
 from app.script.styles import (
+    resolve_emphasis_slab_default,
     resolve_music_gains,
     resolve_narration_speed,
     resolve_render_format,
@@ -378,10 +380,19 @@ async def render_video(
         else None
     )
 
-    # retention_fast_kinetic_text.md K7: resolve the overlay cues ONCE
-    # here so the fingerprint and the compositor cannot drift (RV2).
-    # `cue_list_hash` remains captions; this is a different input.
+    # retention_fast_kinetic_text.md K7/K4: resolve the overlay cues
+    # ONCE here so the fingerprint and the compositor cannot drift
+    # (RV2). Treatment is measured from shot_images, which already
+    # exist at this point — never at the emphasis pass, when pictures
+    # do not. `cue_list_hash` remains captions; this is a different
+    # input. Slab policy is resolved once beside the other style knobs
+    # and handed into the chooser, not re-read inside it.
     overlay_cues = collect_pivot_overlay_cues(timeline, fps=render_settings.fps)
+    overlay_cues = apply_emphasis_treatments(
+        overlay_cues,
+        shot_images,
+        slab_default=resolve_emphasis_slab_default(timeline.metadata.render_style),
+    )
     emphasis_cue_hash = emphasis_cue_content_hash(overlay_cues)
     emphasis_font_hash = emphasis_font_content_hash() if overlay_cues else None
 

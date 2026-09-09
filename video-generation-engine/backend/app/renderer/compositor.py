@@ -38,7 +38,13 @@ COMPOSITION_ID = "Emphasis"
 @dataclass(frozen=True)
 class OverlayCue:
     """One cue as handed to the compositor AND hashed into the render
-    fingerprint (RV2: one value gates derivation and cache)."""
+    fingerprint (RV2: one value gates derivation and cache).
+
+    `treatment` is K4, resolved at render from the covering plate —
+    never a planner field. Default `slab` is the safe unmeasured value
+    (light-on-transparent is the 2025 failure). `shot_id` is how the
+    chooser finds that plate; it is not a compositor input.
+    """
 
     device: str
     text: str
@@ -46,6 +52,8 @@ class OverlayCue:
     offset_s: float
     start_frame: int
     end_frame: int
+    shot_id: str | None = None
+    treatment: str = "slab"
 
 
 def _canonical_json(value: object) -> str:
@@ -98,6 +106,7 @@ def collect_pivot_overlay_cues(timeline: Timeline, *, fps: int) -> list[OverlayC
                 offset_s=cue.offset_s,
                 start_frame=start_frame,
                 end_frame=end_frame,
+                shot_id=shot.id,
             )
         )
     return cues
@@ -105,9 +114,11 @@ def collect_pivot_overlay_cues(timeline: Timeline, *, fps: int) -> list[OverlayC
 
 def emphasis_cue_content_hash(cues: list[OverlayCue]) -> str | None:
     """Fingerprint input: RESOLVED cues (device, text, offset_s,
-    text_register). Not the untimed planner output. None when there are
-    no cues so a no-cue timeline hashes with the key present and the
-    value null."""
+    text_register, treatment). Not the untimed planner output. Treatment
+    is hashed because a plate-driven flip must miss the render cache
+    (retention_fast_kinetic_text.md fingerprint warning). None when
+    there are no cues so a no-cue timeline hashes with the key present
+    and the value null."""
     if not cues:
         return None
     payload = [
@@ -116,6 +127,7 @@ def emphasis_cue_content_hash(cues: list[OverlayCue]) -> str | None:
             "text": cue.text,
             "offset_s": cue.offset_s,
             "text_register": cue.text_register,
+            "treatment": cue.treatment,
         }
         for cue in cues
     ]
@@ -139,6 +151,7 @@ def overlay_input_hash(
                 "textRegister": cue.text_register,
                 "startFrame": cue.start_frame,
                 "endFrame": cue.end_frame,
+                "treatment": cue.treatment,
             }
             for cue in cues
         ],
@@ -170,6 +183,7 @@ def _overlay_props(cues: list[OverlayCue], *, width: int, height: int, fps: int,
                 "textRegister": cue.text_register,
                 "startFrame": cue.start_frame,
                 "endFrame": cue.end_frame,
+                "treatment": cue.treatment,
             }
             for cue in cues
         ],

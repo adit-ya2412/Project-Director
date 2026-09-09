@@ -87,12 +87,14 @@ same shape as `secondary_content_hashes`/`secondary_asset_hash` above.
 does NOT dump the whole `Shot` (it hand-picks fields), so `layers` is
 added there explicitly - see that function's own docstring.
 
-**Emphasis cues (retention_fast_kinetic_text.md K7/K2, 2026-09-09).**
+**Emphasis cues (retention_fast_kinetic_text.md K7/K2/K4, 2026-09-09).**
 `Shot.emphasis_cue` rides into the timeline dump for free, but the
-RESOLVED seconds (`offset_s`) and the vendored Devanagari file are the
-actual compositor inputs, and a cached `final.mp4` that predates this
-feature would silently serve a reel with no kinetic text if those were
-not hashed. `emphasis_cue_hash` / `emphasis_font_hash` are that hook —
+RESOLVED seconds (`offset_s`), the render-time TREATMENT (light/dark/
+slab, measured from the plate — never a planner field), and the vendored
+Devanagari file are the actual compositor inputs, and a cached
+`final.mp4` that predates this feature would silently serve a reel with
+no kinetic text (or the wrong contrast treatment) if those were not
+hashed. `emphasis_cue_hash` / `emphasis_font_hash` are that hook —
 NOT `cue_list_hash`, which already means CAPTION cues. Both present
 unconditionally, `None` when there is no pivot overlay. Palette hash
 is K5 and is not in this slice.
