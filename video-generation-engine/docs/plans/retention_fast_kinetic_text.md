@@ -102,6 +102,47 @@ default and bare type is the exception that must earn its contrast.
 
 ---
 
+## Devanagari typography — four measured rules
+
+Hard-won on 2026-09-08 and recorded here because they otherwise live only
+in throwaway spike code. This script does not tolerate Latin defaults,
+and every one of these was found by rendering a frame and looking at it.
+
+**1. Letter-spacing destroys Devanagari in libass.** An ASS style with
+`Spacing: 2` rendered `झूठ` with a **dotted circle** - the Unicode
+placeholder for a combining mark that failed to attach to its base. The
+existing caption style renders the same word correctly because it carries
+`Spacing: 0`. Rule: never track Devanagari in ASS. There is no workaround;
+tracking and shaping are mutually exclusive there.
+
+**2. Chromium survives the same operation.** `letterSpacing: 14px` on
+`झूठ` in the compositor keeps the vowel sign correctly attached, just with
+air between clusters. This is a concrete capability difference in the
+compositor's favour that has nothing to do with animation - tracking is
+basic typography and the current renderer cannot do it on Hindi at all.
+
+**3. Per-character stagger must split by GRAPHEME CLUSTER.** `झूठ` is
+three code points (झ + ू + ठ) but only TWO clusters, because ू belongs to
+झ. `Array.from()` or `.split("")` tears the vowel sign off its base and
+animates it as an orphan - reproducing rule 1's dotted circle from the
+other direction. Use `Intl.Segmenter(locale, {granularity: "grapheme"})`.
+
+**4. Strike-through sits higher than in Latin.** A correction's strike at
+56% of the line box - the Latin-centred position - reads as an UNDERLINE
+on Devanagari, because the script carries its visual mass high under the
+shirorekha. 48% reads as a cancellation. Any device that crosses out,
+underlines or highlights needs a script-aware vertical position.
+
+**Consequence for K6:** these four are why vendoring
+`NotoSansDevanagari-Bold.ttf` is a prerequisite rather than polish. With
+only a Regular weight, Chromium synthesises bold and smears the matras,
+so the two loudest devices in this style (pivot and correction, both
+Devanagari per the role table) are forced onto slabs for weight. Slabs
+are the right default for contrast anyway - but that should be a design
+choice, not a font limitation.
+
+---
+
 ## Data graphics — the honesty problem
 
 The SUV film's "2 lakh sold" shot is an AI-generated infographic. It
