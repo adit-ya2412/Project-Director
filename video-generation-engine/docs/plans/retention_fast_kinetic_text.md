@@ -75,6 +75,7 @@ and their disposition are below.
 | **K11** device renderers (stamp, counter) | **implemented 2026-09-09; two render-found defects fixed same day** — stamp + counter renderers; unblocks K9. The counter band is now content-derived (its type overflowed a hardcoded 420 by 118px, measured) and `treatment="dark"` gained the light halo it never had |
 | **K8** data graphics | **not started** |
 | **K12** planner authors `picture_is_graphic` | **implemented and reviewed 2026-09-09** (`23f83e9`) — Shot Planner authors required `ShotPlanOutput.picture_is_graphic` (no default) and maps it onto `Shot`. Live re-plan: data shot True, ordinary shots False. K3 already enforces. K8 unblocked on the signal, not yet implemented |
+| **K14** the hook is empty | **not started, ADDED 2026-09-10, THE NEXT SLICE** - the first finished reel put nothing on screen for its first 7.15s. `min_shot_gap=3` makes two cues inside the first 5s impossible, so the rules forbid a dense hook; the spike ran ~66/min there. Needs a hook budget with its own gap, a rate cap that does not undo it, position in the prompt, and word-level entry (NOT already built). BLOCKS captions-off |
 | **K13** the counter has no reachable input | **not started, ADDED 2026-09-09, BLOCKING** — number-stating shots are planned as graphics, K3 rule 2 forbids cues there, so the counter is unreachable. First real reel produced 0 counters from 3 spoken numbers. Recommended fix: stop the Shot Planner making number shots into graphics (option B) |
 
 **Why shipping the pivot first worked without K6.** The pivot is the one
@@ -2614,4 +2615,143 @@ This section is an implementation diary, not a design change. Earlier sections a
 - next: K13 option B -- and it needs the user's confirmation before an
   agent executes, because A and B are not equivalent and the choice is
   editorial, not mechanical.
+
+---
+
+## K14 - The hook is empty, and the density rules are why  **(ADDED 2026-09-10, the next slice)**
+
+Found by watching `nexon-reel3-test` (`34dd1ee1`), the first finished
+`retention_fast` reel with kinetic text on real plates. The devices
+render correctly. The reel still feels flat, and the reason is
+measurable rather than aesthetic.
+
+### What the finished reel actually did
+
+24.70s, 12 shots, 3 cues = **7.29 cues/min**, below the 8-12 band.
+
+| when | what is on screen |
+|---|---|
+| 0.00 - 7.15s | **nothing** (29% of the reel, and the retention-critical part) |
+| 7.15s | counter `SAFETY RATING` counting to 5 |
+| 12.75s | pivot (the best frame in the reel) |
+| 15.17 - 22.92s | **nothing** (7.75s) |
+| 22.92s | stamp `centre` |
+
+### Two different problems
+
+**1. The hook is empty because the rules forbid a dense hook.**
+`min_shot_gap = 3`, and this reel's shots average ~1.9s, so the earliest
+a second cue may legally appear after a first is ~5.7s later. The hook
+is shots 0-2, i.e. 0.00-5.54s. **Two cues inside the first five seconds
+is not unlikely under K3, it is impossible.** K9 could not have fixed
+this by trying harder - `enforce_emphasis_rules` would have stripped it.
+
+**2. The body dead stretch is ordinary under-authoring.** 15.17-22.92s
+spans about 4 shots and could legally have held one or two more cues.
+Nothing blocked them. `_build_user_content` states
+`Target cue count: round(duration_s / 60 * 10.0)` = 4 for this reel, and
+K9 authored 3. That is the integer identified in the 21:20 work log,
+still unfixed.
+
+### The contradiction this exposes
+
+The spike is the only artifact anyone has watched and liked. Its own
+measured onsets, from the "What the spike proved" table earlier in this
+document:
+
+`EVERY/3rd/SUV` 0.69 - `HYUNDAI CRETA` 1.49 - `2025` 2.69 -
+`2,00,000+` 3.60 - the pivot 4.94 - `REALLY?` 5.42
+
+**Six beats in the first 5.42 seconds, about 66 cues/minute.** Four of
+the six were judged to work; the two number beats failed on CONTRAST,
+which is what K4 fixed, not on density. Even counting only the four,
+the spike's hook runs at roughly 44/min.
+
+The band this plan ships is **8-12/min**, and it was never derived from
+that measurement - it came from a recommendation and sounded reasonable.
+The one thing known to work exceeds it by 4-5x in the hook.
+
+**So density cannot be a single uniform rate.** It has to be a hook
+budget plus a body rate.
+
+### The parts
+
+**K14.1 - a hook window with its own budget and its own gap.** Define
+the hook as the first N seconds of the reel (start at 5.0s), resolved
+per style like every other knob (RV2 / R1). Inside it: require at least
+2-3 cues, with the first landing inside roughly the first 1.5s, and
+relax `min_shot_gap` to 0 or 1 so consecutive shots may both carry a
+cue. Outside it: gap 3 as today. Shot membership comes from
+`compute_shot_start_times` (D5-correct), not from shot index - the hook
+is a duration, not a count.
+
+**K14.2 - the rate cap must change with it, or it will undo K14.1.**
+A 5s hook holding 3 cues, plus a body at 12/min across the remaining
+25s, is about 8 cues in 30s = **16/min average**, which the current
+12.0 ceiling rejects. Either compute the cap over the body only, or
+raise it. Decide which and record why; do not leave the cap silently
+strangling the hook.
+
+**K14.3 - tell K9 that position matters.** The prompt says "8-12 per
+minute, pivot guaranteed", which is a uniform instruction, and the model
+placed cues by narrative logic: the number, the turn, the conclusion.
+That is what a writer does. A retention editor front-loads. The prompt
+and `_build_user_content` must name the hook explicitly and say the
+first seconds are worth more than the last. Even with a larger budget
+the model will keep spreading evenly if nothing tells it otherwise.
+
+**K14.4 - raise the body target count.** `round(duration_s/60 * 10.0)`
+in `planners/emphasis/planner.py`. Prose cannot move it; this integer is
+what the model obeys. Measured 2026-09-09: raising the multiplier to
+12.0 alone did NOT help (asked 7, authored 5), so treat this as
+necessary-but-not-sufficient and pair it with K14.1/K14.3 rather than
+shipping it alone.
+
+**K14.5 - word-level entry for a multi-word hook cue. CORRECTION: this
+is NOT already built.** The spike's `EVERY / 3rd / SUV` at
+0.69/0.83/1.17 was ONE cue whose three words dropped in at separate
+onsets - three felt hits, one cue, no rule violated. That is the
+cheapest density available. But it lived in `EmphasisOverlay.tsx`, a
+throwaway spike file. What production `Stamp.tsx` has is **per-GRAPHEME
+CLUSTER** stagger via `Intl.Segmenter` - letters, not words. Feeding it
+`"EVERY 3rd SUV"` would type the phrase out character by character,
+which is a different look entirely. Word-level onsets are new renderer
+work, and the K9 prompt currently defines a stamp as "one stressed
+spoken word", so the authoring side must also allow a short phrase.
+
+**K14.6 - re-derive the band, after watching.** Once a reel exists with
+a dense hook, replace 8-12 with numbers taken from something watched.
+Do this LAST: a number derived from another guess is not an improvement.
+
+### BLOCKING dependency - do not ship captions-off before this
+
+`retention_fast` captions-off is decided (decision 1) and already
+briefed, and it must NOT land first. Those first 7 empty seconds used to
+carry burned captions. They were removed on the promise that dense
+kinetic text replaces them, and at 3 cues in 24.70s it does not - the
+reel measured above is **less** filled than the version that was called
+boring. Shipping captions-off now makes reels emptier, and it will look
+like the captions decision was wrong when the cause is density.
+
+### Verification - watched, not asserted
+
+A green suite proves nothing here. Re-render a real `retention_fast`
+reel and report: the onset of the FIRST cue (target: under about 1.5s),
+the cue count and rate inside the hook window, the cue count and rate
+across the body, the longest stretch anywhere with nothing on screen,
+and the before/after against this reel's 7.15s first cue, 7.29 per
+minute, and 7.75s dead stretch. A NEW project is required - `34dd1ee1`
+is `narration_locked` with `emphasis_pass_attempted=True` and can never
+be re-authored.
+
+Do not tune knobs until the numbers look nice. If a change measures
+worse, report it and revert, the way the 21:20 density attempt was.
+
+### Do not change
+
+The pivot look - white type on the authored band, full-bleed, decaying
+shake - was the best frame in the reel and the spike's own strongest
+beat. K4's contrast thresholds, K3's citation matcher, K13's option-B
+prompt rule, and `EmphasisDevice` staying wide are all settled and out
+of scope.
 
