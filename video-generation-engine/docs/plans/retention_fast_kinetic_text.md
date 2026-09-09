@@ -74,6 +74,7 @@ and their disposition are below.
 | **K6** reach the vendored Bold | **done 2026-09-09** — was never a download |
 | **K11** device renderers (stamp, counter) | **implemented 2026-09-09; two render-found defects fixed same day** — stamp + counter renderers; unblocks K9. The counter band is now content-derived (its type overflowed a hardcoded 420 by 118px, measured) and `treatment="dark"` gained the light halo it never had |
 | **K8** data graphics | **not started** |
+| **K12** planner authors `picture_is_graphic` | **not started, ADDED 2026-09-09** — K3's rule 2 is unreachable until this lands, and K8 is blocked behind it. Shot Planner, because it is what authors `Shot.prompt` |
 
 **Why shipping the pivot first worked without K6.** The pivot is the one
 device whose weight comes from its slab rather than its font, so a
@@ -910,6 +911,43 @@ stamp draws ink type on transparency and nothing else white, so
 near-white partial-alpha pixels are the halo and nothing else — ink
 x 136..459, halo x 117..478, 28,761 such pixels. Pre-fix that count is
 zero by construction.
+
+### K12 — The planner authors `picture_is_graphic`  **(ADDED 2026-09-09)**
+
+K3 added `Shot.picture_is_graphic: bool = False` and enforces it as rule
+2 of `enforce_emphasis_rules`, but nothing ever sets it. The rule is
+therefore unreachable in production, and K8 — which reuses the same
+signal at the opposite polarity ("this IS a data shot, so DRAW it") — is
+blocked behind it. This task is only the wiring; K3 already owns the
+enforcement.
+
+**Why the Shot Planner and not the Asset Planner.** The field lives on
+`Shot`, and the Shot Planner is what authors `Shot.prompt` — the prompt
+that ASKS for an infographic — so it is the one stage that knows at
+authoring time. `Shot.asset_plan` is filled by planner CODE afterwards
+and is never on `ShotPlanOutput`, so an LLM could not populate a field
+hung there. The prompt already distinguishes picture kinds for `sfx_cue`
+("a portrait, a document, a map, a diagram, or a text card",
+`prompts/shot_planner/v1.md`); keep the two consistent rather than
+inventing a second taxonomy.
+
+- Add to `ShotPlanOutput` (`planners/shot/schemas.py`), additive default
+  `False`, and map it through `planners/shot/planner.py`.
+- Teach `prompts/shot_planner/v1.md` when to set it: the picture's job is
+  to DISPLAY INFORMATION — chart, graph, diagram, infographic, dashboard,
+  table, map-with-data — not to show a scene.
+- **Verify with a real re-plan, not a unit test.** A `retention_fast`
+  project whose script carries a data line must come back with
+  `picture_is_graphic=True` on that shot and `False` on the ordinary
+  ones. Record the shot ids and the flag values. A green suite with no
+  re-plan is not evidence: that exact gap shipped two defects in K7 and
+  one in K11.
+
+**The limitation, to be written down rather than designed around.** The
+flag describes what the planner INTENDED to acquire. A Pexels search
+result or a human upload via override was never described by the planner,
+so the flag cannot speak for those. Vision classification stays the only
+complete answer if that ever matters.
 
 ---
 
