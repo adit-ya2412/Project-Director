@@ -552,6 +552,204 @@ panel, the budget and the measurement. Split them in K8.
 
 ---
 
+## Build notes — for whoever implements this
+
+Everything above is WHAT and WHY. This section is WHERE and IN WHAT
+ORDER, written for someone (or something) with no memory of the session
+that produced the plan. Paths were verified against the tree on
+2026-09-09.
+
+### Read these first, in this order
+
+1. `app/timeline/narration_fit.py` module docstring — D1, the master
+   clock, and why shot duration is derived from spoken characters. Cue
+   timing obeys the same law.
+2. `resolve_layer_entry_offsets` in that file — the EXACT pattern K2
+   copies. A layer's entry is anchored to a fragment INDEX and resolved
+   to seconds only when real alignment exists.
+3. `app/prompts/shot_planner_styles/retention_fast.md` — the style's
+   existing direction. Do not contradict it.
+4. `app/renderer/fingerprint.py::compute_render_fingerprint` — read the
+   whole signature before writing any code. See the warning below.
+
+### Build order (dependencies are real)
+
+```
+K6  vendor Bold Devanagari          <- do first, nothing depends on it
+                                       but everything looks wrong without it
+K1  EmphasisCue schema
+ |
+K9  emphasis pass (authoring)       <- needs K1's shape to emit into
+ |
+K2  resolve cue timing              <- needs cues to exist
+ |
+K3  enforcement pass  ---+
+K4  contrast adaptation  |          <- both need resolved cues
+K5  palette resolution   |
+ |                       |
+K7  compositor seam <----+          <- needs everything above to have
+ |                                     something to render
+K8  data graphics                   <- needs K7's seam and K4's contrast
+K10 pivot detection                 <- independent; can ship any time
+                                       after K9 exists
+```
+
+**K10 and K6 are the two that stand alone.** If you want a first commit
+that improves every reel on its own, K10 (lexical pivot detection) plus
+the pivot device is it.
+
+### File map
+
+| task | touch |
+|---|---|
+| K1 | `app/schemas/timeline.py` — `EmphasisCue` model, and a field on `Shot` (class at line 358; `ShotLayer` at 280 is the closest precedent for a planner-authored sub-model, including its "creative decisions only" docstring) |
+| K2 | `app/timeline/narration_fit.py` — a `resolve_emphasis_cue_offsets` beside `resolve_layer_entry_offsets`; call it from `app/workflow/steps/narration.py` at the same seam as line 585 |
+| K3 | new module, e.g. `app/timeline/emphasis_rules.py`; called from the emphasis pass. Precedent for "enforce after the planner returns": the text-card spacing pass in `app/planners/shot/planner.py` (see `chapter_shot_ids` / `min_gap`, lines ~132-177) |
+| K4 | `app/renderer/` — plate measurement. `sample_substrate_colour` in `app/renderer/parallax.py:307` is the existing example of reading pixels off an asset |
+| K5 | palette on `timeline.metadata` (precedent: `metadata.voice_id`); band defaults in `app/script/styles.py` beside `StylePacingBand` |
+| K6 | `backend/vendor/fonts/` — add `NotoSansDevanagari-Bold.ttf`. `app/renderer/captions.py:73` shows the existing font-registry shape |
+| K7 | new `app/renderer/compositor.py` + a tracked `compositor/` package; wired into `app/workflow/steps/render.py` |
+| K8 | extends K7's composition and K1's schema; third `PicturePath` value in `app/script/styles.py:29` |
+| K9 | new step class + registration in `DEFAULT_PIPELINE`, `app/workflow/engine.py` |
+| K10 | inside the K9 pass; pure function, unit-testable with no DB |
+
+### ⚠ The fingerprint. Read this before writing code.
+
+`compute_render_fingerprint` (`app/renderer/fingerprint.py:170`) decides
+whether `RenderStep` reuses the existing `final.mp4`. **If cues are not
+in it, the render step serves the cached video with no text on it and
+nothing errors.** That failure looks exactly like "the feature doesn't
+work" and it will cost hours.
+
+Add, as new keyword arguments:
+
+- `emphasis_cue_hash` — over the RESOLVED cues (device, text, resolved
+  seconds, register, values, treatment). Not the raw planner output.
+- `emphasis_font_hash` — same reason `caption_font_hash` and
+  `text_card_font_hash` already exist: a changed font must invalidate.
+- `palette_hash` — a changed palette must re-render (K5).
+
+The codebase's own rule for this, from analysis.md RV2: **one value gates
+both the derivation and the fingerprint.** Resolve style-derived values
+once in the caller and hand the same value to both, exactly as
+`whoosh_enabled` is handled.
+
+**Naming trap:** `cue_list_hash` already exists in that signature and
+means CAPTION cues. Do not overload it. Use `emphasis_cue_hash`.
+
+### K9 — where the step goes
+
+`WorkflowStep` is a Protocol in `app/workflow/step.py:31`: `name`,
+`retryable`, `max_attempts`, `async is_satisfied(ctx) -> bool`,
+`async run(ctx) -> StepResult`.
+
+`DEFAULT_PIPELINE` in `app/workflow/engine.py` is currently:
+
+```
+GenerateTimelineStep, ResolveAssetsStep(search), SelectMusicStep,
+SelectSfxStep, RomanizeCaptionsStep, NarrationStep, AwaitApprovalStep,
+ResolveAssetsStep(generate), GenerateDiegeticSfxStep, AwaitReviewStep,
+RenderStep, CompleteStep
+```
+
+Insert `EmphasisPassStep()` **after `SelectSfxStep()` and before
+`AwaitApprovalStep()`**. Three reasons:
+
+- It needs only the timeline (shots + fragments), which
+  `GenerateTimelineStep` has already produced.
+- It must land **before the approval gate** so a human reviews cues where
+  they already review the plan. Cues are creative decisions.
+- It must NOT depend on narration. Cue timing is resolved later by K2
+  from real alignment, so this pass never sees or guesses seconds. An
+  earlier draft of this plan said "before narration" and then muddled it;
+  the correct statement is that narration order is irrelevant to
+  AUTHORING and mandatory for TIMING.
+
+`is_satisfied` should return true when the active timeline version was
+produced by this step — the same shape every other planner step uses.
+
+### K7 — the compositor seam, specified
+
+This is the part the rest of the plan only gestured at.
+
+**One parameterized composition, driven by props.** Do NOT generate a
+`.tsx` file per video. The compositor package exposes a single
+composition whose entire content comes from `--props`: canvas, fps,
+duration, palette, and the resolved cue list. Codegen per project is the
+obvious wrong turn here and it will not survive twenty reels.
+
+Python side, `app/renderer/compositor.py`:
+
+1. Build an input hash over (resolved cues + palette + font hashes +
+   canvas + fps + duration + plate ids).
+2. Look for `{storage_root}/{project_id}/overlays/{hash}.mov`. Return it
+   on a hit — **this is what makes headless Chromium acceptable under
+   I5.** Cache by INPUT hash, never by output bytes, exactly as
+   `generated_clip` caches an AI image by `prompt_hash`.
+3. On a miss: write props to a temp JSON, invoke the compositor
+   (`npx remotion render <id> <out> --props=<file>` with the alpha flags
+   below), and atomically move into place.
+4. Alpha flags, verified working: `--codec=prores
+   --prores-profile=4444 --pixel-format=yuva444p10le --image-format=png`.
+   The output reports `yuva444p12le`; that is expected.
+
+Render side, `app/workflow/steps/render.py`: composite with
+`[base][overlay]overlay=0:0:format=auto`. The overlay is one more layer
+in a chain that already burns captions, text cards and a watermark — it
+does not need a new mechanism.
+
+**Do not touch** `mux_narration`, `mux_music`, `mux_sfx`, the loudness
+stage, `compute_timeline_duration`, or anything in `narration_fit`
+besides K2's addition. Remotion produces a layer; ffmpeg remains the
+assembler. `remotion_integration.md` §17 proposes replacing the renderer
+outright — this plan deliberately does not.
+
+**Deploy consequence:** a Node toolchain plus a Chromium binary now sit
+beside Python and ffmpeg. Node 18+ is required (v22.15.1 verified);
+Chrome Headless Shell downloads itself into `node_modules` on first
+render. Vendor the fonts (K6) rather than relying on host fonts — the
+same discipline `captions.py` already applies with its explicit
+`fontsdir=`.
+
+### Done-criteria, per task
+
+Each of these is checkable, and "it looked fine" is not one of them.
+
+- **K1** — a cue round-trips through `append_version` and back out of the
+  DB unchanged; a cue with no `anchor_fragment` is rejected by validation.
+- **K2** — for a known alignment, resolved seconds equal the fragment's
+  own onset to within a frame. Re-narrating at a different `narration_speed`
+  moves every cue and requires no cue edits.
+- **K3** — with a deliberately colliding plan as input, zero cues survive
+  on shots carrying a `text_card` or a graphic asset; a chart with no
+  citable anchor value is dropped.
+- **K4** — for the SUV plate at t=3.0s (mean luma 216) the chosen
+  treatment is NOT light-on-transparent. That exact frame is the
+  regression case; it is in the repo history as a failure.
+- **K5** — the same project renders byte-identical twice; changing the
+  palette changes the fingerprint and forces a re-render.
+- **K6** — `झूठ` renders from the vendored Bold with no synthetic-bold
+  smearing, and with `letterSpacing` applied the vowel sign stays
+  attached (rule 2 above).
+- **K7** — second render of an unchanged project performs zero Chromium
+  invocations (cache hit). `ffprobe` reports `yuva444p*` on the overlay
+  before compositing; a lost alpha channel produces a black rectangle,
+  not an error.
+- **K8** — every chart carries a citable anchor; the `est.` marking is
+  legible at phone size; no chart carries an attribution string.
+- **K9** — cue count per reel falls inside the density band; the pivot is
+  present in every reel that contains a pivot word.
+- **K10** — pure-function unit tests over Hinglish narration strings; no
+  DB, no LLM.
+
+### And the feature-level test, which supersedes all of the above
+
+**Mute a full reel and watch it.** Captions are gone, so if the story
+does not land with no sound, the cue system has failed regardless of what
+any unit test says.
+
+---
+
 ## Gate — PASSED 2026-09-08
 
 The user watched `tmp/suv_test/SUV_AB_captions_vs_kinetic.mp4` on a phone

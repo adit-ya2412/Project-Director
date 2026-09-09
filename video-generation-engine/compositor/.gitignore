@@ -1,0 +1,6 @@
+node_modules/
+out/
+# Fonts are NOT vendored twice. backend/vendor/fonts/ is the single
+# source of truth (captions.py reads the same files); `npm run fonts`
+# copies them here because Remotion's staticFile() resolves from public/.
+public/*.ttf
