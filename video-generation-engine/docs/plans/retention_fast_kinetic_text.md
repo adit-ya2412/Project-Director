@@ -72,6 +72,7 @@ and their disposition are below.
 | **K4** contrast adaptation | **done 2026-09-09, reviewed same day** — render-time plate luma → light/dark/slab on OverlayCue. Slab default for retention_fast. The bright `2025` plate is never `light`. Review applied: band box is now Python-authoritative and travels through the props; `LIGHT_MAX_LUMA` 90 → 105 on six measured plates; the measurement is kept and logged under the slab policy; one decode per plate |
 | **K5** palette resolution | **not started** (the commit says so explicitly) |
 | **K6** reach the vendored Bold | **done 2026-09-09** — was never a download |
+| **K11** device renderers (stamp, counter) | **not started** — blocks K9 |
 | **K8** data graphics | **not started** |
 
 **Why shipping the pivot first worked without K6.** The pivot is the one
@@ -185,9 +186,13 @@ K9, because K9 is where the cue count stops being one.**
    reel none of these bite yet; with K9 they all do.
 4. **K5 — palette resolution.** Needed before any device that is not the
    fixed red band.
-5. **K9 — the real emphasis pass.** Replace the stub with the whole-film
-   LLM call. Do this only once 1-4 are in place.
-6. **K8 — data graphics.** Last, and largest.
+5. **K11 — device renderers for `stamp` and `counter`.** ADDED
+   2026-09-09 and it comes BEFORE K9, not after: the compositor can draw
+   only `pivot`, so K9 would author cues nothing can render. Also the
+   first real consumer of K4's `treatment`.
+6. **K9 — the real emphasis pass.** Replace the stub with the whole-film
+   LLM call. Do this only once 1-5 are in place.
+7. **K8 — data graphics.** Last, and largest.
 
 `K10`'s own follow-ups (the homonym note, the precedence question) can
 ride along with whichever of the above touches the same file.
@@ -461,13 +466,63 @@ spacing pass:
 - At most one cue per shot.
 - **Mutually exclusive with `text_card`** — measured: a stacked
   correction landed on "The Myth and the Burned Scroll", both unreadable.
-- **Never over an asset that is already a graphic** — measured.
+- **Never over an asset that is already a graphic** — measured, and
+  **CURRENTLY UNIMPLEMENTABLE. See the blocker below.**
 - **Every `values[]` entry must cite a fragment whose text contains that
   number.** Drop the cue otherwise.
 - Density cap and min-gap per band. Kinetic text stops working the moment
-  it is constant: it becomes the baseline and nothing punctuates.
+  it is constant: it becomes the baseline and nothing punctuates. **This
+  is the rule most likely to decide whether K9's first output is any
+  good, and it is the one still missing.**
 - **Per-SHOT safe zones, not per-video.** The spike's zones were read off
   one frame, right at 1.3s and wrong at 4.3s.
+
+Note on sequencing: with one pivot cue per reel, NONE of these bite yet.
+`pivot.py` carries the `text_card` exclusion inline and that has been
+sufficient. K9 removes that guarantee in a single step, which is why the
+enforcement pass has to exist first. K3's first job is a MOVE, not new
+code: promote the `text_card` rule out of `pivot.py` into the shared
+pass.
+
+#### BLOCKER: "is this asset a graphic?" has no answer in the data
+
+The rule exists because of a measured failure — at t=4.3s a counter
+landed on an AI-generated infographic (bar chart + dealership report +
+dense labels) and both became unreadable. To enforce it, code must ask
+whether a shot's picture is a chart. Nothing can answer:
+
+- `MediaKind` is `STILL | MOTION` — that is "photo or video", not
+  "picture of what".
+- The `asset` table records provider, source_url, type, licence,
+  attribution, content_hash, confidence, description. None describes
+  subject matter.
+- Measured 2026-09-09 on `fba52b6d`: **all 26 assets are `type=image`**
+  (24 `provider=project_assets`, 2 `pexels`) and `description` is EMPTY
+  on every one. The infographic and the photograph of the Creta are the
+  same row with the same values.
+
+Three ways to create the signal, needing a human decision:
+
+1. **Planner-authored field (recommended).** The planner wrote the
+   prompt that ASKED for an infographic, so it knows at authoring time.
+   A field on the shot or `asset_plan`; free, deterministic, reviewable
+   in the timeline like every other planner decision. Covers GENERATED
+   assets, which is what actually broke.
+2. **Prompt-text heuristic.** Grep the shot's own `prompt` for
+   chart/infographic/diagram. Zero cost, no schema change, fairly
+   reliable because planner prompts are formulaic — but false-positives
+   on "a chart on the wall behind him".
+3. **Vision classification.** `settings.openai_vision_model` already
+   exists for constraint checks. Costs a call per shot, and is the only
+   option that works on assets the planner did not author — Pexels
+   results and human uploads via `POST /shots/{id}/override`.
+
+**One decision unblocks two tasks, at opposite polarity.** K3 asks "is
+this a graphic? then do NOT put text on it". K8 asks "is this a data
+shot? then DRAW it instead of generating an image". K8 is the higher-
+value consumer: that infographic does not merely collide with text, it
+fabricates five of its six numbers from a one-number script and renders
+partly garbled Devanagari.
 
 ### K4 — Contrast adaptation
 **Status (2026-09-09): implemented, then reviewed and revised the same
@@ -713,6 +768,60 @@ task that could ship on its own and improve every reel.
 
 ---
 
+
+### K11 — Device renderers: `stamp` and `counter`  **(ADDED 2026-09-09)**
+
+**This is the task that unblocks K9, and it was missing from the plan.**
+
+`compositor/src/Emphasis.tsx` reads
+`if (cue.device !== "pivot") return null;` and
+`collect_pivot_overlay_cues`'s docstring says "unknown devices are
+ignored". So the pipeline can author seven device types and DRAW exactly
+one. Point K9 at this today and it would emit `stamp`/`counter`/
+`correction` cues that are silently dropped at both ends: an LLM call, a
+plausible timeline, and a video with nothing new on it, with no error
+anywhere. That is the worst failure shape available - expensive,
+invisible, and it reads as "the prompt is bad" when the prompt was fine.
+
+**Port, do not invent.** `compositor/src/SuvRetention.tsx` already has
+both devices working and watched, hardcoded to one film's onsets:
+`stamp` as a word-by-word drop-in with spring overshoot and per-CLUSTER
+stagger (`Intl.Segmenter`, never `split("")` - see "Devanagari
+typography"), `counter` as a value counting to a target with
+`Intl.NumberFormat("en-IN")` grouping plus the filling meter. Copy
+`Pivot.tsx` + `PivotBand` + `collect_pivot_overlay_cues` as the
+props-driven pattern. Leave `SuvRetention.tsx` / `DirectedHook.tsx`
+alone; they are labelled spike proofs.
+
+Four gaps this will hit, all real:
+
+- **`OverlayCue` has no `values`**, so a counter has no target number.
+  `EmphasisValue` (value / unit / cited_fragment) exists on
+  `EmphasisCue` but does not reach the compositor. It must go into
+  props AND into both `overlay_input_hash` and
+  `emphasis_cue_content_hash` - missing the cue hash means editing a
+  target number keeps the hash and `RenderStep` serves a cached
+  `final.mp4` with the old figure.
+- **`PIVOT_HOLD_S = 0.91` is pivot-specific.** Each device needs its own
+  hold, still clamped so a cue cannot outlive its shot or the film.
+- **`treatment` (K4) currently has NO consumer.** The pivot ignores it
+  because the device IS a slab. `stamp` is the first device that must
+  branch on light/dark/slab, which means K4's entire decision is
+  untested against a real device until this lands.
+- **`band` is pivot-only geometry.** Either give stamp/counter their own
+  (Python-authoritative, passed in props, never duplicated in the TSX -
+  finding 3) or none. With no band, K4 falls back to the frame mean:
+  say so in a comment, because that is a measured loss of precision
+  (frame vs box diverged by 54 luma units on a real plate).
+
+**Verification needs no K9.** Construct `OverlayCue` objects directly
+and call `render_or_reuse_emphasis_overlay` for `fba52b6d`, then ffprobe
+for `yuva444p*`, composite with the production filter fragment, and LOOK
+at a frame per device. A lost alpha channel renders a black rectangle
+rather than raising.
+
+---
+
 ## Decisions and open questions
 
 All six answered 2026-09-08. Density (5) is defined by a test rather
@@ -902,6 +1011,8 @@ K5  palette resolution   |
  |                       |
 K7  compositor seam <----+          <- needs everything above to have
  |                                     something to render
+K11 device renderers                <- stamp + counter; K9 has nothing
+ |                                     to author into without this
 K8  data graphics                   <- needs K7's seam and K4's contrast
 K10 pivot detection                 <- independent; can ship any time
                                        after K9 exists
