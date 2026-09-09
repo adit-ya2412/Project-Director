@@ -88,6 +88,7 @@ from app.renderer.compositor import (
     emphasis_cue_content_hash,
     emphasis_font_content_hash,
     emphasis_overlay_filter_fragment,
+    emphasis_palette_hash,
     render_or_reuse_emphasis_overlay,
 )
 from app.renderer.emphasis_contrast import apply_emphasis_treatments
@@ -126,6 +127,7 @@ from app.repositories.shot_binding_repository import ShotBindingRepository
 from app.schemas.project import ProjectStatus
 from app.schemas.timeline import SfxKind, Timeline
 from app.script.styles import (
+    resolve_emphasis_palette,
     resolve_emphasis_slab_default,
     resolve_music_gains,
     resolve_narration_speed,
@@ -406,6 +408,20 @@ async def render_video(
     )
     emphasis_cue_hash = emphasis_cue_content_hash(overlay_cues)
     emphasis_font_hash = emphasis_font_content_hash() if overlay_cues else None
+    # K5: resolve ONCE so the fingerprint and the compositor cannot
+    # drift (RV2). Hash the resolved pair, not the raw metadata field
+    # — unset and an explicit band pair are the same pixels. None when
+    # this render has no overlay.
+    overlay_palette = (
+        resolve_emphasis_palette(
+            timeline,
+            channel_accent=settings.emphasis_accent,
+            channel_pivot_ground=settings.emphasis_pivot_ground,
+        )
+        if overlay_cues
+        else None
+    )
+    palette_hash = emphasis_palette_hash(overlay_palette)
 
     ffmpeg_version = await get_ffmpeg_version(render_settings.ffmpeg_binary)
     # Leftover item 5: style-owned mix. Resolve once so the fingerprint
@@ -505,6 +521,7 @@ async def render_video(
         layer_content_hashes=layer_content_hashes,
         emphasis_cue_hash=emphasis_cue_hash,
         emphasis_font_hash=emphasis_font_hash,
+        palette_hash=palette_hash,
     )
 
     render_repo = RenderRepository(ctx.session)
@@ -616,6 +633,7 @@ async def render_video(
                 height=render_settings.height,
                 fps=render_settings.fps,
                 duration_in_frames=duration_in_frames,
+                palette=overlay_palette,
             )
             extra_inputs.append(overlay_path)
             overlay_index = len(extra_inputs)

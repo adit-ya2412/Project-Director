@@ -11,6 +11,8 @@ import pytest
 
 from app.core.config import settings
 from app.script.styles import (
+    EMPHASIS_SPIKE_ACCENT,
+    EMPHASIS_SPIKE_PIVOT_GROUND,
     STYLE_PACING_BANDS,
     PicturePath,
     StylePacingBand,
@@ -319,6 +321,23 @@ def test_retention_fast_opts_into_emphasis_slab_default():
     assert resolve_emphasis_slab_default("no_such_style") is False
 
 
+def test_retention_fast_records_the_spike_palette_pair():
+    """K5: only this style has kinetic text. Other styles leave both
+    None; the resolver, not the band field, is what use sites read."""
+    band = STYLE_PACING_BANDS["retention_fast"]
+    assert band.emphasis_accent == EMPHASIS_SPIKE_ACCENT
+    assert band.emphasis_pivot_ground == EMPHASIS_SPIKE_PIVOT_GROUND
+    for style in (
+        "documentary_archival",
+        "stillness",
+        "archival_montage",
+        "illustrated_risograph",
+    ):
+        other = STYLE_PACING_BANDS[style]
+        assert other.emphasis_accent is None
+        assert other.emphasis_pivot_ground is None
+
+
 def test_retention_fast_opts_into_emphasis_density_knobs():
     """K3: gap 3 at 1.75s/shot ≈ 11.4 cues/min; cap 12.0 is the top of
     the 8–12/min band. Other styles leave both None so density is a
@@ -585,6 +604,8 @@ def test_existing_four_style_bands_are_byte_for_byte_unchanged():
         emphasis_slab_default=True,
         emphasis_min_shot_gap=3,
         emphasis_max_cues_per_minute=12.0,
+        emphasis_accent="#FFC300",
+        emphasis_pivot_ground="#FF2E2E",
     )
     assert STYLE_PACING_BANDS["archival_montage"] == StylePacingBand(
         name="archival_montage",

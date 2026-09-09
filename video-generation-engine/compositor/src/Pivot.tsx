@@ -36,8 +36,14 @@ import { DEVANAGARI } from "./font";
  * with no `band`, and they are documented as spike code in
  * `compositor/README.md`. Production always passes `band` — see
  * `_overlay_props`. Nothing in the production path reads these.
+ *
+ * Hue: type stays white (K4 light on the band — the band IS the
+ * ground). The band fill is K5 `pivotGround`, passed from Python.
+ * `RED` below is a spike-only fallback for standalone compositions
+ * that pass no palette; production always passes `pivotGround`.
  */
 
+// FALLBACK ONLY — standalone spike compositions. Production passes `pivotGround`.
 const RED = "#FF2E2E";
 const WHITE = "#FFFFFF";
 // FALLBACK ONLY — standalone spike compositions. See the note above.
@@ -66,6 +72,8 @@ export type PivotProps = {
   startFrame: number;
   endFrame: number;
   band?: PivotBandProps | null;
+  // K5 pivot ground. Spike-only fallback is RED when missing.
+  pivotGround?: string | null;
 };
 
 export const Pivot: React.FC<PivotProps> = ({
@@ -73,6 +81,7 @@ export const Pivot: React.FC<PivotProps> = ({
   startFrame,
   endFrame,
   band,
+  pivotGround,
 }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
@@ -104,6 +113,7 @@ export const Pivot: React.FC<PivotProps> = ({
   const pad = band?.pad ?? Math.round(SPIKE_PAD * (height / SPIKE_HEIGHT));
   const left = band?.left ?? 0;
   const bandWidth = band?.width ?? width;
+  const ground = pivotGround ?? RED;
 
   return (
     <div
@@ -111,7 +121,7 @@ export const Pivot: React.FC<PivotProps> = ({
     >
       <div
         style={{
-          background: RED,
+          background: ground,
           padding: `${pad}px 0`,
           transform: `translateX(${shake}px) rotate(-1.5deg)`,
           clipPath: `inset(0 ${100 - bandW * 100}% 0 0)`,

@@ -96,10 +96,16 @@ Devanagari file are the actual compositor inputs, and a cached
 no kinetic text (or the wrong contrast treatment) if those were not
 hashed. `emphasis_cue_hash` / `emphasis_font_hash` are that hook —
 NOT `cue_list_hash`, which already means CAPTION cues. Both present
-unconditionally, `None` when there is no emphasis overlay. Palette hash
-is K5 and is not in this slice. `values` (a counter's target number)
-rides inside `emphasis_cue_hash` as of K11 — editing the figure must
-miss the cached `final.mp4`.
+unconditionally, `None` when there is no emphasis overlay. `palette_hash`
+is K5: the RESOLVED accent + pivot_ground pair actually passed to the
+compositor, `None` when there is no overlay. Hashing the raw metadata
+field as null would let the first authoring of the spike colours HIT
+the unset cache, so this is the resolved pair, not the stored field.
+The raw `emphasis_palette` / `emphasis_palette_override` keys are
+stripped from the timeline dump for the same reason `approved_scenes`
+is (they are authoring records; pixels depend on the resolved pair).
+`values` (a counter's target number) rides inside `emphasis_cue_hash`
+as of K11 — editing the figure must miss the cached `final.mp4`.
 
 Bookkeeping fields (`version`, `parent_version`, `produced_by`, `status`,
 `created_at`, `timeline_id`, `project_id`, `schema_version`) are
@@ -223,6 +229,7 @@ def compute_render_fingerprint(
     layer_content_hashes: dict[str, list[str]] | None = None,
     emphasis_cue_hash: str | None = None,
     emphasis_font_hash: str | None = None,
+    palette_hash: str | None = None,
 ) -> str:
     timeline_document = timeline.model_dump(mode="json")
     content_only = {
@@ -233,10 +240,16 @@ def compute_render_fingerprint(
     # (those stay hashed; dropping all of `metadata` would reopen R6).
     # Click order of per-scene approve must not fork the cache key.
     metadata = content_only.get("metadata")
-    if isinstance(metadata, dict) and "approved_scenes" in metadata:
-        metadata = dict(metadata)
-        metadata.pop("approved_scenes", None)
-        content_only = {**content_only, "metadata": metadata}
+    if isinstance(metadata, dict):
+        # R-C6: `approved_scenes` is a review record. K5: the raw palette
+        # fields are authoring records; pixels depend on `palette_hash`
+        # (the resolved pair). Stripping them means an unset timeline
+        # and one that explicitly records the band pair collide, which
+        # is correct — both produce the same overlay.
+        drop = ("approved_scenes", "emphasis_palette", "emphasis_palette_override")
+        if any(key in metadata for key in drop):
+            metadata = {k: v for k, v in metadata.items() if k not in drop}
+            content_only = {**content_only, "metadata": metadata}
     payload = {
         "timeline": content_only,
         # R16: assignment, not a bag. A flat sorted list could not tell
@@ -431,6 +444,11 @@ def compute_render_fingerprint(
         # separately from `cue_list_hash` (captions).
         "emphasis_cue_hash": emphasis_cue_hash,
         "emphasis_font_hash": emphasis_font_hash,
+        # retention_fast_kinetic_text.md K5: RESOLVED palette pair.
+        # Present unconditionally (R2), None when this render has no
+        # overlay. Named separately from `emphasis_cue_hash` (cues) and
+        # `cue_list_hash` (captions).
+        "palette_hash": palette_hash,
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 

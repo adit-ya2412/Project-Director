@@ -70,7 +70,7 @@ and their disposition are below.
 | **K9** emphasis pass | **stub** — `steps/emphasis_pass.py` exists and is style-gated, but runs only pivot detection. The LLM pass is not written |
 | **K3** enforcement rules | **implemented 2026-09-09, reviewed and the three findings fixed same day** — shared pass in `app/timeline/emphasis_rules.py`; `text_card` rule moved out of `pivot.py`; graphic signal is planner-authored `Shot.picture_is_graphic` (option 1). Safe-zone geometry deferred (no plate at authoring time). Review applied: `min_shot_gap` is an index distance (the off-by-one made the effective gap 4, measured 8.57/min instead of the band's 12.00/min); the citation matcher now reads spelled-out Hindi/English numbers and decimals, reusing `caption_romanizer.numerals`; the call site's two knobs are pinned by a step-level test |
 | **K4** contrast adaptation | **done 2026-09-09, reviewed same day** — render-time plate luma → light/dark/slab on OverlayCue. Slab default for retention_fast. The bright `2025` plate is never `light`. Review applied: band box is now Python-authoritative and travels through the props; `LIGHT_MAX_LUMA` 90 → 105 on six measured plates; the measurement is kept and logged under the slab policy; one decode per plate |
-| **K5** palette resolution | **not started; decision recorded 2026-09-09** — scenario A, planner-authored and recorded on the timeline (decision 7). The accent and the pivot ground are palette; white/ink stay K4's contrast treatments |
+| **K5** palette resolution | **implemented 2026-09-09, awaiting review** — scenario A, planner-authored and recorded on the timeline (decision 7). The accent and the pivot ground are palette; white/ink stay K4's contrast treatments |
 | **K6** reach the vendored Bold | **done 2026-09-09** — was never a download |
 | **K11** device renderers (stamp, counter) | **implemented 2026-09-09; two render-found defects fixed same day** — stamp + counter renderers; unblocks K9. The counter band is now content-derived (its type overflowed a hardcoded 420 by 118px, measured) and `treatment="dark"` gained the light halo it never had |
 | **K8** data graphics | **not started** |
@@ -2129,6 +2129,103 @@ K12 is the wiring. `ShotPlanOutput.picture_is_graphic` is a required bool with n
 - Live re-plan left project `8b09ae2a-59c0-41ca-8e38-fea4c98c0ddd` in the local DB as evidence. Throwaway script in `tmp/k12_replan.py` (gitignored).
 
 **Not done (out of slice):** K8 (drawing the chart), K9 LLM emphasis pass, K5 palette, vision classification, Pexels/override reclassification.
+
+No commit, no `git add`, no push. Working tree left dirty for review. Stopping.
+
+---
+
+## Work log — K5 palette resolution (2026-09-09)
+
+This section is an implementation diary, not a design change. Earlier sections above stay authoritative. Append only; never rewrite prior log entries.
+
+### 19:12 — starting
+
+- read / opened: this plan (K5 task ~688, decision 7 ~1125, architecture table "colour is decided once and written down", fingerprint warning `palette_hash`, file map); `timeline.py` `TimelineMetadata.voice_id`; `styles.py` `StylePacingBand` + `resolve_emphasis_slab_default`; `compositor.py` (`overlay_input_hash`, `_overlay_props`, `render_or_reuse_emphasis_overlay`); `render.py` (overlay collect ~396, fingerprint ~449, compositor call ~612); `fingerprint.py` (emphasis docstring still says palette is not in this slice); compositor `Stamp.tsx` / `Counter.tsx` / `Pivot.tsx` / `Emphasis.tsx` (four hexes: `#FFC300` accent, `#FF2E2E` pivot ground, `#FFFFFF` white, `#0A0A0B` ink); K11 live-render pattern in `tmp/k11_fix/verify_k11_fixes.py`.
+- decided: scenario A as recorded. Palette is a pair (accent + pivot_ground). White/ink stay K4 literals. Precedence `override > planner > channel > band`; last-last fallback for a non-retention band is the spike pair so the compositor never invents hexes — same pair `retention_fast` records, not a second colour-choosing system. No K9 LLM call. Resolve once in RenderStep (RV2). Hash the resolved pair, not the raw metadata field. Strip the raw metadata fields from the timeline dump (like `approved_scenes`) so unset vs explicit-band-pair collide on the render fingerprint.
+- files: this plan (K5 status line + this work log)
+- tests: none yet
+- next: schema + band + resolver
+
+### 19:20 — schema, resolver, seam, compositor
+
+- files: `backend/app/schemas/timeline.py` (`EmphasisPalette`, `emphasis_palette` + `emphasis_palette_override` on `TimelineMetadata`, hex `#RRGGBB` validator, empty string rejected); `backend/app/script/styles.py` (`emphasis_accent` / `emphasis_pivot_ground` on the band, spike pair on `retention_fast`, `resolve_emphasis_palette`); `backend/app/core/config.py` (channel defaults, None); `backend/app/renderer/compositor.py` (`emphasis_palette_as_props`, `emphasis_palette_hash`, palette in `overlay_input_hash` / `_overlay_props` / `render_or_reuse_emphasis_overlay`); `backend/app/renderer/fingerprint.py` (`palette_hash` kwarg, raw palette fields stripped from the timeline dump); `backend/app/workflow/steps/render.py` (resolve once, same object to fingerprint and compositor); compositor `Emphasis.tsx` / `Stamp.tsx` / `Counter.tsx` / `Pivot.tsx` (props in, WHITE/INK stay literals, leftover hexes labelled spike-only fallbacks). Spike compositions untouched.
+- decided: last-last fallback for a non-retention band is the spike pair (compositor never invents hexes). Channel/band may mix per role; override/planner are a pair. Hash the resolved pair. Strip raw metadata fields so unset vs explicit-band-pair collide.
+- tests: 193 passed (`test_emphasis_palette` schema + resolver, `test_styles`, `test_compositor`, `test_fingerprint` + parallax/reveal helpers). Ruff clean on the K5 Python files (pre-existing B905 in `test_styles.py` not touched).
+- next: live Remotion renders + pixel sampling
+
+### 19:26 — live Remotion renders + measured RGB
+
+- did: `tmp/k5_palette/verify_k5.py` drove `render_or_reuse_emphasis_overlay` (real Chromium, ProRes 4444) with a stamp + counter + pivot overlay at 720×1280 / 30fps / 130 frames. Palette resolved through `resolve_emphasis_palette` from a timeline, not hardcoded at the compositor. Frames extracted as RGBA PNG. `tmp/` is gitignored.
+- Node 22.15.1, npx 11.5.2, ffmpeg 9.0. Four Chromium invokes (unset, authored, amber-off, amber-on). Second render of unset: **0 invokes**, same path — cache hit.
+- **Watch 1 — unset fallback.** `render_style=retention_fast`, no palette fields. Resolver returned `#FFC300` / `#FF2E2E`. Overlay `tmp/k5_palette/storage/k5-palette/overlays/28e26880….mov`.
+
+  | site | frame | (x,y) | hex | expect |
+  |---|---|---|---|---|
+  | stamp rule | `tmp/k5_palette/unset_stamp.png` | (215, 530) | `#FFC300` | amber accent |
+  | counter digits | `tmp/k5_palette/unset_counter.png` | (128, 339) | `#FFC300` | amber accent |
+  | pivot band fill | `tmp/k5_palette/unset_pivot.png` | (171, 385) | `#FF2E2E` | red ground |
+  | pivot type | same | (238, 400) | `#FFFFFF` | K4 light, not palette |
+  | stamp point | same stamp | (360, 535) | `#FFC300` | |
+  | pivot point | same pivot | (80, 389) | `#FF2E2E` | |
+
+  Zero drift from the authored hexes on the overlay RGBA. (360, 374) on the counter frame is slab ink `#0A0A0B` — the digits sit left of centre; the closest-accent search is the one that finds type.
+
+- **Watch 2 — authored palette.** Same cues, `emphasis_palette={accent: "#00C8FF", pivot_ground: "#5A00A8"}`. Overlay `tmp/k5_palette/storage/k5-palette/overlays/fdefec72….mov`.
+
+  | site | frame | (x,y) | hex |
+  |---|---|---|---|
+  | stamp rule | `tmp/k5_palette/authored_stamp.png` | (216, 530) | `#00C8FF` |
+  | counter digits | `tmp/k5_palette/authored_counter.png` | (128, 339) | `#00C8FF` |
+  | pivot band fill | `tmp/k5_palette/authored_pivot.png` | (174, 385) | `#5A00A8` |
+  | pivot type | same | (238, 400) | `#FFFFFF` |
+
+  Accent sites are **not** still amber. Pivot ground is **not** still `#FF2E2E`. Pivot type stayed white.
+
+- **Watch 3 — amber-on-amber.** Plate `tmp/k5_palette/amber_plate.png` filled `#FFC300`. Counter, accent `#FFC300`. Measured luma through the counter band: **190.71** (Rec.601 theoretical 190.71). `DARK_MIN_LUMA=180`, `LIGHT_MAX_LUMA=105`.
+
+  | policy | treatment | type colour | sits on | frames |
+  |---|---|---|---|---|
+  | `slab_default=False` | `dark` | ink `#0A0A0B` at (128, 323) and (128, 339) on overlay **and** composite | the amber plate | `amber_off_overlay.png` / `amber_off_composite.png` |
+  | `slab_default=True` (production retention_fast) | `slab` | accent `#FFC300` at (128, 339) and (200, 360) | the ink slab (composite slab `#27200A` = 0.88 ink over amber), **not** the plate | `amber_on_overlay.png` / `amber_on_composite.png` |
+
+  Plate itself at (40, 40) stayed `#FFC300` on both composites.
+
+  **Does K4 save it, or does accent type sit on an amber plate?** K4 saves it. With the policy off the chooser picks `dark` and the digits render as ink, not accent — accent type does not sit on the amber plate. With the policy on, digits stay accent but they sit on the designed slab, not on the plate. The `#FFCD2C` at composite (360, 374) under `dark` is the light halo (overlay white @ alpha 44) mixed over `#FFC300`, not the accent hue.
+
+- files: `tmp/k5_palette/` (script, PNGs, `report.json`, overlay `.mov`s). Not committed.
+- next: finish / summary
+
+### 19:26 — finish / summary
+
+K5 is the recording mechanism. A palette is a pair (accent + pivot_ground) on `TimelineMetadata`, resolved once in RenderStep, passed through `--props`, hashed as `palette_hash` and into `overlay_input_hash`. Unset `retention_fast` renders the spike pair; an authored pair changes the pixels; K4's chooser, not a second colour system, is what keeps amber type off an amber plate.
+
+**Files changed**
+
+- Schema: `backend/app/schemas/timeline.py` (`EmphasisPalette`, `emphasis_palette`, `emphasis_palette_override`)
+- Band + resolver: `backend/app/script/styles.py` (`emphasis_accent` / `emphasis_pivot_ground`, `resolve_emphasis_palette`); channel knobs on `backend/app/core/config.py`
+- Render seam: `backend/app/workflow/steps/render.py` (resolve once → fingerprint + compositor)
+- Overlay hash / props: `backend/app/renderer/compositor.py`
+- Fingerprint: `backend/app/renderer/fingerprint.py` (`palette_hash`; raw palette fields stripped from the timeline dump)
+- Compositor: `compositor/src/Emphasis.tsx`, `Stamp.tsx`, `Counter.tsx`, `Pivot.tsx`
+- Tests: `backend/tests/unit/timeline/test_emphasis_palette.py` (new), `backend/tests/unit/script/test_emphasis_palette.py` (new), `test_styles.py`, `test_compositor.py`, `test_fingerprint.py`
+- This plan (K5 status row + this work log)
+- Live evidence (gitignored): `tmp/k5_palette/`
+
+**Decisions (also in the entries above)**
+
+- Scenario A as recorded. No K9 LLM call this slice.
+- Last-last fallback for a non-retention band is the spike pair, so the compositor never invents hexes. Same pair `retention_fast` records, not a second colour-choosing system.
+- Override / planner are a pair; channel / band may mix per role.
+- Hash the resolved pair. Strip the raw metadata fields from the fingerprint dump so unset vs explicit-band-pair collide.
+
+**Deviations / contradictions found**
+
+- Plan phrase "roles, not hues" / `accent` / `alert` / `neutral` on the band is older than decision 7. This slice implements the pair in the K5 task table (accent + pivot_ground), not a three-role system.
+- `LIGHT_MAX_LUMA` 105 / `DARK_MIN_LUMA` 180 meant the amber plate (luma 190.71) could never be `light`; the fight K4 actually fights here is `dark` (ink type) vs `slab` (accent on ink), not white-on-amber.
+- venv is at repo root, not `backend/.venv`.
+- Pre-existing ruff B905 in `test_styles.py` not touched.
+
+**Not done (out of slice):** K9 LLM authoring of the palette, K8, vision, sampling dominant hue at render, any change to white/ink, pivot type as accent, spike file hardcoded colours.
 
 No commit, no `git add`, no push. Working tree left dirty for review. Stopping.
 

@@ -15,6 +15,7 @@ Rules encoded here:
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from enum import StrEnum
 
@@ -737,6 +738,30 @@ class Scene(BaseModel):
     caption_word_groups: list[int] | None = None
 
 
+# retention_fast_kinetic_text.md K5: `#` + 6 hex digits. Empty string is
+# not "unset" — that is `None` on the metadata fields below.
+_EMPHASIS_HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+class EmphasisPalette(BaseModel):
+    """The per-project kinetic-text colour pair (K5, decision 7).
+
+    `accent` is the stamp rule and the counter digits/meter.
+    `pivot_ground` is the pivot band's fill. White (`#FFFFFF`) and ink
+    (`#0A0A0B`) are K4 treatments, not palette, and do not live here.
+    """
+
+    accent: str
+    pivot_ground: str
+
+    @field_validator("accent", "pivot_ground")
+    @classmethod
+    def _hex_rrggbb(cls, value: str) -> str:
+        if not _EMPHASIS_HEX.fullmatch(value):
+            raise ValueError("must be a #RRGGBB hex colour")
+        return value.upper()
+
+
 class TimelineMetadata(BaseModel):
     language: str = "en"
     aspect_ratio: str = "9:16"
@@ -856,6 +881,21 @@ class TimelineMetadata(BaseModel):
     # version. It is NOT a substitute for produced_by — Narration
     # overwrites that.
     emphasis_pass_attempted: bool | None = None
+    # retention_fast_kinetic_text.md K5 / decision 7: the per-project
+    # kinetic-text palette, authored once and recorded. `None` means
+    # unset — stored timelines without the key load as None and the
+    # resolver falls through to channel, then the style band. Empty
+    # strings are rejected on `EmphasisPalette`, not treated as unset.
+    # Precedence (resolved in `resolve_emphasis_palette`, never here):
+    # human override > planner-authored > channel default > style band.
+    # K9 is the eventual authoring home; this slice only records.
+    emphasis_palette: EmphasisPalette | None = None
+    # Human override of the pair above, same "two optional fields so
+    # precedence is explicit on a single version" shape as
+    # `grade_style` vs `render_style`. A later HUMAN `append_version`
+    # is not required to win — setting this field on the current
+    # document is enough.
+    emphasis_palette_override: EmphasisPalette | None = None
 
 
 class MusicTrackSelection(BaseModel):

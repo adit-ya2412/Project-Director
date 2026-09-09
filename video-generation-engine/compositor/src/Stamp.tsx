@@ -33,10 +33,16 @@ import type { PivotBandProps } from "./Pivot";
  * CSS stack. `hi` uses the bundled Noto so compositor faces never depend
  * on host fontconfig. Letter-spacing is 4px for Latin (Year) and 0 for
  * Devanagari — tracking Devanagari is the libass-breaking case.
+ *
+ * Hue: white `#FFFFFF` and ink `#0A0A0B` stay K4 literals. The rule
+ * colour is K5 `accent`, passed from Python. `AMBER` below is a
+ * spike-only fallback for standalone compositions that pass no palette;
+ * production always passes `accent`.
  */
 
 const WHITE = "#FFFFFF";
 const INK = "#0A0A0B";
+// FALLBACK ONLY — standalone spike compositions. Production passes `accent`.
 const AMBER = "#FFC300";
 const HEAVY = "'Segoe UI Black','Arial Black',Impact,sans-serif";
 const SHADOW = "0 6px 0 rgba(0,0,0,0.35), 0 0 26px rgba(0,0,0,0.6)";
@@ -80,6 +86,8 @@ export type StampProps = {
   endFrame: number;
   treatment: "light" | "dark" | "slab";
   band?: PivotBandProps | null;
+  // K5 accent. Spike-only fallback is AMBER when missing.
+  accent?: string | null;
 };
 
 export const Stamp: React.FC<StampProps> = ({
@@ -89,6 +97,7 @@ export const Stamp: React.FC<StampProps> = ({
   endFrame,
   treatment,
   band,
+  accent,
 }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
@@ -132,6 +141,7 @@ export const Stamp: React.FC<StampProps> = ({
   const fontFamily = isHi ? `${DEVANAGARI}, sans-serif` : HEAVY;
   const letterSpacing = isHi ? 0 : 4;
   const typeColor = treatment === "dark" ? INK : WHITE;
+  const accentColor = accent ?? AMBER;
   // light -> dark plate -> white type + dark shadow.
   // dark  -> bright plate -> ink type + light halo (see HALO above).
   // slab  -> the device draws its own ground, so neither.
@@ -198,7 +208,7 @@ export const Stamp: React.FC<StampProps> = ({
             margin: "6px auto 0",
             width: ruleWidth,
             height: 10,
-            background: AMBER,
+            background: accentColor,
             clipPath: `inset(0 ${50 - rule * 50}% 0 ${50 - rule * 50}%)`,
           }}
         />

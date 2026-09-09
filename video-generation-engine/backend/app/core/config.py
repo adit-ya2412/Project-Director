@@ -658,6 +658,11 @@ class Settings(BaseSettings):
     # `app/script/styles.py::resolve_constraint_bundle`'s own docstring
     # for the `None`-means-default reasoning this depends on.
     default_render_style: str = "documentary_archival"
+    # retention_fast_kinetic_text.md K5: optional channel-wide palette.
+    # None = no channel default; `resolve_emphasis_palette` falls through
+    # to the style band. Read through that resolver, never at use sites.
+    emphasis_accent: str | None = None
+    emphasis_pivot_ground: str | None = None
 
     # Track C C4: reuse penalty is a temporal window, not a global set.
     # Uncalibrated taste default (plan §5.2) — full penalty at 0 s gap,

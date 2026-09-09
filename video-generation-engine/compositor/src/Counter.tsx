@@ -45,12 +45,16 @@ import type { PivotBandProps } from "./Pivot";
  * and that is where it gets fixed.
  *
  * Latin faces: same CSS stack as the spike (no Latin file is vendored).
- * Hue: spike colours only — white `#FFFFFF`, ink `#0A0A0B`, amber
- * `#FFC300`. Treatment flips which of those apply, not a new hex.
+ * Hue: white `#FFFFFF` and ink `#0A0A0B` stay K4 literals. Digits and
+ * the meter fill are K5 `accent`, passed from Python. `AMBER` below is
+ * a spike-only fallback for standalone compositions that pass no
+ * palette; production always passes `accent`. `onDark ? INK : accent`
+ * is a K4 treatment branch, not a hue choice.
  */
 
 const WHITE = "#FFFFFF";
 const INK = "#0A0A0B";
+// FALLBACK ONLY — standalone spike compositions. Production passes `accent`.
 const AMBER = "#FFC300";
 const HEAVY = "'Segoe UI Black','Arial Black',Impact,sans-serif";
 const SHADOW = "0 6px 0 rgba(0,0,0,0.35), 0 0 26px rgba(0,0,0,0.6)";
@@ -94,6 +98,8 @@ export type CounterProps = {
   treatment: "light" | "dark" | "slab";
   band?: PivotBandProps | null;
   values: CounterValueProps[];
+  // K5 accent. Spike-only fallback is AMBER when missing.
+  accent?: string | null;
 };
 
 export const Counter: React.FC<CounterProps> = ({
@@ -104,6 +110,7 @@ export const Counter: React.FC<CounterProps> = ({
   treatment,
   band,
   values,
+  accent,
 }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
@@ -141,10 +148,12 @@ export const Counter: React.FC<CounterProps> = ({
   const kickerFamily = isHi ? `${DEVANAGARI}, sans-serif` : HEAVY;
   const onSlab = treatment === "slab";
   const onDark = treatment === "dark";
-  // Amber is the watched number colour on dark plates / slabs; ink is
+  const accentColor = accent ?? AMBER;
+  // Accent is the watched number colour on dark plates / slabs; ink is
   // the contrast escape on a bright plate (the 4.3s infographic failure
-  // was type with no ground of its own).
-  const numberColor = onDark ? INK : AMBER;
+  // was type with no ground of its own). K4 picks the branch; K5
+  // supplies the hue.
+  const numberColor = onDark ? INK : accentColor;
   const kickerColor = onDark ? INK : WHITE;
   // light -> dark plate -> white type + dark shadow.
   // dark  -> bright plate -> ink type + light halo (see HALO above).
@@ -204,7 +213,7 @@ export const Counter: React.FC<CounterProps> = ({
             background: "rgba(0,0,0,0.45)",
           }}
         >
-          <div style={{ width: `${t * 100}%`, height: "100%", background: AMBER }} />
+          <div style={{ width: `${t * 100}%`, height: "100%", background: accentColor }} />
         </div>
         {text ? (
           <div

@@ -26,7 +26,7 @@ from pathlib import Path
 from app.core.config import settings
 from app.core.errors import PermanentError
 from app.core.logging import get_logger
-from app.schemas.timeline import EmphasisDevice, Timeline
+from app.schemas.timeline import EmphasisDevice, EmphasisPalette, Timeline
 from app.timeline.duration import compute_shot_start_times, compute_timeline_duration
 
 logger = get_logger(__name__)
@@ -710,6 +710,26 @@ def emphasis_cue_content_hash(cues: list[OverlayCue]) -> str | None:
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
+def emphasis_palette_as_props(palette: EmphasisPalette) -> dict[str, str]:
+    """The props contract consumed by `Emphasis.tsx` (`palette`)."""
+    return {"accent": palette.accent, "pivotGround": palette.pivot_ground}
+
+
+def emphasis_palette_hash(palette: EmphasisPalette | None) -> str | None:
+    """Fingerprint input: the RESOLVED pair actually passed to the compositor.
+
+    None when this render has no overlay. Unset metadata and an explicit
+    band pair hash identically because both resolve to the same colours
+    — hashing the raw metadata field as null would let the first authoring
+    of the spike pair wrongly HIT the unset cache.
+    """
+    if palette is None:
+        return None
+    return hashlib.sha256(
+        _canonical_json(emphasis_palette_as_props(palette)).encode("utf-8")
+    ).hexdigest()
+
+
 def overlay_input_hash(
     *,
     cues: list[OverlayCue],
@@ -718,6 +738,7 @@ def overlay_input_hash(
     fps: int,
     duration_in_frames: int,
     font_hash: str,
+    palette: EmphasisPalette,
 ) -> str:
     """Cache key for the rendered `.mov`. Every pixel input, nothing else.
 
@@ -729,9 +750,11 @@ def overlay_input_hash(
     band in the old position. `values` joined with K11 for the same
     reason one level down: editing a counter's target (or which
     fragment it is cited from) must miss this cache instead of serving
-    a `.mov` that still counts to the old figure. Consequence, expected
-    and correct: every overlay cached before this change misses once
-    and re-renders.
+    a `.mov` that still counts to the old figure. `palette` joined with
+    K5: changing accent or pivot_ground must miss instead of serving a
+    `.mov` with the old colours (the plan's own fingerprint trap).
+    Consequence, expected and correct: every overlay cached before this
+    change misses once and re-renders.
     """
     payload = {
         "cues": [
@@ -751,6 +774,7 @@ def overlay_input_hash(
         "fps": fps,
         "duration_in_frames": duration_in_frames,
         "font_hash": font_hash,
+        "palette": emphasis_palette_as_props(palette),
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
@@ -763,20 +787,30 @@ def emphasis_overlay_filter_fragment(
     )
 
 
-def _overlay_props(cues: list[OverlayCue], *, width: int, height: int, fps: int, duration_in_frames: int) -> dict:
+def _overlay_props(
+    cues: list[OverlayCue],
+    *,
+    width: int,
+    height: int,
+    fps: int,
+    duration_in_frames: int,
+    palette: EmphasisPalette,
+) -> dict:
     """The props contract handed to the `Emphasis` composition.
 
     `cue.band` is the finding-3 half of it: Python resolves the band and
     the device TSX positions itself from these numbers instead of holding
     its own copy of the layout. `values` is the counter's target (K11).
-    Keys are camelCase because that is what the TSX types declare; the
-    Python-side names are snake_case and the translation happens only
-    here.
+    `palette` is the K5 pair (accent + pivot ground), resolved in Python
+    and never re-derived inside the compositor. Keys are camelCase
+    because that is what the TSX types declare; the Python-side names
+    are snake_case and the translation happens only here.
     """
     return {
         "canvas": {"width": width, "height": height},
         "fps": fps,
         "durationInFrames": duration_in_frames,
+        "palette": emphasis_palette_as_props(palette),
         "cues": [
             {
                 "device": cue.device,
@@ -868,13 +902,16 @@ async def render_or_reuse_emphasis_overlay(
     height: int,
     fps: int,
     duration_in_frames: int,
+    palette: EmphasisPalette,
     storage_root: Path | None = None,
     invoke=_invoke_remotion,
 ) -> Path:
     """Return `{storage_root}/{project_id}/overlays/{input_hash}.mov`.
 
     Cache HIT skips Chromium. Cache is keyed on the INPUT hash, never
-    on output bytes.
+    on output bytes. `palette` is the resolved pair (K5) — the same
+    object the fingerprint hashed — so a colour change cannot reuse a
+    `.mov` with the old hexes.
     """
     if not cues:
         raise PermanentError("render_or_reuse_emphasis_overlay called with no cues")
@@ -886,6 +923,7 @@ async def render_or_reuse_emphasis_overlay(
         fps=fps,
         duration_in_frames=duration_in_frames,
         font_hash=font_hash,
+        palette=palette,
     )
     root = storage_root if storage_root is not None else settings.storage_root
     overlays_dir = root / project_id / "overlays"
@@ -914,6 +952,7 @@ async def render_or_reuse_emphasis_overlay(
                 height=height,
                 fps=fps,
                 duration_in_frames=duration_in_frames,
+                palette=palette,
             ),
             ensure_ascii=False,
         ),

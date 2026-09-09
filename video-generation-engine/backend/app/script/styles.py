@@ -11,10 +11,12 @@ every style is a behaviour four planners can regress against).
 """
 
 import math
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 
 from app.core.config import settings
+from app.schemas.timeline import EmphasisPalette, Timeline
 
 # A fast style's dead-stop ceiling is expressed as a multiple of its own
 # target shot duration, not a flat constant - a style with a slower
@@ -174,6 +176,14 @@ class StylePacingBand:
     # the plan builds against. Read through
     # `resolve_emphasis_max_cues_per_minute`.
     emphasis_max_cues_per_minute: float | None = None
+    # retention_fast_kinetic_text.md K5: the style-band palette pair.
+    # None = this style has no kinetic text and no band colour.
+    # `retention_fast` records the spike pair (`#FFC300` / `#FF2E2E`).
+    # Read through `resolve_emphasis_palette`, never the band field at
+    # a use site (RV2 / R1). Additive default None so other styles do
+    # not change.
+    emphasis_accent: str | None = None
+    emphasis_pivot_ground: str | None = None
 
     @property
     def max_fragment_duration_s(self) -> float | None:
@@ -257,6 +267,12 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
         # styles leave both None, so the pass is a no-op for density.
         emphasis_min_shot_gap=3,
         emphasis_max_cues_per_minute=12.0,
+        # K5: the watched fallback for an unset retention_fast timeline.
+        # Same pair the spike compositions hardcode. Other styles leave
+        # both None; the resolver then uses this same pair as a last
+        # resort so the compositor is never asked to invent hexes.
+        emphasis_accent="#FFC300",
+        emphasis_pivot_ground="#FF2E2E",
     ),
     "archival_montage": StylePacingBand(
         # Feature B (style_extensions.md §4.3, decided 2026-08-25):
@@ -492,6 +508,89 @@ def resolve_emphasis_min_shot_gap(style: str | None) -> int | None:
     if band is None:
         return None
     return band.emphasis_min_shot_gap
+
+
+# Spike pair — the SUV retention look, and the last-last fallback so
+# the compositor never invents hexes (K5). Same values `retention_fast`
+# records on the band; not a second colour-choosing system.
+EMPHASIS_SPIKE_ACCENT = "#FFC300"
+EMPHASIS_SPIKE_PIVOT_GROUND = "#FF2E2E"
+_EMPHASIS_HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+def _emphasis_hex_or_none(value: str | None, *, source: str) -> str | None:
+    """None stays None. Anything else must be `#RRGGBB` and is uppercased.
+
+    Empty string is not unset — that is a bad value, and it raises.
+    """
+    if value is None:
+        return None
+    if not _EMPHASIS_HEX.fullmatch(value):
+        raise ValueError(f"{source} must be a #RRGGBB hex colour, got {value!r}")
+    return value.upper()
+
+
+def _first_hex(*candidates: str | None) -> str:
+    for value in candidates:
+        if value is not None:
+            return value
+    raise RuntimeError("emphasis palette chain produced no colour")
+
+
+def resolve_emphasis_palette(
+    timeline: Timeline,
+    *,
+    channel_accent: str | None = None,
+    channel_pivot_ground: str | None = None,
+) -> EmphasisPalette:
+    """Style-owned kinetic-text palette (retention_fast_kinetic_text.md K5).
+
+    Precedence: human override > per-project planner-authored
+    (recorded) > channel default > style band default. A rung that is
+    None falls through. Override and planner are a pair — if the field
+    is set, both roles come from it. Channel and band are two optional
+    hexes and may mix with the next rung.
+
+    Last rung is the style band for `timeline.metadata.render_style`
+    (unset style names resolve through `settings.default_render_style`,
+    same shape as `resolve_emphasis_slab_default`). If even the band is
+    unset — every style except `retention_fast` — the spike pair is
+    returned so the compositor is never asked to invent hexes. That is
+    the same pair `retention_fast` records, not a second colour-choosing
+    system. For `retention_fast`, the band pair IS the watched fallback.
+
+    Resolve once in the render caller (RV2) and pass the same object
+    into the fingerprint and the compositor. Never read the band field
+    at a use site.
+    """
+    override = timeline.metadata.emphasis_palette_override
+    if override is not None:
+        return override
+    authored = timeline.metadata.emphasis_palette
+    if authored is not None:
+        return authored
+    band = STYLE_PACING_BANDS.get(
+        timeline.metadata.render_style or settings.default_render_style
+    )
+    accent = _first_hex(
+        _emphasis_hex_or_none(channel_accent, source="settings.emphasis_accent"),
+        _emphasis_hex_or_none(
+            band.emphasis_accent if band is not None else None,
+            source="style_band.emphasis_accent",
+        ),
+        EMPHASIS_SPIKE_ACCENT,
+    )
+    pivot_ground = _first_hex(
+        _emphasis_hex_or_none(
+            channel_pivot_ground, source="settings.emphasis_pivot_ground"
+        ),
+        _emphasis_hex_or_none(
+            band.emphasis_pivot_ground if band is not None else None,
+            source="style_band.emphasis_pivot_ground",
+        ),
+        EMPHASIS_SPIKE_PIVOT_GROUND,
+    )
+    return EmphasisPalette(accent=accent, pivot_ground=pivot_ground)
 
 
 def resolve_emphasis_max_cues_per_minute(style: str | None) -> float | None:

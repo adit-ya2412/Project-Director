@@ -14,6 +14,7 @@ from app.renderer.compositor import (
     collect_emphasis_overlay_cues,
     counter_band,
     emphasis_cue_content_hash,
+    emphasis_palette_hash,
     format_counter_value,
     overlay_input_hash,
     pivot_band,
@@ -23,6 +24,7 @@ from app.renderer.compositor import (
 from app.schemas.timeline import (
     EmphasisCue,
     EmphasisDevice,
+    EmphasisPalette,
     EmphasisRegister,
     EmphasisValue,
     ProducedBy,
@@ -32,6 +34,9 @@ from app.schemas.timeline import (
     Timeline,
     TimelineStatus,
 )
+
+_SPIKE = EmphasisPalette(accent="#FFC300", pivot_ground="#FF2E2E")
+_CYAN = EmphasisPalette(accent="#00C8FF", pivot_ground="#5A00A8")
 
 
 def _timeline_with_pivot(*, offset_s: float = 0.4, duration_s: float = 2.0) -> Timeline:
@@ -161,6 +166,7 @@ async def test_cache_hit_on_second_call_does_not_reinvoke(tmp_path: Path):
         height=1280,
         fps=30,
         duration_in_frames=90,
+        palette=_SPIKE,
         storage_root=tmp_path,
         invoke=fake_invoke,
     )
@@ -174,7 +180,14 @@ async def test_cache_hit_on_second_call_does_not_reinvoke(tmp_path: Path):
 
 def test_overlay_input_hash_changes_when_a_cue_changes():
     font = "abc"
-    base = dict(width=720, height=1280, fps=30, duration_in_frames=90, font_hash=font)
+    base = dict(
+        width=720,
+        height=1280,
+        fps=30,
+        duration_in_frames=90,
+        font_hash=font,
+        palette=_SPIKE,
+    )
     a = [
         OverlayCue(
             device="pivot",
@@ -228,7 +241,14 @@ def test_treatment_change_misses_emphasis_and_overlay_hashes():
     """K4: a plate-driven treatment flip must rerender, not reuse the
     cached overlay / final.mp4. cue_list_hash remains captions."""
     font = "abc"
-    base = dict(width=720, height=1280, fps=30, duration_in_frames=90, font_hash=font)
+    base = dict(
+        width=720,
+        height=1280,
+        fps=30,
+        duration_in_frames=90,
+        font_hash=font,
+        palette=_SPIKE,
+    )
     slab = OverlayCue(
         device="pivot",
         text="लेकिन",
@@ -307,7 +327,9 @@ def test_overlay_props_carry_the_band_in_the_shape_the_tsx_reads():
     cues = collect_emphasis_overlay_cues(
         _timeline_with_pivot(offset_s=0.4), fps=30, width=720, height=1280
     )
-    props = _overlay_props(cues, width=720, height=1280, fps=30, duration_in_frames=90)
+    props = _overlay_props(
+        cues, width=720, height=1280, fps=30, duration_in_frames=90, palette=_SPIKE
+    )
     band = props["cues"][0]["band"]
     # camelCase, and exactly these keys: `PivotBandProps` in Pivot.tsx.
     assert set(band) == {"left", "top", "width", "fontSize", "pad"}
@@ -317,6 +339,7 @@ def test_overlay_props_carry_the_band_in_the_shape_the_tsx_reads():
     # allowed to differ.
     assert "height" not in band
     assert props["cues"][0]["values"] == []
+    assert props["palette"] == {"accent": "#FFC300", "pivotGround": "#FF2E2E"}
 
 
 def test_a_moved_band_misses_the_overlay_cache_and_the_render_fingerprint():
@@ -324,7 +347,14 @@ def test_a_moved_band_misses_the_overlay_cache_and_the_render_fingerprint():
     so both caches must miss — otherwise a cached final.mp4 is served
     with the band in its old place and nothing errors (the plan's own
     fingerprint warning)."""
-    base = dict(width=720, height=1280, fps=30, duration_in_frames=90, font_hash="abc")
+    base = dict(
+        width=720,
+        height=1280,
+        fps=30,
+        duration_in_frames=90,
+        font_hash="abc",
+        palette=_SPIKE,
+    )
     cue = OverlayCue(
         device="pivot",
         text="लेकिन",
@@ -529,7 +559,12 @@ def test_stamp_and_counter_round_trip_into_overlay_props():
         values=(OverlayValue(value=200000, unit="lakh", cited_fragment=4),),
     )
     props = _overlay_props(
-        [stamp, counter], width=720, height=1280, fps=30, duration_in_frames=210
+        [stamp, counter],
+        width=720,
+        height=1280,
+        fps=30,
+        duration_in_frames=210,
+        palette=_SPIKE,
     )
     stamp_props, counter_props = props["cues"]
     assert stamp_props["device"] == "stamp"
@@ -559,7 +594,14 @@ def test_stamp_and_counter_round_trip_into_overlay_props():
 def test_target_number_change_misses_both_hashes():
     """Load-bearing: editing a counter's target must not serve a cached
     final.mp4 that still counts to the old figure."""
-    base = dict(width=720, height=1280, fps=30, duration_in_frames=90, font_hash="abc")
+    base = dict(
+        width=720,
+        height=1280,
+        fps=30,
+        duration_in_frames=90,
+        font_hash="abc",
+        palette=_SPIKE,
+    )
     cue = OverlayCue(
         device="counter",
         text="lakh",
@@ -597,7 +639,14 @@ def test_target_number_change_misses_both_hashes():
 
 def test_stamp_vs_pivot_device_misses_both_hashes():
     """A cached pivot overlay must not serve a stamp of the same word."""
-    base = dict(width=720, height=1280, fps=30, duration_in_frames=90, font_hash="abc")
+    base = dict(
+        width=720,
+        height=1280,
+        fps=30,
+        duration_in_frames=90,
+        font_hash="abc",
+        palette=_SPIKE,
+    )
     pivot = OverlayCue(
         device="pivot",
         text="2025",
@@ -700,7 +749,14 @@ def test_a_wider_target_moves_the_band_the_measurement_and_both_hashes():
     must also move the rectangle K4 measures on the plate and miss both
     caches — otherwise a cached .mov keeps the old rectangle and a cached
     final.mp4 keeps the old plate decision."""
-    base = dict(width=720, height=1280, fps=30, duration_in_frames=90, font_hash="abc")
+    base = dict(
+        width=720,
+        height=1280,
+        fps=30,
+        duration_in_frames=90,
+        font_hash="abc",
+        palette=_SPIKE,
+    )
     small = (OverlayValue(value=999, unit=None, cited_fragment=1),)
     large = (OverlayValue(value=17281400, unit=None, cited_fragment=1),)
     narrow = counter_band(720, 1280, values=small)
@@ -729,7 +785,14 @@ def test_a_wider_target_moves_the_band_the_measurement_and_both_hashes():
         cues=[widened], **base
     )
     # and the props the TSX draws from
-    props = _overlay_props([widened], width=720, height=1280, fps=30, duration_in_frames=90)
+    props = _overlay_props(
+        [widened],
+        width=720,
+        height=1280,
+        fps=30,
+        duration_in_frames=90,
+        palette=_SPIKE,
+    )
     assert props["cues"][0]["band"]["width"] == wide.width
 
 
@@ -790,3 +853,69 @@ def test_collect_wires_the_counter_target_into_its_own_band():
     assert small.band.width == 420
     assert large.band.width > 420
     assert large.band.left < small.band.left
+
+
+def test_overlay_input_hash_changes_when_accent_changes():
+    """K5: a cached .mov with the old colour must miss. Same cues, same
+    canvas, different palette."""
+    base = dict(
+        width=720,
+        height=1280,
+        fps=30,
+        duration_in_frames=90,
+        font_hash="abc",
+    )
+    cue = OverlayCue(
+        device="pivot",
+        text="लेकिन",
+        text_register="hi",
+        offset_s=0.4,
+        start_frame=12,
+        end_frame=39,
+    )
+    assert overlay_input_hash(cues=[cue], palette=_SPIKE, **base) != overlay_input_hash(
+        cues=[cue], palette=_CYAN, **base
+    )
+    other_ground = EmphasisPalette(accent="#FFC300", pivot_ground="#5A00A8")
+    assert overlay_input_hash(cues=[cue], palette=_SPIKE, **base) != overlay_input_hash(
+        cues=[cue], palette=other_ground, **base
+    )
+
+
+def test_overlay_input_hash_identical_for_unset_and_explicit_band_pair():
+    """Both resolve to the spike pair, so the overlay cache must HIT.
+    Hashing raw metadata-as-null would miss this and re-render."""
+    base = dict(
+        width=720,
+        height=1280,
+        fps=30,
+        duration_in_frames=90,
+        font_hash="abc",
+    )
+    cue = OverlayCue(
+        device="stamp",
+        text="2025",
+        text_register="en",
+        offset_s=0.0,
+        start_frame=0,
+        end_frame=26,
+    )
+    explicit = EmphasisPalette(accent="#FFC300", pivot_ground="#FF2E2E")
+    assert overlay_input_hash(cues=[cue], palette=_SPIKE, **base) == overlay_input_hash(
+        cues=[cue], palette=explicit, **base
+    )
+    assert emphasis_palette_hash(_SPIKE) == emphasis_palette_hash(explicit)
+    assert emphasis_palette_hash(None) is None
+    assert emphasis_palette_hash(_SPIKE) != emphasis_palette_hash(_CYAN)
+
+
+def test_overlay_props_carry_the_palette_in_the_shape_the_tsx_reads():
+    cues = collect_emphasis_overlay_cues(
+        _timeline_with_pivot(offset_s=0.4), fps=30, width=720, height=1280
+    )
+    props = _overlay_props(
+        cues, width=720, height=1280, fps=30, duration_in_frames=90, palette=_CYAN
+    )
+    assert props["palette"] == {"accent": "#00C8FF", "pivotGround": "#5A00A8"}
+    assert "accent" not in props["cues"][0]
+    assert "pivotGround" not in props["cues"][0]

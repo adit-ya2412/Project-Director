@@ -376,7 +376,59 @@ def test_emphasis_keys_are_in_the_fingerprint_payload():
     source = inspect.getsource(compute_render_fingerprint)
     assert '"emphasis_cue_hash"' in source
     assert '"emphasis_font_hash"' in source
+    assert '"palette_hash"' in source
     assert '"cue_list_hash"' in source
+
+
+def test_palette_hash_change_misses_the_cache():
+    """K5: changing accent or pivot_ground must re-render. Named
+    separately from cue_list_hash (captions) and emphasis_cue_hash."""
+    assert _fingerprint(palette_hash="amber-red") != _fingerprint(
+        palette_hash="cyan-purple"
+    )
+    assert _fingerprint(palette_hash=None) != _fingerprint(palette_hash="amber-red")
+    captions_only = _fingerprint(cue_list_hash="amber-red")
+    palette_only = _fingerprint(palette_hash="amber-red")
+    assert captions_only != palette_only
+
+
+def test_raw_palette_fields_do_not_fork_the_fingerprint_when_resolved_pair_matches():
+    """Unset vs explicit band pair are the same pixels. The raw metadata
+    fields are stripped from the timeline dump; `palette_hash` carries
+    the resolved pair. Authoring the spike colours onto a previously
+    unset timeline must HIT, not miss."""
+    from app.schemas.timeline import EmphasisPalette
+
+    unset = _timeline()
+    unset.metadata.render_style = "retention_fast"
+    explicit = _timeline()
+    explicit.metadata.render_style = "retention_fast"
+    explicit.metadata.emphasis_palette = EmphasisPalette(
+        accent="#FFC300", pivot_ground="#FF2E2E"
+    )
+    override_same = _timeline()
+    override_same.metadata.render_style = "retention_fast"
+    override_same.metadata.emphasis_palette_override = EmphasisPalette(
+        accent="#FFC300", pivot_ground="#FF2E2E"
+    )
+    resolved = "resolved-spike"
+    assert (
+        _fingerprint(timeline=unset, palette_hash=resolved)
+        == _fingerprint(timeline=explicit, palette_hash=resolved)
+        == _fingerprint(timeline=override_same, palette_hash=resolved)
+    )
+    different = _timeline()
+    different.metadata.render_style = "retention_fast"
+    different.metadata.emphasis_palette = EmphasisPalette(
+        accent="#00C8FF", pivot_ground="#5A00A8"
+    )
+    # Raw field still stripped; the miss comes from palette_hash.
+    assert _fingerprint(timeline=unset, palette_hash=resolved) != _fingerprint(
+        timeline=different, palette_hash="resolved-cyan"
+    )
+    assert _fingerprint(timeline=unset, palette_hash=resolved) == _fingerprint(
+        timeline=different, palette_hash=resolved
+    )
 
 
 def test_different_duck_envelope_changes_the_fingerprint():

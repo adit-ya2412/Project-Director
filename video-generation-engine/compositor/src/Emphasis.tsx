@@ -20,6 +20,11 @@ import { Stamp } from "./Stamp";
 
 export type EmphasisValueProps = CounterValueProps;
 
+export type EmphasisPaletteProps = {
+  accent: string;
+  pivotGround: string;
+};
+
 export type EmphasisCueProps = {
   device: string;
   text: string;
@@ -47,6 +52,10 @@ export type EmphasisProps = {
   fps: number;
   durationInFrames: number;
   cues: EmphasisCueProps[];
+  // K5: composition-level pair, resolved in Python. Not per-cue — hue
+  // does not flip per shot; treatment does. Production always passes
+  // this; the default is the spike pair for Remotion studio.
+  palette?: EmphasisPaletteProps | null;
 };
 
 export const DEFAULT_EMPHASIS_PROPS: EmphasisProps = {
@@ -54,9 +63,12 @@ export const DEFAULT_EMPHASIS_PROPS: EmphasisProps = {
   fps: 30,
   durationInFrames: 1,
   cues: [],
+  palette: { accent: "#FFC300", pivotGround: "#FF2E2E" },
 };
 
-export const Emphasis: React.FC<EmphasisProps> = ({ cues }) => {
+export const Emphasis: React.FC<EmphasisProps> = ({ cues, palette }) => {
+  const accent = palette?.accent;
+  const pivotGround = palette?.pivotGround;
   return (
     <AbsoluteFill style={{ backgroundColor: "transparent" }}>
       {cues.map((cue, index) => {
@@ -69,6 +81,7 @@ export const Emphasis: React.FC<EmphasisProps> = ({ cues }) => {
               startFrame={cue.startFrame}
               endFrame={cue.endFrame}
               band={cue.band}
+              pivotGround={pivotGround}
             />
           );
         }
@@ -82,6 +95,7 @@ export const Emphasis: React.FC<EmphasisProps> = ({ cues }) => {
               endFrame={cue.endFrame}
               treatment={cue.treatment}
               band={cue.band}
+              accent={accent}
             />
           );
         }
@@ -96,6 +110,7 @@ export const Emphasis: React.FC<EmphasisProps> = ({ cues }) => {
               treatment={cue.treatment}
               band={cue.band}
               values={cue.values ?? []}
+              accent={accent}
             />
           );
         }
