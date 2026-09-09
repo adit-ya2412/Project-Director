@@ -18,7 +18,7 @@ import { Pivot } from "./Pivot";
 export type EmphasisCueProps = {
   device: string;
   text: string;
-  register: "hi" | "en";
+  textRegister: "hi" | "en";
   startFrame: number;
   endFrame: number;
 };

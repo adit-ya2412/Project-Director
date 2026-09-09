@@ -318,7 +318,13 @@ class EmphasisCue(BaseModel):
     # WHICH WORD — 1-indexed, never seconds. Required (no default).
     anchor_fragment: int = Field(ge=1)
     text: str = Field(min_length=1)
-    register: EmphasisRegister
+    # `text_register`, never bare `register`: that name shadows
+    # `ABCMeta.register`, inherited here via `BaseModel`, and pydantic
+    # emits a UserWarning on every single import of this module. Not
+    # `script` either - in this codebase "script" is already the
+    # narration screenplay (the `script` table, `Project.script`), so it
+    # would be genuinely ambiguous on a cue that means "which alphabet".
+    text_register: EmphasisRegister
     values: list[EmphasisValue] = Field(default_factory=list)
     replaced_text: str | None = None
     # Seconds from THIS SHOT's start. Default 0.0 until K2 fills it

@@ -89,7 +89,7 @@ async def test_retention_fast_with_a_pivot_word_is_not_satisfied_then_run_attach
     assert cue is not None
     assert cue.device is EmphasisDevice.PIVOT
     assert cue.text == "लेकिन"
-    assert cue.register == "hi"
+    assert cue.text_register == "hi"
     assert attached.metadata.emphasis_pass_attempted is True
     assert await step.is_satisfied(ctx)
 

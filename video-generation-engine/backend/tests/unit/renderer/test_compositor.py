@@ -35,7 +35,7 @@ def _timeline_with_pivot(*, offset_s: float = 0.4, duration_s: float = 2.0) -> T
             device=EmphasisDevice.PIVOT,
             anchor_fragment=1,
             text="लेकिन",
-            register=EmphasisRegister.HI,
+            text_register=EmphasisRegister.HI,
             offset_s=offset_s,
         ),
     )
@@ -57,7 +57,7 @@ def test_collect_pivot_uses_resolved_offset_and_spike_hold():
     cue = cues[0]
     assert cue.device == "pivot"
     assert cue.text == "लेकिन"
-    assert cue.register == "hi"
+    assert cue.text_register == "hi"
     assert cue.offset_s == 0.4
     assert cue.start_frame == round(0.4 * 30)
     assert cue.end_frame - cue.start_frame == round(PIVOT_HOLD_S * 30)
@@ -99,7 +99,7 @@ async def test_cache_hit_on_second_call_does_not_reinvoke(tmp_path: Path):
         OverlayCue(
             device="pivot",
             text="लेकिन",
-            register="hi",
+            text_register="hi",
             offset_s=0.4,
             start_frame=12,
             end_frame=39,
@@ -130,7 +130,7 @@ def test_overlay_input_hash_changes_when_a_cue_changes():
         OverlayCue(
             device="pivot",
             text="लेकिन",
-            register="hi",
+            text_register="hi",
             offset_s=0.4,
             start_frame=12,
             end_frame=39,
@@ -140,7 +140,7 @@ def test_overlay_input_hash_changes_when_a_cue_changes():
         OverlayCue(
             device="pivot",
             text="मगर",
-            register="hi",
+            text_register="hi",
             offset_s=0.4,
             start_frame=12,
             end_frame=39,
@@ -155,7 +155,7 @@ def test_emphasis_cue_content_hash_is_none_when_empty():
         OverlayCue(
             device="pivot",
             text="लेकिन",
-            register="hi",
+            text_register="hi",
             offset_s=0.4,
             start_frame=12,
             end_frame=39,
@@ -166,7 +166,7 @@ def test_emphasis_cue_content_hash_is_none_when_empty():
         OverlayCue(
             device="pivot",
             text="लेकिन",
-            register="hi",
+            text_register="hi",
             offset_s=1.2,
             start_frame=36,
             end_frame=63,

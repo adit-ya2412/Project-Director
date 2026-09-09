@@ -55,6 +55,99 @@ polish problem:
 
 ---
 
+## Current state — updated 2026-09-09
+
+First slice landed in `175e0c9` ("Put the pivot on the reel"). It is
+labelled K10 but delivers more than that. Reviewed the same day; findings
+and their disposition are below.
+
+| task | state |
+|---|---|
+| **K1** EmphasisCue schema | **done** — `schemas/timeline.py`, with `offset_s` split from `anchor_fragment` exactly as `ShotLayer.enter_on_fragment` does |
+| **K2** resolve timing from alignment | **done** — `resolve_emphasis_cue_offsets` in `narration_fit.py`, called from `NarrationStep` |
+| **K10** pivot detection | **done** — `timeline/pivot.py`, lexical, one per reel |
+| **K7** compositor seam | **partial** — `renderer/compositor.py` + props-driven `Pivot.tsx`/`Emphasis.tsx`. Fingerprint hooks (`emphasis_cue_hash`, `emphasis_font_hash`) are in and correctly separate from `cue_list_hash` |
+| **K9** emphasis pass | **stub** — `steps/emphasis_pass.py` exists and is style-gated, but runs only pivot detection. The LLM pass is not written |
+| **K3** enforcement rules | **partial** — only the `text_card` exclusion, inline in `pivot.py`. No density cap, no graphic-asset exclusion, no safe zones |
+| **K4** contrast adaptation | **not started** |
+| **K5** palette resolution | **not started** (the commit says so explicitly) |
+| **K6** vendor Bold Devanagari | **not started** |
+| **K8** data graphics | **not started** |
+
+**Why shipping the pivot first worked without K6.** The pivot is the one
+device whose weight comes from its slab rather than its font, so a
+Regular-only Devanagari is enough for it and only for it. Every other
+Devanagari device needs K6.
+
+### Review findings from 175e0c9
+
+- **Fix APPLIED 2026-09-09:** `emphasis_pass.py`'s placement rationale cites
+  pre-A8 behaviour - it claims render "muxes audio only when the active
+  version is `produced_by=NARRATION`". `render.py` checks
+  `metadata.narration_locked`, which A8 introduced precisely so later
+  versions do NOT silence the render. The placement is right; the reason
+  is stale. The surviving reason is the approval gate (a post-narration
+  append lands a DRAFT version).
+- **Fix APPLIED 2026-09-09, REVERSING a documented decision:**
+  `EmphasisCue.register` shadowed `ABCMeta.register` via pydantic's
+  `BaseModel` and warned on every import. Renamed to `text_register`.
+  Read the 13:05 work-log entry below before judging the implementer:
+  it SPOTTED the warning and kept the name anyway, because "renaming
+  would diverge from the schema in this document". The plan was wrong
+  and was followed correctly. The spec sketch above is now fixed; the
+  work-log entries stay as history. Lesson: a spec sketch in a plan is
+  not evidence, and an implementer noticing a real defect should be
+  able to say so without diverging - that is a gap in how these plans
+  ask to be read, not in the agent.
+- **Known gap, PINNED BY TEST 2026-09-09:** the regex word-boundary
+  anchor does NOT protect Devanagari the way `pivot.py`s comment claims.
+  Base Devanagari letters ARE word characters; combining marks are NOT
+  (े U+0947 Mn, ि U+093F Mc, ् U+094D Mn), so a boundary fires
+  between a consonant and a matra and the pivot pattern matches INSIDE
+  लेकिनी. Latin IS protected - `button`, `butter` and
+  `magarmach` are all correctly rejected, and the existing tests cover
+  those. Not being fixed: लेकिनी is not a word, and changing
+  the matching rule is a design decision. The risk grows if the token
+  list gains words that inflect.
+- **Note:** `मगर` also means "crocodile". Irrelevant for cars and
+  history, a false red band on a wildlife reel.
+- **Open design question:** when a `text_card` sits on the pivot shot the
+  card wins and the reel loses its pivot entirely, and detection does not
+  look further. For this style the turn is arguably worth more than a
+  card. The existing text-card spacing pass already has a precedence
+  concept (chapter cards outrank ordinary ones) worth mirroring. Decide
+  rather than inherit.
+- **Minor:** `attach_pivot_cue` re-checks `shot.text_card` after
+  `detect_pivot` already filtered those shots. Unreachable; blurs which
+  layer owns the K3 rule.
+
+### Pick up next, in this order
+
+The ordering principle: **everything that makes cues SAFE lands before
+K9, because K9 is where the cue count stops being one.**
+
+1. **K6 — vendor `NotoSansDevanagari-Bold.ttf`.** Smallest task on the
+   list, unblocks every Devanagari device that is not the pivot, and
+   removes the synthetic-bold matra smearing.
+2. **K4 — contrast adaptation.** Today's single red band is slab-backed
+   and safe on any plate. The first bare-text device is not. Regression
+   case is named in the Build notes: the SUV plate at t=3.0s, mean luma
+   216.
+3. **K3 — the full enforcement pass.** Promote the `text_card` rule out
+   of `pivot.py` into the shared pass, then add the graphic-asset
+   exclusion, the density cap and per-shot safe zones. With one cue per
+   reel none of these bite yet; with K9 they all do.
+4. **K5 — palette resolution.** Needed before any device that is not the
+   fixed red band.
+5. **K9 — the real emphasis pass.** Replace the stub with the whole-film
+   LLM call. Do this only once 1-4 are in place.
+6. **K8 — data graphics.** Last, and largest.
+
+`K10`'s own follow-ups (the homonym note, the precedence question) can
+ride along with whichever of the above touches the same file.
+
+---
+
 ## What the spike proved (2026-09-08, all watched)
 
 Six beats over the first 7.0s of the SUV film, captions stripped
@@ -304,7 +397,8 @@ EmphasisCue:
   device:          stamp | counter | meter | comparison | correction | pivot | question
   anchor_fragment: int         # WHICH WORD - index, never seconds
   text:            str
-  register:        hi | en     # see Open Question 4
+  text_register:   hi | en     # see Open Question 4. NOT `register`:
+                               # that shadows ABCMeta.register via BaseModel
   values:          [{value: int, unit: str|None, cited_fragment: int}]
   replaced_text:   str | None  # correction
 ```

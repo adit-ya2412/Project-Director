@@ -646,7 +646,7 @@ def _cued_shot(shot_id: str, order: int, span: tuple[int, int], *, fragment: int
             device=EmphasisDevice.PIVOT,
             anchor_fragment=fragment,
             text="लेकिन",
-            register=EmphasisRegister.HI,
+            text_register=EmphasisRegister.HI,
         ),
     )
 

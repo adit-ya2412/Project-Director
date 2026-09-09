@@ -1,5 +1,6 @@
 """K10 — lexical pivot detection. Pure, no DB, no LLM."""
 
+import re
 from datetime import UTC, datetime
 
 import pytest
@@ -83,7 +84,7 @@ def test_detects_pivot_tokens_case_insensitive(text: str, expected_display: str)
     hit = detect_pivot(_timeline(text))
     assert hit is not None
     assert hit.text == expected_display
-    assert hit.register is EmphasisRegister.HI
+    assert hit.text_register is EmphasisRegister.HI
     assert hit.shot_id == "sh_01"
     assert hit.anchor_fragment >= 1
 
@@ -108,7 +109,15 @@ def test_suv_like_string_detects_lekin():
 
 @pytest.mark.parametrize(
     "text",
-    ["press the button", "butter chicken", "", "no turn in this line", "button butter"],
+    [
+        "press the button",
+        "butter chicken",
+        "",
+        "no turn in this line",
+        "button butter",
+        # Latin suffix collision on the OTHER pivot token, correctly rejected.
+        "magarmach ka shikar",
+    ],
 )
 def test_non_matches(text: str):
     assert detect_pivot(_timeline(text)) is None
@@ -157,7 +166,7 @@ def test_attach_writes_the_canonical_cue_on_the_covering_shot():
     assert cue is not None
     assert cue.device is EmphasisDevice.PIVOT
     assert cue.text == "लेकिन"
-    assert cue.register is EmphasisRegister.HI
+    assert cue.text_register is EmphasisRegister.HI
     assert cue.anchor_fragment == _fragment_index_for(text, "lekin")
     assert cue.offset_s == 0.0
 
@@ -178,3 +187,41 @@ def test_attach_is_noop_when_already_attached():
 def test_attach_is_noop_when_there_is_no_pivot_word():
     attached = attach_pivot_cue(_timeline("nothing to turn on"))
     assert attached.all_shots()[0].emphasis_cue is None
+
+
+def test_devanagari_matra_after_a_pivot_token_still_matches():
+    """KNOWN GAP in `\\b`, pinned deliberately (K10 review).
+
+    `\\b` protects Latin properly - `button` / `butter` / `magarmach` are
+    all rejected (see `test_non_matches`) - because every Latin letter is
+    `\\w`. Devanagari BASE letters are `\\w` too, so the same protection
+    holds for a following base consonant: `लेकिनक` is rejected.
+
+    Devanagari COMBINING MARKS are not `\\w`. So a `\\b` fires between a
+    consonant and a following matra or virama, and the pivot regex
+    matches INSIDE a longer string.
+
+    This test does NOT want that fixed. `लेकिनी` is not a Hindi
+    word, so nothing real is misdetected today, and tightening the
+    matching rule is a design decision outside K10. Its job is to make
+    the asymmetry visible and impossible to change silently - and to
+    fail loudly if the pivot token list is ever extended to words that
+    take inflection, where an inflected form WOULD match on its stem.
+    """
+    # The Unicode facts underneath, asserted rather than described.
+    assert "न".isalnum() is True  # U+0928 DEVANAGARI LETTER NA, category Lo
+    assert re.fullmatch(r"\w", "न") is not None
+    for mark in ("े", "ि", "्"):  # Mn, Mc, Mn
+        assert mark.isalnum() is False
+        assert re.fullmatch(r"\w", mark) is None
+
+    # Consequence: the trailing `\b` closes on the mark, so these match.
+    for text in ("लेकिनी", "मगरे", "लेकिन्क"):
+        hit = detect_pivot(_timeline(text))
+        assert hit is not None, text
+        assert hit.matched in {"लेकिन", "मगर"}, text
+
+    # A following BASE letter IS `\w`, so that half is genuinely
+    # protected - the same way `butter` is.
+    assert detect_pivot(_timeline("लेकिनक")) is None
+    assert detect_pivot(_timeline("मगरक")) is None

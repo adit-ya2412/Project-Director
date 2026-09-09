@@ -7,8 +7,10 @@ LLM, no seconds. The cue it attaches names a fragment INDEX; K2
 resolves that to `offset_s` once real alignment exists.
 
 Word-boundary matching is load-bearing: `button` / `butter` must not
-fire. Canonical on-screen text and register are a fixed table (pivot
-is Devanagari), not a planner choice.
+fire. It is not symmetric across the two scripts, though - see the
+`_PIVOT_RE` comment for the Devanagari combining-mark gap it does NOT
+close. Canonical on-screen text and `text_register` are a fixed table
+(pivot is Devanagari), not a planner choice.
 """
 
 from __future__ import annotations
@@ -29,7 +31,25 @@ from app.schemas.timeline import (
 logger = get_logger(__name__)
 
 # Longer Latin tokens first so a future addition cannot shadow them.
-# Devanagari letters are `\w` in Python 3, so `\b` holds for both scripts.
+#
+# What `\b` actually buys here, measured (K10 review): Devanagari BASE
+# letters ARE `\w` - न U+0928 is category Lo, `isalnum()` True - so
+# `\b` does protect against the Latin-style collision in both scripts:
+# `button`, `butter`, `magarmach` and `लेकिनक` (lekin + base क) are all
+# correctly rejected today.
+#
+# Combining marks are NOT `\w`, though: े U+0947 (Mn), ि U+093F (Mc)
+# and the virama ् U+094D (Mn) all report `isalnum() == False`. A `\b`
+# therefore FIRES between a consonant and a following matra, so this
+# regex matches INSIDE `लेकिनी` and `मगरे` - a pivot token plus a vowel
+# sign or virama still reads as a whole-word hit. Deliberately NOT
+# fixed: neither is a real Hindi word, so the risk today is nil, and
+# changing the matching rule (a trailing `(?![\u0900-\u097F])`
+# lookahead, say) is a design decision, not a bug fix. The risk GROWS
+# the moment this token list is extended to words that TAKE
+# INFLECTION, since an inflected form would then match on its bare
+# stem. Pinned by `tests/unit/timeline/test_pivot.py::
+# test_devanagari_matra_after_a_pivot_token_still_matches`.
 _PIVOT_RE = re.compile(
     r"\b(?:lekin|magar|but|लेकिन|मगर)\b",
     re.IGNORECASE | re.UNICODE,
@@ -53,7 +73,7 @@ class PivotHit:
     shot_id: str
     anchor_fragment: int
     text: str
-    register: EmphasisRegister
+    text_register: EmphasisRegister
     matched: str
 
 
@@ -130,7 +150,7 @@ def detect_pivot(timeline: Timeline) -> PivotHit | None:
             shot_id=shot.id,
             anchor_fragment=fragment_index,
             text=_canonical_display(matched),
-            register=EmphasisRegister.HI,
+            text_register=EmphasisRegister.HI,
             matched=matched,
         )
     return None
@@ -161,7 +181,7 @@ def attach_pivot_cue(timeline: Timeline) -> Timeline:
                 device=EmphasisDevice.PIVOT,
                 anchor_fragment=hit.anchor_fragment,
                 text=hit.text,
-                register=hit.register,
+                text_register=hit.text_register,
             )
             return copy
     return copy

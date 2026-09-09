@@ -33,7 +33,7 @@ def _cue(**overrides) -> EmphasisCue:
         "device": EmphasisDevice.PIVOT,
         "anchor_fragment": 1,
         "text": "लेकिन",
-        "register": EmphasisRegister.HI,
+        "text_register": EmphasisRegister.HI,
     }
     fields.update(overrides)
     return EmphasisCue(**fields)
@@ -58,7 +58,7 @@ def test_cue_round_trips_dump_validate():
     assert restored.emphasis_cue.device is EmphasisDevice.PIVOT
     assert restored.emphasis_cue.anchor_fragment == 1
     assert restored.emphasis_cue.text == "लेकिन"
-    assert restored.emphasis_cue.register is EmphasisRegister.HI
+    assert restored.emphasis_cue.text_register is EmphasisRegister.HI
     assert restored.emphasis_cue.values == []
     assert restored.emphasis_cue.replaced_text is None
     assert restored.emphasis_cue.offset_s == 0.0
@@ -85,7 +85,7 @@ def test_timeline_round_trips_a_cue_through_dump_validate():
 
 def test_missing_anchor_fragment_is_rejected():
     with pytest.raises(ValidationError):
-        EmphasisCue(device="pivot", text="लेकिन", register="hi")
+        EmphasisCue(device="pivot", text="लेकिन", text_register="hi")
 
 
 def test_anchor_fragment_must_be_at_least_one():

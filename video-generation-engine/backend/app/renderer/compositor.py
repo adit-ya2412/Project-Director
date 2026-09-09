@@ -42,7 +42,7 @@ class OverlayCue:
 
     device: str
     text: str
-    register: str
+    text_register: str
     offset_s: float
     start_frame: int
     end_frame: int
@@ -94,7 +94,7 @@ def collect_pivot_overlay_cues(timeline: Timeline, *, fps: int) -> list[OverlayC
             OverlayCue(
                 device=cue.device.value,
                 text=cue.text,
-                register=cue.register.value,
+                text_register=cue.text_register.value,
                 offset_s=cue.offset_s,
                 start_frame=start_frame,
                 end_frame=end_frame,
@@ -104,9 +104,10 @@ def collect_pivot_overlay_cues(timeline: Timeline, *, fps: int) -> list[OverlayC
 
 
 def emphasis_cue_content_hash(cues: list[OverlayCue]) -> str | None:
-    """Fingerprint input: RESOLVED cues (device, text, offset_s, register).
-    Not the untimed planner output. None when there are no cues so a
-    no-cue timeline hashes with the key present and the value null."""
+    """Fingerprint input: RESOLVED cues (device, text, offset_s,
+    text_register). Not the untimed planner output. None when there are
+    no cues so a no-cue timeline hashes with the key present and the
+    value null."""
     if not cues:
         return None
     payload = [
@@ -114,7 +115,7 @@ def emphasis_cue_content_hash(cues: list[OverlayCue]) -> str | None:
             "device": cue.device,
             "text": cue.text,
             "offset_s": cue.offset_s,
-            "register": cue.register,
+            "text_register": cue.text_register,
         }
         for cue in cues
     ]
@@ -135,7 +136,7 @@ def overlay_input_hash(
             {
                 "device": cue.device,
                 "text": cue.text,
-                "register": cue.register,
+                "textRegister": cue.text_register,
                 "startFrame": cue.start_frame,
                 "endFrame": cue.end_frame,
             }
@@ -166,7 +167,7 @@ def _overlay_props(cues: list[OverlayCue], *, width: int, height: int, fps: int,
             {
                 "device": cue.device,
                 "text": cue.text,
-                "register": cue.register,
+                "textRegister": cue.text_register,
                 "startFrame": cue.start_frame,
                 "endFrame": cue.end_frame,
             }

@@ -343,7 +343,7 @@ def test_resolved_cue_fields_on_the_timeline_change_the_fingerprint():
         device=EmphasisDevice.PIVOT,
         anchor_fragment=1,
         text="लेकिन",
-        register=EmphasisRegister.HI,
+        text_register=EmphasisRegister.HI,
         offset_s=0.0,
     )
     later = _timeline()
@@ -351,7 +351,7 @@ def test_resolved_cue_fields_on_the_timeline_change_the_fingerprint():
         device=EmphasisDevice.PIVOT,
         anchor_fragment=1,
         text="लेकिन",
-        register=EmphasisRegister.HI,
+        text_register=EmphasisRegister.HI,
         offset_s=1.2,
     )
     other_text = _timeline()
@@ -359,7 +359,7 @@ def test_resolved_cue_fields_on_the_timeline_change_the_fingerprint():
         device=EmphasisDevice.PIVOT,
         anchor_fragment=1,
         text="मगर",
-        register=EmphasisRegister.HI,
+        text_register=EmphasisRegister.HI,
         offset_s=0.0,
     )
     assert _fingerprint(timeline=at_start) != _fingerprint(timeline=later)
