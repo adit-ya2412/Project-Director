@@ -56,17 +56,13 @@ from typing import Literal
 
 from PIL import Image, ImageStat, UnidentifiedImageError
 
+from app.core.colour import rec601_luma
 from app.core.logging import get_logger
 from app.renderer.compositor import OverlayCue, PivotBand, pivot_band
 
 logger = get_logger(__name__)
 
 Treatment = Literal["light", "dark", "slab"]
-
-# Rec. 601. Same coefficients every call; range 0–255.
-_LUMA_R = 0.299
-_LUMA_G = 0.587
-_LUMA_B = 0.114
 
 # SUV hook t=3.0s / the washed-out `2025`. Named so the number appears
 # in the regression test, not as a magic 216 in an assert. Historical:
@@ -112,6 +108,16 @@ SUV_T3_MEAN_LUMA = 216.0
 # DARK_MIN_LUMA stays at 180.0: 190.1 is the only reference plate above
 # it, dark type there was never inspected either, and unlike the light
 # side there is no measured good case asking for the boundary to move.
+#
+# There is a THIRD luma threshold in this feature and it is deliberately
+# not here: `PIVOT_GROUND_MAX_LUMA` in `app/schemas/timeline.py` caps
+# how bright an authored `pivot_ground` may be. It is not a plate
+# measurement, so it does not belong beside these two — it constrains a
+# colour a planner WRITES DOWN, and it is enforced at the schema so an
+# illegible pair cannot be constructed at all. It is also NOT
+# `DARK_MIN_LUMA`: see that constant's own comment for why the numbers
+# answer different questions and why reusing 180.0 there measures out at
+# 2.07:1 against white.
 #
 # Still conservative on purpose. Better to pick slab too often than to
 # ship another washed-out year stamp.
@@ -169,7 +175,12 @@ def _mean_luma_of_image(
         raise ValueError("image region has zero width or height; cannot measure luma")
     channels = ImageStat.Stat(region).mean
     r, g, b = channels[0], channels[1], channels[2]
-    return _LUMA_R * r + _LUMA_G * g + _LUMA_B * b
+    # Rec. 601 lives in `app.core.colour` now, not twice: the
+    # `pivot_ground` guard in `app/schemas/timeline.py` measures a
+    # single authored hex with the same coefficients this measures a
+    # plate with, and two copies that can disagree is the mirrored
+    # band-geometry bug (finding 3) in another costume.
+    return rec601_luma(r, g, b)
 
 
 def mean_luma(

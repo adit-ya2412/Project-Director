@@ -432,3 +432,23 @@ def test_counter_band_uses_its_own_box_not_the_pivot_box(tmp_path: Path):
     assert measure_plate_luma(data, device="counter", band=band) == pytest.approx(
         mean_luma(data, box=box), abs=1.0
     )
+
+
+def test_hex_luma_and_plate_luma_are_one_implementation():
+    """K5 review finding: the `pivot_ground` guard measures a single
+    authored hex and this module measures a decoded plate. Both go
+    through `app.core.colour.rec601_luma`, so a flat image of a colour
+    must read exactly that colour's `hex_luma`. Two Rec.601 formulas
+    that can disagree is the mirrored-band-geometry bug (finding 3) in
+    another costume."""
+    from app.core.colour import hex_luma
+
+    for hex_colour, rgb in (
+        ("#FF2E2E", (0xFF, 0x2E, 0x2E)),
+        ("#5A00A8", (0x5A, 0x00, 0xA8)),
+        ("#8C8C8C", (0x8C, 0x8C, 0x8C)),
+    ):
+        buf = io.BytesIO()
+        Image.new("RGB", (8, 8), rgb).save(buf, "PNG")
+        assert mean_luma(buf.getvalue()) == pytest.approx(hex_luma(hex_colour))
+
