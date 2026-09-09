@@ -14,6 +14,7 @@ from app.renderer.compositor import (
     collect_emphasis_overlay_cues,
     counter_band,
     emphasis_cue_content_hash,
+    format_counter_value,
     overlay_input_hash,
     pivot_band,
     render_or_reuse_emphasis_overlay,
@@ -411,7 +412,12 @@ def test_collect_emits_stamp_and_counter_not_only_pivot():
     counter = cues[2]
     assert counter.values == (OverlayValue(value=200000, unit="lakh", cited_fragment=4),)
     assert counter.band is not None
-    assert (counter.band.left, counter.band.top, counter.band.width) == (150, 300, 420)
+    # NOT the old hardcoded (150, 300, 420): `2,00,000` + a four-letter
+    # unit at font 116 is estimated wider than the canvas, so the band
+    # is the full canvas and `counter_band` logs that it clamped. 420
+    # was the width that shipped in f19370b and the type overran it by
+    # 59px on a real render.
+    assert (counter.band.left, counter.band.top, counter.band.width) == (0, 300, 720)
     assert counter.band.font_size == 116
 
 
@@ -608,3 +614,179 @@ def test_stamp_vs_pivot_device_misses_both_hashes():
     assert overlay_input_hash(cues=[pivot], **base) != overlay_input_hash(
         cues=[stamp], **base
     )
+
+
+# --------------------------------------------------------------------------
+# The counter band is CONTENT-derived (fix for f19370b).
+#
+# f19370b shipped `_COUNTER_REF_BAND_WIDTH = 420` as the width and the
+# counter's own type overflowed it. Measured on a real render at 720x1280
+# (tmp/k11_fix): the declared band was x 150..570, the slab was drawn
+# there (overlay alpha, x 150..569), and the type ran to x=687 — 118px of
+# amber digits and a white `+` on the bare plate, in a region whose
+# treatment K4 had measured for a rectangle the type did not stay in.
+# Same cue with the derived band: band x 17..703, type x 100..617, inside
+# with 83px/85px of margin. These tests pin the derivation; only a render
+# can pin the pixels, which is why the numbers above are written down.
+
+
+def test_counter_band_width_is_derived_from_the_content():
+    """No content keeps the spike look; content widens the box."""
+    bare = counter_band(720, 1280)
+    assert bare is not None
+    assert (bare.left, bare.top, bare.width, bare.height) == (150, 300, 420, 148)
+
+    values = (OverlayValue(value=200000, unit="+", cited_fragment=1),)
+    derived = counter_band(720, 1280, values=values, kicker="SOLD IN A YEAR")
+    assert derived is not None
+    assert derived.width == 686
+    assert derived.left == 17
+    # Everything but the width is untouched: the look is the spike look,
+    # only wider.
+    assert (derived.top, derived.height, derived.font_size, derived.pad) == (
+        300,
+        148,
+        116,
+        16,
+    )
+    # `Counter.tsx` lays the type out inside `width - 2*pad`, and the
+    # render measured that type at x 100..617 = 518px wide.
+    assert derived.width - 2 * derived.pad >= 518
+
+
+def test_counter_band_is_never_narrower_than_the_type_it_must_cover():
+    """The estimate must err WIDE. Erring narrow is the shipped bug.
+
+    Lower bound from real metrics rather than from the estimate itself:
+    `hmtx` advances of the faces the CSS stack resolves to, tabular
+    digits at Arial Black .667 (the widest in the stack) and its comma at
+    .333, plus the unit span at half size and its 10px margin.
+    """
+    for target, unit in (
+        (0, None),
+        (999, None),
+        (200000, "+"),
+        (1728140, "+"),
+        (99999999, "%"),
+        (200000, None),
+    ):
+        values = (OverlayValue(value=target, unit=unit, cited_fragment=1),)
+        band = counter_band(720, 1280, values=values)
+        assert band is not None
+        rendered = format_counter_value(target)
+        separators = rendered.count(",")
+        true_width = (len(rendered) - separators) * 0.667 * band.font_size
+        true_width += separators * 0.333 * band.font_size
+        if unit:
+            true_width += len(unit) * 1.0 * round(band.font_size * 0.5) + 10
+        if band.width == 720:
+            # Clamped: the estimate wanted more than the canvas, so the
+            # band is full-bleed and the type may still overflow (see the
+            # warning in `counter_band`). The estimate is allowed to be
+            # conservative here, but it must not be crying wolf — the
+            # REAL width has to be within a fifth of the canvas content
+            # box. `9,99,99,999%` needs ~803px of 688 (genuinely
+            # impossible); `17,28,140+` needs ~687 of 688 (fits by a
+            # pixel in the worst face in the stack, and the estimate
+            # rounds it up to full-bleed rather than risk 59px of amber
+            # on the bare plate again).
+            assert true_width > 0.8 * (720 - 2 * band.pad), (target, unit, true_width)
+            continue
+        assert band.width - 2 * band.pad >= true_width, (target, unit, band.width)
+
+
+def test_a_wider_target_moves_the_band_the_measurement_and_both_hashes():
+    """One value, three readers. Widening the band for a longer number
+    must also move the rectangle K4 measures on the plate and miss both
+    caches — otherwise a cached .mov keeps the old rectangle and a cached
+    final.mp4 keeps the old plate decision."""
+    base = dict(width=720, height=1280, fps=30, duration_in_frames=90, font_hash="abc")
+    small = (OverlayValue(value=999, unit=None, cited_fragment=1),)
+    large = (OverlayValue(value=17281400, unit=None, cited_fragment=1),)
+    narrow = counter_band(720, 1280, values=small)
+    wide = counter_band(720, 1280, values=large)
+    assert narrow is not None and wide is not None
+    assert wide.width > narrow.width
+
+    cue = OverlayCue(
+        device="counter",
+        text="SOLD IN A YEAR",
+        text_register="en",
+        offset_s=0.0,
+        start_frame=0,
+        end_frame=39,
+        shot_id="sh_01",
+        treatment="slab",
+        band=narrow,
+        values=small,
+    )
+    widened = replace(cue, band=wide, values=large)
+    # reader 1: the rectangle K4 measures on the plate
+    assert cue.band.box_on(1920, 1080) != widened.band.box_on(1920, 1080)
+    # readers 2 and 3: the render fingerprint and the overlay cache
+    assert emphasis_cue_content_hash([cue]) != emphasis_cue_content_hash([widened])
+    assert overlay_input_hash(cues=[cue], **base) != overlay_input_hash(
+        cues=[widened], **base
+    )
+    # and the props the TSX draws from
+    props = _overlay_props([widened], width=720, height=1280, fps=30, duration_in_frames=90)
+    assert props["cues"][0]["band"]["width"] == wide.width
+
+
+def test_format_counter_value_matches_intl_en_in_grouping():
+    """The band counts GLYPHS, and the separators are glyphs. Grouping in
+    threes would undercount `2,00,000` by a comma."""
+    assert format_counter_value(0) == "0"
+    assert format_counter_value(999) == "999"
+    assert format_counter_value(1000) == "1,000"
+    assert format_counter_value(100000) == "1,00,000"
+    assert format_counter_value(200000) == "2,00,000"
+    assert format_counter_value(1728140) == "17,28,140"
+    assert format_counter_value(-1728140) == "-17,28,140"
+
+
+def test_counter_band_wider_than_the_canvas_is_clamped_and_logged(caplog):
+    """A target too long for the canvas at font 116 cannot be covered by
+    any rectangle. Clamp, but SAY so — clamping in silence is how the 420
+    shipped."""
+    values = (OverlayValue(value=999999999999, unit="crore", cited_fragment=1),)
+    with caplog.at_level("WARNING"):
+        band = counter_band(720, 1280, values=values)
+    assert band is not None
+    assert band.width == 720
+    assert band.left == 0
+    assert any(
+        record.message == "compositor.counter_band_exceeds_canvas"
+        for record in caplog.records
+    )
+
+
+def test_collect_wires_the_counter_target_into_its_own_band():
+    """The missing link in f19370b: the collector resolved the band from
+    the canvas alone, so no target could ever widen it. This is the one
+    test that would have failed before the pixels did."""
+    def _counter_shot(value: int) -> Shot:
+        return Shot(
+            id="sh_counter",
+            order=0,
+            intent=ShotIntent.EXPLAIN,
+            duration_s=3.0,
+            emphasis_cue=_cue(
+                EmphasisDevice.COUNTER,
+                text="SOLD",
+                text_register=EmphasisRegister.EN,
+                values=[EmphasisValue(value=value, unit=None, cited_fragment=1)],
+            ),
+        )
+
+    small = collect_emphasis_overlay_cues(
+        _timeline_from_shots([_counter_shot(9)]), fps=30, width=720, height=1280
+    )[0]
+    large = collect_emphasis_overlay_cues(
+        _timeline_from_shots([_counter_shot(17281400)]), fps=30, width=720, height=1280
+    )[0]
+    assert small.band is not None and large.band is not None
+    # A one-digit target still gets the spike floor.
+    assert small.band.width == 420
+    assert large.band.width > 420
+    assert large.band.left < small.band.left

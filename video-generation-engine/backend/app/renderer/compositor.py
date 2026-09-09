@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import os
 import shutil
 from dataclasses import dataclass
@@ -266,28 +267,207 @@ def stamp_band(canvas_width: int, canvas_height: int) -> PivotBand | None:
 # without one, K4 falls back to the frame mean, and on the SUV reel
 # that mean and the cue box diverged by 54 luma units. Same scale
 # rules as pivot. Finding 3: this is the only copy.
+#
+# The 420 is now a FLOOR, not the width. As shipped in f19370b it was
+# the width, and the counter's own type overflowed it — measured on a
+# real render by sampling pixels, not by eye: the band declared
+# x 150..570, the slab was drawn there correctly ((34,36,36) at
+# x=155..560, bare plate (226,241,244) from x=575), and the amber ran to
+# x=629. `1,72,814` at font 116 plus a `+` unit is ~480px of type in a
+# 420px band, so the unit and part of the last digit sat on the bare
+# plate with no slab under them. That is the exact inversion of why the
+# band exists: `Emphasis.tsx` says the band means "the treatment can no
+# longer describe a region the type does not cover", and a hardcoded
+# width describes a region the type EXCEEDS. So the width is derived
+# from the content the counter will actually draw (see
+# `_counter_content_width`) and the spike 420 survives only as the
+# minimum, which keeps the spike look for every value that fits it.
 _COUNTER_REF_WIDTH = 720
 _COUNTER_REF_HEIGHT = 1280
 _COUNTER_REF_FONT = 116
 _COUNTER_REF_TOP = 300
 _COUNTER_REF_PAD = 16
-_COUNTER_REF_BAND_WIDTH = 420
+_COUNTER_MIN_BAND_WIDTH = 420
+
+# Glyph-advance estimates, in em, for the counter content width.
+#
+# Python cannot do real text metrics here — the faces are chosen by
+# Chromium out of a CSS stack (`Segoe UI Black` / `Arial Black` /
+# Impact) and no Latin file is vendored, so there is nothing to load.
+# These are therefore ESTIMATES, and they are deliberately biased WIDE:
+# erring wide leaves slab the type does not use, erring narrow
+# reproduces the bug above.
+#
+# Basis (measured 2026-09-09, `hmtx` advances read off the host faces
+# the stack actually resolves to, normalised by unitsPerEm):
+#   tabular digits    Segoe UI Black .599 (.483-.621 proportional)
+#                     Arial Black    .667      Impact .381-.542
+#   group separator   Arial Black    .333      Segoe UI Black .320
+#                     Impact         .168
+#   widest glyph      Segoe UI Black W 1.053, % .898
+#                     Arial Black    W 1.000, % 1.000
+# So 0.70 clears the widest digit in the stack by 5%, 0.40 clears the
+# widest separator by 20%, and 1.10 clears the widest glyph of any kind
+# by 4%. The digit headroom also absorbs the value spring overshoot:
+# `Counter.tsx` scales the number by `interpolate(s, [0,1], [0.7,1])`
+# with damping 13 / mass 0.5 / stiffness 150, whose peak is s=1.028,
+# i.e. scale 1.0085 — 0.85%, well inside the 5%.
+#
+# If the stack ever gains a wider face (or a vendored Latin Black lands),
+# RE-MEASURE these three numbers rather than nudging them.
+_COUNTER_DIGIT_ADVANCE_EM = 0.70
+_COUNTER_SEPARATOR_ADVANCE_EM = 0.40
+_COUNTER_GLYPH_ADVANCE_EM = 1.10
+
+# Mirrored from `Counter.tsx`, and the direction of the mirror is what
+# makes it safe: these only decide how much EXTRA width the band asks
+# for, so if the TSX changes one the band ends up a few px looser or
+# tighter around type that still fits — not review finding 3, where two
+# copies decided different things and only one of them drew anything.
+_COUNTER_UNIT_FONT_SCALE = 0.5  # `fontSize * 0.5` on the unit span
+_COUNTER_UNIT_MARGIN_PX = 10  # `marginLeft: 10` on the unit span
+_COUNTER_KICKER_FONT_SCALE = 44 / 116  # `fontSize * (44/116)`
+_COUNTER_KICKER_TRACKING_PX = 9  # `letterSpacing: 9` (Latin; `hi` is 0)
 
 
-def counter_band(canvas_width: int, canvas_height: int) -> PivotBand | None:
+def format_counter_value(value: int) -> str:
+    """Indian digit grouping — the same string `Counter.tsx` draws.
+
+    `Intl.NumberFormat("en-IN")` is deterministic: last three digits,
+    then groups of two (200000 -> "2,00,000", 1728140 -> "17,28,140").
+    Reimplemented rather than approximated because the band width is
+    counted in GLYPHS and the separators ARE glyphs — grouping in threes
+    would undercount `2,00,000` by one comma, and undercounting is the
+    failure being fixed.
+    """
+    sign = "-" if value < 0 else ""
+    digits = str(abs(int(value)))
+    if len(digits) <= 3:
+        return sign + digits
+    head, tail = digits[:-3], digits[-3:]
+    groups: list[str] = []
+    while len(head) > 2:
+        groups.insert(0, head[-2:])
+        head = head[:-2]
+    if head:
+        groups.insert(0, head)
+    groups.append(tail)
+    return sign + ",".join(groups)
+
+
+def _counter_content_width(
+    *,
+    font_size: int,
+    pad: int,
+    values: tuple[OverlayValue, ...],
+    kicker: str,
+) -> int:
+    """Minimum band width that contains everything the counter draws.
+
+    Two lines can be the widest and both are measured:
+
+    1. The value line — `format_counter_value(target)` plus the optional
+       unit span at half size with its 10px left margin.
+    2. The kicker — the longest single WORD of `text`, because the kicker
+       wraps at spaces inside the band but an unbreakable word cannot.
+       On the reference case ("SOLD IN A YEAR") this never binds; a long
+       compound word in either register would, and that is the same
+       overflow bug one font size down.
+
+    **The value line is sized to the FINAL value, not the current one.**
+    `Counter.tsx` draws `Intl.NumberFormat("en-IN").format(round(t *
+    target))` with no padding, so the string gains a glyph at a time and
+    re-centres, and the count only goes UP — the final value is the
+    widest string the cue ever shows. Both alternatives fail: a band
+    sized to the current value would be a different rectangle every
+    frame, which this design cannot express (the band is ONE value, that
+    K4 measures once on the plate and both hashes key on), and
+    right-padding the digits to hold the final width would change a
+    watched look to buy nothing the band does not already give. The cost
+    is a slab slightly wider than the digits early in the count; it is
+    centred, so that reads as margin, and margin is the harmless
+    direction.
+
+    `+ 2 * pad` because `Counter.tsx` draws the slab as a padded box, so
+    the type is laid out in `width - 2*pad`. That is why the overflow on
+    the real render started at x=166 (band left 150 + pad 16) and not at
+    the band edge.
+    """
+    unit_font = max(1, round(font_size * _COUNTER_UNIT_FONT_SCALE))
+    kicker_font = max(1, round(font_size * _COUNTER_KICKER_FONT_SCALE))
+    value_line = 0.0
+    for item in values[:1]:  # `Counter.tsx` draws values[0] and no more
+        rendered = format_counter_value(item.value)
+        separators = rendered.count(",")
+        glyphs = len(rendered) - separators
+        value_line = glyphs * _COUNTER_DIGIT_ADVANCE_EM * font_size
+        value_line += separators * _COUNTER_SEPARATOR_ADVANCE_EM * font_size
+        if item.unit:
+            value_line += len(item.unit) * _COUNTER_GLYPH_ADVANCE_EM * unit_font
+            value_line += _COUNTER_UNIT_MARGIN_PX
+    kicker_line = 0.0
+    for word in kicker.split():
+        # Tracking is charged per glyph and Latin-always: `hi` sets 0, so
+        # assuming 9 is the wide side of the two registers.
+        kicker_line = max(
+            kicker_line,
+            len(word) * (_COUNTER_GLYPH_ADVANCE_EM * kicker_font + _COUNTER_KICKER_TRACKING_PX),
+        )
+    return math.ceil(max(value_line, kicker_line)) + 2 * pad
+
+
+def counter_band(
+    canvas_width: int,
+    canvas_height: int,
+    *,
+    values: tuple[OverlayValue, ...] = (),
+    kicker: str = "",
+) -> PivotBand | None:
     """Resolve the counter box for a canvas, or None if it cannot be formed.
 
-    Reference: (150, 300, 570, 448) on 720x1280 — 420-wide meter, centred,
-    font 116 + 2*pad 16. The slab/scrim draws this rectangle; K4 measures
-    it. Meter and optional kicker sit inside/just below using `pad`.
+    With no content: (150, 300, 570, 448) on 720x1280 — the spike
+    420-wide meter, centred, font 116 + 2*pad 16. With content the width
+    is `max(420-scaled, _counter_content_width(...))`, so the box grows
+    to hold `2,00,000` + unit and never shrinks below the spike look.
+    The slab/scrim draws this rectangle, K4 measures it, and both hashes
+    key on it — one value, three readers, so widening it here moves the
+    measured region and misses both caches with no extra wiring.
+
+    `values`/`kicker` default to empty for callers that want geometry
+    only (tests, degenerate-canvas checks). Production always passes
+    them — see `_band_for_device`.
     """
     if canvas_width <= 0 or canvas_height <= 0:
         return None
     font_size = round(_COUNTER_REF_FONT * (canvas_width / _COUNTER_REF_WIDTH))
     top = round(_COUNTER_REF_TOP * (canvas_height / _COUNTER_REF_HEIGHT))
     pad = round(_COUNTER_REF_PAD * (canvas_height / _COUNTER_REF_HEIGHT))
-    band_width = round(_COUNTER_REF_BAND_WIDTH * (canvas_width / _COUNTER_REF_WIDTH))
-    band_width = max(1, min(canvas_width, band_width))
+    min_width = round(_COUNTER_MIN_BAND_WIDTH * (canvas_width / _COUNTER_REF_WIDTH))
+    content_width = _counter_content_width(
+        font_size=font_size, pad=pad, values=values, kicker=kicker
+    )
+    band_width = max(1, min_width, content_width)
+    if band_width > canvas_width:
+        # The canvas is now the binding constraint, so the band goes
+        # full-bleed and the type may still overflow it — no rectangle
+        # inside the canvas can cover type wider than the canvas. Logged
+        # rather than clamped in silence, because clamping in silence is
+        # how the 420 shipped. `estimated_width` is named as an estimate
+        # on purpose: it is biased wide (see the em ratios above), so
+        # this line can fire slightly before real overflow does — e.g.
+        # `17,28,140+` at font 116 measures ~687px against a 688px
+        # content box and is still rounded up to full-bleed. Treat it as
+        # "this counter is at the canvas limit", and if it fires for a
+        # value that plainly fits, the ratios are what to re-measure.
+        logger.warning(
+            "compositor.counter_band_exceeds_canvas",
+            extra={
+                "canvas_width": canvas_width,
+                "estimated_width": band_width,
+                "font_size": font_size,
+            },
+        )
+        band_width = canvas_width
     left = max(0, (canvas_width - band_width) // 2)
     band_height = font_size + pad * 2
     y0 = max(0, min(canvas_height, top))
@@ -306,13 +486,23 @@ def counter_band(canvas_width: int, canvas_height: int) -> PivotBand | None:
     )
 
 
-def _band_for_device(device: EmphasisDevice, canvas_width: int, canvas_height: int) -> PivotBand | None:
+def _band_for_device(
+    device: EmphasisDevice,
+    canvas_width: int,
+    canvas_height: int,
+    *,
+    values: tuple[OverlayValue, ...] = (),
+    text: str = "",
+) -> PivotBand | None:
     if device is EmphasisDevice.PIVOT:
         return pivot_band(canvas_width, canvas_height)
     if device is EmphasisDevice.STAMP:
         return stamp_band(canvas_width, canvas_height)
     if device is EmphasisDevice.COUNTER:
-        return counter_band(canvas_width, canvas_height)
+        # The one device whose band cannot be a function of the canvas
+        # alone: the width has to hold the digits of THIS cue target.
+        # `text` is the kicker, drawn inside the same box.
+        return counter_band(canvas_width, canvas_height, values=values, kicker=text)
     return None
 
 
@@ -471,7 +661,13 @@ def collect_emphasis_overlay_cues(
                 start_frame=start_frame,
                 end_frame=end_frame,
                 shot_id=shot.id,
-                band=_band_for_device(cue.device, width, height),
+                # `values`/`text` reach the band because the counter box
+                # is content-derived: its width has to hold the digits of
+                # this cue target (f19370b shipped a hardcoded 420 that
+                # the type overran by 59px). Pivot and stamp ignore them.
+                band=_band_for_device(
+                    cue.device, width, height, values=values, text=cue.text
+                ),
                 values=values,
             )
         )

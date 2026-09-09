@@ -28,10 +28,21 @@ import type { PivotBandProps } from "./Pivot";
  * hardcode "SOLD IN A YEAR".
  *
  * LAYOUT COMES FROM PROPS (review finding 3). Python resolves the box
- * (`counter_band`: 420-wide, centred, font 116). The slab/scrim draws
- * that rectangle; K4 measures it. Without a band K4 would use the
- * frame mean, a measured 54-luma loss of precision on the SUV reel.
+ * (`counter_band`, centred, font 116). The slab/scrim draws that
+ * rectangle; K4 measures it. Without a band K4 would use the frame
+ * mean, a measured 54-luma loss of precision on the SUV reel.
  * SPIKE_* is a fallback for standalone compositions only.
+ *
+ * The band WIDTH is content-derived on the Python side as of 2026-09-09
+ * (`max(420-scaled, digits + unit + 2*pad)`), because a hardcoded 420
+ * was overrun by 59px of real type: `1,72,814+` at font 116 ran to
+ * x=629 against a slab ending at x=570, measured on a render. Do not
+ * compensate for that here — no `whiteSpace`, no `transform: scale`,
+ * no shrink-to-fit. The band is the rectangle K4 measured for
+ * `treatment` and the rectangle both hashes key on, so anything drawn
+ * outside it is type whose contrast was never measured. If the type
+ * still overflows, the estimate in `_counter_content_width` is wrong
+ * and that is where it gets fixed.
  *
  * Latin faces: same CSS stack as the spike (no Latin file is vendored).
  * Hue: spike colours only — white `#FFFFFF`, ink `#0A0A0B`, amber
@@ -43,6 +54,23 @@ const INK = "#0A0A0B";
 const AMBER = "#FFC300";
 const HEAVY = "'Segoe UI Black','Arial Black',Impact,sans-serif";
 const SHADOW = "0 6px 0 rgba(0,0,0,0.35), 0 0 26px rgba(0,0,0,0.6)";
+// The `dark` half of the same protection, added 2026-09-09. Until then
+// `textShadow` was `treatment === "light" ? SHADOW : "none"`, which had
+// it exactly backwards: `light` means the plate measured DARK, so white
+// type already sits on a dark ground and a dark shadow adds almost
+// nothing, while `dark` means the plate measured BRIGHT (the 236.9 SUV
+// plate) and near-black type got NO protection at all — and a bright,
+// UNEVEN plate is precisely where black type loses its edges. So `dark`
+// gets a light halo, the analogue of what `light` gets. `slab` still
+// needs neither: the device brings its own ground.
+//
+// Two glows and no offset ledge, unlike SHADOW: SHADOW is a hard 6px
+// drop plus a wide blur, but offsetting a LIGHT halo under dark type
+// would protect one side of each glyph and leave the other bare, and an
+// uneven plate is uneven in no particular direction. Tight 10px at 0.95
+// buys the edge separation, wide 26px at 0.8 lifts the surround.
+// SHADOW itself is untouched — `light` was never the broken case.
+const HALO = "0 0 10px rgba(255,255,255,0.95), 0 0 26px rgba(255,255,255,0.8)";
 
 // FALLBACK ONLY — standalone spike compositions. See the note above.
 const SPIKE_WIDTH = 720;
@@ -118,7 +146,11 @@ export const Counter: React.FC<CounterProps> = ({
   // was type with no ground of its own).
   const numberColor = onDark ? INK : AMBER;
   const kickerColor = onDark ? INK : WHITE;
-  const textShadow = treatment === "light" ? SHADOW : "none";
+  // light -> dark plate -> white type + dark shadow.
+  // dark  -> bright plate -> ink type + light halo (see HALO above).
+  // slab  -> the device draws its own ground, so neither.
+  const textShadow =
+    treatment === "light" ? SHADOW : treatment === "dark" ? HALO : "none";
 
   return (
     <div

@@ -72,7 +72,7 @@ and their disposition are below.
 | **K4** contrast adaptation | **done 2026-09-09, reviewed same day** — render-time plate luma → light/dark/slab on OverlayCue. Slab default for retention_fast. The bright `2025` plate is never `light`. Review applied: band box is now Python-authoritative and travels through the props; `LIGHT_MAX_LUMA` 90 → 105 on six measured plates; the measurement is kept and logged under the slab policy; one decode per plate |
 | **K5** palette resolution | **not started** (the commit says so explicitly) |
 | **K6** reach the vendored Bold | **done 2026-09-09** — was never a download |
-| **K11** device renderers (stamp, counter) | **implemented 2026-09-09, pending review** — stamp + counter renderers; unblocks K9 |
+| **K11** device renderers (stamp, counter) | **implemented 2026-09-09; two render-found defects fixed same day** — stamp + counter renderers; unblocks K9. The counter band is now content-derived (its type overflowed a hardcoded 420 by 118px, measured) and `treatment="dark"` gained the light halo it never had |
 | **K8** data graphics | **not started** |
 
 **Why shipping the pivot first worked without K6.** The pivot is the one
@@ -819,6 +819,79 @@ and call `render_or_reuse_emphasis_overlay` for `fba52b6d`, then ffprobe
 for `yuva444p*`, composite with the production filter fragment, and LOOK
 at a frame per device. A lost alpha channel renders a black rectangle
 rather than raising.
+
+#### Two defects, found only by rendering, fixed 2026-09-09
+
+Both shipped in `f19370b` behind 592 green tests and clean lint, which
+is the point: neither is reachable from a unit test. They are pixel
+facts, and the K11 work skipped the live render.
+
+**1. The counter's type overflowed its own slab. FIXED — the band width
+is now derived from the content.**
+
+`_COUNTER_REF_BAND_WIDTH = 420` was the band WIDTH. `2,00,000` plus a
+unit at font 116 does not fit in 420, so the band described a region the
+type EXCEEDED — the exact inversion of the invariant in `Emphasis.tsx`
+("the treatment can no longer describe a region the type does not
+cover"). Measured on a real 720x1280 render, on the overlay's own alpha
+so the plate cannot confuse the reading (`tmp/k11_fix`):
+
+| | declared band | slab drawn | type drawn | inside? |
+|---|---|---|---|---|
+| before (420) | x 150..570 | x 150..569 | x 171..**687** | **no — 118px out** |
+| after (derived) | x 17..703 | x 17..702 | x 100..617 | yes, 83px / 85px margin |
+
+Both rows are the SAME cue (`value=200000, unit="+"`, kicker "SOLD IN A
+YEAR", `treatment="slab"`) drawn by the same TSX in the same render; the
+only difference is the rectangle Python resolved. In the composite the
+before-frame reads the way the defect was first reported: amber digits
+to x=635 and the white `+` beyond it, against a scrim ending at x=570.
+
+The width is `max(420-scaled, digits + unit + 2*pad)`, so the spike look
+survives for every value that fits inside 420 and the box grows only
+when it must. **Sized to the FINAL value, not the current one** —
+`Counter.tsx` re-formats `round(t * target)` every frame with no
+padding, and the count only goes up, so the final value is the widest
+string the cue ever shows; a band tracking the current value would have
+to be a different rectangle every frame, which this design cannot
+express (one band, measured once by K4, hashed by both caches). The cost
+is a slab slightly wider than the digits early in the count, centred, so
+it reads as margin.
+
+The estimate is a glyph count times a per-em advance ratio biased WIDE
+(0.70 em per tabular digit, 0.40 per group separator, 1.10 per arbitrary
+glyph), measured from the `hmtx` tables of the faces the CSS stack
+actually resolves to — Arial Black digits .667 is the widest in the
+stack, Segoe UI Black `W` 1.053 the widest glyph of any kind. Erring
+wide leaves unused slab; erring narrow reproduces the bug. Consequences
+recorded rather than hidden: a 7-digit target with a unit now rounds up
+to a full-bleed band, and a target too long for the canvas at font 116
+is clamped with a `compositor.counter_band_exceeds_canvas` warning
+instead of silently overflowing.
+
+One value, three readers still holds, and it is now tested: widening the
+band moved `box_on` (the plate measurement of `k_4.30.png` through the
+counter box went 185.75 → 197.61 luma), `emphasis_cue_content_hash` and
+`overlay_input_hash`.
+
+**2. `textShadow` was on the wrong treatment. FIXED — `dark` gets a
+light halo.**
+
+`treatment === "light" ? SHADOW : "none"` had it backwards. `light`
+means the plate measured DARK, so white type already has a dark ground
+and the dark shadow adds little; `dark` means the plate measured BRIGHT
+(the 236.9 SUV plate) and near-black type had NO protection at all,
+which is where black type loses its edges on an uneven plate. `dark` now
+gets `HALO` — two white glows, tight 10px at 0.95 plus wide 26px at 0.8,
+and no offset ledge, because offsetting a light halo protects one side
+of each glyph and an uneven plate is uneven in no direction. `SHADOW` is
+unchanged (`light` was never the broken case) and `slab` still gets
+neither, since the device brings its own ground. Measured on the
+overlay's alpha, where a halo cannot hide: for `treatment="dark"` the
+stamp draws ink type on transparency and nothing else white, so
+near-white partial-alpha pixels are the halo and nothing else — ink
+x 136..459, halo x 117..478, 28,761 such pixels. Pre-fix that count is
+zero by construction.
 
 ---
 
@@ -1608,9 +1681,100 @@ K11 unblocks K9: the compositor can now DRAW stamp and counter, not only pivot. 
 - **Latin faces depend on the host CSS stack** (`Segoe UI Black` / `Arial Black` / Impact), matching the spike. The plan also says not to depend on host fonts for compositor faces. Chose the spike stack over vendoring a new Latin file (K6 is done; do not add a font). Devanagari is bundled. Documented here rather than quietly inventing a Noto-Latin look the spike never had.
 - **Stamp combines Year's 1.45→1.0 whole-word scale with EmphasisOverlay's per-cluster stagger**, rather than picking one. The plan asked for both energies.
 - **Counter always draws `text` as the kicker.** Schema requires `text` min_length=1, so a kicker is always present. K9 should put the label in `text` and the number in `values`; if it puts the number in both, the kicker duplicates. Not this slice's planner.
-- Did not run a live Chromium render. Brief: unit tests, no Chromium required; a lost alpha is a black rectangle rather than a raise. Props-shape tests cover the contract.
+- Did not run a live Chromium render. **[Corrected in review: the render WAS then done, by the reviewer, and it found two defects a green test suite could not - see "Two defects, found only by rendering". The reasoning here inverted the brief: "you do not need K9" became "no Chromium required", and "a lost alpha is a black rectangle rather than a raise, so looking is the only real check" became a reason not to look.]**
 - Did not switch `SuvRetention.tsx` onto `Stamp.tsx` / `Counter.tsx`. Spike files left alone.
 
 **Not done (out of slice):** correction / question / meter-as-separate-device / comparison, K3 density, K5 palette, K8 charts, K9 LLM authoring, stamp/counter authoring in EmphasisPassStep, pivot look changes, SFX, pacing.
 
 No commit, no `git add`, no push. Working tree left dirty for review. Stopping.
+
+---
+
+## Work log — K11 defects: counter band overflow + wrong-treatment shadow (2026-09-09)
+
+This section is an implementation diary, not a design change. Earlier sections above stay authoritative. Append only; never rewrite prior log entries. Two defects documented in `f19370b`'s own commit message; both fixed against that baseline.
+
+### 18:10 — starting
+
+- read / opened: `f19370b` commit message in full (both defects); this plan (K4 task + the 2026-09-09 review findings, K11 task, the three prior work logs, the fingerprint warning, done-criteria); `backend/app/renderer/compositor.py` in full (`PivotBand`, `pivot_band` / `stamp_band` / `counter_band`, `_band_for_device`, `OverlayValue`, `collect_emphasis_overlay_cues`, `emphasis_cue_content_hash`, `overlay_input_hash`, `_overlay_props`, `_invoke_remotion`, `render_or_reuse_emphasis_overlay`); `backend/app/renderer/emphasis_contrast.py` (`measure_plate_luma`'s band branch); `compositor/src/Emphasis.tsx`, `Counter.tsx`, `Stamp.tsx`, `Pivot.tsx`; `backend/tests/unit/renderer/test_compositor.py`, `test_emphasis_contrast.py`; `tmp/suv_test/` and `tmp/k11_check/`.
+- decided: fix 1 by deriving the counter band width from the cue's own content in Python, not by compensating in the TSX. `counter_band` gains `values`/`kicker` keyword arguments and `_band_for_device` passes them through from the collector. The 420 becomes a FLOOR so every value that already fits keeps the spike look.
+- decided: no real text metrics available in Python — the counter's faces come from a CSS stack Chromium resolves, and no Latin file is vendored — so a glyph-count estimate with per-em advance ratios, biased wide. Measure the ratios off the actual host faces rather than guessing them.
+- decided: verify by RENDERING. That is why these two defects exist.
+- files: none yet
+- tests: none yet
+- next: measure the advance ratios before writing any arithmetic
+
+### 18:22 — the glyph-width assumption, measured
+
+- did: read `hmtx` advances (normalised by unitsPerEm) off every face in the counter's CSS stack — `C:\Windows\Fonts\seguibl.ttf` (Segoe UI Black), `ariblk.ttf` (Arial Black), `impact.ttf` — plus the vendored `NotoSansDevanagari-Regular.ttf` for a Devanagari unit.
+- measured: **tabular digits** Segoe UI Black .599 (.483–.621 proportional), Arial Black .667, Impact .381–.542. **Group separator** Arial Black .333, Segoe UI Black .320, Impact .168. **Widest glyph of any kind** Segoe UI Black `W` 1.053 and `%` .898, Arial Black `W` 1.000 and `%` 1.000.
+- decided: 0.70 em per digit (clears the widest digit in the stack by 5%), 0.40 per separator (clears the widest by 20%), 1.10 per arbitrary glyph for the unit and the kicker (clears the widest by 4%). Counting a separator at its own ratio rather than as a digit matters: at three separators, digit-width commas alone would inflate the reference band by ~120px and push it into the canvas clamp.
+- measured: the value's spring overshoot, because the number is `transform: scale`d. damping 13 / mass 0.5 / stiffness 150 gives ζ=0.751, peak s=1.028, i.e. scale 1.0085 — 0.85%, inside the digit ratio's 5% headroom. Written into the constant's comment so nobody has to redo it.
+- decided: reimplement `Intl.NumberFormat("en-IN")` grouping in Python (`format_counter_value`) instead of grouping in threes. The band counts glyphs and the separators ARE glyphs; threes would undercount `2,00,000` by one comma, and undercounting is the bug.
+- files: `backend/app/renderer/compositor.py`
+- tests: not yet
+- next: the band itself
+
+### 18:35 — content-derived counter band + the halo
+
+- decided: `_counter_content_width` sizes the value line to the FINAL target, not the current one, and the reason is written where the choice is made: `Counter.tsx` formats `round(t * target)` with no padding and re-centres, the count only rises, so the final value is the widest string; a band tracking the current value would need a different rectangle every frame, which this design cannot express, since the band is one value that K4 measures once and both caches key on. Right-padding the digits instead would change a watched look to buy nothing.
+- decided: the kicker's longest WORD is measured too. It wraps at spaces inside the band but an unbreakable word cannot, and that is the same overflow one font size down. It does not bind on "SOLD IN A YEAR".
+- decided: clamp to the canvas with a `compositor.counter_band_exceeds_canvas` WARNING rather than in silence. Clamping in silence is how the 420 shipped. The log names its number `estimated_width` and the comment says the estimate can fire slightly early, so a wolf-cry is diagnosable.
+- decided: fix 2 with a new `HALO` in `Stamp.tsx` and `Counter.tsx` — two white glows (tight 10px at 0.95, wide 26px at 0.8) and NO offset ledge, unlike `SHADOW`: offsetting a light halo under dark type protects one side of each glyph and a bright uneven plate is uneven in no particular direction. `SHADOW` untouched, `slab` still gets neither.
+- files: `backend/app/renderer/compositor.py`, `compositor/src/Stamp.tsx`, `compositor/src/Counter.tsx`
+- tests: not yet
+- next: the render, before the tests — the render is what these defects needed
+
+### 18:48 — real render, and the measurement
+
+- did: drove `render_or_reuse_emphasis_overlay` directly for project `fba52b6d-9c1a-44dd-bb95-5b03ba18eb8f` at 720x1280 / 30fps / 359 frames with three hand-built cues and no planner: a `stamp` "2025" at `treatment="dark"`, a `counter` (`value=200000, unit="+"`, kicker "SOLD IN A YEAR", `treatment="slab"`) on the OLD 420 band, and the same counter on the derived band. Both counters in ONE render, so the only difference between them is the rectangle Python resolved. Script and artifacts in `tmp/k11_fix/`.
+- measured: `ffprobe` gives **prores / yuva444p12le / 720x1280 / 359 frames**. Alpha intact — the check is not optional, a lost alpha paints a black rectangle over the plate and raises nothing.
+- did: composited over `tmp/suv_test/plate_nocaptions.mp4` with the production `emphasis_overlay_filter_fragment` (`[0:v][1:v]overlay=0:0:format=auto[out]`) and measured frames with PIL, on the overlay's own alpha so the plate cannot confuse the reading.
+- measured, counter **before** (band x 150..570): slab drawn x 150..569, type drawn x **171..687**. 118px outside the slab — the `+` and the last digit on the bare plate. Composite agrees: amber to x=635, scrim ending at 570.
+- measured, counter **after** (band x 17..703): slab drawn x 17..702, type drawn x 100..617, INSIDE with 83px left and 85px right margin. Asserted, not eyeballed. A composite row scan at y=372 confirms the scrim runs to x=702 and the plate resumes at x=703.
+- measured, the halo (`treatment="dark"` stamp, overlay alpha): ink x 136..459, near-white partial-alpha pixels x 117..478, 28,761 of them — 19px beyond the ink on both sides. Pre-fix that count is zero by construction, since a `dark` stamp draws ink type on transparency and nothing else white.
+- did: **looked at the frames.** `counter_before_composite.png` shows the clipped last digit and the orphaned `+` outside the scrim with the kicker wrapped to two lines; `counter_after_composite.png` has number, unit, meter and kicker all on the scrim; `stamp_dark_composite.png` has black `202` (the 4th cluster still staggering in at that frame) with a visible light separation from the luma-236 plate, and the plate visible everywhere outside — not a black rectangle.
+- measured: K4 follows the band with no extra wiring. `k_4.30.png` through the old counter box (150,300,570,448) is 185.75 luma; through the derived box (17,300,703,448) it is 197.61.
+- files: `tmp/k11_fix/verify_k11_fixes.py` plus its PNGs and composite (throwaway, gitignored); `backend/storage/fba52b6d-.../overlays/e4a3fea1....mov` and its props sidecar (a real cached artifact of the new contract; nothing pre-existing under `overlays/` was touched)
+- next: tests, ruff
+
+### 18:56 — tests and the two stale assertions
+
+- did: seven new tests — the derived width and the preserved 420 floor; a lower bound built from the REAL `hmtx` advances (a target/unit table asserting the content box covers the true width, and that a clamped band is genuinely at the canvas limit rather than crying wolf); a wider target moving `box_on`, both hashes and the props; `format_counter_value` against `Intl` grouping; the clamp warning; and the collector wiring a target into its own band — the one test that would have failed before the pixels did.
+- found: two existing assertions pinned the hardcoded 420 and had to change, which is the fix having teeth. `test_collect_emits_stamp_and_counter_not_only_pivot`'s counter (`value=200000, unit="lakh"`) now resolves to a full-bleed (0, 300, 720) band with the clamp warning: a four-letter unit at half of font 116 is estimated wider than the canvas. Recorded rather than tuned away — the estimate is deliberately the wide side, and the alternative is 59px of amber on the bare plate.
+- found, and it contradicts nothing in the plan but is worth writing down: my own new lower-bound test found `9,99,99,999%` needs ~803px of a 688px content box at font 116. No rectangle inside a 720 canvas can cover that. It is a planner-side problem, the warning is the only honest response, and the test now asserts that branch instead of pretending geometry can fix it.
+- tests: `cd backend`; `python -m pytest tests/unit/renderer tests/unit/timeline -q` → **598 passed** in 41.6s (450 in `tests/unit/renderer` alone). Did NOT run the whole suite, `make test`, or `PYTEST_TRUNCATE_DB=1` — the Postgres is shared and holds real projects. The 5 known failures in `tests/unit/workflow/test_sfx_overlays_diegetic.py` were not run and not touched.
+- ruff: `ruff check backend/app/renderer/compositor.py backend/tests/unit/renderer/test_compositor.py` — all checks passed. Did NOT run `ruff format`; this project uses black.
+- next: this work-log entry, then stop
+
+### 19:04 — finish / summary
+
+Both defects were pixel facts and both are now numbers. The counter band is content-derived, so the rectangle K4 measures, the rectangle both caches key on and the rectangle the TSX draws still agree — and now they also agree with the type.
+
+**Files changed**
+
+- Content-derived counter band, `Intl`-compatible grouping in Python, the advance ratios and their measured basis, canvas clamp + warning, collector wiring: `backend/app/renderer/compositor.py`
+- `dark` treatment gains `HALO`; `light` keeps `SHADOW` untouched: `compositor/src/Stamp.tsx`, `compositor/src/Counter.tsx` (the latter also gains the "do not compensate for the band here" note)
+- Tests: `backend/tests/unit/renderer/test_compositor.py`
+- This plan (K11 status row, the new K11 defects subsection, this work log)
+
+**Decisions (also in the entries above)**
+
+- Band width derives from content in PYTHON. No layout arithmetic went back into the TSX; the `SPIKE_*` constants stay the labelled standalone-spike fallback.
+- 420 is a floor, not a width. Values that fit keep the spike look exactly.
+- Sized to the final value. A per-frame band is not expressible (one band, measured once, hashed twice) and right-padding would change a watched look.
+- Advance ratios 0.70 / 0.40 / 1.10 em, measured from the stack's own `hmtx` tables, biased wide, with the spring overshoot accounted for in the comment.
+- Over-canvas is clamped AND logged, with the log naming its number an estimate.
+- `dark` gets a light halo with no offset ledge; `SHADOW` unchanged; `slab` unchanged.
+
+**Deviations / contradictions found**
+
+- **A 7-digit target with a unit now goes full-bleed.** `17,28,140+` estimates 767px against a 720 canvas while the true worst-face width is ~687 of a 688px content box — it fits by a pixel, and the conservative estimate rounds it up to the whole canvas with a warning. Reported rather than tuned: the brief's own rule is that erring wide is harmless and erring narrow reproduces the bug.
+- **The estimate runs ~26% wide on the reference case.** Band 686, of which the type measured 518px. That is the price of having no shaper in Python, and it is the direction that cannot regress into the bug.
+- The verification script had to pass `values=`/`kicker=` to `counter_band`, so its shape differs from the worked example in the brief (`counter_band(720, 1280)`) — that call still exists and is exactly the "before" case it renders.
+- Could not typecheck the TSX (no `typescript` in `compositor/node_modules`; Remotion bundles with esbuild, which strips types without checking them). The real render plus the pixel measurement stands in for it, as in the K4 review.
+
+**Not done (out of slice):** K3 density, K5 palette, K8 charts, K9 LLM authoring, the other four devices, any change to the pivot, `SuvRetention.tsx` / `DirectedHook.tsx` (labelled spike proofs), stamp band content-derivation (`stamp_band` is full width already, so a stamp cannot overflow it horizontally).
+
+No commit, no `git add`, no push. Working tree left for review.
+
