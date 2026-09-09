@@ -73,6 +73,10 @@ export const Pivot: React.FC<PivotProps> = ({ text, startFrame, endFrame }) => {
           style={{
             textAlign: "center",
             fontFamily: `${DEVANAGARI}, sans-serif`,
+            // Real Bold from the variable font's wght axis, NOT synthetic.
+            // font.ts declares the 100-900 range so this instances the
+            // font's own Bold master instead of smearing the matras.
+            fontWeight: 700,
             fontSize,
             lineHeight: 1.1,
             color: WHITE,

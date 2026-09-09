@@ -205,13 +205,23 @@ async def _invoke_remotion(props_path: Path, output_path: Path) -> None:
         public_font.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(EMPHASIS_FONT_PATH, public_font)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    # ABSOLUTE paths, because this subprocess runs with cwd=COMPOSITOR_ROOT
+    # while both paths are built from `settings.storage_root`, which is
+    # relative ("./storage") and resolves against the BACKEND's cwd. Passed
+    # through relative, the CLI cannot find the props file (it reports
+    # "neither valid JSON nor a file path to a valid JSON file") and would
+    # write the .mov into compositor/storage/... even if it could. Found
+    # 2026-09-09 the first time `_invoke_remotion` was ever really called:
+    # every unit test injects a fake `invoke`, so this line had never run.
+    props_arg = props_path.resolve()
+    output_arg = output_path.resolve()
     process = await asyncio.create_subprocess_exec(
         npx,
         "remotion",
         "render",
         COMPOSITION_ID,
-        str(output_path),
-        f"--props={props_path}",
+        str(output_arg),
+        f"--props={props_arg}",
         "--codec=prores",
         "--prores-profile=4444",
         "--pixel-format=yuva444p10le",
@@ -272,7 +282,13 @@ async def render_or_reuse_emphasis_overlay(
 
     overlays_dir.mkdir(parents=True, exist_ok=True)
     props_path = overlays_dir / f"{input_hash}.json"
-    tmp_path = overlays_dir / f".{input_hash}.mov.tmp"
+    # Must still END in .mov: the Remotion CLI validates the output
+    # extension against the codec ("prores ... must end in one of: mov,
+    # mkv, mxf") before it renders anything, so a ".mov.tmp" suffix is
+    # rejected outright. Leading dot keeps it out of the way and
+    # `os.replace` below keeps the swap atomic. Found 2026-09-09 on the
+    # first real invocation.
+    tmp_path = overlays_dir / f".{input_hash}.partial.mov"
     props_path.write_text(
         json.dumps(
             _overlay_props(

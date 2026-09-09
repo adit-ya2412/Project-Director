@@ -71,7 +71,7 @@ and their disposition are below.
 | **K3** enforcement rules | **partial** — only the `text_card` exclusion, inline in `pivot.py`. No density cap, no graphic-asset exclusion, no safe zones |
 | **K4** contrast adaptation | **not started** |
 | **K5** palette resolution | **not started** (the commit says so explicitly) |
-| **K6** vendor Bold Devanagari | **not started** |
+| **K6** reach the vendored Bold | **done 2026-09-09** — was never a download |
 | **K8** data graphics | **not started** |
 
 **Why shipping the pivot first worked without K6.** The pivot is the one
@@ -126,9 +126,8 @@ Devanagari device needs K6.
 The ordering principle: **everything that makes cues SAFE lands before
 K9, because K9 is where the cue count stops being one.**
 
-1. **K6 — vendor `NotoSansDevanagari-Bold.ttf`.** Smallest task on the
-   list, unblocks every Devanagari device that is not the pivot, and
-   removes the synthetic-bold matra smearing.
+1. ~~**K6**~~ **DONE 2026-09-09.** Not a download - the vendored file was
+   already the variable font. One `FontFace` weight descriptor. See K6.
 2. **K4 — contrast adaptation.** Today's single red band is slab-backed
    and safe on any plate. The first bare-text device is not. Regression
    case is named in the Build notes: the SUV plate at t=3.0s, mean luma
@@ -226,13 +225,10 @@ on Devanagari, because the script carries its visual mass high under the
 shirorekha. 48% reads as a cancellation. Any device that crosses out,
 underlines or highlights needs a script-aware vertical position.
 
-**Consequence for K6:** these four are why vendoring
-`NotoSansDevanagari-Bold.ttf` is a prerequisite rather than polish. With
-only a Regular weight, Chromium synthesises bold and smears the matras,
-so the two loudest devices in this style (pivot and correction, both
-Devanagari per the role table) are forced onto slabs for weight. Slabs
-are the right default for contrast anyway - but that should be a design
-choice, not a font limitation.
+**Consequence for K6 (corrected 2026-09-09):** these four rules are why
+a real Bold matters — but the Bold was already vendored. The file named
+`-Regular.ttf` is the variable font, `wght` 100-900. See K6; the fix was
+a `FontFace` weight descriptor, not a download.
 
 ---
 
@@ -437,14 +433,50 @@ default > style band default`. Unset must produce something correct.
 If derived from assets, pick an accent that OPPOSES the film's dominant
 hue — matching makes type sink into the picture.
 
-### K6 — Vendor a heavy Devanagari weight  **(PREREQUISITE)**
-`backend/vendor/fonts/` ships `NotoSansDevanagari-Regular.ttf` only.
-Chromium synthesises bold and it smears the matras, so every spike beat
-ran at weight 400 and got impact from size and slabs. Vendor
-`NotoSansDevanagari-Bold.ttf`. Latin is fine on this host (Arial Black,
-Segoe UI Black, Impact, Bahnschrift) but **do not depend on host fonts**:
-`captions.py` passes libass an explicit `fontsdir=` precisely to avoid
-"host-fontconfig non-determinism". Vendor every face the compositor uses.
+### K6 — Reach the Bold that is already vendored  **(CORRECTED 2026-09-09)**
+
+**This task was described wrongly in every earlier version of this plan,
+including its "PREREQUISITE" note and the build order. There is nothing
+to download.**
+
+`backend/vendor/fonts/NotoSansDevanagari-Regular.ttf` is MISNAMED. It is
+the full variable font (Noto Sans Devanagari v2.006, Monotype), measured
+with fontTools on 2026-09-09:
+
+```
+wght  min=100  default=400  max=900
+wdth  min=62.5 default=100  max=100
+named instances: Thin ... Regular(400) ... Bold(700) ... Black(900)
+```
+
+A real Bold master has been in the repo since 2026-08-17. The filename is
+the only thing that ever said "Regular", and this plan believed it.
+
+The actual defect was one missing descriptor. `new FontFace(family, src)`
+with no `weight` defaults to `"400"`, which caps the matcher at the
+Regular instance, so every heavier request became SYNTHETIC bold - the
+matra smearing this plan kept citing as a reason to vendor a second file.
+
+The fix, applied: declare the axis range on the `FontFace`
+(`{ weight: "100 900" }`) and ask for `fontWeight: 700`. Nothing
+downloaded, nothing vendored, no supply-chain question, no second binary
+to keep in sync.
+
+Two consequences worth carrying forward:
+
+- **The slab is now a design choice, not a workaround.** Earlier text in
+  this plan justified slabs partly because Devanagari could not be bold.
+  It can. Slabs remain the right default for CONTRAST robustness (the
+  luma 93-216 finding), which is a separate and still-valid argument.
+- **libass does not follow the axis.** It uses the default instance, so
+  captions stay Regular. Irrelevant for `retention_fast` (captions are
+  off) but it means the compositor and libass will render different
+  weights from the same file. Do not treat that as a bug.
+
+Also worth renaming the file to `-Variable.ttf` eventually - the current
+name has now caused two wrong decisions in this document - but the
+rename touches `captions.py`'s font registry and the compositor's copy
+script, so it is not part of this task.
 
 ### K7 — Compositor integration
 Remotion as a **layer producer**, never a renderer replacement. It emits
@@ -577,11 +609,11 @@ That last row is the important one - a `stamp` echoes a spoken word, so
 it can simply mirror what was spoken. Most cues resolve with no rule at
 all.
 
-**Consequence: K6 (vendor a Bold Devanagari) is now a PREREQUISITE, not
-a polish item.** With Devanagari carrying the pivot and corrections - the
-two loudest beats - Regular-only forces both onto slabs for weight. Slabs
-are the right default anyway (contrast robustness), but the choice should
-be design, not a font limitation.
+**Consequence for K6 (corrected 2026-09-09):** with Devanagari carrying
+the pivot and corrections, real weight matters — and it was always
+available. The vendored file is the variable font; declaring the axis
+range was the whole task. Slabs stay the default for CONTRAST reasons,
+which is a separate argument and still holds.
 
 **5. Density — RESOLVED BY METHOD, not by a number. Not blocking.**
 No longer purely taste, because captions are gone (see 1). The spike ran
@@ -673,8 +705,7 @@ that produced the plan. Paths were verified against the tree on
 ### Build order (dependencies are real)
 
 ```
-K6  vendor Bold Devanagari          <- do first, nothing depends on it
-                                       but everything looks wrong without it
+K6  reach the vendored Bold          <- one FontFace descriptor; DONE 2026-09-09
 K1  EmphasisCue schema
  |
 K9  emphasis pass (authoring)       <- needs K1's shape to emit into
@@ -705,7 +736,7 @@ the pivot device is it.
 | K3 | new module, e.g. `app/timeline/emphasis_rules.py`; called from the emphasis pass. Precedent for "enforce after the planner returns": the text-card spacing pass in `app/planners/shot/planner.py` (see `chapter_shot_ids` / `min_gap`, lines ~132-177) |
 | K4 | `app/renderer/` — plate measurement. `sample_substrate_colour` in `app/renderer/parallax.py:307` is the existing example of reading pixels off an asset |
 | K5 | palette on `timeline.metadata` (precedent: `metadata.voice_id`); band defaults in `app/script/styles.py` beside `StylePacingBand` |
-| K6 | `backend/vendor/fonts/` — add `NotoSansDevanagari-Bold.ttf`. `app/renderer/captions.py:73` shows the existing font-registry shape |
+| K6 | `compositor/src/font.ts` only — declare the `FontFace` weight range. Nothing in `backend/vendor/fonts/`: the file there is already the variable font (DONE) |
 | K7 | new `app/renderer/compositor.py` + a tracked `compositor/` package; wired into `app/workflow/steps/render.py` |
 | K8 | extends K7's composition and K1's schema; third `PicturePath` value in `app/script/styles.py:29` |
 | K9 | new step class + registration in `DEFAULT_PIPELINE`, `app/workflow/engine.py` |
