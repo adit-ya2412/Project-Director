@@ -63,9 +63,22 @@ Rule order (logged as `rule` on each drop):
    `device=pivot` cue to satisfy density; a non-pivot already kept
    yields to a later pivot inside the gap (same shape as chapter cards
    outranking ordinary text cards). A lone pivot is always kept.
+
+   K14.1: when `hook_s` is set, a shot whose start time (via
+   `compute_shot_start_times`, start < hook_s) is inside the hook
+   uses `hook_min_shot_gap` instead (1 on retention_fast so
+   consecutive hook shots may both keep a cue). Body shots still use
+   `min_shot_gap`. Gap 0 would skip the rule under `if gap > 0`;
+   gap 1 is the value that lets consecutive indices survive.
 6. `rate_cap` — optional extra cap in cues/minute. When over, drop
    non-pivot first, film order, reserving a slot for every pivot.
    Never drop a pivot to satisfy the cap.
+
+   K14.2: when `hook_s` is set, the cap is computed over the BODY
+   only (duration after hook_s; cues whose shots start >= hook_s).
+   Hook cues are extra and never dropped by this rule. Do not raise
+   the whole-reel ceiling instead — that would let the body pack at
+   the higher average too.
 
 Band knobs are resolved by the caller (EmphasisPassStep), not here —
 RV2 / R1, same as whoosh and slab_default.
@@ -86,7 +99,7 @@ from app.core.logging import get_logger
 from app.planners.caption_romanizer import numerals
 from app.planners.fragments import split_narration_fragments
 from app.schemas.timeline import EmphasisCue, EmphasisDevice, Scene, Shot, Timeline
-from app.timeline.duration import compute_timeline_duration
+from app.timeline.duration import compute_shot_start_times, compute_timeline_duration
 
 logger = get_logger(__name__)
 
@@ -352,10 +365,17 @@ def enforce_emphasis_rules(
     *,
     min_shot_gap: int | None,
     max_cues_per_minute: float | None,
+    hook_s: float | None = None,
+    hook_min_shot_gap: int | None = None,
 ) -> Timeline:
-    """Return a copy with offending cues cleared. Never mutates `timeline`."""
+    """Return a copy with offending cues cleared. Never mutates `timeline`.
+
+    `hook_s` / `hook_min_shot_gap` are K14 additives. Defaults keep
+    pre-K14 call sites (whole-reel gap and rate cap) unchanged.
+    """
     copy = timeline.model_copy(deep=True)
     film = _film_order(copy)
+    starts = compute_shot_start_times([shot for _scene, shot in film])
 
     for scene, shot in film:
         cue = shot.emphasis_cue
@@ -368,13 +388,55 @@ def enforce_emphasis_rules(
         if not _values_are_cited(scene, cue):
             _drop(shot, "values_citation")
 
-    if min_shot_gap is not None and min_shot_gap > 0:
-        _apply_min_gap(film, min_shot_gap)
+    if _gap_rule_active(min_shot_gap, hook_s, hook_min_shot_gap):
+        _apply_min_gap(
+            film,
+            starts,
+            min_shot_gap=min_shot_gap,
+            hook_s=hook_s,
+            hook_min_shot_gap=hook_min_shot_gap,
+        )
 
     if max_cues_per_minute is not None:
-        _apply_rate_cap(film, max_cues_per_minute)
+        _apply_rate_cap(
+            film,
+            starts,
+            max_cues_per_minute,
+            hook_s=hook_s,
+        )
 
     return copy
+
+
+def _gap_rule_active(
+    min_shot_gap: int | None,
+    hook_s: float | None,
+    hook_min_shot_gap: int | None,
+) -> bool:
+    if min_shot_gap is not None and min_shot_gap > 0:
+        return True
+    return (
+        hook_s is not None
+        and hook_s > 0
+        and hook_min_shot_gap is not None
+        and hook_min_shot_gap > 0
+    )
+
+
+def _shot_in_hook(
+    shot_id: str,
+    starts: dict[str, float],
+    hook_s: float | None,
+) -> bool:
+    """Hook membership is by start time: start < hook_s.
+
+    A long first shot that overlaps the whole window is in the hook
+    because it starts at 0; a shot that begins at exactly hook_s is
+    body. Not shot index, not overlap of [0, hook_s).
+    """
+    if hook_s is None or hook_s <= 0:
+        return False
+    return starts[shot_id] < hook_s
 
 
 def _film_order(timeline: Timeline) -> list[tuple[Scene, Shot]]:
@@ -551,19 +613,42 @@ def _stated_numbers(text: str) -> set[int]:
     return stated
 
 
-def _apply_min_gap(film: list[tuple[Scene, Shot]], min_shot_gap: int) -> None:
+def _gap_for_shot(
+    shot: Shot,
+    starts: dict[str, float],
+    *,
+    min_shot_gap: int | None,
+    hook_s: float | None,
+    hook_min_shot_gap: int | None,
+) -> int | None:
+    """Gap that applies to a NEW cue on this shot (hook vs body)."""
+    if _shot_in_hook(shot.id, starts, hook_s):
+        if hook_min_shot_gap is not None:
+            return hook_min_shot_gap
+    return min_shot_gap
+
+
+def _apply_min_gap(
+    film: list[tuple[Scene, Shot]],
+    starts: dict[str, float],
+    *,
+    min_shot_gap: int | None,
+    hook_s: float | None,
+    hook_min_shot_gap: int | None,
+) -> None:
     """Walk film order. Pivot is never dropped; a non-pivot yields to it.
 
     The gap is an INDEX DISTANCE in film order: a cue at film index `i`
-    is inside the gap when `i - last_kept_index < min_shot_gap`, so a
-    cue exactly `min_shot_gap` shots after the last kept one is KEPT
-    (gap 3: shots 0 and 3 both survive; shots 0 and 2 do not; adjacent
-    shots never do). Reviewed 2026-09-09: the first implementation
-    counted "shots seen since the keeper", which read a distance of `d`
-    as `d - 1` and made the effective gap 4 — the docstring's rule and
-    the band comment's `1.75 x 3 = 5.25s` arithmetic both describe this
-    index reading, and at gap 3 it is what puts a fully-authored reel on
-    the 12.0/min cap instead of 8.57/min.
+    is inside the gap when `i - last_kept_index < gap`, so a cue exactly
+    `gap` shots after the last kept one is KEPT (gap 3: shots 0 and 3
+    both survive; shots 0 and 2 do not). Reviewed 2026-09-09: the first
+    implementation counted "shots seen since the keeper", which read a
+    distance of `d` as `d - 1` and made the effective gap 4.
+
+    K14.1: the gap for the incoming cue is hook_min_shot_gap when that
+    cue's shot starts inside the hook, else min_shot_gap. Gap 1 inside
+    the hook lets consecutive indices survive (`i - last < 1` is never
+    true for two different shots).
 
     Mirrors `_cap_text_cards`: chapter cards there, pivot cues here.
     Two pivots inside the gap are both kept — never drop a pivot.
@@ -576,7 +661,19 @@ def _apply_min_gap(film: list[tuple[Scene, Shot]], min_shot_gap: int) -> None:
         if cue is None:
             continue
 
-        inside_gap = last_kept_index is not None and i - last_kept_index < min_shot_gap
+        gap = _gap_for_shot(
+            shot,
+            starts,
+            min_shot_gap=min_shot_gap,
+            hook_s=hook_s,
+            hook_min_shot_gap=hook_min_shot_gap,
+        )
+        if gap is None or gap <= 0:
+            last_kept_index = i
+            last_kept_is_pivot = cue.device is EmphasisDevice.PIVOT
+            continue
+
+        inside_gap = last_kept_index is not None and i - last_kept_index < gap
         if cue.device is EmphasisDevice.PIVOT:
             if inside_gap and not last_kept_is_pivot and last_kept_index is not None:
                 _drop(film[last_kept_index][1], "min_gap")
@@ -593,7 +690,10 @@ def _apply_min_gap(film: list[tuple[Scene, Shot]], min_shot_gap: int) -> None:
 
 def _apply_rate_cap(
     film: list[tuple[Scene, Shot]],
+    starts: dict[str, float],
     max_cues_per_minute: float,
+    *,
+    hook_s: float | None,
 ) -> None:
     """Drop non-pivots in film order until under the cap; never drop a pivot.
 
@@ -601,20 +701,36 @@ def _apply_rate_cap(
     push the reel back over the cap after earlier stamps were kept.
     A lone pivot is kept even when the hypothetical rate is already
     exhausted.
+
+    K14.2 choice: when `hook_s` is set, compute the ceiling over the
+    BODY only (duration_s - hook_s; cues whose shots start >= hook_s).
+    Hook cues are never dropped by this rule and do not consume body
+    slots. Leaving 12.0 on the whole reel would strip a dense hook;
+    raising the whole-reel cap to ~16 would let the body pack 16/min.
     """
     shots = [shot for _scene, shot in film]
     duration_s = compute_timeline_duration(shots)
     if duration_s <= 0:
         return
-    allowed = max_cues_per_minute * (duration_s / 60.0)
+
+    if hook_s is not None and hook_s > 0:
+        body_duration_s = max(0.0, duration_s - hook_s)
+        if body_duration_s <= 0:
+            return
+        allowed = max_cues_per_minute * (body_duration_s / 60.0)
+        body_shots = [shot for shot in shots if not _shot_in_hook(shot.id, starts, hook_s)]
+    else:
+        allowed = max_cues_per_minute * (duration_s / 60.0)
+        body_shots = shots
+
     n_pivots = sum(
         1
-        for shot in shots
+        for shot in body_shots
         if shot.emphasis_cue is not None and shot.emphasis_cue.device is EmphasisDevice.PIVOT
     )
     remaining_pivots = n_pivots
     kept = 0
-    for shot in shots:
+    for shot in body_shots:
         cue = shot.emphasis_cue
         if cue is None:
             continue

@@ -245,24 +245,42 @@ async def test_the_resolved_band_knobs_arrive_in_the_right_parameters(monkeypatc
     captured: dict[str, object] = {}
     real = emphasis_pass.enforce_emphasis_rules
 
-    def _spy(timeline, *, min_shot_gap, max_cues_per_minute):
+    def _spy(
+        timeline,
+        *,
+        min_shot_gap,
+        max_cues_per_minute,
+        hook_s=None,
+        hook_min_shot_gap=None,
+    ):
         captured["min_shot_gap"] = min_shot_gap
         captured["max_cues_per_minute"] = max_cues_per_minute
+        captured["hook_s"] = hook_s
+        captured["hook_min_shot_gap"] = hook_min_shot_gap
         return real(
             timeline,
             min_shot_gap=min_shot_gap,
             max_cues_per_minute=max_cues_per_minute,
+            hook_s=hook_s,
+            hook_min_shot_gap=hook_min_shot_gap,
         )
 
     monkeypatch.setattr(emphasis_pass, "enforce_emphasis_rules", _spy)
     ctx = _ctx(_timeline("bike. lekin kya Creta", render_style="retention_fast"))
     result = await EmphasisPassStep().run(ctx)
     assert result.outcome == "ok"
-    assert captured == {"min_shot_gap": 3, "max_cues_per_minute": 12.0}
+    assert captured == {
+        "min_shot_gap": 3,
+        "max_cues_per_minute": 12.0,
+        "hook_s": 5.0,
+        "hook_min_shot_gap": 1,
+    }
     # `3 == 3.0` and `12.0 == 12`, so equality alone would not catch a
     # swap of two numerically-equal knobs; the shapes differ.
     assert isinstance(captured["min_shot_gap"], int)
     assert isinstance(captured["max_cues_per_minute"], float)
+    assert isinstance(captured["hook_s"], float)
+    assert isinstance(captured["hook_min_shot_gap"], int)
 
 
 async def test_narration_locked_is_skipped_so_a_resume_cannot_drop_audio():

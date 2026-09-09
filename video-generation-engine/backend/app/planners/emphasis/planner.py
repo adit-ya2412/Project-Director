@@ -45,6 +45,7 @@ from app.schemas.timeline import (
     Shot,
     Timeline,
 )
+from app.script.styles import resolve_emphasis_hook_s
 from app.timeline.duration import compute_timeline_duration
 from app.timeline.emphasis_rules import shot_blocks_emphasis_cue
 from app.timeline.pivot import attach_pivot_cue, detect_pivot
@@ -53,6 +54,14 @@ logger = get_logger(__name__)
 
 AGENT = "emphasis"
 PROMPT_VERSION = "v1"
+
+# K14.4: authoring target multiplier (was 10.0). Necessary-but-not-
+# sufficient without the hook wording in K14.3.
+_TARGET_CUES_PER_MINUTE = 12.0
+# K14.3 / K14.4: authoring floor inside the hook window. K3 cannot
+# invent cues; this integer is what the model obeys.
+_HOOK_MIN_CUES = 3
+_HOOK_FIRST_CUE_DEADLINE_S = 1.5
 
 _V1_DEVICES = frozenset({"stamp", "counter", "pivot"})
 _PIVOT_CANONICAL = {
@@ -108,10 +117,33 @@ def _short(text: str, limit: int = 160) -> str:
     return stripped[: limit - 1] + "…"
 
 
+def _density_target_line(timeline: Timeline, duration_s: float) -> str:
+    """Authoring target string. K14.3 names the hook; K14.4 raises 12.0."""
+    total = max(1, round(duration_s / 60.0 * _TARGET_CUES_PER_MINUTE))
+    hook_s = resolve_emphasis_hook_s(timeline.metadata.render_style)
+    if hook_s is None or hook_s <= 0:
+        return (
+            f"Target cue count: {total} (band 8-12 per minute; one cue per shot; "
+            "space them — several shots of rest between cues)."
+        )
+    hook_min = min(_HOOK_MIN_CUES, total)
+    body = max(0, total - hook_min)
+    return (
+        f"Target cue count: {total} = at least {hook_min} in the first "
+        f"{hook_s:.1f}s hook + {body} in the body "
+        f"(multiplier {_TARGET_CUES_PER_MINUTE:.1f}/min). "
+        f"The first seconds are worth more than the last — front-load. "
+        f"Put the first cue inside ~{_HOOK_FIRST_CUE_DEADLINE_S:.1f}s. "
+        f"Inside the hook, consecutive shots may both carry a cue. "
+        f"Body uses the remaining {body} with several shots of rest "
+        f"between cues (gap 3). One cue per shot."
+    )
+
+
 def _build_user_content(timeline: Timeline) -> str:
     shots = timeline.all_shots()
     duration_s = compute_timeline_duration(shots)
-    target = max(1, round(duration_s / 60.0 * 10.0))
+    density_line = _density_target_line(timeline, duration_s)
     fragments_by_scene = _fragments_by_scene(timeline)
     hit = detect_pivot(timeline)
     if hit is None:
@@ -163,8 +195,7 @@ def _build_user_content(timeline: Timeline) -> str:
     return (
         f"Film duration_s: {duration_s:.2f}\n"
         f"Shot count: {len(shots)}\n"
-        f"Target cue count: {target} (band 8-12 per minute; one cue per shot; "
-        f"space them — several shots of rest between cues).\n"
+        f"{density_line}\n"
         f"{turn_line}\n"
         "Use each shot id EXACTLY as written (already namespaced with the "
         "scene id). anchor_fragment and cited_fragment are 1-indexed "

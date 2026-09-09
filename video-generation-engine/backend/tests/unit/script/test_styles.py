@@ -19,6 +19,8 @@ from app.script.styles import (
     frame_aspect_error,
     resolve_constraint_bundle,
     resolve_draft_format,
+    resolve_emphasis_hook_min_shot_gap,
+    resolve_emphasis_hook_s,
     resolve_emphasis_max_cues_per_minute,
     resolve_emphasis_min_shot_gap,
     resolve_emphasis_slab_default,
@@ -339,11 +341,12 @@ def test_retention_fast_records_the_spike_palette_pair():
 
 
 def test_retention_fast_opts_into_emphasis_density_knobs():
-    """K3: gap 3 at 1.75s/shot ≈ 11.4 cues/min; cap 12.0 is the top of
-    the 8–12/min band. Other styles leave both None so density is a
-    no-op."""
+    """K3/K14: body gap 3, body rate 12.0, hook 5.0s with gap 1. Other
+    styles leave all four None so density is a no-op."""
     assert resolve_emphasis_min_shot_gap("retention_fast") == 3
     assert resolve_emphasis_max_cues_per_minute("retention_fast") == 12.0
+    assert resolve_emphasis_hook_s("retention_fast") == 5.0
+    assert resolve_emphasis_hook_min_shot_gap("retention_fast") == 1
     for style in (
         "documentary_archival",
         "stillness",
@@ -354,6 +357,8 @@ def test_retention_fast_opts_into_emphasis_density_knobs():
     ):
         assert resolve_emphasis_min_shot_gap(style) is None
         assert resolve_emphasis_max_cues_per_minute(style) is None
+        assert resolve_emphasis_hook_s(style) is None
+        assert resolve_emphasis_hook_min_shot_gap(style) is None
 
 
 def test_documentary_archival_is_1280x720_and_retention_fast_stays_portrait():
@@ -604,6 +609,8 @@ def test_existing_four_style_bands_are_byte_for_byte_unchanged():
         emphasis_slab_default=True,
         emphasis_min_shot_gap=3,
         emphasis_max_cues_per_minute=12.0,
+        emphasis_hook_s=5.0,
+        emphasis_hook_min_shot_gap=1,
         emphasis_accent="#FFC300",
         emphasis_pivot_ground="#FF2E2E",
     )

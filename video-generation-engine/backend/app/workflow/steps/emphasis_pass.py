@@ -62,6 +62,8 @@ from app.providers.openai_provider import OpenAIPlanningProvider
 from app.repositories.llm_call_repository import LlmCallRepository
 from app.schemas.timeline import ProducedBy, Timeline
 from app.script.styles import (
+    resolve_emphasis_hook_min_shot_gap,
+    resolve_emphasis_hook_s,
     resolve_emphasis_max_cues_per_minute,
     resolve_emphasis_min_shot_gap,
 )
@@ -88,6 +90,8 @@ def _enforce(timeline: Timeline) -> Timeline:
         timeline,
         min_shot_gap=resolve_emphasis_min_shot_gap(style),
         max_cues_per_minute=resolve_emphasis_max_cues_per_minute(style),
+        hook_s=resolve_emphasis_hook_s(style),
+        hook_min_shot_gap=resolve_emphasis_hook_min_shot_gap(style),
     )
 
 

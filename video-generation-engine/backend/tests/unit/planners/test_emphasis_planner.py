@@ -10,6 +10,8 @@ from pydantic import ValidationError
 
 from app.planners.emphasis.planner import (
     EmphasisPlanner,
+    _TARGET_CUES_PER_MINUTE,
+    _build_user_content,
     apply_emphasis_plan,
     derive_text_register,
 )
@@ -133,6 +135,30 @@ def test_narration_splits_into_five_fragments():
         "Brochures kehte hain 9 lakh.",
         "Comment karo abhi.",
     ]
+
+
+def test_build_user_content_names_the_hook_and_uses_12_multiplier():
+    """K14.3 / K14.4: Target cue count must name the hook and use 12.0."""
+    timeline = _timeline()
+    timeline.metadata.render_style = "retention_fast"
+    # 5 shots × 2.0s = 10s → round(10/60 * 12) = 2; hook_min clipped to 2.
+    content = _build_user_content(timeline)
+    assert _TARGET_CUES_PER_MINUTE == 12.0
+    assert "first 5.0s hook" in content
+    assert "front-load" in content
+    assert "~1.5s" in content
+    assert "consecutive shots may both carry a cue" in content
+    assert "gap 3" in content
+    assert "multiplier 12.0/min" in content
+    assert "Target cue count: 2 = at least 2 in the first 5.0s hook + 0 in the body" in content
+
+
+def test_build_user_content_without_hook_keeps_uniform_band_line():
+    timeline = _timeline()
+    timeline.metadata.render_style = "documentary_archival"
+    content = _build_user_content(timeline)
+    assert "first 5.0s hook" not in content
+    assert "band 8-12 per minute" in content
 
 
 def test_emphasis_planner_schema_has_no_defaults():

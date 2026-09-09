@@ -175,7 +175,24 @@ class StylePacingBand:
     # cap. `retention_fast` sets 12.0, the top of the 8–12/min band
     # the plan builds against. Read through
     # `resolve_emphasis_max_cues_per_minute`.
+    #
+    # K14.2: when `emphasis_hook_s` is set, this ceiling applies to
+    # BODY cues only (shots whose start >= hook_s). Hook cues are
+    # extra and do not consume the body budget — raising the whole-
+    # reel cap instead would let the body pack at that higher rate.
     emphasis_max_cues_per_minute: float | None = None
+    # retention_fast_kinetic_text.md K14: first N seconds of the reel
+    # are the hook window. None = no hook (uniform gap / whole-reel
+    # rate cap). Membership is by shot START time via
+    # `compute_shot_start_times` (start < hook_s), not shot index.
+    # Read through `resolve_emphasis_hook_s`.
+    emphasis_hook_s: float | None = None
+    # Gap applied to cues whose shots start inside the hook. 1 means
+    # consecutive hook shots may both keep a cue (`i - last < 1` is
+    # never true for two different indices). Gap 0 would skip the
+    # rule entirely under `if gap > 0`. Read through
+    # `resolve_emphasis_hook_min_shot_gap`.
+    emphasis_hook_min_shot_gap: int | None = None
     # retention_fast_kinetic_text.md K5: the style-band palette pair.
     # None = this style has no kinetic text and no band colour.
     # `retention_fast` records the spike pair (`#FFC300` / `#FF2E2E`).
@@ -250,23 +267,19 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
         # contrast via the chooser with the policy off; here it never
         # does. The 2025 year stamp washed out at luma 216.
         emphasis_slab_default=True,
-        # K3 density. At target_shot_duration_s=1.75, 8–12 cues/min is
-        # one cue every 5–7.5s ≈ every 3–4 shots. The gap is an index
-        # distance in film order, so gap 3 keeps cues on shots 0, 3,
-        # 6, … → an interval of 1.75×3 = 5.25s → 60/5.25 ≈ 11.4/min
-        # between cues, inside the band. MEASURED 2026-09-09 (K3
-        # review, `tmp/k3_min_gap_probe.py`) on a reel with a cue
-        # authored on every shot: 20×1.75s = 35.0s → 7 cues kept =
-        # 12.00/min (8.57 before the off-by-one fix); 26×1.35s =
-        # 35.1s → 7 = 11.97/min; 17×2.05s = 34.85s → 6 = 10.33/min.
-        # A reel carries the cue at t=0 on top of the intervals, so a
-        # fully-authored reel measures AT the 12.0/min cap, not at
-        # 11.4 — the cap is the binding ceiling, and it is what holds
-        # shorter shots down (26 shots at 1.35s would keep 9 on the gap
-        # alone; the 0.8s floor would allow ~25/min at gap 3). Other
-        # styles leave both None, so the pass is a no-op for density.
+        # K3 / K14 density. Body gap 3 at 1.75s/shot ≈ every 5.25s.
+        # K14.1 adds a 5.0s hook with gap 1 so consecutive early shots
+        # may both keep a cue (uniform gap 3 made two cues in the
+        # first 5s impossible). K14.2: the 12.0/min ceiling is the
+        # BODY rate only — hook cues do not consume it. MEASURED
+        # arithmetic on a fully-authored 20×1.75s = 35.0s reel with
+        # hook_s=5 / hook_gap=1 / body_gap=3: hook keeps 0,1,2
+        # (starts 0, 1.75, 3.5); body keeps 5,8,11,14,17 → 8 cues.
+        # Other styles leave all four None, so density is a no-op.
         emphasis_min_shot_gap=3,
         emphasis_max_cues_per_minute=12.0,
+        emphasis_hook_s=5.0,
+        emphasis_hook_min_shot_gap=1,
         # K5: the watched fallback for an unset retention_fast timeline.
         # Same pair the spike compositions hardcode. Other styles leave
         # both None; the resolver then uses this same pair as a last
@@ -597,12 +610,39 @@ def resolve_emphasis_max_cues_per_minute(style: str | None) -> float | None:
     """Style-owned emphasis rate cap (retention_fast_kinetic_text.md K3).
 
     None means no rate cap. Unknown / unset follow the same fallback
-    as `resolve_emphasis_min_shot_gap`.
+    as `resolve_emphasis_min_shot_gap`. When the style also sets
+    `emphasis_hook_s`, this ceiling applies to body cues only (K14.2).
     """
     band = STYLE_PACING_BANDS.get(style or settings.default_render_style)
     if band is None:
         return None
     return band.emphasis_max_cues_per_minute
+
+
+def resolve_emphasis_hook_s(style: str | None) -> float | None:
+    """Style-owned hook window length in seconds (K14.1).
+
+    None means no hook window — uniform gap and whole-reel rate cap.
+    Unknown / unset follow the same fallback as
+    `resolve_emphasis_min_shot_gap`. Resolve once in the emphasis-pass
+    caller (RV2) and pass the float in.
+    """
+    band = STYLE_PACING_BANDS.get(style or settings.default_render_style)
+    if band is None:
+        return None
+    return band.emphasis_hook_s
+
+
+def resolve_emphasis_hook_min_shot_gap(style: str | None) -> int | None:
+    """Style-owned min-gap inside the hook window (K14.1).
+
+    None means the hook uses the body gap (or no gap). Unknown / unset
+    follow the same fallback as `resolve_emphasis_min_shot_gap`.
+    """
+    band = STYLE_PACING_BANDS.get(style or settings.default_render_style)
+    if band is None:
+        return None
+    return band.emphasis_hook_min_shot_gap
 
 
 def resolve_sfx_whoosh_enabled(style: str | None) -> bool:

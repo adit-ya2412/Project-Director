@@ -75,7 +75,7 @@ and their disposition are below.
 | **K11** device renderers (stamp, counter) | **implemented 2026-09-09; two render-found defects fixed same day** — stamp + counter renderers; unblocks K9. The counter band is now content-derived (its type overflowed a hardcoded 420 by 118px, measured) and `treatment="dark"` gained the light halo it never had |
 | **K8** data graphics | **not started** |
 | **K12** planner authors `picture_is_graphic` | **implemented and reviewed 2026-09-09** (`23f83e9`) — Shot Planner authors required `ShotPlanOutput.picture_is_graphic` (no default) and maps it onto `Shot`. Live re-plan: data shot True, ordinary shots False. K3 already enforces. K8 unblocked on the signal, not yet implemented |
-| **K14** the hook is empty | **not started, ADDED 2026-09-10, THE NEXT SLICE** - the first finished reel put nothing on screen for its first 7.15s. `min_shot_gap=3` makes two cues inside the first 5s impossible, so the rules forbid a dense hook; the spike ran ~66/min there. Needs a hook budget with its own gap, a rate cap that does not undo it, position in the prompt, and word-level entry (NOT already built). BLOCKS captions-off |
+| **K14** the hook is empty | **implemented 2026-09-10, awaiting watched reel** — hook window 5.0s / gap 1; **K14.2 body-only 12.0/min cap** (hook cues extra; did not raise the whole-reel ceiling); K9 prompt + `Target cue count` front-load at 12.0/min with hook floor 3; stamp word-stagger 0/4/14/24. K14.6 not done. A NEW project is required (`34dd1ee1` cannot be re-authored). BLOCKS captions-off until the numbers beat 7.15s / 7.29 per min / 7.75s |
 | **K13** the counter has no reachable input | **not started, ADDED 2026-09-09, BLOCKING** — number-stating shots are planned as graphics, K3 rule 2 forbids cues there, so the counter is unreachable. First real reel produced 0 counters from 3 spoken numbers. Recommended fix: stop the Shot Planner making number shots into graphics (option B) |
 
 **Why shipping the pivot first worked without K6.** The pivot is the one
@@ -2754,4 +2754,61 @@ shake - was the best frame in the reel and the spike's own strongest
 beat. K4's contrast thresholds, K3's citation matcher, K13's option-B
 prompt rule, and `EmphasisDevice` staying wide are all settled and out
 of scope.
+
+---
+
+## Work log — K14 hook density (2026-09-10)
+
+This section is an implementation diary, not a design change. Append only.
+
+### 00:21 — K14.1
+
+- read: full K14 section (measurements on 34dd1ee1, six parts, do-not-change, verification). Uniform gap 3 makes two cues in the first 5s impossible; spike ran ~66/min in the hook.
+- decided: hook = first `emphasis_hook_s` seconds (5.0 on `retention_fast`). Shot membership is **start time < hook_s** via `compute_shot_start_times` (D5-correct), not shot index and not overlap of [0, hook_s). A long first shot of 6s is in the hook (starts at 0); its successor at 6.0 is body. Hook gap = 1 so `i - last < 1` never fires for two different indices — consecutive hook cues survive. Gap 0 would skip the rule under `if gap > 0`. Body keeps gap 3.
+- files: `backend/app/script/styles.py` (band fields + resolvers), `backend/app/timeline/emphasis_rules.py` (`hook_s` / `hook_min_shot_gap` on `enforce_emphasis_rules`), `backend/app/workflow/steps/emphasis_pass.py` (RV2 resolve-once into enforce).
+- tests: pinned three consecutive stamps on shots 0/1/2 (starts 0/1.75/3.5) survive at hook_gap=1 and drop under uniform gap 3; short vs long first-shot membership; body adjacent after hook still drops.
+- next: K14.2 body-only rate cap (without it this slice is a measured no-op).
+
+### 00:22 — K14.2
+
+- decided: **compute the rate cap over the BODY only** (cues whose shots start >= hook_s; allowed = `12.0 * (duration_s - hook_s) / 60`). Hook cues are extra and never dropped by `rate_cap`. Do NOT raise the whole-reel cap to ~16 — that would let the body pack 16/min too. Do NOT leave 12.0 on the whole reel — a 5s/3-cue hook + body at 12/min ≈ 16/min average and would strip the hook back out. Pivot still never dropped. Recorded in the band field comment and in `_apply_rate_cap`.
+- files: `emphasis_rules.py` (`_apply_rate_cap`), `styles.py` (comment on `emphasis_max_cues_per_minute`).
+- tests: `test_body_only_rate_cap_does_not_strip_a_dense_hook` — 8 authored cues survive body-only; the same set under whole-reel 12/min keeps only 6. Full-reel resolver test updated: 20×1.75s keeps `0,1,2,5,8,11,14,17` (8), not the old 7.
+- next: K14.3 prompt / user-content front-load.
+
+### 00:23 — K14.3
+
+- decided: Density section in `emphasis/v1.md` no longer says uniform 8–12/min / "space them". Names hook, front-load, first cue ~1.5s, 2–3 cues in the window, consecutive OK in hook, body may rest. `_build_user_content` names the hook explicitly (window length, min cues, first-cue deadline, consecutive OK, body remainder with gap 3) when `resolve_emphasis_hook_s` is set.
+- files: `backend/app/prompts/emphasis/v1.md`, `backend/app/planners/emphasis/planner.py` (`_density_target_line`).
+- tests: `test_build_user_content_names_the_hook_and_uses_12_multiplier`; non-hook style keeps the old uniform band line.
+- next: K14.4 multiplier + split target.
+
+### 00:24 — K14.4
+
+- decided: authoring multiplier `10.0` → **12.0**. Split target = hook_min (3, clipped to total) + body remainder, not one uniform number. Necessary-but-not-sufficient; shipped with K14.3 wording, not alone. Stamp prompt also allows a 2–4 word spoken phrase as one cue (feeds K14.5).
+- files: `planner.py` (`_TARGET_CUES_PER_MINUTE`, `_HOOK_MIN_CUES`, `_HOOK_FIRST_CUE_DEADLINE_S`), `emphasis/v1.md` stamp device line.
+- tests: asserts `multiplier 12.0/min` and split `at least N in the first 5.0s hook + M in the body`.
+- next: K14.5 word stagger in Stamp.tsx.
+
+### 00:25 — K14.5
+
+- decided: production `Stamp.tsx` was grapheme-cluster only. Multi-word `text` (whitespace) now splits on whitespace and staggers WORDS at spike-like delays 0 / 4 / 14 / 24 frames (4th extends +10); each word still grapheme-staggers internally (never `.split("")`). Single word unchanged. One cue, one `anchor_fragment`. Left `SuvRetention.tsx` / `EmphasisOverlay.tsx` alone. No second timing path of seconds in the planner.
+- files: `compositor/src/Stamp.tsx`.
+- tests: Python compositor suite still green (Stamp is TS; no new Remotion unit harness). K14.6 not done — re-derive 8–12 after a watched reel.
+- next: deviations + handoff. User will render a NEW project; `34dd1ee1` cannot be re-authored.
+
+### 00:25 — deviations / handoff
+
+- deviations: none material. Hook membership chose **start < hook_s** (documented + tested). Hook authoring floor is 3 (clipped when total target is smaller). Fourth-word delay 24 frames (spike only measured three).
+- K14.6 not implemented (out of scope for this slice).
+- did not touch `backend/app/prompts/shot_planner/v1.md` (dirty K13 option B).
+- tests run: `pytest tests/unit/timeline/test_emphasis_rules.py tests/unit/script/test_styles.py tests/unit/workflow/test_emphasis_pass_step.py tests/unit/planners/test_emphasis_planner.py tests/unit/renderer/test_compositor.py -q` → **173 passed**.
+- no commit, no git add. No project created, no OpenAI call.
+
+### 00:26 — review (Grok 4.6)
+
+- K14.1–14.5 match the section. K14.2 choice is body-only cap, tested (`test_body_only_rate_cap_does_not_strip_a_dense_hook`: 8 survive vs 6 under whole-reel 12/min). Do-not-touch list held (`SuvRetention` / `EmphasisOverlay` / pivot look / K4 / citation / `EmphasisDevice` / K13 `shot_planner/v1.md` left as the pre-existing dirty option-B prompt).
+- `python -m pytest tests/unit -q` from `backend`: **1462 passed, 6 failed**. Baseline was 1456/6; the six failures are the pre-existing director-planner + sfx-diegetic set. No new failure.
+- Observations, not reverts: (1) first-cue ~1.5s is prompt-only — K3 cannot invent a cue; (2) authoring still splits a *whole-reel* 12/min total (24.7s → 5 = 3 hook + 2 body) while enforcement would keep more body; (3) 4th stamp word at +24 frames vs `STAMP_HOLD_S` 0.86s (~26 frames, 3-frame exit) — 3-word phrases are fine, a 4-word stamp’s last word barely lands. Watch before retuning.
+- K14.6 not done. No project created. User renders a NEW `retention_fast` reel and reports first-cue onset, hook rate, body rate, longest empty stretch vs 7.15s / 7.29 per min / 7.75s.
 

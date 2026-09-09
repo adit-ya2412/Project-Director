@@ -19,10 +19,12 @@ from app.schemas.timeline import (
     TimelineStatus,
 )
 from app.script.styles import (
+    resolve_emphasis_hook_min_shot_gap,
+    resolve_emphasis_hook_s,
     resolve_emphasis_max_cues_per_minute,
     resolve_emphasis_min_shot_gap,
 )
-from app.timeline.duration import compute_timeline_duration
+from app.timeline.duration import compute_shot_start_times, compute_timeline_duration
 from app.timeline.emphasis_rules import (
     _ROMAN_NEEDS_SCALE,
     _ROMAN_NUMBER_WORDS,
@@ -109,11 +111,15 @@ def _enforce(
     *,
     min_shot_gap: int | None = None,
     max_cues_per_minute: float | None = None,
+    hook_s: float | None = None,
+    hook_min_shot_gap: int | None = None,
 ) -> Timeline:
     return enforce_emphasis_rules(
         timeline,
         min_shot_gap=min_shot_gap,
         max_cues_per_minute=max_cues_per_minute,
+        hook_s=hook_s,
+        hook_min_shot_gap=hook_min_shot_gap,
     )
 
 
@@ -478,13 +484,12 @@ def test_a_dropped_cue_does_not_restart_the_gap():
     assert _cues(out) == [EmphasisDevice.STAMP, None, None, EmphasisDevice.STAMP]
 
 
-def test_retention_fast_knobs_measure_12_cues_per_minute_on_a_full_reel():
-    """The band comment's arithmetic, pinned through the real resolvers.
+def test_retention_fast_knobs_measure_hook_plus_body_on_a_full_reel():
+    """K14 band arithmetic, pinned through the real resolvers.
 
-    20 shots x 1.75s = 35.0s; gap 3 keeps shots 0, 3, ... 18 = 7 cues =
-    12.00/min, exactly the 12.0/min cap. Before the index-distance fix
-    the same reel measured 8.57/min, below the plan's 8-12/min band and
-    nowhere near the cap the comment calls the ceiling.
+    20 shots x 1.75s = 35.0s. Hook (start < 5.0) is shots 0,1,2; hook
+    gap 1 keeps all three. Body gap 3 from last hook keeper (2) keeps
+    5,8,11,14,17 → 8 cues. Pre-K14 uniform gap 3 kept 7.
     """
     shots = [
         _shot(f"sh_{i:02d}", order=i, duration_s=1.75, emphasis_cue=_cue(text=f"S{i}"))
@@ -494,12 +499,151 @@ def test_retention_fast_knobs_measure_12_cues_per_minute_on_a_full_reel():
         _timeline(shots),
         min_shot_gap=resolve_emphasis_min_shot_gap("retention_fast"),
         max_cues_per_minute=resolve_emphasis_max_cues_per_minute("retention_fast"),
+        hook_s=resolve_emphasis_hook_s("retention_fast"),
+        hook_min_shot_gap=resolve_emphasis_hook_min_shot_gap("retention_fast"),
     )
     kept = [shot.id for shot in out.all_shots() if shot.emphasis_cue is not None]
     duration_s = compute_timeline_duration(out.all_shots())
-    assert kept == ["sh_00", "sh_03", "sh_06", "sh_09", "sh_12", "sh_15", "sh_18"]
+    assert kept == ["sh_00", "sh_01", "sh_02", "sh_05", "sh_08", "sh_11", "sh_14", "sh_17"]
     assert duration_s == pytest.approx(35.0)
-    assert len(kept) * 60.0 / duration_s == pytest.approx(12.0)
+    assert resolve_emphasis_hook_s("retention_fast") == 5.0
+    assert resolve_emphasis_hook_min_shot_gap("retention_fast") == 1
+
+
+def test_hook_gap_1_keeps_three_consecutive_stamps_uniform_gap_3_would_drop():
+    """Shots 0,1,2 at 1.75s start at 0 / 1.75 / 3.5 — all inside a 5s hook."""
+    shots = [
+        _shot(f"sh_{i}", order=i, duration_s=1.75, emphasis_cue=_cue(text=f"S{i}"))
+        for i in range(3)
+    ]
+    with_hook = _enforce(
+        _timeline(shots),
+        min_shot_gap=3,
+        hook_s=5.0,
+        hook_min_shot_gap=1,
+    )
+    assert _cues(with_hook) == [
+        EmphasisDevice.STAMP,
+        EmphasisDevice.STAMP,
+        EmphasisDevice.STAMP,
+    ]
+    without = _enforce(_timeline(shots), min_shot_gap=3)
+    assert _cues(without) == [EmphasisDevice.STAMP, None, None]
+
+
+def test_hook_membership_is_by_start_time_not_index():
+    """Short first shot: starts 0 and 1.0 are in a 5s hook; long first
+    shot of 6s: only shot 0 (start 0) is in the hook — shot 1 at 6.0 is
+    body, so adjacent body stamps still drop under gap 3.
+    """
+    short = [
+        _shot("sh_a", order=0, duration_s=1.0, emphasis_cue=_cue(text="A")),
+        _shot("sh_b", order=1, duration_s=1.0, emphasis_cue=_cue(text="B")),
+    ]
+    short_starts = compute_shot_start_times(short)
+    assert short_starts == {"sh_a": 0.0, "sh_b": 1.0}
+    short_out = _enforce(
+        _timeline(short),
+        min_shot_gap=3,
+        hook_s=5.0,
+        hook_min_shot_gap=1,
+    )
+    assert _cues(short_out) == [EmphasisDevice.STAMP, EmphasisDevice.STAMP]
+
+    long = [
+        _shot("sh_a", order=0, duration_s=6.0, emphasis_cue=_cue(text="A")),
+        _shot("sh_b", order=1, duration_s=1.0, emphasis_cue=_cue(text="B")),
+    ]
+    long_starts = compute_shot_start_times(long)
+    assert long_starts == {"sh_a": 0.0, "sh_b": 6.0}
+    long_out = _enforce(
+        _timeline(long),
+        min_shot_gap=3,
+        hook_s=5.0,
+        hook_min_shot_gap=1,
+    )
+    assert _cues(long_out) == [EmphasisDevice.STAMP, None]
+
+
+def test_body_adjacent_stamps_after_the_hook_still_drop():
+    """Hook keeps 0,1,2; shot 3 starts at 5.25 (>= 5) and is body — gap 3
+    from last hook keeper drops it.
+    """
+    shots = [
+        _shot(f"sh_{i}", order=i, duration_s=1.75, emphasis_cue=_cue(text=f"S{i}"))
+        for i in range(4)
+    ]
+    out = _enforce(
+        _timeline(shots),
+        min_shot_gap=3,
+        hook_s=5.0,
+        hook_min_shot_gap=1,
+    )
+    assert _cues(out) == [
+        EmphasisDevice.STAMP,
+        EmphasisDevice.STAMP,
+        EmphasisDevice.STAMP,
+        None,
+    ]
+
+
+def test_body_only_rate_cap_does_not_strip_a_dense_hook():
+    """K14.2 no-op guard: 5s hook with 3 cues + body at 12/min must not
+    be stripped by applying 12.0 to the whole reel.
+
+    30s reel, hook_s=5 → body 25s → allowed body = 12 * 25/60 = 5.
+    Three hook stamps + five body stamps spaced by gap 3 all survive;
+    a whole-reel 12/min cap on 30s would allow only 6 and strip the hook.
+    """
+    # 6×1s hook-ish shots (0..5) but only first 5s is hook → shots 0..4
+    # start < 5; shot 5 starts at 5.0 → body. Then more body shots.
+    shots = [
+        _shot(f"sh_{i:02d}", order=i, duration_s=1.0, emphasis_cue=_cue(text=f"S{i}"))
+        for i in range(30)
+    ]
+    # Place cues on hook 0,1,2 and body 5,8,11,14,17 (gap 3 from last
+    # hook keeper at 2 → first body keeper at 5).
+    keep_idx = {0, 1, 2, 5, 8, 11, 14, 17}
+    for i, shot in enumerate(shots):
+        if i not in keep_idx:
+            shot.emphasis_cue = None
+    out = _enforce(
+        _timeline(shots),
+        min_shot_gap=3,
+        max_cues_per_minute=12.0,
+        hook_s=5.0,
+        hook_min_shot_gap=1,
+    )
+    kept = [shot.id for shot in out.all_shots() if shot.emphasis_cue is not None]
+    assert kept == [
+        "sh_00",
+        "sh_01",
+        "sh_02",
+        "sh_05",
+        "sh_08",
+        "sh_11",
+        "sh_14",
+        "sh_17",
+    ]
+    # Whole-reel 12/min on 30s would allow only 6 — proving body-only
+    # is what let all 8 survive.
+    whole_reel = _enforce(
+        _timeline(
+            [
+                _shot(
+                    f"sh_{i:02d}",
+                    order=i,
+                    duration_s=1.0,
+                    emphasis_cue=_cue(text=f"S{i}") if i in keep_idx else None,
+                )
+                for i in range(30)
+            ]
+        ),
+        max_cues_per_minute=12.0,
+    )
+    whole_kept = [s.id for s in whole_reel.all_shots() if s.emphasis_cue is not None]
+    assert len(whole_kept) == 6
+    assert len(kept) == 8
 
 
 def test_adjacent_stamps_second_dropped_at_min_gap_3():
