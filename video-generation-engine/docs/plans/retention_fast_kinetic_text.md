@@ -69,7 +69,7 @@ and their disposition are below.
 | **K7** compositor seam | **proven end-to-end 2026-09-09** — `renderer/compositor.py` + props-driven `Pivot.tsx`/`Emphasis.tsx`. Fingerprint hooks (`emphasis_cue_hash`, `emphasis_font_hash`) are in and correctly separate from `cue_list_hash` |
 | **K9** emphasis pass | **stub** — `steps/emphasis_pass.py` exists and is style-gated, but runs only pivot detection. The LLM pass is not written |
 | **K3** enforcement rules | **partial** — only the `text_card` exclusion, inline in `pivot.py`. No density cap, no graphic-asset exclusion, no safe zones |
-| **K4** contrast adaptation | **done 2026-09-09** — render-time plate luma → light/dark/slab on OverlayCue. Slab default for retention_fast. luma 216 is never `light`. |
+| **K4** contrast adaptation | **done 2026-09-09, reviewed same day** — render-time plate luma → light/dark/slab on OverlayCue. Slab default for retention_fast. The bright `2025` plate is never `light`. Review applied: band box is now Python-authoritative and travels through the props; `LIGHT_MAX_LUMA` 90 → 105 on six measured plates; the measurement is kept and logged under the slab policy; one decode per plate |
 | **K5** palette resolution | **not started** (the commit says so explicitly) |
 | **K6** reach the vendored Bold | **done 2026-09-09** — was never a download |
 | **K8** data graphics | **not started** |
@@ -470,10 +470,146 @@ spacing pass:
   one frame, right at 1.3s and wrong at 4.3s.
 
 ### K4 — Contrast adaptation
-**Status (2026-09-09): implemented.** Render-time plate luma → light/dark/slab on `OverlayCue`. Not a planner field.
-Measure each cue's own plate (mean luma, ideally local luma under the
-cue's box) and choose light type / dark type / slab. Slab is the default
-for this style. This is the task that would have caught `2025`.
+**Status (2026-09-09): implemented, then reviewed and revised the same
+day.** Render-time plate luma → light/dark/slab on `OverlayCue`. Not a
+planner field. Measure each cue's own plate (mean luma, local luma under
+the cue's box) and choose light type / dark type / slab. Slab is the
+default for this style. This is the task that would have caught `2025`.
+
+#### What the 2026-09-09 review changed
+
+**1. The band box is Python-authoritative and travels through the props.**
+As first shipped, the pixel box K4 measured was a hand-copied mirror of
+five layout constants in `compositor/src/Pivot.tsx` (`top 380`,
+`font 132`, `pad 18` on a 720x1280 reference canvas). Nothing tied the
+copies together. Moving the band in the TSX would have left Python
+measuring the old rectangle and choosing a treatment for a place the
+text is not — **no exception, no ffmpeg error, no failing test.** It was
+the only failure mode in K4 that was completely silent, which is why it
+was fixed first and fixed structurally rather than with a guard:
+
+```
+pivot_band(canvas_w, canvas_h) -> PivotBand      # app/renderer/compositor.py
+      |                                          #   the ONE definition
+      +--> PivotBand.box_on(plate_w, plate_h)    # the rectangle MEASURED
+      +--> PivotBand.as_props()                  # the rectangle DRAWN
+      +--> PivotBand.hash_payload()              # overlay cache + fingerprint
+```
+
+The band is resolved once by `collect_pivot_overlay_cues` (which now
+takes the canvas), carried on `OverlayCue.band`, and shipped to the TSX
+as `cue.band`. `Pivot.tsx` positions itself from that prop and holds no
+production layout arithmetic. Its `SPIKE_*` constants survive **only** as
+a fallback for the standalone spike compositions (`SuvRetention.tsx`
+passes no band) and are labelled as such in the file. Drift is now
+impossible by construction: the measured region is the drawn region
+because they are the same numbers.
+
+**Props contract, before → after** (`_overlay_props`, per cue):
+
+```
+before:  device, text, textRegister, startFrame, endFrame, treatment
+after:   device, text, textRegister, startFrame, endFrame, treatment,
+         band: { left, top, width, fontSize, pad } | null
+```
+
+`band` is hashed into `overlay_input_hash` AND
+`emphasis_cue_content_hash`. The five band constants are code, so
+editing them must invalidate both the `.mov` and the cached `final.mp4`
+— otherwise the plan's own fingerprint warning applies and the render
+step serves a video with the band in its old place. **Consequence,
+correct and expected: every overlay and every render fingerprint from
+before this change misses once.**
+
+Two things deliberately left as they are, both recorded in
+`PivotBand.as_props`:
+
+- `height` is NOT in the props. The drawn band's height comes out of
+  `fontSize`, `pad` and the CSS line-height (1.1, needed for Devanagari
+  matras above the shirorekha), so it measures ~183px against the
+  nominal `font + 2*pad = 168`. The nominal number stays the *measured*
+  one because it is the box the threshold below was derived through;
+  widening it moves 98.3 → 100.6 and 108.6 → 103.3 and silently inverts
+  that argument. Forcing the drawn band down to 168 instead would change
+  a look the plan says twice not to change. The residue is bounded and
+  on the safe side — the measured slice sits inside the drawn band.
+- `box_on` maps the band by its **fraction of the canvas**, because
+  `shot_images` holds the raw resolved asset (often 1920x1080), not a
+  canvas-sized frame. Recomputing the band from the asset's own
+  dimensions was subtly wrong on any non-matching aspect: font (hence
+  band height) scales with width while top scales with height, so on
+  1920x1080 the old code measured a slice 0.35 of the picture tall where
+  the drawn band covers 0.13. Still an approximation — the ken-burns
+  crop decides which asset pixels actually land under the band, and
+  knowing that exactly means extracting the rendered frame. Out of
+  scope; the fractional map is strictly closer than what it replaced.
+
+**2. `LIGHT_MAX_LUMA` 90.0 → 105.0. `DARK_MIN_LUMA` stays 180.0.**
+Measured, not chosen. Six plates, one per moment the hand-built spike
+put type on screen, taken through the band box `(0, 380, 720, 548)` on
+`tmp/suv_test/plate_nocaptions.mp4` (720x1280, reproduced 2026-09-09):
+
+| t (s) | box luma | frame mean | what the spike drew there |
+|---|---|---|---|
+| 1.30 | **98.3** | 99.6 | bare white type — **inspected, read well** |
+| 2.20 | **108.6** | 88.7 | dark slab — bare type **never tested** |
+| 3.00 | **236.9** | 231.7 | bare white `2025` — **washed out** |
+| 4.30 | 190.1 | 199.0 | counter on an infographic (the other failure) |
+| 5.20 | 159.8 | 105.5 | red pivot band (slab, brings its own ground) |
+| 5.90 | 132.2 | 98.6 | lower band (slab) |
+
+- 98.3 is a **measured good case that 90.0 excluded.**
+- 236.9 is the failure this feature exists to prevent; 105 still calls
+  it `dark`, with 132 units of clearance.
+- 108.6 is the nearest plate above the good case and is **unproven**, so
+  105 admits the one proven case with ~7 units of margin and stops below
+  it.
+- **Worth stating plainly: at 90.0, `light` never fired on ANY plate in
+  the reference reel.** The branch had zero coverage in real data —
+  only in synthetic test fixtures. It was never a measured floor, just a
+  cautious one. At 105 exactly one real plate reaches it.
+- `DARK_MIN_LUMA` does not move: 190.1 is the only reference plate above
+  it, dark type there was never inspected either, and unlike the light
+  side there is no measured good case asking the boundary to shift.
+
+Note on the plan's own `216`: the historical figure for the `2025` beat
+is not reproducible to the digit. Re-measured, that frame is 236.9 in the
+band box and 231.7 as a frame mean, and the archived
+`tmp/suv_test/fail_2025.png` reads 228.8. `SUV_T3_MEAN_LUMA = 216.0`
+stays as the name the plan, the commit history and the regression test
+all speak in; every one of those values is far above 180 and classifies
+identically, so nothing downstream turns on which is used.
+
+**3. The measurement is kept under the slab policy, and logged.**
+`retention_fast` sets `emphasis_slab_default=True`, so `choose_treatment`
+returns `slab` for every cue it currently emits and the measured luma
+changes nothing on frame. The tempting optimisation — skip the decode
+when the policy is on — is **explicitly rejected**: a PIL decode of one
+still is a few milliseconds against a render measured in minutes, and
+the measured numbers are the only thing that will let a human relax the
+policy with evidence rather than a second guess. The threshold move in
+(2) is exactly that kind of decision, and it was only possible because
+somebody went and measured.
+
+So `apply_emphasis_treatments` emits one `emphasis_contrast.treatment`
+line per cue carrying: `device`, `shot_id`, `measured`, `luma`,
+`treatment`, **`threshold_treatment`** (what the floors alone would have
+picked), `slab_default`, **`policy_override`**, both thresholds, and
+`band_box`. Every render now accumulates the calibration data for free.
+The reason not to optimise it away is written next to the code, in the
+`emphasis_contrast` module docstring and in `choose_treatment`, because
+someone will see a discarded value and try.
+
+**4. One decode per plate.** `measure_plate_luma` used to open and
+convert the bytes to learn the image size, then call `mean_luma`, which
+opened and converted the identical bytes again. Both paths now share
+`_mean_luma_of_image` and decode once. Error behaviour is unchanged and
+deliberately non-uniform: empty bytes RAISE out of `mean_luma`; empty,
+missing, unreadable or non-image bytes return `None` from
+`measure_plate_luma` and log; `None` becomes `slab` at the chooser.
+A render must not fail because a shot resolved to a motion clip, and an
+unmeasured plate must never default to `light` — that is the 2025 bug in
+another costume.
 
 ### K5 — Palette resolution
 Precedence: `human override > per-project (LLM or derived) > channel
@@ -902,7 +1038,11 @@ Each of these is checkable, and "it looked fine" is not one of them.
   citable anchor value is dropped.
 - **K4** — for the SUV plate at t=3.0s (mean luma 216) the chosen
   treatment is NOT light-on-transparent. That exact frame is the
-  regression case; it is in the repo history as a failure.
+  regression case; it is in the repo history as a failure. (Re-measured
+  2026-09-09: that frame is 236.9 in the band box, 231.7 as a frame
+  mean. The `216` is historical and not reproducible to the digit; see
+  the note under K4. The criterion is unaffected — all three values are
+  well above `DARK_MIN_LUMA`.)
 - **K5** — the same project renders byte-identical twice; changing the
   palette changes the fingerprint and forces a re-render.
 - **K6** — `झूठ` renders from the vendored Bold with no synthetic-bold
@@ -1148,3 +1288,120 @@ Stopping for human review. No push, no PR.
 
 
 
+
+---
+
+## Work log — K4 review findings applied (2026-09-09)
+
+This section is an implementation diary, not a design change. Earlier sections above stay authoritative. Append only; never rewrite prior log entries. Four review findings against `1a8aade` ("Never white type on luma 216"); all four applied.
+
+### 15:31 — starting
+
+- read / opened: this plan (Current state table, K4 task, the two failures, done-criteria, the fingerprint warning, both prior work logs); `backend/app/renderer/emphasis_contrast.py` in full; `backend/app/renderer/compositor.py` (`OverlayCue`, `collect_pivot_overlay_cues`, `emphasis_cue_content_hash`, `overlay_input_hash`, `_overlay_props`, `_invoke_remotion`); `compositor/src/Pivot.tsx`, `Emphasis.tsx`, `Root.tsx`, `compositor/README.md`, `SuvRetention.tsx`'s `Pivot` wrapper (~line 289); `app/workflow/steps/render.py` (`shot_images` at ~241, overlay collect at ~385, filter chain at ~600); `app/renderer/fingerprint.py` emphasis docstring; `tests/unit/renderer/test_emphasis_contrast.py`, `test_compositor.py`.
+- decided: finding 3 first, because it is the only one that can fail silently. Then 2 (needs the plate measured before anything else moves), then 1, then 4.
+- decided: no commit, no push. Working tree only, for review.
+- files: none yet
+- tests: none yet
+- next: reproduce the six reference-plate luma numbers before changing any threshold
+
+### 15:33 — reproducing the measurement
+
+- read / opened: `tmp/suv_test/` (the six `k_*.png` frames from the spike session, `fail_2025.png`, `plate_nocaptions.mp4` — 720x1280, 30fps, 359 frames, 11.97s).
+- did: extracted t = 1.30 / 2.20 / 3.00 / 4.30 / 5.20 / 5.90 fresh with ffmpeg into `tmp/suv_test/_f2review/` and measured each through `measure_plate_luma(..., device="pivot")`.
+- measured: **98.3, 108.6, 236.9, 190.1, 159.8, 132.2** — every one an exact match for the numbers in the review brief. Box confirmed `(0, 380, 720, 548)`.
+- found, and it contradicts the plan: **the `216` figure for the t=3.0s beat does not reproduce.** That frame is 236.9 in the band box, 231.7 as a frame mean; the archived `tmp/suv_test/fail_2025.png` (same frame, spike-era encode) is 228.8. Recorded in the K4 section and beside `SUV_T3_MEAN_LUMA` rather than "fixed": every value is far above `DARK_MIN_LUMA`, the classification is identical, and 216 is the number the plan, the commit history and the regression test all speak in. Renaming it would churn three places to change nothing.
+- files: none
+- tests: none
+- next: finding 3
+
+### 15:36 — finding 3: the band box becomes Python-authoritative
+
+- decided: geometry lives in `compositor.py`, not `emphasis_contrast.py`. `emphasis_contrast` already imports `compositor` for `OverlayCue`, so the reverse direction would be a cycle; and the band IS the props contract, so it belongs next to `_overlay_props`. No new module.
+- decided: `PivotBand` frozen dataclass carrying the canvas it was cut for, with three readers and nothing else — `box_on()` (measure), `as_props()` (draw), `hash_payload()` (cache). `pivot_band(w, h)` resolves it. `pivot_spike_box` is gone; `emphasis_contrast.pivot_band_box` is the thin measurement helper.
+- decided: **the band goes ON the cue** (`OverlayCue.band`) rather than being passed around beside it. That is what makes `apply_emphasis_treatments` need no canvas argument, and it puts the band in `emphasis_cue_content_hash` for free — which matters, because without it a band moved by editing the five constants would keep the same cue hash and `RenderStep` would serve a cached `final.mp4` with the band in the old place. Exactly the trap the plan's fingerprint warning describes.
+- decided: `collect_pivot_overlay_cues` takes `width`/`height` as REQUIRED kwargs. A defaulted 720x1280 would be the same unguarded assumption the finding removes.
+- decided: `box_on` maps by canvas FRACTION, not by recomputing from the plate's own size. `shot_images` holds the raw asset; the old code measured a band 0.35 of a 1920x1080 picture tall where the drawn one covers 0.13.
+- decided: `height` stays OUT of the props, and this is the one honest seam left. Drawn height is `fontSize`, `pad` and line-height 1.1 (needed for matras) and measures ~183px; nominal `font + 2*pad` is 168. Measured both boxes before choosing: widening the measured box to the drawn height moves the two numbers finding 2 rests on to 100.6 and 103.3, which puts a 105 threshold ABOVE the untested plate and inverts the argument. Narrowing the drawn band to 168 needs an explicit height and re-centred type — a change to a look this plan says twice not to change. So: nominal box measured, ~8% residue documented in `PivotBand.as_props`, and the measured slice sits inside the drawn band.
+- decided: `Pivot.tsx` positions from `band` and keeps its `SPIKE_*` constants ONLY as the nullish-coalescing fallback for `SuvRetention.tsx`, which passes no band. Labelled as such. `SuvRetention.tsx` / `DirectedHook.tsx` not otherwise touched — spike code, per `compositor/README.md`.
+- files: `backend/app/renderer/compositor.py`, `backend/app/renderer/emphasis_contrast.py`, `backend/app/workflow/steps/render.py`, `compositor/src/Pivot.tsx`, `compositor/src/Emphasis.tsx`
+- tests: not yet run
+- next: finding 2
+
+### 15:40 — finding 2: LIGHT_MAX_LUMA 90.0 to 105.0
+
+- decided: 105.0 with the six measurements, the good case (98.3, inspected), the failure (236.9), and the nearest unproven plate (108.6) all written into the constant's comment block. `DARK_MIN_LUMA` unchanged at 180.0 — 190.1 is the only plate above it and dark type there was never inspected either, so there is no measured case asking it to move.
+- decided: record the consequence that makes the old number cheap to change — **at 90.0 `light` never fired on any plate in the reference reel**, so the branch had no coverage in real data at all. Pinned as a test rather than only a comment.
+- files: `backend/app/renderer/emphasis_contrast.py`
+- tests: not yet run
+- next: finding 1
+
+### 15:43 — finding 1: keep the measurement, log it
+
+- decided: `choose_treatment` stays a pure function of its arguments and keeps the `slab_default` short-circuit. Logging goes in `apply_emphasis_treatments`, which is where the device, the shot and the policy are all in scope, and it keeps the chooser trivially testable at boundary values.
+- decided: call `choose_treatment` twice per cue — once with `slab_default=False` for `threshold_treatment`, once with the real policy. `policy_override` is the difference. That is the field a human actually needs before relaxing the policy: how often the policy is doing work, and what it is overriding.
+- decided: one `emphasis_contrast.treatment` line per cue with `device`, `shot_id`, `measured`, `luma` (2dp — enough to compare against the thresholds, not enough to pretend the crop is exact), `treatment`, `threshold_treatment`, `slab_default`, `policy_override`, both thresholds, `band_box`.
+- decided: write the reason NOT to optimise the decode away in two places — the module docstring at length, and a paragraph in `choose_treatment` beside the short-circuit itself. The brief is right that someone will see a discarded value and try; the docstring is where they will be standing when they do.
+- files: `backend/app/renderer/emphasis_contrast.py`
+- tests: not yet run
+- next: finding 4
+
+### 15:45 — finding 4: one decode per plate
+
+- decided: extract `_mean_luma_of_image(image, box)` and have both `mean_luma` (which opens) and `measure_plate_luma` (which opens once, reads `.size` off the lazy handle, then converts) call it. `Image.open` is lazy, so reading `.size` before `convert("RGB")` costs no pixel load — that is what makes one decode enough.
+- decided: error behaviour preserved exactly and documented as deliberately non-uniform. Empty bytes RAISE out of `mean_luma`. Empty / `None` / unreadable / non-image return `None` from `measure_plate_luma` (and log), which becomes `slab`. Do not collapse those into each other: an exception fails a render that had nothing wrong with it, and a default number is how bare white type lands on a white frame.
+- files: `backend/app/renderer/emphasis_contrast.py`
+- tests: not yet run
+- next: tests, then a real render
+
+### 15:47 — tests
+
+- files: `backend/tests/unit/renderer/test_compositor.py` (three `collect_pivot_overlay_cues` call sites gained the canvas; five new tests for the band contract — resolved geometry, canvas scaling, degenerate canvases, the fraction map onto a 1920x1080 plate, the props key set, and a moved band missing BOTH hashes), `backend/tests/unit/renderer/test_emphasis_contrast.py` (`pivot_spike_box` becomes `pivot_band_box`, the pivot fixture now carries its band, plus eight new tests: the new threshold against the proven and unproven plates, `light`'s zero coverage at 90.0, a gated re-measurement of the six literals off the real frames, the calibration log's fields in all three shapes, single-decode via a counted `Image.open`, and unchanged error behaviour).
+- decided: assert the six numbers as literals so the suite needs no `tmp/` fixture, and add a `pytest.skip`-gated test that re-measures them off the real frames whenever they are present. Same pattern the existing `fail_2025.png` test already uses.
+- decided: the drift the finding describes can no longer be tested for from Python — there are no production constants left in the TSX to drift. What IS testable is the props key set, so that is what the test pins: a rename on either side breaks it.
+- tests: `cd backend`; venv pytest `tests/unit/renderer tests/unit/script tests/unit/timeline` gives **670 passed** in 43s. `tests/unit/workflow` gives 92 passed and **5 pre-existing failures** in `test_sfx_overlays_diegetic.py` (stale stub missing `transition_structural_only`), untouched.
+- ruff: two B905 (`zip()` without `strict=`) in the new tests, fixed. `ruff check` clean on all five touched files. Did NOT run `ruff format` — this project uses black.
+- next: a real render, because no unit test exercises the subprocess
+
+### 15:52 — real render, and looking at it
+
+- did: drove the production path with no stubbed `invoke` — one `OverlayCue` at `offset_s=1.30` (startFrame 39, endFrame 66), project `fba52b6d-9c1a-44dd-bb95-5b03ba18eb8f`, 720x1280 at 30fps, 359 frames, through `render_or_reuse_emphasis_overlay`. Rendered it TWICE: once with the Python-resolved band, once with `band=None` so `Pivot.tsx` falls back to its spike constants — i.e. the exact pre-review layout path.
+- measured: `ffprobe` on both gives `prores`, **`yuva444p12le`**, 720x1280, 359 frames. Alpha intact, as K7's done-criteria requires.
+- measured: composited both over `tmp/suv_test/plate_nocaptions.mp4` with the production `emphasis_overlay_filter_fragment` (`[0:v][1:v]overlay=0:0:format=auto`) and diffed the first 60 frames pixel-by-pixel: **all 60 identical, zero differing pixels.** The props change moved the band by nothing. Band located in the composite at rows 379-561 (height 183), matching the predicted line-height overshoot and containing the measured box 380-548.
+- did: **looked at the frame** (`tmp/suv_test/f3_band_props_driven.png`). Full-bleed red band at the same height over the Creta grille, white लेकिन correctly shaped with the matra attached, the -1.5deg tilt and the drop shadow present, and the plate visible everywhere outside the band — not a black rectangle, which is what a lost alpha channel would have produced silently.
+- measured: re-ran the same call and got a cache hit in 3.0s wall, no Chromium invocation.
+- files: `backend/storage/fba52b6d-.../overlays/7eda5fd5....mov` plus its props sidecar (kept — a real cached artifact of the new contract). The `band=None` comparison render and the 120 diff frames were throwaway and were deleted; nothing pre-existing under `overlays/` was touched.
+- next: this work-log entry, then stop
+
+### 15:56 — finish / summary
+
+Four findings applied. The one that mattered most was invisible: K4 measured a rectangle defined twice, and only one of the two definitions decided where the band actually got drawn.
+
+**Files changed**
+
+- Band geometry + props contract: `backend/app/renderer/compositor.py` (`PivotBand`, `pivot_band`, `OverlayCue.band`, canvas args on `collect_pivot_overlay_cues`, band in `emphasis_cue_content_hash` / `overlay_input_hash` / `_overlay_props`)
+- Measurement, thresholds, logging, single decode: `backend/app/renderer/emphasis_contrast.py`
+- Canvas into the collector: `backend/app/workflow/steps/render.py`
+- Layout from props: `compositor/src/Pivot.tsx`, `compositor/src/Emphasis.tsx`
+- Tests: `backend/tests/unit/renderer/test_compositor.py`, `backend/tests/unit/renderer/test_emphasis_contrast.py`
+- This plan (K4 section, K4 status row, K4 done-criteria note, this work log)
+
+**Decisions (also in the entries above)**
+
+- One band definition, in `compositor.py`, read by the measurement, the props and both hashes. No cycle, no new module, and the TSX keeps no production layout arithmetic.
+- Band on the cue, so the render fingerprint covers a moved band and no caller needs to pass a canvas around.
+- Both caches intentionally miss once. The props contract changed; that is what a cache key is for.
+- `height` stays out of the props; the nominal box is the measured box, because the threshold rationale was derived through it.
+- 105.0 from six measured plates, with the good case, the failure and the nearest unproven plate all named. 180.0 unchanged for want of a measured case.
+- Measurement retained under the policy and logged with `threshold_treatment` / `policy_override`. The reason not to skip it is written where someone tempted to skip it will be reading.
+- One decode; three distinct error shapes preserved verbatim.
+
+**Deviations / contradictions found**
+
+- **The plan's `216` for the t=3.0s beat does not reproduce.** Measured 236.9 (band box) / 231.7 (frame mean) / 228.8 (`fail_2025.png`). Documented in place; `SUV_T3_MEAN_LUMA` deliberately left at 216.0 because all values classify identically and 216 is the shared vocabulary. Saying so rather than quietly keeping a number that does not measure.
+- The drawn band is ~183px against a nominal 168px. Pre-existing, now measured, documented, and deliberately not reconciled — reconciling it either invalidates finding 2's own rationale or changes the pivot look.
+- `box_on`'s fractional map is an improvement, not a fix: a ken-burns crop still decides which asset pixels land under the band. Exact would mean extracting the rendered frame. Noted, out of scope.
+- Could not typecheck the TSX — no `typescript` in `compositor/node_modules`, and Remotion bundles with esbuild, which strips types without checking them. The real render plus the pixel diff is what stands in for it.
+
+**Not done (out of slice):** K3 density, K5 palette, K6 already done, K8 charts, K9 LLM authoring, any other device's visuals, any change to the pivot look.
+
+No commit, no push. Working tree left for review.

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
-from app.renderer.compositor import OverlayCue
+from app.renderer.compositor import OverlayCue, pivot_band
 from app.renderer.emphasis_contrast import (
     DARK_MIN_LUMA,
     LIGHT_MAX_LUMA,
@@ -15,7 +15,7 @@ from app.renderer.emphasis_contrast import (
     choose_treatment,
     mean_luma,
     measure_plate_luma,
-    pivot_spike_box,
+    pivot_band_box,
 )
 
 
@@ -36,6 +36,7 @@ def _overlay(*, shot_id: str = "sh_01", treatment: str = "slab") -> OverlayCue:
         end_frame=39,
         shot_id=shot_id,
         treatment=treatment,
+        band=pivot_band(720, 1280),
     )
 
 
@@ -82,7 +83,7 @@ def test_local_box_not_frame_mean():
     """The 2025 type sat on the bright centre; the bottom of that same
     frame is a dark infographic. Treatment must follow the cue box."""
     width, height = 720, 1280
-    box = pivot_spike_box(width, height)
+    box = pivot_band_box(width, height)
     assert box == (0, 380, 720, 548)
     x0, y0, x1, y1 = box
 
@@ -117,7 +118,7 @@ def test_local_box_not_frame_mean():
 
 def test_apply_follows_the_box_and_defaults_missing_plates_to_slab(tmp_path: Path):
     width, height = 720, 1280
-    x0, y0, x1, y1 = pivot_spike_box(width, height)
+    x0, y0, x1, y1 = pivot_band_box(width, height)
     image = Image.new("RGB", (width, height), color=(255, 255, 255))
     ImageDraw.Draw(image).rectangle((x0, y0, x1 - 1, y1 - 1), fill=(40, 40, 40))
     plate = tmp_path / "sh_01.png"
@@ -168,3 +169,170 @@ def test_suv_fail_2025_png_is_never_light_when_present():
     luma = mean_luma(path.read_bytes())
     assert choose_treatment(luma, slab_default=False) != "light"
     assert choose_treatment(luma, slab_default=True) == "slab"
+
+
+# --------------------------------------------------------------------------
+# Review finding 2 (2026-09-09): LIGHT_MAX_LUMA 90.0 -> 105.0.
+#
+# The six numbers below are the measured box luma of the six moments the
+# hand-built spike put type on screen, taken through the pivot band box
+# on `tmp/suv_test/plate_nocaptions.mp4` (720x1280) at t = 1.30, 2.20,
+# 3.00, 4.30, 5.20, 5.90. They are asserted as literals rather than
+# recomputed from the video so this stays a CI test with no `tmp/`
+# fixture; `test_reference_reel_plate_luma_when_present` below checks the
+# literals against the real file whenever it happens to be there.
+REFERENCE_REEL_BOX_LUMA = [98.3, 108.6, 236.9, 190.1, 159.8, 132.2]
+
+
+def test_new_light_threshold_admits_the_proven_plate_and_no_further():
+    good, untested = 98.3, 108.6
+    # 98.3 is the plate where bare white type was rendered, inspected,
+    # and read well. The old 90.0 threshold called it slab.
+    assert choose_treatment(good, slab_default=False) == "light"
+    assert choose_treatment(good, slab_default=False, light_max_luma=90.0) == "slab"
+    # 108.6 is the next plate up and bare type there was NEVER tested —
+    # the spike drew a dark slab at that moment. It must stay slab.
+    assert choose_treatment(untested, slab_default=False) == "slab"
+    assert LIGHT_MAX_LUMA == 105.0
+    assert good < LIGHT_MAX_LUMA < untested
+    # The failure the whole feature exists to prevent is still nowhere
+    # near the light branch.
+    assert choose_treatment(236.9, slab_default=False) == "dark"
+    assert DARK_MIN_LUMA == 180.0
+
+
+def test_light_had_zero_coverage_on_real_plates_at_the_old_threshold():
+    """Worth pinning because it is the argument for moving the number:
+    at 90.0 not one plate in the reference reel could ever be `light`,
+    so the branch had no coverage in real data at all. At 105.0 exactly
+    one does."""
+    old = [
+        choose_treatment(v, slab_default=False, light_max_luma=90.0)
+        for v in REFERENCE_REEL_BOX_LUMA
+    ]
+    new = [choose_treatment(v, slab_default=False) for v in REFERENCE_REEL_BOX_LUMA]
+    assert old.count("light") == 0
+    assert new.count("light") == 1
+    # Nothing else moved: the only reclassification is 98.3 slab -> light.
+    assert [o == n for o, n in zip(old, new, strict=True)] == [False, True, True, True, True, True]
+
+
+def test_reference_reel_plate_luma_when_present():
+    """Local-only. Re-measures the six literals above off the real plate
+    frames when they exist, so the threshold rationale cannot quietly
+    stop matching the picture it was derived from."""
+    frames = (
+        Path(__file__).resolve().parents[4] / "tmp" / "suv_test" / "_f2review"
+    )
+    stamps = ["1.30", "2.20", "3.00", "4.30", "5.20", "5.90"]
+    paths = [frames / f"p_{t}.png" for t in stamps]
+    if not all(p.exists() for p in paths):
+        pytest.skip("tmp/suv_test/_f2review frames are local-only")
+    band = pivot_band(720, 1280)
+    for path, expected in zip(paths, REFERENCE_REEL_BOX_LUMA, strict=True):
+        measured = measure_plate_luma(path.read_bytes(), device="pivot", band=band)
+        assert measured == pytest.approx(expected, abs=0.05)
+
+
+# --------------------------------------------------------------------------
+# Review finding 1 (2026-09-09): the measurement is kept under the slab
+# policy and LOGGED, rather than skipped. The log line is the calibration
+# data that lets a human relax the policy with evidence.
+
+
+def test_policy_override_is_measured_and_logged(tmp_path: Path, caplog):
+    """retention_fast discards the luma, so the only way the measurement
+    earns its keep is by being recorded. One line per cue, carrying the
+    device, the luma, the treatment, and what the thresholds alone would
+    have picked."""
+    width, height = 720, 1280
+    x0, y0, x1, y1 = pivot_band_box(width, height)
+    image = Image.new("RGB", (width, height), color=(255, 255, 255))
+    ImageDraw.Draw(image).rectangle((x0, y0, x1 - 1, y1 - 1), fill=(40, 40, 40))
+    plate = tmp_path / "sh_01.png"
+    image.save(plate, format="PNG")
+
+    with caplog.at_level("INFO"):
+        out = apply_emphasis_treatments(
+            [_overlay()], {"sh_01": plate}, slab_default=True
+        )
+    assert out[0].treatment == "slab"
+    records = [r for r in caplog.records if r.message == "emphasis_contrast.treatment"]
+    assert len(records) == 1
+    record = records[0]
+    assert record.device == "pivot"
+    assert record.measured is True
+    assert record.luma == pytest.approx(40.0, abs=1.0)
+    assert record.treatment == "slab"
+    # The whole point: the thresholds would have said `light`, and the
+    # style policy is what turned it into a slab. That is now visible.
+    assert record.threshold_treatment == "light"
+    assert record.policy_override is True
+    assert record.slab_default is True
+    assert record.band_box == (0, 380, 720, 548)
+
+
+def test_unmeasured_cue_is_logged_as_unmeasured_not_as_a_number(caplog):
+    with caplog.at_level("INFO"):
+        out = apply_emphasis_treatments([_overlay()], {}, slab_default=False)
+    assert out[0].treatment == "slab"
+    record = next(
+        r for r in caplog.records if r.message == "emphasis_contrast.treatment"
+    )
+    assert record.measured is False
+    assert record.luma is None
+    assert record.treatment == "slab"
+    # No policy in play — an unmeasured plate is slab on the thresholds
+    # alone, so this is not an override and must not be logged as one.
+    assert record.threshold_treatment == "slab"
+    assert record.policy_override is False
+
+
+def test_no_policy_means_no_override_flag(tmp_path: Path, caplog):
+    grey = 200
+    plate = tmp_path / "bright.png"
+    plate.write_bytes(_png(720, 1280, (grey, grey, grey)))
+    with caplog.at_level("INFO"):
+        out = apply_emphasis_treatments(
+            [_overlay()], {"sh_01": plate}, slab_default=False
+        )
+    assert out[0].treatment == "dark"
+    record = next(
+        r for r in caplog.records if r.message == "emphasis_contrast.treatment"
+    )
+    assert record.treatment == "dark"
+    assert record.threshold_treatment == "dark"
+    assert record.policy_override is False
+
+
+def test_plate_is_decoded_once_per_measurement(monkeypatch):
+    """Review finding 4. `measure_plate_luma` used to open and convert
+    the bytes to learn the size, then call `mean_luma`, which opened and
+    converted the identical bytes again."""
+    opens: list[int] = []
+    real_open = Image.open
+
+    def counting_open(*args, **kwargs):
+        opens.append(1)
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(Image, "open", counting_open)
+    data = _png(720, 1280, (40, 40, 40))
+    assert measure_plate_luma(
+        data, device="pivot", band=pivot_band(720, 1280)
+    ) == pytest.approx(40.0, abs=1.0)
+    assert len(opens) == 1
+
+
+def test_unreadable_plate_still_returns_none_and_does_not_raise():
+    """Error behaviour is unchanged by the single-decode restructure:
+    empty bytes raise out of `mean_luma`, garbage bytes return None from
+    `measure_plate_luma` (-> slab), and nothing becomes `light`."""
+    with pytest.raises(ValueError, match="empty"):
+        mean_luma(b"")
+    assert measure_plate_luma(b"", device="pivot") is None
+    assert measure_plate_luma(None, device="pivot") is None
+    assert measure_plate_luma(b"\x00\x01\x02not-an-image", device="pivot") is None
+    assert choose_treatment(
+        measure_plate_luma(b"garbage", device="pivot"), slab_default=False
+    ) == "slab"

@@ -30,6 +30,15 @@ seam, specified".
 - `Pivot.tsx` / `Emphasis.tsx` — production overlay. `Emphasis` is the
   one `--props`-driven composition (`id="Emphasis"`); this slice renders
   `pivot` only. Hold is ~0.91s (spike 4.94→5.85).
+  **`Pivot.tsx` takes its LAYOUT from props too** (`cue.band`, added
+  2026-09-09). Python resolves the band (`pivot_band` in
+  `backend/app/renderer/compositor.py`), measures that exact rectangle
+  for K4's light/dark/slab choice, and ships it here — so the rectangle
+  measured and the rectangle drawn are one value. The `SPIKE_*`
+  constants left in the file are a fallback for the standalone spike
+  compositions below, which pass no band; production never reads them.
+  Do not put layout arithmetic back in this component, and do not read
+  those constants from new code.
 
 ## Run
 

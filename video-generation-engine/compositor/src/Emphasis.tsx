@@ -1,7 +1,7 @@
 import React from "react";
 import { AbsoluteFill } from "remotion";
 import "./font";
-import { Pivot } from "./Pivot";
+import { Pivot, type PivotBandProps } from "./Pivot";
 
 /**
  * Production kinetic-text overlay. ONE composition driven by `--props`.
@@ -25,6 +25,12 @@ export type EmphasisCueProps = {
   // the compositor cache. Pivot drawing ignores this — the device IS
   // a slab (the red band). Later devices (stamp) will branch on it.
   treatment: "light" | "dark" | "slab";
+  // Review finding 3: the cue's band rectangle, resolved by Python
+  // (`pivot_band`), which is also the rectangle K4 measured on the
+  // plate to pick `treatment` above. Passing it means the treatment
+  // can no longer describe a region the band does not cover. Nullable
+  // only for devices that have no band yet; pivot always has one.
+  band?: PivotBandProps | null;
 };
 
 export type EmphasisProps = {
@@ -52,6 +58,7 @@ export const Emphasis: React.FC<EmphasisProps> = ({ cues }) => {
             text={cue.text}
             startFrame={cue.startFrame}
             endFrame={cue.endFrame}
+            band={cue.band}
           />
         );
       })}

@@ -7,9 +7,11 @@ from pathlib import Path
 from app.renderer.compositor import (
     PIVOT_HOLD_S,
     OverlayCue,
+    _overlay_props,
     collect_pivot_overlay_cues,
     emphasis_cue_content_hash,
     overlay_input_hash,
+    pivot_band,
     render_or_reuse_emphasis_overlay,
 )
 from app.schemas.timeline import (
@@ -53,7 +55,9 @@ def _timeline_with_pivot(*, offset_s: float = 0.4, duration_s: float = 2.0) -> T
 
 
 def test_collect_pivot_uses_resolved_offset_and_spike_hold():
-    cues = collect_pivot_overlay_cues(_timeline_with_pivot(offset_s=0.4), fps=30)
+    cues = collect_pivot_overlay_cues(
+        _timeline_with_pivot(offset_s=0.4), fps=30, width=720, height=1280
+    )
     assert len(cues) == 1
     cue = cues[0]
     assert cue.device == "pivot"
@@ -79,12 +83,15 @@ def test_collect_ignores_unknown_devices_and_empty_timelines():
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
         scenes=[scene],
     )
-    assert collect_pivot_overlay_cues(timeline, fps=30) == []
+    assert collect_pivot_overlay_cues(timeline, fps=30, width=720, height=1280) == []
 
 
 def test_hold_is_clamped_to_the_remaining_shot():
     cues = collect_pivot_overlay_cues(
-        _timeline_with_pivot(offset_s=1.7, duration_s=2.0), fps=30
+        _timeline_with_pivot(offset_s=1.7, duration_s=2.0),
+        fps=30,
+        width=720,
+        height=1280,
     )
     assert len(cues) == 1
     # 0.3s remaining, not the full 0.91s hold.
@@ -202,4 +209,99 @@ def test_treatment_change_misses_emphasis_and_overlay_hashes():
     )
     assert overlay_input_hash(cues=[slab], **base) != overlay_input_hash(
         cues=[dark], **base
+    )
+
+
+# --------------------------------------------------------------------------
+# Review finding 3 (2026-09-09): the band is resolved in Python, travels
+# through the props, and `Pivot.tsx` draws from it. These tests pin the
+# CONTRACT — the shape and the numbers the TSX reads — because that is
+# the half of the mirror Python can still assert on. The drift itself is
+# no longer possible: the TSX holds no production layout constants to
+# drift away from. What is left to protect is the props key names, which
+# a rename here would break silently on the TypeScript side.
+
+
+def test_band_is_resolved_python_side_and_matches_the_measured_box():
+    cues = collect_pivot_overlay_cues(
+        _timeline_with_pivot(offset_s=0.4), fps=30, width=720, height=1280
+    )
+    band = cues[0].band
+    assert band is not None
+    # The reference-canvas geometry every K4 luma measurement was taken
+    # through: top 380, height 132 + 2*18, full width.
+    assert (band.left, band.top, band.width, band.height) == (0, 380, 720, 168)
+    assert (band.font_size, band.pad) == (132, 18)
+    assert band.box_on(720, 1280) == (0, 380, 720, 548)
+    assert band == pivot_band(720, 1280)
+
+
+def test_band_scales_with_the_canvas_and_refuses_degenerate_ones():
+    tall = pivot_band(1080, 1920)
+    assert tall is not None
+    assert tall.font_size == round(132 * 1080 / 720)
+    assert tall.top == round(380 * 1920 / 1280)
+    assert pivot_band(0, 1280) is None
+    assert pivot_band(720, 0) is None
+
+
+def test_band_box_on_a_differently_shaped_plate_keeps_the_canvas_fraction():
+    """`shot_images` holds the raw asset, not a canvas-sized frame. The
+    band must map by its fraction of the canvas; recomputing it from the
+    asset's own dimensions made the band height wrong on any asset whose
+    aspect differed from the canvas."""
+    band = pivot_band(720, 1280)
+    assert band is not None
+    box = band.box_on(1920, 1080)
+    assert box is not None
+    x0, y0, x1, y1 = box
+    assert (x0, x1) == (0, 1920)
+    assert y0 == round(380 / 1280 * 1080)
+    # Endpoints are rounded independently, so the height can land one
+    # pixel off the rounded fraction. That is the right trade: y0 and y1
+    # each match the canvas fraction exactly.
+    assert abs((y1 - y0) - 168 / 1280 * 1080) <= 1
+    assert band.box_on(0, 0) is None
+
+
+def test_overlay_props_carry_the_band_in_the_shape_the_tsx_reads():
+    cues = collect_pivot_overlay_cues(
+        _timeline_with_pivot(offset_s=0.4), fps=30, width=720, height=1280
+    )
+    props = _overlay_props(cues, width=720, height=1280, fps=30, duration_in_frames=90)
+    band = props["cues"][0]["band"]
+    # camelCase, and exactly these keys: `PivotBandProps` in Pivot.tsx.
+    assert set(band) == {"left", "top", "width", "fontSize", "pad"}
+    assert band == {"left": 0, "top": 380, "width": 720, "fontSize": 132, "pad": 18}
+    # `height` stays out of the props on purpose — see
+    # `PivotBand.as_props` for why the drawn and measured heights are
+    # allowed to differ.
+    assert "height" not in band
+
+
+def test_a_moved_band_misses_the_overlay_cache_and_the_render_fingerprint():
+    """The band's constants are CODE. Editing them moves the drawn band,
+    so both caches must miss — otherwise a cached final.mp4 is served
+    with the band in its old place and nothing errors (the plan's own
+    fingerprint warning)."""
+    base = dict(width=720, height=1280, fps=30, duration_in_frames=90, font_hash="abc")
+    cue = OverlayCue(
+        device="pivot",
+        text="लेकिन",
+        text_register="hi",
+        offset_s=0.4,
+        start_frame=12,
+        end_frame=39,
+        shot_id="sh_01",
+        band=pivot_band(720, 1280),
+    )
+    moved = replace(cue, band=replace(cue.band, top=300))
+    assert emphasis_cue_content_hash([cue]) != emphasis_cue_content_hash([moved])
+    assert overlay_input_hash(cues=[cue], **base) != overlay_input_hash(
+        cues=[moved], **base
+    )
+    bandless = replace(cue, band=None)
+    assert emphasis_cue_content_hash([cue]) != emphasis_cue_content_hash([bandless])
+    assert overlay_input_hash(cues=[cue], **base) != overlay_input_hash(
+        cues=[bandless], **base
     )

@@ -387,7 +387,17 @@ async def render_video(
     # do not. `cue_list_hash` remains captions; this is a different
     # input. Slab policy is resolved once beside the other style knobs
     # and handed into the chooser, not re-read inside it.
-    overlay_cues = collect_pivot_overlay_cues(timeline, fps=render_settings.fps)
+    # Canvas goes in here (review finding 3) because the collector now
+    # also resolves each cue's BAND — the one rectangle that K4 measures
+    # on the plate, the fingerprint hashes, and `Pivot.tsx` draws from.
+    # It used to be a hand-mirrored copy of the TSX's own constants; a
+    # band moved in the TSX drifted silently past the measurement.
+    overlay_cues = collect_pivot_overlay_cues(
+        timeline,
+        fps=render_settings.fps,
+        width=render_settings.width,
+        height=render_settings.height,
+    )
     overlay_cues = apply_emphasis_treatments(
         overlay_cues,
         shot_images,

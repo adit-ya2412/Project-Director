@@ -35,6 +35,182 @@ EMPHASIS_FONT_PATH = Path(__file__).resolve().parents[2] / "vendor" / "fonts" / 
 COMPOSITION_ID = "Emphasis"
 
 
+# --------------------------------------------------------------------------
+# Band geometry — ONE definition, and Python owns it.
+#
+# Review finding 3 (2026-09-09). These five numbers used to exist TWICE:
+# as `_SPIKE_*` in `emphasis_contrast.pivot_spike_box`, which decided
+# where to MEASURE the plate, and again as `SPIKE_*` inside
+# `compositor/src/Pivot.tsx`, which decided where to DRAW the band.
+# Nothing guarded that mirror. Move the band in the TSX and Python keeps
+# measuring the old rectangle: it picks a treatment for a place the text
+# is not, with no exception, no ffmpeg error and no failing test. It is
+# the only failure mode in K4 that is completely silent, which is why it
+# was fixed first.
+#
+# The fix is structural rather than a guard or a test: the band is
+# resolved HERE, in canvas pixels, carried on the cue
+# (`OverlayCue.band`), measured through `PivotBand.box_on` and shipped to
+# the TSX through `_overlay_props` as `cue.band`. `Pivot.tsx` positions
+# itself from that prop. The measured rectangle and the drawn rectangle
+# are now the same numbers rather than two copies of the same arithmetic,
+# so drift is impossible by construction. `Pivot.tsx` keeps the spike
+# constants ONLY as a fallback for the standalone spike compositions
+# (`SuvRetention.tsx`), which pass no band; that fallback is labelled as
+# such in the TSX and production never reaches it.
+#
+# Spike origin (do not "improve" the look): `SuvRetention.tsx` Beat 5 on
+# a 720x1280 canvas — font 132, top 380, vertical padding 18, full width.
+# Font scales with WIDTH, top and padding with HEIGHT, exactly as the
+# spike did; on the reference canvas the band is (0, 380, 720, 548).
+_PIVOT_REF_WIDTH = 720
+_PIVOT_REF_HEIGHT = 1280
+_PIVOT_REF_FONT = 132
+_PIVOT_REF_TOP = 380
+_PIVOT_REF_PAD = 18
+
+
+@dataclass(frozen=True)
+class PivotBand:
+    """Where the pivot band sits, in the pixels of the canvas it was cut for.
+
+    Both halves of K4 read this object and nothing else: `box_on()` gives
+    the rectangle to measure, `as_props()` gives the rectangle to draw.
+    `canvas_width`/`canvas_height` are carried because `box_on` needs to
+    know what the band's pixels are a fraction OF.
+    """
+
+    canvas_width: int
+    canvas_height: int
+    left: int
+    top: int
+    width: int
+    height: int
+    font_size: int
+    pad: int
+
+    def as_props(self) -> dict[str, int]:
+        """The props contract consumed by `Pivot.tsx`.
+
+        camelCase to match every other key in `_overlay_props`; the TSX
+        reads these verbatim and computes no layout of its own.
+
+        `height` is deliberately NOT in here, and that is the one place
+        this contract is not literally one number. The band's drawn
+        height comes out of `fontSize`, `pad` and the CSS line-height
+        (1.1, for Devanagari matras above the shirorekha), so it is
+        ~13px taller on the reference canvas than the nominal
+        `font + 2*pad` this class reports as `height`. Two reasons the
+        nominal number stays the measured one rather than being
+        reconciled:
+
+        1. It is the box the six reference-reel luma measurements were
+           taken through, and `LIGHT_MAX_LUMA = 105` is justified by
+           two of them (98.3 good, 108.6 untested). Widening the box to
+           the drawn height moves those to 100.6 and 103.3, which would
+           put the threshold ABOVE the untested plate and silently undo
+           the rationale in `emphasis_contrast`.
+        2. Forcing the drawn band down to 168px means an explicit
+           height and re-centred type — a change to a look the plan
+           says twice not to change.
+
+        So: `top`/`left`/`width`/`fontSize`/`pad` are the single source
+        of truth and cannot drift. The residual ~8% height difference is
+        known, bounded, and on the safe side (the measured slice sits
+        inside the drawn band).
+        """
+        return {
+            "left": self.left,
+            "top": self.top,
+            "width": self.width,
+            "fontSize": self.font_size,
+            "pad": self.pad,
+        }
+
+    def hash_payload(self) -> dict[str, int]:
+        """What the fingerprint and the overlay cache hash.
+
+        The canvas is already hashed separately, but the band is not a
+        pure function of it forever: the five module constants above are
+        CODE, and moving the band by editing them must invalidate both
+        the overlay `.mov` and the cached `final.mp4`. Without this the
+        plan's own fingerprint warning applies — the render step would
+        serve a cached video whose band sits in the old place and
+        nothing would error.
+        """
+        return {
+            "left": self.left,
+            "top": self.top,
+            "width": self.width,
+            "height": self.height,
+            "font_size": self.font_size,
+            "pad": self.pad,
+        }
+
+    def box_on(self, width: int, height: int) -> tuple[int, int, int, int] | None:
+        """`(x0, y0, x1, y1)` for this band projected onto a `width`x`height` image.
+
+        K4 measures `shot_images`, which holds the RAW resolved asset —
+        frequently 1920x1080 — not a canvas-sized frame; the crop into
+        720x1280 happens later inside ffmpeg. So the band is mapped by
+        its fraction of the canvas rather than recomputed from the
+        asset's own dimensions. Recomputing was subtly wrong on any
+        asset whose aspect differs from the canvas: font (and therefore
+        band height) scales with WIDTH while top scales with HEIGHT, so
+        on a 1920x1080 asset the old code measured a band 0.35 of the
+        picture tall where the drawn one covers 0.13.
+
+        Still an approximation, and deliberately left as one: a
+        ken-burns crop decides which of the asset's pixels actually land
+        under the band, and knowing that exactly means extracting the
+        rendered frame. That is a bigger change than this review, and
+        the fractional map is strictly closer than what it replaces.
+        """
+        if width <= 0 or height <= 0:
+            return None
+        if self.canvas_width <= 0 or self.canvas_height <= 0:
+            return None
+        scale_x = width / self.canvas_width
+        scale_y = height / self.canvas_height
+        x0 = max(0, min(width, round(self.left * scale_x)))
+        x1 = max(0, min(width, round((self.left + self.width) * scale_x)))
+        y0 = max(0, min(height, round(self.top * scale_y)))
+        y1 = max(0, min(height, round((self.top + self.height) * scale_y)))
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return (x0, y0, x1, y1)
+
+
+def pivot_band(canvas_width: int, canvas_height: int) -> PivotBand | None:
+    """Resolve the pivot band for a canvas, or None if it cannot be formed.
+
+    The single source of truth described in the block comment above. On
+    the 720x1280 reference canvas this is top 380, height 168
+    (font 132 + 2*pad 18), full width — i.e. the box (0, 380, 720, 548)
+    that K4's regression tests pin.
+    """
+    if canvas_width <= 0 or canvas_height <= 0:
+        return None
+    font_size = round(_PIVOT_REF_FONT * (canvas_width / _PIVOT_REF_WIDTH))
+    top = round(_PIVOT_REF_TOP * (canvas_height / _PIVOT_REF_HEIGHT))
+    pad = round(_PIVOT_REF_PAD * (canvas_height / _PIVOT_REF_HEIGHT))
+    band_height = font_size + pad * 2
+    y0 = max(0, min(canvas_height, top))
+    y1 = max(0, min(canvas_height, top + band_height))
+    if y1 <= y0:
+        return None
+    return PivotBand(
+        canvas_width=canvas_width,
+        canvas_height=canvas_height,
+        left=0,
+        top=y0,
+        width=canvas_width,
+        height=y1 - y0,
+        font_size=font_size,
+        pad=pad,
+    )
+
+
 @dataclass(frozen=True)
 class OverlayCue:
     """One cue as handed to the compositor AND hashed into the render
@@ -44,6 +220,14 @@ class OverlayCue:
     never a planner field. Default `slab` is the safe unmeasured value
     (light-on-transparent is the 2025 failure). `shot_id` is how the
     chooser finds that plate; it is not a compositor input.
+
+    `band` is the cue's resolved geometry (review finding 3). It is on
+    the cue rather than passed around separately so that the rectangle
+    K4 measures, the rectangle the fingerprint hashes and the rectangle
+    `Pivot.tsx` draws are one value read three times. `None` means the
+    canvas could not produce a band (degenerate dimensions) or the
+    device does not have one yet — pivot is the only device with a band
+    in this slice.
     """
 
     device: str
@@ -54,6 +238,7 @@ class OverlayCue:
     end_frame: int
     shot_id: str | None = None
     treatment: str = "slab"
+    band: PivotBand | None = None
 
 
 def _canonical_json(value: object) -> str:
@@ -69,16 +254,26 @@ def emphasis_font_content_hash() -> str:
     return hashlib.sha256(EMPHASIS_FONT_PATH.read_bytes()).hexdigest()
 
 
-def collect_pivot_overlay_cues(timeline: Timeline, *, fps: int) -> list[OverlayCue]:
+def collect_pivot_overlay_cues(
+    timeline: Timeline, *, fps: int, width: int, height: int
+) -> list[OverlayCue]:
     """Film-absolute frames from each shot's resolved `offset_s`.
 
     Hold is `PIVOT_HOLD_S` (0.91s, the spike window), clamped so the
     cue cannot outlive the remaining shot or the remaining film.
     Unknown devices are ignored — this slice only composites `pivot`.
+
+    `width`/`height` are the CANVAS, and they are required rather than
+    defaulted because they resolve the cue's `band` (review finding 3).
+    This is the resolver that already turns creative decisions into
+    render-time numbers — frames from fragment offsets — so geometry
+    belongs here too, and a defaulted 720x1280 would be exactly the kind
+    of unguarded assumption finding 3 removed.
     """
     shots = timeline.all_shots()
     if not shots:
         return []
+    band = pivot_band(width, height)
     starts = compute_shot_start_times(shots)
     total_s = compute_timeline_duration(shots)
     duration_frames = max(1, round(total_s * fps))
@@ -107,6 +302,7 @@ def collect_pivot_overlay_cues(timeline: Timeline, *, fps: int) -> list[OverlayC
                 start_frame=start_frame,
                 end_frame=end_frame,
                 shot_id=shot.id,
+                band=band,
             )
         )
     return cues
@@ -114,11 +310,20 @@ def collect_pivot_overlay_cues(timeline: Timeline, *, fps: int) -> list[OverlayC
 
 def emphasis_cue_content_hash(cues: list[OverlayCue]) -> str | None:
     """Fingerprint input: RESOLVED cues (device, text, offset_s,
-    text_register, treatment). Not the untimed planner output. Treatment
-    is hashed because a plate-driven flip must miss the render cache
-    (retention_fast_kinetic_text.md fingerprint warning). None when
-    there are no cues so a no-cue timeline hashes with the key present
-    and the value null."""
+    text_register, treatment, band). Not the untimed planner output.
+    Treatment is hashed because a plate-driven flip must miss the render
+    cache (retention_fast_kinetic_text.md fingerprint warning). `band`
+    is hashed for the same reason one level down: the band's five
+    constants live in code, so editing them moves the drawn band, and a
+    `final.mp4` keyed on an unchanged cue list would be served with the
+    band still in its old place — the plan's own "serves the cached
+    video and nothing errors" trap. None when there are no cues so a
+    no-cue timeline hashes with the key present and the value null.
+
+    Adding `band` changes every historical value of this hash, so the
+    first render of each existing project after this review re-renders.
+    That is correct: the props contract it fingerprints did change.
+    """
     if not cues:
         return None
     payload = [
@@ -128,6 +333,7 @@ def emphasis_cue_content_hash(cues: list[OverlayCue]) -> str | None:
             "offset_s": cue.offset_s,
             "text_register": cue.text_register,
             "treatment": cue.treatment,
+            "band": cue.band.hash_payload() if cue.band is not None else None,
         }
         for cue in cues
     ]
@@ -143,6 +349,16 @@ def overlay_input_hash(
     duration_in_frames: int,
     font_hash: str,
 ) -> str:
+    """Cache key for the rendered `.mov`. Every pixel input, nothing else.
+
+    `band` joined this payload with review finding 3. The canvas is
+    already here and the band is derived from it today, but the
+    derivation lives in code (`_PIVOT_REF_*`), so the band is hashed
+    explicitly: editing those constants must miss this cache instead of
+    reusing a `.mov` with the band in the old position. Consequence,
+    expected and correct: every overlay cached before this change misses
+    once and re-renders.
+    """
     payload = {
         "cues": [
             {
@@ -152,6 +368,7 @@ def overlay_input_hash(
                 "startFrame": cue.start_frame,
                 "endFrame": cue.end_frame,
                 "treatment": cue.treatment,
+                "band": cue.band.as_props() if cue.band is not None else None,
             }
             for cue in cues
         ],
@@ -172,6 +389,14 @@ def emphasis_overlay_filter_fragment(
 
 
 def _overlay_props(cues: list[OverlayCue], *, width: int, height: int, fps: int, duration_in_frames: int) -> dict:
+    """The props contract handed to the `Emphasis` composition.
+
+    `cue.band` is the finding-3 half of it: Python resolves the band and
+    `Pivot.tsx` positions itself from these numbers instead of holding
+    its own copy of the layout. Keys are camelCase because that is what
+    the TSX types declare; the Python-side names are snake_case and the
+    translation happens only here.
+    """
     return {
         "canvas": {"width": width, "height": height},
         "fps": fps,
@@ -184,6 +409,7 @@ def _overlay_props(cues: list[OverlayCue], *, width: int, height: int, fps: int,
                 "startFrame": cue.start_frame,
                 "endFrame": cue.end_frame,
                 "treatment": cue.treatment,
+                "band": cue.band.as_props() if cue.band is not None else None,
             }
             for cue in cues
         ],
