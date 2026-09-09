@@ -26,7 +26,10 @@ seam, specified".
   fade) and the counter+meter pair. Note the 48% strike position and why.
 - `SuvRetention.tsx` — the retention vocabulary: word-by-word build,
   slab lockup, Indian-grouped counter, full-bleed pivot band, decaying
-  shake.
+  shake. The pivot beat now imports the shared `Pivot` component.
+- `Pivot.tsx` / `Emphasis.tsx` — production overlay. `Emphasis` is the
+  one `--props`-driven composition (`id="Emphasis"`); this slice renders
+  `pivot` only. Hold is ~0.91s (spike 4.94→5.85).
 
 ## Run
 

@@ -135,6 +135,7 @@ from app.timeline.narration_fit import (
     SceneAlignment,
     reconcile_timeline_durations,
     resolve_element_reveals,
+    resolve_emphasis_cue_offsets,
     resolve_layer_entry_offsets,
 )
 from app.utils.bounded_gather import narration_concurrency, reserve_then_gather
@@ -587,6 +588,10 @@ class NarrationStep:
         # a shot's own element reveal is resolved to real seconds here
         # too, never at render time (§4.1/R2).
         element_reveals = resolve_element_reveals(timeline.scenes, alignments, reconciled)
+        # K2 (retention_fast_kinetic_text.md): same seam, same arithmetic.
+        # An emphasis cue is a fragment INDEX; seconds exist only once
+        # alignment does. Never a second timing path.
+        cue_offsets = resolve_emphasis_cue_offsets(timeline.scenes, alignments, reconciled)
 
         # D7 caps vs. reality (M8 settled decision): a shot may legitimately
         # exceed max_shot_duration_s once its real narration is in - the
@@ -634,6 +639,12 @@ class NarrationStep:
                     reveal = element_reveals.get(shot.id)
                     if reveal is not None:
                         shot.reveal_start_offset_s, shot.reveal_duration_s = reveal
+                    # K2: absent from `cue_offsets` means this shot has
+                    # no emphasis cue — `offset_s` already sits at its
+                    # schema default (0.0).
+                    cue_offset = cue_offsets.get(shot.id)
+                    if cue_offset is not None and shot.emphasis_cue is not None:
+                        shot.emphasis_cue.offset_s = cue_offset
             # Recomputed via the one function that owns this arithmetic
             # (D5) - never by hand.
             base.metadata.total_duration_s = compute_timeline_duration(base.all_shots())

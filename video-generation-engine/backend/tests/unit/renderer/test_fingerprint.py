@@ -16,6 +16,9 @@ from app.renderer.slideshow import RenderSettings
 from app.schemas.timeline import (
     Camera,
     CameraMovement,
+    EmphasisCue,
+    EmphasisDevice,
+    EmphasisRegister,
     ProducedBy,
     Scene,
     Shot,
@@ -305,6 +308,74 @@ def test_different_cue_list_changes_the_fingerprint():
     assert _fingerprint(burn_captions=True, cue_list_hash="cues-a") != _fingerprint(
         burn_captions=True, cue_list_hash="cues-b"
     )
+
+
+def test_cue_list_hash_still_means_captions_not_emphasis():
+    """Naming trap: `cue_list_hash` is captions. Emphasis has its own
+    key. Flipping one must not be mistaken for flipping the other."""
+    captions_only = _fingerprint(cue_list_hash="cues-a")
+    emphasis_only = _fingerprint(emphasis_cue_hash="cues-a")
+    assert captions_only != emphasis_only
+    assert _fingerprint(cue_list_hash="cues-a") == _fingerprint(cue_list_hash="cues-a")
+
+
+def test_emphasis_cue_hash_change_misses_the_cache():
+    """Resolved offset or text change must re-render; otherwise
+    RenderStep serves the cached video with no kinetic text (R2)."""
+    assert _fingerprint(emphasis_cue_hash="pivot-lekin-0.0") != _fingerprint(
+        emphasis_cue_hash="pivot-lekin-1.2"
+    )
+    assert _fingerprint(emphasis_cue_hash=None) != _fingerprint(
+        emphasis_cue_hash="pivot-lekin-0.0"
+    )
+
+
+def test_emphasis_font_hash_change_misses_the_cache():
+    assert _fingerprint(emphasis_font_hash="font-a") != _fingerprint(emphasis_font_hash="font-b")
+
+
+def test_resolved_cue_fields_on_the_timeline_change_the_fingerprint():
+    """The timeline dump already carries `emphasis_cue`; a resolved
+    offset or on-screen text change must miss even before the dedicated
+    hash is consulted."""
+    at_start = _timeline()
+    at_start.all_shots()[0].emphasis_cue = EmphasisCue(
+        device=EmphasisDevice.PIVOT,
+        anchor_fragment=1,
+        text="लेकिन",
+        register=EmphasisRegister.HI,
+        offset_s=0.0,
+    )
+    later = _timeline()
+    later.all_shots()[0].emphasis_cue = EmphasisCue(
+        device=EmphasisDevice.PIVOT,
+        anchor_fragment=1,
+        text="लेकिन",
+        register=EmphasisRegister.HI,
+        offset_s=1.2,
+    )
+    other_text = _timeline()
+    other_text.all_shots()[0].emphasis_cue = EmphasisCue(
+        device=EmphasisDevice.PIVOT,
+        anchor_fragment=1,
+        text="मगर",
+        register=EmphasisRegister.HI,
+        offset_s=0.0,
+    )
+    assert _fingerprint(timeline=at_start) != _fingerprint(timeline=later)
+    assert _fingerprint(timeline=at_start) != _fingerprint(timeline=other_text)
+
+
+def test_emphasis_keys_are_in_the_fingerprint_payload():
+    """Unconditional presence (even when None) so the going-forward
+    shape is stable. Adding the keys changes every historical hash —
+    accepted, same as every prior R2 addition."""
+    import inspect
+
+    source = inspect.getsource(compute_render_fingerprint)
+    assert '"emphasis_cue_hash"' in source
+    assert '"emphasis_font_hash"' in source
+    assert '"cue_list_hash"' in source
 
 
 def test_different_duck_envelope_changes_the_fingerprint():

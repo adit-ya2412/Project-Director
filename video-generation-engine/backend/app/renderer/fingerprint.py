@@ -87,6 +87,16 @@ same shape as `secondary_content_hashes`/`secondary_asset_hash` above.
 does NOT dump the whole `Shot` (it hand-picks fields), so `layers` is
 added there explicitly - see that function's own docstring.
 
+**Emphasis cues (retention_fast_kinetic_text.md K7/K2, 2026-09-09).**
+`Shot.emphasis_cue` rides into the timeline dump for free, but the
+RESOLVED seconds (`offset_s`) and the vendored Devanagari file are the
+actual compositor inputs, and a cached `final.mp4` that predates this
+feature would silently serve a reel with no kinetic text if those were
+not hashed. `emphasis_cue_hash` / `emphasis_font_hash` are that hook —
+NOT `cue_list_hash`, which already means CAPTION cues. Both present
+unconditionally, `None` when there is no pivot overlay. Palette hash
+is K5 and is not in this slice.
+
 Bookkeeping fields (`version`, `parent_version`, `produced_by`, `status`,
 `created_at`, `timeline_id`, `project_id`, `schema_version`) are
 EXCLUDED from the hashed Timeline content - the same set
@@ -207,6 +217,8 @@ def compute_render_fingerprint(
     secondary_content_hashes: dict[str, str] | None = None,
     shot_focal: dict[str, str] | None = None,
     layer_content_hashes: dict[str, list[str]] | None = None,
+    emphasis_cue_hash: str | None = None,
+    emphasis_font_hash: str | None = None,
 ) -> str:
     timeline_document = timeline.model_dump(mode="json")
     content_only = {
@@ -409,6 +421,12 @@ def compute_render_fingerprint(
         # Padded-panel verdict 2026-08-20: crop-to-fill. A letterbox
         # revert must miss every cached split encode (§7).
         "split_panel_fit": SPLIT_PANEL_FIT,
+        # retention_fast_kinetic_text.md K7: RESOLVED kinetic-text cues
+        # and the vendored Devanagari file. Present unconditionally
+        # (R2), None when this render has no pivot overlay. Named
+        # separately from `cue_list_hash` (captions).
+        "emphasis_cue_hash": emphasis_cue_hash,
+        "emphasis_font_hash": emphasis_font_hash,
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 

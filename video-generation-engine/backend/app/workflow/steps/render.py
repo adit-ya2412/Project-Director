@@ -83,6 +83,13 @@ from app.renderer.captions import (
     serialize_ass,
     subtitles_filter_fragment,
 )
+from app.renderer.compositor import (
+    collect_pivot_overlay_cues,
+    emphasis_cue_content_hash,
+    emphasis_font_content_hash,
+    emphasis_overlay_filter_fragment,
+    render_or_reuse_emphasis_overlay,
+)
 from app.renderer.fingerprint import compute_render_fingerprint, get_ffmpeg_version
 from app.renderer.grading import grade_filter_fragment
 from app.renderer.loudness import apply_loudness_target
@@ -125,6 +132,7 @@ from app.script.styles import (
     resolve_transition_sfx_structural_only,
 )
 from app.timeline.acts import act_time_ranges, music_content_hash_for
+from app.timeline.duration import compute_timeline_duration
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
 from app.workflow.steps.resolve_assets import layer_prompt_hash
@@ -370,6 +378,13 @@ async def render_video(
         else None
     )
 
+    # retention_fast_kinetic_text.md K7: resolve the overlay cues ONCE
+    # here so the fingerprint and the compositor cannot drift (RV2).
+    # `cue_list_hash` remains captions; this is a different input.
+    overlay_cues = collect_pivot_overlay_cues(timeline, fps=render_settings.fps)
+    emphasis_cue_hash = emphasis_cue_content_hash(overlay_cues)
+    emphasis_font_hash = emphasis_font_content_hash() if overlay_cues else None
+
     ffmpeg_version = await get_ffmpeg_version(render_settings.ffmpeg_binary)
     # Leftover item 5: style-owned mix. Resolve once so the fingerprint
     # and the mux_music call cannot drift (R2's own lesson).
@@ -466,6 +481,8 @@ async def render_video(
         ffmpeg_version=ffmpeg_version,
         shot_focal=shot_focal_fingerprints,
         layer_content_hashes=layer_content_hashes,
+        emphasis_cue_hash=emphasis_cue_hash,
+        emphasis_font_hash=emphasis_font_hash,
     )
 
     render_repo = RenderRepository(ctx.session)
@@ -566,6 +583,24 @@ async def render_video(
                 subtitles_filter_fragment(current_label, "captioned", ass_path, FONT_DIR)
             )
             current_label = "captioned"
+
+        if overlay_cues:
+            total_s = compute_timeline_duration(timeline.all_shots())
+            duration_in_frames = max(1, round(total_s * render_settings.fps))
+            overlay_path = await render_or_reuse_emphasis_overlay(
+                project_id=ctx.project_id,
+                cues=overlay_cues,
+                width=render_settings.width,
+                height=render_settings.height,
+                fps=render_settings.fps,
+                duration_in_frames=duration_in_frames,
+            )
+            extra_inputs.append(overlay_path)
+            overlay_index = len(extra_inputs)
+            filter_fragments.append(
+                emphasis_overlay_filter_fragment(current_label, "emphasized", overlay_index)
+            )
+            current_label = "emphasized"
 
         if render_settings.watermark_enabled:
             extra_inputs.append(LOGO_PATH)

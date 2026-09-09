@@ -73,6 +73,7 @@ def test_default_pipeline_runs_narration_before_approval_and_generation_after():
         "select_music",
         "select_sfx",
         "romanize_captions",
+        "emphasis_pass",
         "narration",
         "await_approval",
         "resolve_assets_generate",

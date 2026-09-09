@@ -7,7 +7,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
-import { DEVANAGARI } from "./font";
+import { Pivot as PivotDevice } from "./Pivot";
 
 /**
  * "The king of midsize SUV" (project fba52b6d, retention_fast, 720x1280)
@@ -34,7 +34,6 @@ import { DEVANAGARI } from "./font";
 
 const AMBER = "#FFC300";
 const WHITE = "#FFFFFF";
-const RED = "#FF2E2E";
 const INK = "#0A0A0B";
 
 const HEAVY = "'Segoe UI Black','Arial Black',Impact,sans-serif";
@@ -288,38 +287,13 @@ const Counter: React.FC = () => {
 // full-bleed red band that slams in, with a shake that settles.
 
 const Pivot: React.FC = () => {
-  const { visible, local, exit, fps } = useWin(4.94, 5.85);
-  if (!visible) return null;
-
-  const s = spring({ frame: local, fps, config: { damping: 9, mass: 0.5, stiffness: 190 } });
-  const bandW = interpolate(s, [0, 1], [0, 1]);
-  // decaying shake — energy that dies out rather than a static hit
-  const shake = Math.sin(local * 1.9) * Math.max(0, 10 - local * 1.6);
-
+  const { fps } = useVideoConfig();
   return (
-    <div style={{ position: "absolute", top: 380, left: 0, width: W, opacity: exit }}>
-      <div
-        style={{
-          background: RED,
-          padding: "18px 0",
-          transform: `translateX(${shake}px) rotate(-1.5deg)`,
-          clipPath: `inset(0 ${100 - bandW * 100}% 0 0)`,
-          boxShadow: "0 12px 40px rgba(0,0,0,0.55)",
-        }}
-      >
-        <div
-          style={{
-            textAlign: "center",
-            fontFamily: `${DEVANAGARI}, sans-serif`,
-            fontSize: 132,
-            lineHeight: 1.1,
-            color: WHITE,
-          }}
-        >
-          लेकिन
-        </div>
-      </div>
-    </div>
+    <PivotDevice
+      text="लेकिन"
+      startFrame={4.94 * fps}
+      endFrame={5.85 * fps}
+    />
   );
 };
 

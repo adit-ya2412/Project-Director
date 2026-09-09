@@ -1,5 +1,6 @@
 import React from "react";
 import { Composition } from "remotion";
+import { DEFAULT_EMPHASIS_PROPS, Emphasis, type EmphasisProps } from "./Emphasis";
 import { EmphasisOverlay } from "./EmphasisOverlay";
 import { DirectedHook } from "./DirectedHook";
 import { SuvRetention } from "./SuvRetention";
@@ -51,6 +52,22 @@ export const RemotionRoot: React.FC = () => {
         fps={30}
         width={720}
         height={1280}
+      />
+      {/* Production overlay: one composition, entirely driven by --props. */}
+      <Composition
+        id="Emphasis"
+        component={Emphasis}
+        durationInFrames={DEFAULT_EMPHASIS_PROPS.durationInFrames}
+        fps={DEFAULT_EMPHASIS_PROPS.fps}
+        width={DEFAULT_EMPHASIS_PROPS.canvas.width}
+        height={DEFAULT_EMPHASIS_PROPS.canvas.height}
+        defaultProps={DEFAULT_EMPHASIS_PROPS}
+        calculateMetadata={({ props }: { props: EmphasisProps }) => ({
+          fps: props.fps,
+          width: props.canvas.width,
+          height: props.canvas.height,
+          durationInFrames: Math.max(1, props.durationInFrames),
+        })}
       />
     </>
   );

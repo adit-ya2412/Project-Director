@@ -54,6 +54,11 @@ class ProducedBy(StrEnum):
     # instead of this value (render.py refuses to mux audio unless the
     # active version is NARRATION).
     CAPTION_ROMANIZATION = "caption_romanization"
+    # retention_fast_kinetic_text.md K10: the lexical pivot-attach pass.
+    # Same placement rule as CAPTION_ROMANIZATION — it appends BEFORE
+    # NarrationStep so the active version at render is still NARRATION.
+    # `is_satisfied` must NOT key off this value; Narration overwrites it.
+    EMPHASIS_PASS = "emphasis_pass"
 
 
 class ShotIntent(StrEnum):
@@ -264,6 +269,63 @@ class RevealDirection(StrEnum):
     LEFT_TO_RIGHT = "left_to_right"
 
 
+class EmphasisDevice(StrEnum):
+    """On-screen punctuation device (retention_fast_kinetic_text.md).
+    Enum is the full v1 set so later devices do not churn the model;
+    this slice only authors and renders `pivot`."""
+
+    STAMP = "stamp"
+    COUNTER = "counter"
+    METER = "meter"
+    COMPARISON = "comparison"
+    CORRECTION = "correction"
+    PIVOT = "pivot"
+    QUESTION = "question"
+
+
+class EmphasisRegister(StrEnum):
+    """On-screen script. Fixed by the role table, not a per-cue planner
+    choice — pivot is Devanagari (`hi`)."""
+
+    HI = "hi"
+    EN = "en"
+
+
+class EmphasisValue(BaseModel):
+    """One plotted number on a data device. `cited_fragment` is what
+    makes the honesty rule enforceable (K8); unused for pivot."""
+
+    value: int
+    unit: str | None = None
+    cited_fragment: int = Field(ge=1)
+
+
+class EmphasisCue(BaseModel):
+    """One kinetic-text beat on a shot (retention_fast_kinetic_text.md K1).
+
+    Creative decisions only (canon 3.1): which word, which device, which
+    register, which text. No colours, no positions, no pixels. Timing is
+    a fragment INDEX (`anchor_fragment`); `offset_s` is the resolved
+    half, filled by `resolve_emphasis_cue_offsets` once real alignment
+    exists — the same split `ShotLayer.enter_on_fragment` /
+    `enter_offset_s` already uses (F4). A model cannot predict a duration
+    that does not exist yet.
+
+    `anchor_fragment` is required: a cue with no word cannot be timed.
+    """
+
+    device: EmphasisDevice
+    # WHICH WORD — 1-indexed, never seconds. Required (no default).
+    anchor_fragment: int = Field(ge=1)
+    text: str = Field(min_length=1)
+    register: EmphasisRegister
+    values: list[EmphasisValue] = Field(default_factory=list)
+    replaced_text: str | None = None
+    # Seconds from THIS SHOT's start. Default 0.0 until K2 fills it
+    # from alignment; never authored by the planner.
+    offset_s: float = 0.0
+
+
 class LayerRole(StrEnum):
     """One plane's depth role in a parallax composite (illustrated_
     faceless.md §2.2/F2). F2 uses exactly two, in this order -
@@ -407,6 +469,14 @@ class Shot(BaseModel):
     # tied to which shot is on screen, not to spoken words) with a fixed
     # fade in/out - see `app/renderer/text_cards.py`.
     text_card: str | None = None
+    # retention_fast_kinetic_text.md K1: at most one kinetic-text cue
+    # on this shot. `None` is today's behaviour exactly (§3.1 isolation):
+    # every existing timeline and every style that never sets this field
+    # renders as it always did. A single optional field, not a list —
+    # K3's "at most one cue per shot" is then structural. Mutually
+    # exclusive with a non-empty `text_card` (measured: a stacked
+    # correction on a title card was unreadable).
+    emphasis_cue: EmphasisCue | None = None
     # long_form_direction.md A8 (2026-09-01): a planner-authored phrase
     # naming a sound the STORY wants at this shot's start ("faint Geiger
     # counter clicking, sparse and distant") - never style-derived (canon
@@ -586,6 +656,22 @@ class Shot(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _emphasis_cue_and_text_card_are_mutually_exclusive(self) -> Shot:
+        """K3 (retention_fast_kinetic_text.md), measured: a stacked cue
+        on a title card was unreadable. Enforced here so a Timeline read
+        back from storage cannot carry both, matching the other
+        cross-field refusals in this class. `None`/empty `text_card` is
+        the common case and is not a conflict."""
+        if self.emphasis_cue is not None and self.text_card:
+            raise ValueError(
+                "Shot.text_card and Shot.emphasis_cue are mutually exclusive "
+                "(retention_fast_kinetic_text.md K3): a title card and a "
+                "kinetic cue stacked on the same shot were measured "
+                "unreadable"
+            )
+        return self
+
 
 class Scene(BaseModel):
     id: str
@@ -735,6 +821,15 @@ class TimelineMetadata(BaseModel):
     # and never re-checks after the step returns "ok" - an earlier
     # version of this comment claimed otherwise.
     caption_romanization_attempted: bool | None = None
+    # retention_fast_kinetic_text.md K10: True once EmphasisPassStep has
+    # attempted the lexical pivot attach, whether a cue was written or
+    # the covering shot already carried a text_card. None on every
+    # timeline that predates this field. `is_satisfied` prefers "cue
+    # already present / no attachable pivot" over this stamp; the stamp
+    # is the backstop for a no-op run so a resume cannot append another
+    # version. It is NOT a substitute for produced_by — Narration
+    # overwrites that.
+    emphasis_pass_attempted: bool | None = None
 
 
 class MusicTrackSelection(BaseModel):

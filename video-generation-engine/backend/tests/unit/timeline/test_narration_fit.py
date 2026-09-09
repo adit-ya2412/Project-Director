@@ -14,6 +14,9 @@ from app.core.errors import PermanentError
 from app.schemas.timeline import (
     Camera,
     CameraMovement,
+    EmphasisCue,
+    EmphasisDevice,
+    EmphasisRegister,
     LayerRole,
     RevealDirection,
     Scene,
@@ -34,6 +37,7 @@ from app.timeline.narration_fit import (
     reconcile_spoken_durations,
     reconcile_timeline_durations,
     resolve_element_reveals,
+    resolve_emphasis_cue_offsets,
     resolve_layer_entry_offsets,
 )
 
@@ -622,6 +626,66 @@ def test_clamp_reveal_window_on_a_shot_shorter_than_the_tail_clamps_both_to_zero
     start, finish = _clamp_reveal_window(0.5, 0.6, duration_s=0.02, shot_id="sh1")
     assert start == 0.0
     assert finish == 0.0
+
+
+# ---------------------------------------------------------------------------
+# K2 - `resolve_emphasis_cue_offsets` (retention_fast_kinetic_text.md):
+# a cue's fragment-anchored word, turned into real seconds at the SAME
+# seam `duration_s` / F4 layer entries are fitted to narration at.
+# ---------------------------------------------------------------------------
+
+
+def _cued_shot(shot_id: str, order: int, span: tuple[int, int], *, fragment: int) -> Shot:
+    return Shot(
+        id=shot_id,
+        order=order,
+        intent=ShotIntent.EXPLAIN,
+        narration_span=span,
+        duration_s=1.0,
+        emphasis_cue=EmphasisCue(
+            device=EmphasisDevice.PIVOT,
+            anchor_fragment=fragment,
+            text="लेकिन",
+            register=EmphasisRegister.HI,
+        ),
+    )
+
+
+def test_emphasis_cue_resolves_to_the_fragments_own_onset_relative_to_the_shot():
+    shot = _cued_shot("sh1", 0, (0, len(_F4_TEXT)), fragment=2)
+    scene = _scene("sc1", 0, _F4_TEXT, [shot])
+    alignment = _uniform_alignment(_F4_TEXT, chars_per_second=10.0)
+
+    reconciled = reconcile_timeline_durations(_timeline([scene]), {"sc1": alignment})
+    offsets = resolve_emphasis_cue_offsets([scene], {"sc1": alignment}, reconciled)
+
+    # Fragment 2 starts at character 26 -> onset 2.6s. Shot onset is 0.0.
+    # Within a frame at 30fps (the K2 done-criterion).
+    assert offsets["sh1"] == pytest.approx(2.6)
+    assert abs(offsets["sh1"] - 2.6) < 1 / 30
+
+
+def test_a_shot_with_no_cue_is_absent_from_the_result():
+    shot = _shot("sh1", 0, (0, len(_F4_TEXT)))
+    scene = _scene("sc1", 0, _F4_TEXT, [shot])
+    alignment = _uniform_alignment(_F4_TEXT, chars_per_second=10.0)
+    reconciled = reconcile_timeline_durations(_timeline([scene]), {"sc1": alignment})
+    assert resolve_emphasis_cue_offsets([scene], {"sc1": alignment}, reconciled) == {}
+
+
+def test_emphasis_cue_offset_is_relative_to_a_non_zero_shot_onset():
+    shot1 = _shot("sh1", 0, (0, 26))
+    shot2 = _cued_shot("sh2", 1, (26, 54), fragment=2)
+    scene = _scene("sc1", 0, _F4_TEXT, [shot1, shot2])
+    alignment = _uniform_alignment(_F4_TEXT, chars_per_second=10.0)
+
+    reconciled = reconcile_timeline_durations(_timeline([scene]), {"sc1": alignment})
+    offsets = resolve_emphasis_cue_offsets([scene], {"sc1": alignment}, reconciled)
+
+    assert "sh1" not in offsets
+    # shot2 onset is character 26 at 2.6s; fragment 2 starts there too.
+    assert offsets["sh2"] == pytest.approx(0.0)
+    assert abs(offsets["sh2"] - 0.0) < 1 / 30
 
 
 def test_clamp_reveal_window_logs_only_when_it_actually_changes_something(caplog):

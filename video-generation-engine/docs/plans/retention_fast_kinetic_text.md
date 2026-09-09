@@ -295,6 +295,8 @@ on this band and nothing here adds a new audio layer.
 ## Tasks
 
 ### K1 — `EmphasisCue` on the shot
+**Status (2026-09-09): implemented for the pivot-first slice (other devices remain schema-only).**
+
 Creative decisions only, canon 3.1 (no colours, no positions, no pixels):
 
 ```
@@ -393,6 +395,8 @@ resolved later by K2 from real alignment, so this pass never sees or
 guesses seconds.
 
 ### K10 — Pivot detection
+**Status (2026-09-09): implemented in the K10 + pivot-device slice.**
+
 Lexical, not semantic, for v1: "lekin", "magar", "but". Cheap, testable,
 and it hits the single most important beat in the script. This is the one
 task that could ship on its own and improve every reel.
@@ -783,3 +787,107 @@ Reuse the session's method rather than trusting a status field:
 - Grab a frame at each cue's midpoint and LOOK. Every failure in the
   spike was invisible in the numbers and obvious in the picture.
 - Count cues colliding with a `text_card` or a graphic asset. Expect zero.
+
+---
+
+## Work log — K10 + pivot device (2026-09-09)
+
+This section is an implementation diary, not a design change. Earlier sections above stay authoritative. Append only; never rewrite prior log entries.
+
+### 13:00 — starting
+
+- read / opened: plan (K1 schema, K2, K7 compositor seam, K10, fingerprint warning, DEFAULT_PIPELINE notes, Devanagari rules, role table); `narration_fit.py` module docstring + `resolve_layer_entry_offsets`; `fingerprint.py::compute_render_fingerprint`; `SuvRetention.tsx` Pivot (~line 285); `font.ts`, compositor README, `Root.tsx`; `timeline.py` Shot / ShotLayer / ProducedBy; `engine.py` DEFAULT_PIPELINE invariant; `fragments.py` (1-based, character spans); `render.py` overlay chain; `romanize_captions.py` / `select_sfx.py` step shape; existing tests named in the slice brief.
+- decided: this slice is K10 + parameterized pivot + minimum glue (schema, attach step before Narration, K2 offset resolve, compositor seam for pivot only, fingerprint). Not K3-K6, not other devices, no PR, no push.
+- decided: `is_satisfied` will NOT trust `produced_by` (Narration overwrites it). Derive from "pivot cue already present / nothing attachable / pass attempted / not this style". Skip already-narrated (`narration_locked`) projects the same way romanize does, so a resume cannot append after narration and drop audio. Dry-run WILL attach (unlike romanize) — there is no LLM, and fake timelines should still carry the pivot.
+- decided: first lexical match in film order is THE turn. If that covering shot already has a non-empty `text_card`, skip attaching and do not search further (K3 mutual exclusion; reel has no pivot).
+- files: this plan (status lines on K1/K10; this work log)
+- tests: none yet
+- next: schema (K1, pivot-first), then `app/timeline/pivot.py` + unit tests
+
+### 13:05 — schema (K1, pivot-first)
+
+- read / opened: `Shot`, `ShotLayer` (creative-only docstring + `enter_offset_s` split), `ProducedBy.CAPTION_ROMANIZATION`, `TimelineMetadata.caption_romanization_attempted`, existing Shot validators.
+- decided: full device enum now so later devices do not churn the model; this slice only authors/renders `pivot`. `anchor_fragment` required (`Field(ge=1)`), `offset_s` defaults 0.0. At most one cue per shot = a single optional field. Validator refuses non-empty `text_card` + `emphasis_cue`. Added `ProducedBy.EMPHASIS_PASS` because the step does append a version (placed before Narration). Added `metadata.emphasis_pass_attempted` as a backstop stamp, not as the primary `is_satisfied` signal.
+- decided: keep the field name `register` as the plan specifies. Pydantic warns that it shadows a `BaseModel` attribute; renaming would diverge from the schema in this document. Lived with the warning.
+- files: `backend/app/schemas/timeline.py`
+- tests: `tests/unit/timeline/test_emphasis_cue.py` (written, not yet run)
+- next: K10 `pivot.py`
+
+### 13:08 — K10 detection + attach
+
+- read / opened: `split_narration_fragments` (1-based, `[start, end)` character spans), `Shot.narration_span`.
+- decided: word-boundary regex, case-insensitive, Unicode. Canonical display: `lekin`/`लेकिन`/`but` → `लेकिन`; `magar`/`मगर` → `मगर`; `register=hi`. First match in film order is THE turn. No covering shot → skip, do not invent. Covering shot has a non-empty `text_card` → skip attaching and do not search further (reel has no pivot). `attach_pivot_cue` always returns a deep copy.
+- files: `backend/app/timeline/pivot.py`, `backend/tests/unit/timeline/test_pivot.py`
+- tests: not yet run
+- next: thin authoring step
+
+### 13:09 — emphasis pass step + pipeline slot
+
+- read / opened: `romanize_captions.py` (`is_satisfied`, dry-run, `narration_locked` landmine), `engine.py` DEFAULT_PIPELINE comment (Narration must be last append before the gate).
+- decided: insert `EmphasisPassStep()` after `RomanizeCaptionsStep()` and before `NarrationStep()` (the slice brief, tighter than the older "after SelectSfx / before AwaitApproval" note — romanize already occupies that window). Style-gate on `timeline.metadata.render_style == "retention_fast"` exactly (None / other styles are no-ops). Skip `narration_locked` so a resume cannot restamp DRAFT and drop audio. Dry-run attaches (no LLM; fake timelines should carry the pivot). `is_satisfied` keys off cue present / nothing attachable / attempted stamp / style / narration_locked — never `produced_by`.
+- files: `backend/app/workflow/steps/emphasis_pass.py`, `backend/app/workflow/engine.py`, `backend/tests/unit/workflow/test_emphasis_pass_step.py`, `backend/tests/unit/workflow/test_render_only.py`, `backend/tests/integration/test_narration_pipeline_ordering.py`
+- tests: not yet run
+- next: K2 timing
+
+### 13:10 — K2 timing
+
+- read / opened: `resolve_layer_entry_offsets` / `_fragment_onset_offset_s` / `_clamp_entry_offset`; `NarrationStep._reconcile_and_append`.
+- decided: `resolve_emphasis_cue_offsets` beside the F4/F5 resolvers, same arithmetic, same clamp. Called from NarrationStep at the same seam. No alignment yet → `offset_s` stays 0.0 (schema default). No second timing path.
+- files: `backend/app/timeline/narration_fit.py`, `backend/app/workflow/steps/narration.py`, `backend/tests/unit/timeline/test_narration_fit.py` (K2 cases appended)
+- tests: not yet run
+- next: compositor pivot + Python seam + fingerprint
+
+### 13:11 — compositor pivot + Python seam + fingerprint + render wire
+
+- read / opened: spike `Pivot` (Beat 5), `font.ts`, `Root.tsx`, `render.py` filter chain, `fingerprint.py` signature, `watermark_filter_fragment` extra-input indexing, `compute_shot_start_times`.
+- decided: extract parameterized `Pivot.tsx` (spike look unchanged: `#FF2E2E`, clipPath wipe, `Math.sin(local * 1.9) * Math.max(0, 10 - local * 1.6)`, −1.5deg, 3-frame snap exit). Spike composition imports it. New `Emphasis` composition driven by `--props` (`calculateMetadata` from canvas/fps/duration). Transparent `AbsoluteFill`. Pivot-only; other devices ignored. No per-video TSX. No letter-spacing. No type stagger (spike did not stagger). Vendored Regular via `font.ts` (K6 Bold is later).
+- decided: hold `PIVOT_HOLD_S = 0.91` (spike 4.94→5.85). Clamped to remaining shot and remaining film. Film-absolute `startFrame = round((shot_start_s + offset_s) * fps)`.
+- decided: Python `app/renderer/compositor.py` caches `{storage_root}/{project_id}/overlays/{input_hash}.mov` by INPUT hash (cues + canvas + fps + duration + font file hash). Miss invokes `npx remotion render Emphasis` with ProRes 4444 / `yuva444p10le` / png. Missing Node/package is `PermanentError`, never a silent skip. Tests stub `_invoke_remotion`.
+- decided: fingerprint adds `emphasis_cue_hash` and `emphasis_font_hash` as new kwargs defaulting to None, keys always present in the payload even when None. This changes every historical fingerprint (accepted; no golden hashes in unit tests). Do not overload `cue_list_hash`. Palette hash skipped (K5). RenderStep resolves overlay cues once and hands the same list to the fingerprint and the compositor (RV2). Overlay sits after captions, before watermark: `[base][overlay]overlay=0:0:format=auto`.
+- files: `compositor/src/Pivot.tsx`, `compositor/src/Emphasis.tsx`, `compositor/src/SuvRetention.tsx`, `compositor/src/Root.tsx`, `compositor/README.md`, `backend/app/renderer/compositor.py`, `backend/app/renderer/fingerprint.py`, `backend/app/workflow/steps/render.py`, `backend/tests/unit/renderer/test_fingerprint.py`, `backend/tests/unit/renderer/test_compositor.py`
+- tests: not yet run
+- next: run the slice tests
+
+### 13:13 — tests
+
+- tests: `cd backend`; venv pytest on `test_pivot.py`, `test_emphasis_cue.py`, `test_narration_fit.py`, `test_fingerprint.py`, `test_emphasis_pass_step.py`, `test_compositor.py`, `test_render_only.py` → **157 passed** in ~5s. Related: `test_fingerprint_parallax.py`, `test_fingerprint_reveal.py`, `test_romanize_captions_step.py` → **45 passed**.
+- decided: ruff SIM103 on `is_satisfied`'s final `narration_locked` return; isort on compositor test imports. Re-ran the 157 after the fix, still green.
+- warning: Pydantic `Field name "register" shadows an attribute in parent "BaseModel"` — kept the plan's field name.
+- next: work-log summary + local commit. No push, no PR.
+
+### 13:14 — finish / summary
+
+Slice is a vertical cut: a `retention_fast` timeline with `lekin` in narration gets `EmphasisCue(device=pivot, text=लेकिन, register=hi)` on the covering shot; NarrationStep fills `offset_s` from alignment; RenderStep fingerprints the resolved cues and composites a props-driven red-band overlay.
+
+**Files changed**
+
+- Schema: `backend/app/schemas/timeline.py`
+- K10: `backend/app/timeline/pivot.py`
+- Step: `backend/app/workflow/steps/emphasis_pass.py`, `backend/app/workflow/engine.py`
+- K2: `backend/app/timeline/narration_fit.py`, `backend/app/workflow/steps/narration.py`
+- Compositor (visual): `compositor/src/Pivot.tsx`, `compositor/src/Emphasis.tsx`, `compositor/src/SuvRetention.tsx`, `compositor/src/Root.tsx`, `compositor/README.md`
+- Compositor (Python) + fingerprint + render: `backend/app/renderer/compositor.py`, `backend/app/renderer/fingerprint.py`, `backend/app/workflow/steps/render.py`
+- Tests: `backend/tests/unit/timeline/test_pivot.py`, `test_emphasis_cue.py`, `test_narration_fit.py` (appended); `backend/tests/unit/workflow/test_emphasis_pass_step.py`, `test_render_only.py`; `backend/tests/unit/renderer/test_fingerprint.py`, `test_compositor.py`; `backend/tests/integration/test_narration_pipeline_ordering.py`
+- This plan (status lines + this work log)
+
+**Decisions (also in the entries above)**
+
+- One cue per shot via a single optional field. Pivot is Devanagari, canonical text table is fixed.
+- First lexical match wins; a `text_card` on that shot means the reel has no pivot.
+- Step before Narration; `is_satisfied` does not trust `produced_by`. Skip `narration_locked`. Dry-run attaches.
+- Hold 0.91s, clamped. Overlay cache by input hash. Fingerprint keys always present (None when no overlay) — historical hashes change.
+- Pivot-only rendering. Unknown devices ignored. No SFX, no Bold vendor, no per-video TSX.
+
+**Deviations from the plan**
+
+- K9 as specified is an LLM pass; this slice is the K10 stub only, as the brief asked.
+- Older K9 placement note said "after SelectSfx / before AwaitApproval". The slice brief (and the silent-video invariant) put the step after romanize and before Narration. That is what shipped.
+- `ProducedBy.EMPHASIS_PASS` was added because the step appends; `is_satisfied` still does not key off it.
+- Already-narrated (`narration_locked`) retention_fast projects are skipped rather than backfilled. Same landmine romanize documented. Fresh pipelines attach before narration.
+- `emphasis_cue_hash` / `emphasis_font_hash` are always in the fingerprint payload, even when None, so every pre-slice cache entry misses. Accepted; unit tests compare equality, not golden hex.
+- Pydantic warning on field name `register` left in place so the on-disk field matches this document.
+- K6 (Bold Devanagari) not done; Regular + slab, as the brief allowed.
+
+**Not done (out of slice):** stamp/counter/meter/comparison/correction/question rendering, K3 density pass, K4 contrast, K5 palette, K6 Bold, K8 charts, K9 LLM authoring.
+
+Stopping for human review. No push, no PR.

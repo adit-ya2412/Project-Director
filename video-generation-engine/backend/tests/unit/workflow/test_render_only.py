@@ -39,10 +39,12 @@ def test_render_only_steps_is_not_the_default_pipelines_own_instance():
 def test_romanize_captions_sits_between_select_sfx_and_narration():
     """caption_romanization.md §3.2 (b): own step, before Narration so
     the version it appends is overwritten by `produced_by=NARRATION`
-    before anything renders."""
+    before anything renders. EmphasisPassStep sits in the same window
+    (after romanize, still before narration) for the identical reason."""
     names = [step.name for step in DEFAULT_PIPELINE]
     assert names.index("select_sfx") + 1 == names.index("romanize_captions")
-    assert names.index("romanize_captions") + 1 == names.index("narration")
+    assert names.index("romanize_captions") + 1 == names.index("emphasis_pass")
+    assert names.index("emphasis_pass") + 1 == names.index("narration")
 
 
 def test_every_paid_or_planning_step_is_excluded_from_the_precondition_check():
@@ -65,6 +67,7 @@ def test_every_paid_or_planning_step_is_excluded_from_the_precondition_check():
         "select_music",
         "select_sfx",
         "romanize_captions",
+        "emphasis_pass",
         "await_approval",
         "narration",
         "resolve_assets_generate",

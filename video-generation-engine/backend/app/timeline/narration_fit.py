@@ -538,3 +538,47 @@ def resolve_element_reveals(
             )
             windows[shot.id] = (start, finish - start)
     return windows
+
+
+def resolve_emphasis_cue_offsets(
+    scenes: list[Scene],
+    alignments: dict[str, SceneAlignment],
+    reconciled_durations: dict[str, float],
+) -> dict[str, float]:
+    """{shot_id: offset_s} for each shot carrying an `EmphasisCue`.
+
+    K2 (retention_fast_kinetic_text.md): the identical fragment-index-to-
+    seconds derivation `resolve_layer_entry_offsets` (F4) already owns.
+    `EmphasisCue.anchor_fragment` is a fragment INDEX, never a time in
+    seconds — a planner cannot predict a duration that does not exist
+    yet. This is the one seam where that index becomes real, relative to
+    THIS SHOT's own onset, clamped by `_clamp_entry_offset` so a cue
+    cannot equal or exceed the shot's own (already-reconciled) duration.
+
+    A shot with no cue is absent from the returned dict entirely, so a
+    project that never uses kinetic text touches this function for zero
+    shots. A cue whose scene has no alignment yet is not this function's
+    problem: it is only called from `NarrationStep` once alignments
+    exist; until then `offset_s` stays at its schema default (0.0).
+    """
+    offsets: dict[str, float] = {}
+    for scene in scenes:
+        shots_with_cues = [shot for shot in scene.shots if shot.emphasis_cue is not None]
+        if not shots_with_cues:
+            continue
+
+        alignment = alignments[scene.id]
+        fragments = split_narration_fragments(scene.narration_text)
+
+        for shot in shots_with_cues:
+            assert shot.narration_span is not None
+            assert shot.emphasis_cue is not None
+            onset = alignment.character_start_times_seconds[shot.narration_span[0]]
+            duration = reconciled_durations[shot.id]
+            raw_offset = _fragment_onset_offset_s(
+                fragments, shot.emphasis_cue.anchor_fragment, alignment, onset
+            )
+            offsets[shot.id] = _clamp_entry_offset(
+                raw_offset, duration_s=duration, shot_id=shot.id
+            )
+    return offsets

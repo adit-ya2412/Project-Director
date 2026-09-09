@@ -22,6 +22,7 @@ from app.workflow.step import StepResult, WorkflowStep
 from app.workflow.steps.await_approval import AwaitApprovalStep
 from app.workflow.steps.await_review import AwaitReviewStep
 from app.workflow.steps.complete import CompleteStep
+from app.workflow.steps.emphasis_pass import EmphasisPassStep
 from app.workflow.steps.generate_diegetic_sfx import GenerateDiegeticSfxStep
 from app.workflow.steps.generate_timeline import GenerateTimelineStep
 from app.workflow.steps.narration import NarrationStep
@@ -134,6 +135,14 @@ logger = get_logger(__name__)
 # so a DEFAULT_PIPELINE resume cannot restamp DRAFT / drop audio; those
 # go through `backfill_caption_romanization` instead.
 #
+# `EmphasisPassStep` (retention_fast_kinetic_text.md K10) sits immediately
+# after romanize and still BEFORE narration, for the same silent-video
+# reason: it appends (`produced_by=EMPHASIS_PASS`) and Narration must
+# overwrite that stamp before anything renders. Authoring does not
+# depend on narration; cue TIMING is resolved later by K2 from real
+# alignment. Already-narrated projects skip it (`narration_locked`) so a
+# resume cannot restamp DRAFT / drop audio.
+#
 # `GenerateDiegeticSfxStep` (long_form_direction.md A8, 2026-09-01) runs
 # AFTER `AwaitApprovalStep`, immediately following `resolve_assets_generate`
 # - it costs real money (ElevenLabs `/v1/sound-generation`), so I6 places
@@ -149,6 +158,7 @@ DEFAULT_PIPELINE: list[WorkflowStep] = [
     SelectMusicStep(),
     SelectSfxStep(),
     RomanizeCaptionsStep(),
+    EmphasisPassStep(),
     NarrationStep(),
     AwaitApprovalStep(),
     ResolveAssetsStep(name="resolve_assets_generate", permitted_strategies=GENERATION_RUNGS),
