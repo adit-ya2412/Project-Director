@@ -84,7 +84,7 @@ from app.renderer.captions import (
     subtitles_filter_fragment,
 )
 from app.renderer.compositor import (
-    collect_pivot_overlay_cues,
+    collect_emphasis_overlay_cues,
     emphasis_cue_content_hash,
     emphasis_font_content_hash,
     emphasis_overlay_filter_fragment,
@@ -389,10 +389,11 @@ async def render_video(
     # and handed into the chooser, not re-read inside it.
     # Canvas goes in here (review finding 3) because the collector now
     # also resolves each cue's BAND — the one rectangle that K4 measures
-    # on the plate, the fingerprint hashes, and `Pivot.tsx` draws from.
-    # It used to be a hand-mirrored copy of the TSX's own constants; a
-    # band moved in the TSX drifted silently past the measurement.
-    overlay_cues = collect_pivot_overlay_cues(
+    # on the plate, the fingerprint hashes, and the device TSX draws
+    # from. It used to be a hand-mirrored copy of the TSX's own
+    # constants; a band moved in the TSX drifted silently past the
+    # measurement.
+    overlay_cues = collect_emphasis_overlay_cues(
         timeline,
         fps=render_settings.fps,
         width=render_settings.width,

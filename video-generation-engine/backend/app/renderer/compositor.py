@@ -1,4 +1,4 @@
-"""Remotion as a layer producer (retention_fast_kinetic_text.md K7).
+"""Remotion as a layer producer (retention_fast_kinetic_text.md K7/K11).
 
 One parameterized composition driven by `--props`. Cache by INPUT hash
 (never output bytes) so headless Chromium's non-determinism cannot
@@ -6,7 +6,10 @@ break I5 at the assembly level. Missing Node/compositor is a
 PermanentError — silently skipping would ship a reel with no kinetic
 text and nothing would error.
 
-This slice renders `pivot` only.
+This slice composites `pivot`, `stamp`, and `counter`. Other devices
+(meter, comparison, correction, question) are ignored until they have
+a renderer — collecting them here with nothing to draw would be the
+silent-drop failure K11 exists to prevent.
 """
 
 from __future__ import annotations
@@ -27,8 +30,14 @@ from app.timeline.duration import compute_shot_start_times, compute_timeline_dur
 
 logger = get_logger(__name__)
 
-# Spike Beat 5: 4.94s → 5.85s. Documented in the plan work log.
+# Per-device hold, pinned from the SUV spike windows (K11 work log).
+# Each is still clamped to remaining shot and remaining film at collect.
+# pivot  Beat 5  4.94 → 5.85  = 0.91s
+# stamp  Beat 3  2.69 → 3.55  = 0.86s  (the year)
+# counter Beat 4  3.60 → 4.90  = 1.30s
 PIVOT_HOLD_S = 0.91
+STAMP_HOLD_S = 0.86
+COUNTER_HOLD_S = 1.30
 
 COMPOSITOR_ROOT = Path(__file__).resolve().parents[3] / "compositor"
 EMPHASIS_FONT_PATH = Path(__file__).resolve().parents[2] / "vendor" / "fonts" / "NotoSansDevanagari-Regular.ttf"
@@ -211,6 +220,141 @@ def pivot_band(canvas_width: int, canvas_height: int) -> PivotBand | None:
     )
 
 
+# Stamp geometry — SUV spike Beat 3 (Year) on 720x1280: top 320, font 190,
+# full width. Same scale rules as pivot (font with width, top/pad with
+# height). Pad is the slab inset; the spike Year was bare type, but
+# retention_fast's slab default needs a rectangle to draw and K4 needs
+# the same rectangle to measure. Finding 3: this is the only copy.
+_STAMP_REF_WIDTH = 720
+_STAMP_REF_HEIGHT = 1280
+_STAMP_REF_FONT = 190
+_STAMP_REF_TOP = 320
+_STAMP_REF_PAD = 14
+
+
+def stamp_band(canvas_width: int, canvas_height: int) -> PivotBand | None:
+    """Resolve the stamp box for a canvas, or None if it cannot be formed.
+
+    Reference: (0, 320, 720, 538) on 720x1280 — font 190 + 2*pad 14.
+    Full width so K4 measures the vertical strip the type actually sits
+    in; the TSX may shrink the ink slab to the word.
+    """
+    if canvas_width <= 0 or canvas_height <= 0:
+        return None
+    font_size = round(_STAMP_REF_FONT * (canvas_width / _STAMP_REF_WIDTH))
+    top = round(_STAMP_REF_TOP * (canvas_height / _STAMP_REF_HEIGHT))
+    pad = round(_STAMP_REF_PAD * (canvas_height / _STAMP_REF_HEIGHT))
+    band_height = font_size + pad * 2
+    y0 = max(0, min(canvas_height, top))
+    y1 = max(0, min(canvas_height, top + band_height))
+    if y1 <= y0:
+        return None
+    return PivotBand(
+        canvas_width=canvas_width,
+        canvas_height=canvas_height,
+        left=0,
+        top=y0,
+        width=canvas_width,
+        height=y1 - y0,
+        font_size=font_size,
+        pad=pad,
+    )
+
+
+# Counter geometry — SUV spike Beat 4 on 720x1280: top 300, font 116,
+# meter 420 wide (not full-bleed). A band here is a precision choice:
+# without one, K4 falls back to the frame mean, and on the SUV reel
+# that mean and the cue box diverged by 54 luma units. Same scale
+# rules as pivot. Finding 3: this is the only copy.
+_COUNTER_REF_WIDTH = 720
+_COUNTER_REF_HEIGHT = 1280
+_COUNTER_REF_FONT = 116
+_COUNTER_REF_TOP = 300
+_COUNTER_REF_PAD = 16
+_COUNTER_REF_BAND_WIDTH = 420
+
+
+def counter_band(canvas_width: int, canvas_height: int) -> PivotBand | None:
+    """Resolve the counter box for a canvas, or None if it cannot be formed.
+
+    Reference: (150, 300, 570, 448) on 720x1280 — 420-wide meter, centred,
+    font 116 + 2*pad 16. The slab/scrim draws this rectangle; K4 measures
+    it. Meter and optional kicker sit inside/just below using `pad`.
+    """
+    if canvas_width <= 0 or canvas_height <= 0:
+        return None
+    font_size = round(_COUNTER_REF_FONT * (canvas_width / _COUNTER_REF_WIDTH))
+    top = round(_COUNTER_REF_TOP * (canvas_height / _COUNTER_REF_HEIGHT))
+    pad = round(_COUNTER_REF_PAD * (canvas_height / _COUNTER_REF_HEIGHT))
+    band_width = round(_COUNTER_REF_BAND_WIDTH * (canvas_width / _COUNTER_REF_WIDTH))
+    band_width = max(1, min(canvas_width, band_width))
+    left = max(0, (canvas_width - band_width) // 2)
+    band_height = font_size + pad * 2
+    y0 = max(0, min(canvas_height, top))
+    y1 = max(0, min(canvas_height, top + band_height))
+    if y1 <= y0:
+        return None
+    return PivotBand(
+        canvas_width=canvas_width,
+        canvas_height=canvas_height,
+        left=left,
+        top=y0,
+        width=band_width,
+        height=y1 - y0,
+        font_size=font_size,
+        pad=pad,
+    )
+
+
+def _band_for_device(device: EmphasisDevice, canvas_width: int, canvas_height: int) -> PivotBand | None:
+    if device is EmphasisDevice.PIVOT:
+        return pivot_band(canvas_width, canvas_height)
+    if device is EmphasisDevice.STAMP:
+        return stamp_band(canvas_width, canvas_height)
+    if device is EmphasisDevice.COUNTER:
+        return counter_band(canvas_width, canvas_height)
+    return None
+
+
+@dataclass(frozen=True)
+class OverlayValue:
+    """One plotted number on a data device, mirrored from `EmphasisValue`.
+
+    `cited_fragment` is not drawn — it is hashed so changing which
+    fragment a number is cited from misses the overlay cache and the
+    render fingerprint (honesty / K8 later).
+    """
+
+    value: int
+    unit: str | None
+    cited_fragment: int
+
+    def as_props(self) -> dict:
+        return {
+            "value": self.value,
+            "unit": self.unit,
+            "citedFragment": self.cited_fragment,
+        }
+
+    def hash_payload(self) -> dict:
+        return {
+            "value": self.value,
+            "unit": self.unit,
+            "cited_fragment": self.cited_fragment,
+        }
+
+
+_COMPOSITED_DEVICES = frozenset(
+    {EmphasisDevice.PIVOT, EmphasisDevice.STAMP, EmphasisDevice.COUNTER}
+)
+
+_DEVICE_HOLD_S = {
+    EmphasisDevice.PIVOT: PIVOT_HOLD_S,
+    EmphasisDevice.STAMP: STAMP_HOLD_S,
+    EmphasisDevice.COUNTER: COUNTER_HOLD_S,
+}
+
+
 @dataclass(frozen=True)
 class OverlayCue:
     """One cue as handed to the compositor AND hashed into the render
@@ -224,10 +368,15 @@ class OverlayCue:
     `band` is the cue's resolved geometry (review finding 3). It is on
     the cue rather than passed around separately so that the rectangle
     K4 measures, the rectangle the fingerprint hashes and the rectangle
-    `Pivot.tsx` draws are one value read three times. `None` means the
-    canvas could not produce a band (degenerate dimensions) or the
-    device does not have one yet — pivot is the only device with a band
-    in this slice.
+    the device TSX draws are one value read three times. `None` means
+    the canvas could not produce a band (degenerate dimensions). Pivot,
+    stamp, and counter each have their own resolver; a missing band on
+    those devices is a degenerate-canvas case, not "this device has no
+    geometry yet".
+
+    `values` is the counter's target (and any later data device). Empty
+    for pivot/stamp. A counter collected with no values is dropped
+    upstream rather than drawn as 0→0.
     """
 
     device: str
@@ -239,6 +388,7 @@ class OverlayCue:
     shot_id: str | None = None
     treatment: str = "slab"
     band: PivotBand | None = None
+    values: tuple[OverlayValue, ...] = ()
 
 
 def _canonical_json(value: object) -> str:
@@ -254,14 +404,20 @@ def emphasis_font_content_hash() -> str:
     return hashlib.sha256(EMPHASIS_FONT_PATH.read_bytes()).hexdigest()
 
 
-def collect_pivot_overlay_cues(
+def collect_emphasis_overlay_cues(
     timeline: Timeline, *, fps: int, width: int, height: int
 ) -> list[OverlayCue]:
     """Film-absolute frames from each shot's resolved `offset_s`.
 
-    Hold is `PIVOT_HOLD_S` (0.91s, the spike window), clamped so the
-    cue cannot outlive the remaining shot or the remaining film.
-    Unknown devices are ignored — this slice only composites `pivot`.
+    Hold is per-device (`PIVOT_HOLD_S` 0.91s / `STAMP_HOLD_S` 0.86s /
+    `COUNTER_HOLD_S` 1.30s), clamped so the cue cannot outlive the
+    remaining shot or the remaining film.
+
+    This slice composites `pivot`, `stamp`, and `counter`. Other devices
+    (meter, comparison, correction, question) are ignored — they have no
+    renderer yet, and collecting them would be a silent drop. A
+    `counter` with empty `values` is skipped and logged: a counter with
+    no target is a planner bug, and drawing 0→0 is worse than dropping it.
 
     `width`/`height` are the CANVAS, and they are required rather than
     defaulted because they resolve the cue's `band` (review finding 3).
@@ -273,26 +429,39 @@ def collect_pivot_overlay_cues(
     shots = timeline.all_shots()
     if not shots:
         return []
-    band = pivot_band(width, height)
     starts = compute_shot_start_times(shots)
     total_s = compute_timeline_duration(shots)
     duration_frames = max(1, round(total_s * fps))
     cues: list[OverlayCue] = []
     for shot in shots:
         cue = shot.emphasis_cue
-        if cue is None or cue.device is not EmphasisDevice.PIVOT:
+        if cue is None or cue.device not in _COMPOSITED_DEVICES:
+            continue
+        if cue.device is EmphasisDevice.COUNTER and not cue.values:
+            logger.info(
+                "compositor.counter_skipped_empty_values",
+                extra={"shot_id": shot.id},
+            )
             continue
         shot_start_s = starts.get(shot.id, 0.0)
         start_s = shot_start_s + cue.offset_s
         remaining_shot_s = max(0.0, shot.duration_s - cue.offset_s)
         remaining_film_s = max(0.0, total_s - start_s)
-        hold_s = min(PIVOT_HOLD_S, remaining_shot_s, remaining_film_s)
+        hold_s = min(_DEVICE_HOLD_S[cue.device], remaining_shot_s, remaining_film_s)
         if hold_s <= 0:
             continue
         start_frame = max(0, round(start_s * fps))
         end_frame = min(duration_frames, start_frame + max(1, round(hold_s * fps)))
         if end_frame <= start_frame:
             continue
+        values = tuple(
+            OverlayValue(
+                value=item.value,
+                unit=item.unit,
+                cited_fragment=item.cited_fragment,
+            )
+            for item in cue.values
+        )
         cues.append(
             OverlayCue(
                 device=cue.device.value,
@@ -302,7 +471,8 @@ def collect_pivot_overlay_cues(
                 start_frame=start_frame,
                 end_frame=end_frame,
                 shot_id=shot.id,
-                band=band,
+                band=_band_for_device(cue.device, width, height),
+                values=values,
             )
         )
     return cues
@@ -310,18 +480,21 @@ def collect_pivot_overlay_cues(
 
 def emphasis_cue_content_hash(cues: list[OverlayCue]) -> str | None:
     """Fingerprint input: RESOLVED cues (device, text, offset_s,
-    text_register, treatment, band). Not the untimed planner output.
-    Treatment is hashed because a plate-driven flip must miss the render
-    cache (retention_fast_kinetic_text.md fingerprint warning). `band`
-    is hashed for the same reason one level down: the band's five
-    constants live in code, so editing them moves the drawn band, and a
-    `final.mp4` keyed on an unchanged cue list would be served with the
-    band still in its old place — the plan's own "serves the cached
-    video and nothing errors" trap. None when there are no cues so a
-    no-cue timeline hashes with the key present and the value null.
+    text_register, treatment, band, values). Not the untimed planner
+    output. Treatment is hashed because a plate-driven flip must miss
+    the render cache (retention_fast_kinetic_text.md fingerprint
+    warning). `band` is hashed for the same reason one level down: the
+    band's constants live in code, so editing them moves the drawn
+    band, and a `final.mp4` keyed on an unchanged cue list would be
+    served with the band still in its old place — the plan's own
+    "serves the cached video and nothing errors" trap. `values` is
+    hashed because editing a counter's target number (or its
+    `cited_fragment`) must miss the same way. None when there are no
+    cues so a no-cue timeline hashes with the key present and the
+    value null.
 
-    Adding `band` changes every historical value of this hash, so the
-    first render of each existing project after this review re-renders.
+    Adding `values` changes every historical value of this hash, so
+    the first render of each existing project after K11 re-renders.
     That is correct: the props contract it fingerprints did change.
     """
     if not cues:
@@ -334,6 +507,7 @@ def emphasis_cue_content_hash(cues: list[OverlayCue]) -> str | None:
             "text_register": cue.text_register,
             "treatment": cue.treatment,
             "band": cue.band.hash_payload() if cue.band is not None else None,
+            "values": [item.hash_payload() for item in cue.values],
         }
         for cue in cues
     ]
@@ -353,11 +527,15 @@ def overlay_input_hash(
 
     `band` joined this payload with review finding 3. The canvas is
     already here and the band is derived from it today, but the
-    derivation lives in code (`_PIVOT_REF_*`), so the band is hashed
-    explicitly: editing those constants must miss this cache instead of
-    reusing a `.mov` with the band in the old position. Consequence,
-    expected and correct: every overlay cached before this change misses
-    once and re-renders.
+    derivation lives in code (`_PIVOT_REF_*` / `_STAMP_REF_*` /
+    `_COUNTER_REF_*`), so the band is hashed explicitly: editing those
+    constants must miss this cache instead of reusing a `.mov` with the
+    band in the old position. `values` joined with K11 for the same
+    reason one level down: editing a counter's target (or which
+    fragment it is cited from) must miss this cache instead of serving
+    a `.mov` that still counts to the old figure. Consequence, expected
+    and correct: every overlay cached before this change misses once
+    and re-renders.
     """
     payload = {
         "cues": [
@@ -369,6 +547,7 @@ def overlay_input_hash(
                 "endFrame": cue.end_frame,
                 "treatment": cue.treatment,
                 "band": cue.band.as_props() if cue.band is not None else None,
+                "values": [item.as_props() for item in cue.values],
             }
             for cue in cues
         ],
@@ -392,10 +571,11 @@ def _overlay_props(cues: list[OverlayCue], *, width: int, height: int, fps: int,
     """The props contract handed to the `Emphasis` composition.
 
     `cue.band` is the finding-3 half of it: Python resolves the band and
-    `Pivot.tsx` positions itself from these numbers instead of holding
-    its own copy of the layout. Keys are camelCase because that is what
-    the TSX types declare; the Python-side names are snake_case and the
-    translation happens only here.
+    the device TSX positions itself from these numbers instead of holding
+    its own copy of the layout. `values` is the counter's target (K11).
+    Keys are camelCase because that is what the TSX types declare; the
+    Python-side names are snake_case and the translation happens only
+    here.
     """
     return {
         "canvas": {"width": width, "height": height},
@@ -410,6 +590,7 @@ def _overlay_props(cues: list[OverlayCue], *, width: int, height: int, fps: int,
                 "endFrame": cue.end_frame,
                 "treatment": cue.treatment,
                 "band": cue.band.as_props() if cue.band is not None else None,
+                "values": [item.as_props() for item in cue.values],
             }
             for cue in cues
         ],

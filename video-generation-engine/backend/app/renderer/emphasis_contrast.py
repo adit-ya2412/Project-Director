@@ -254,8 +254,13 @@ def measure_plate_luma(
     ends up on a white frame.
 
     Decodes exactly once (review finding 4). Pass the cue's own `band`;
-    with `band=None` the plate is treated as its own canvas, which is
-    only right for diagnostics.
+    with `band=None` AND `device=="pivot"` the plate is treated as its
+    own canvas, which is only right for diagnostics. Any other device
+    without a band falls back to the FRAME MEAN. That fallback is a
+    measured loss of precision: on the SUV reel the frame mean and the
+    cue box diverged by 54 luma units (box 190.1 vs a much darker /
+    brighter rest of frame). Stamp and counter production always pass
+    a band so they do not take this path.
     """
     if not image_bytes:
         return None
@@ -264,11 +269,14 @@ def measure_plate_luma(
             width, height = image.size
             if width == 0 or height == 0:
                 return None
-            box = (
-                pivot_band_box(width, height, band=band)
-                if device == "pivot"
-                else None
-            )
+            if band is not None:
+                box = band.box_on(width, height)
+            elif device == "pivot":
+                # Diagnostic path: image-as-canvas, pre-finding-3 tests.
+                box = pivot_band_box(width, height)
+            else:
+                # No band → frame mean. See the 54-luma note above.
+                box = None
             return _mean_luma_of_image(image, box)
     except (UnidentifiedImageError, OSError, ValueError):
         logger.info(

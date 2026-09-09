@@ -72,7 +72,7 @@ and their disposition are below.
 | **K4** contrast adaptation | **done 2026-09-09, reviewed same day** — render-time plate luma → light/dark/slab on OverlayCue. Slab default for retention_fast. The bright `2025` plate is never `light`. Review applied: band box is now Python-authoritative and travels through the props; `LIGHT_MAX_LUMA` 90 → 105 on six measured plates; the measurement is kept and logged under the slab policy; one decode per plate |
 | **K5** palette resolution | **not started** (the commit says so explicitly) |
 | **K6** reach the vendored Bold | **done 2026-09-09** — was never a download |
-| **K11** device renderers (stamp, counter) | **not started** — blocks K9 |
+| **K11** device renderers (stamp, counter) | **implemented 2026-09-09, pending review** — stamp + counter renderers; unblocks K9 |
 | **K8** data graphics | **not started** |
 
 **Why shipping the pivot first worked without K6.** The pivot is the one
@@ -769,7 +769,7 @@ task that could ship on its own and improve every reel.
 ---
 
 
-### K11 — Device renderers: `stamp` and `counter`  **(ADDED 2026-09-09)**
+### K11 — Device renderers: `stamp` and `counter`  **(ADDED 2026-09-09, implemented 2026-09-09, pending review)**
 
 **This is the task that unblocks K9, and it was missing from the plan.**
 
@@ -1516,3 +1516,101 @@ Four findings applied. The one that mattered most was invisible: K4 measured a r
 **Not done (out of slice):** K3 density, K5 palette, K6 already done, K8 charts, K9 LLM authoring, any other device's visuals, any change to the pivot look.
 
 No commit, no push. Working tree left for review.
+
+---
+
+## Work log — K11 device renderers: stamp and counter (2026-09-09)
+
+This section is an implementation diary, not a design change. Earlier sections above stay authoritative. Append only; never rewrite prior log entries.
+
+### 16:05 — start
+
+- read / opened: this plan (K11 ~772, device table, Devanagari rules, role table, K4 finding 3, fingerprint warning, the two spike failures, current-state table); `compositor/src/SuvRetention.tsx` (Beat 1 drop, Beat 3 Year stamp 2.69–3.55, Beat 4 Counter 3.60–4.90); `compositor/src/EmphasisOverlay.tsx` (`Intl.Segmenter` grapheme stagger); `Pivot.tsx` / `Emphasis.tsx` (props-driven production, pivot-only gate); `backend/app/renderer/compositor.py` (`OverlayCue`, `PivotBand`, `collect_pivot_overlay_cues`, both hashes, `_overlay_props`); `emphasis_contrast.py` (`measure_plate_luma` still boxes only `device=="pivot"`); `timeline.py` (`EmphasisValue`, `STAMP`/`COUNTER` already on the enum); `render.py` collect → treat → hash; `test_compositor.py`, `test_emphasis_contrast.py`, `test_fingerprint.py`.
+- decided: port SuvRetention Year/Counter + EmphasisOverlay cluster stagger into new `Stamp.tsx`/`Counter.tsx`; do not edit the spike files. Rename `collect_pivot_overlay_cues` → `collect_emphasis_overlay_cues` completely (the leftover name would be a lie once stamp/counter are collected). Reuse `PivotBand` rather than a CueBand rename. Give both stamp and counter a Python-resolved band so K4 measures the box the type sits in; counter without a band would be frame mean and that is a measured 54-luma loss. Hold constants pinned from the spike windows: pivot 0.91s, stamp 0.86s (2.69–3.55), counter 1.30s (3.60–4.90). No K9, no Chromium in unit tests, no commit.
+- files: this plan (K11 heading + current-state row + this log)
+- tests: not yet
+- next: OverlayCue.values + per-device hold + collector + stamp/counter bands
+
+### 16:40 — OverlayCue.values + collector + per-device holds
+
+- read / opened: `compositor.py` OverlayCue / collect / hashes; `render.py` collect call site; `timeline.py` EmphasisValue.
+- decided: rename `collect_pivot_overlay_cues` → `collect_emphasis_overlay_cues` completely (render.py + tests). Keep `PIVOT_HOLD_S` exported; add `STAMP_HOLD_S = 0.86` (year 2.69–3.55) and `COUNTER_HOLD_S = 1.30` (3.60–4.90). Frozen `OverlayValue(value, unit, cited_fragment)` as a tuple on OverlayCue. Empty-values counter is skipped + logged, not drawn as 0→0. Meter/comparison/correction/question still ignored.
+- files: `backend/app/renderer/compositor.py`, `backend/app/workflow/steps/render.py`, `backend/app/schemas/timeline.py` (enum docstring only)
+- tests: not yet
+- next: Python-authoritative stamp/counter bands
+
+### 16:48 — Python-authoritative geometry (finding 3)
+
+- decided: reuse `PivotBand` rather than a CueBand rename (don't over-refactor pivot). `stamp_band`: spike Year top 320, font 190, pad 14, full width → (0, 320, 720, 538) on 720×1280. `counter_band`: spike Counter top 300, font 116, pad 16, meter 420 centred → (150, 300, 570, 448). Prefer a counter band over none because the 54-luma frame-vs-box gap is a measured loss. Scale like pivot (font/width with width, top/pad with height).
+- files: `backend/app/renderer/compositor.py` (`stamp_band`, `counter_band`, `_band_for_device`)
+- tests: not yet
+- next: Stamp.tsx
+
+### 16:55 — Stamp.tsx
+
+- decided: port Year (scale 1.45→1.0, amber 300×10 rule, snap 3-frame exit) plus EmphasisOverlay per-grapheme-cluster stagger via `Intl.Segmenter`. Never `.split("")`. Vendored Noto + fontWeight 700 for `hi`; spike CSS stack (`Segoe UI Black` / `Arial Black` / Impact) for `en` — no new font file. Tracking 4 for Latin, 0 for Devanagari. Treatment branch: light = white + drop shadow; dark = ink on transparent; slab = ink wipe like Brand. Layout from `band`; SPIKE_* labelled fallback only. Hue: white / ink / amber only.
+- files: `compositor/src/Stamp.tsx`
+- tests: not yet
+- next: Counter.tsx
+
+### 17:02 — Counter.tsx
+
+- decided: port Beat 4: 0 → `values[0].value` over 0.95 of the hold, `Easing.out(Easing.cubic)`, `Intl.NumberFormat("en-IN")`, tabular nums, filling meter, snap exit. Unit as suffix (tracking 0). `text` is the kicker — not hardcoded "SOLD IN A YEAR". Slab = 0.88 ink scrim over the Python band (the 4.3s infographic escape). Light/dark = bare type. Latin CSS stack for digits.
+- files: `compositor/src/Counter.tsx`
+- tests: not yet
+- next: Emphasis.tsx treatment/device branching
+
+### 17:08 — Emphasis.tsx branching + hashes + K4
+
+- decided: switch on `cue.device`; else → null (explicit, not "only pivot exists"). Props gain `values`. Pivot look unchanged (still ignores treatment). Both hashes and `_overlay_props` include values (value / unit / citedFragment). `measure_plate_luma`: if `band` is present, measure that box for any device; pivot without a band keeps the diagnostic image-as-canvas path; any other device without a band uses frame mean, with the 54-luma comment.
+- files: `compositor/src/Emphasis.tsx`, `compositor/README.md`, `backend/app/renderer/compositor.py` (hashes + props), `backend/app/renderer/emphasis_contrast.py`, `backend/app/renderer/fingerprint.py` (docstring)
+- tests: not yet
+- next: tests
+
+### 17:20 — tests
+
+- did: collector emits stamp+counter, still ignores correction/question; per-device holds pinned; empty-values counter dropped+logged; stamp/counter round-trip into `_overlay_props` with values+treatment+band; both hashes miss on target number, unit, cited_fragment, and stamp-vs-pivot device; stamp/counter bands used as K4 local boxes; band-less non-pivot falls back to frame mean (the 54-luma path). Existing pivot tests kept.
+- files: `backend/tests/unit/renderer/test_compositor.py`, `backend/tests/unit/renderer/test_emphasis_contrast.py`
+- tests: `.venv\Scripts\python.exe -m pytest --rootdir=backend -c backend/pytest.ini backend/tests/unit/renderer/test_compositor.py backend/tests/unit/renderer/test_emphasis_contrast.py backend/tests/unit/renderer/test_fingerprint.py -q` → **108 passed in 2.80s**. ruff check on the changed Python files: all passed. First attempt used system `python -m pytest` (no pytest); reran with the repo `.venv`.
+- next: finish / summary
+
+### 17:28 — finish / summary
+
+K11 unblocks K9: the compositor can now DRAW stamp and counter, not only pivot. OverlayCue.values reach props and both hashes. Stamp is the first K4 treatment consumer. Holds are per-device and clamped. Layout is Python-authoritative.
+
+**Files changed**
+
+- Collector + OverlayValue + per-device holds + stamp/counter bands + hashes + props: `backend/app/renderer/compositor.py` (`collect_emphasis_overlay_cues`, `OverlayValue`, `STAMP_HOLD_S` 0.86 / `COUNTER_HOLD_S` 1.30, `stamp_band`, `counter_band`)
+- K4 measures any cue's band, frame-mean fallback commented: `backend/app/renderer/emphasis_contrast.py`
+- RenderStep collect call: `backend/app/workflow/steps/render.py`
+- Fingerprint docstring: `backend/app/renderer/fingerprint.py`
+- Enum docstring: `backend/app/schemas/timeline.py`
+- Production renderers: `compositor/src/Stamp.tsx`, `compositor/src/Counter.tsx`, `compositor/src/Emphasis.tsx`
+- README production-shape note: `compositor/README.md`
+- Tests: `backend/tests/unit/renderer/test_compositor.py`, `backend/tests/unit/renderer/test_emphasis_contrast.py`
+- This plan (K11 heading, current-state row, this work log)
+
+**Decisions (also in the entries above)**
+
+- Renamed `collect_pivot_overlay_cues` → `collect_emphasis_overlay_cues` completely. A leftover name that only collected pivot would be a lie.
+- Reused `PivotBand` rather than a CueBand rename.
+- Both stamp and counter get a Python band. Counter without one would be frame mean, a measured 54-luma loss.
+- Hold constants pinned from the spike windows: pivot 0.91s, stamp 0.86s (2.69–3.55), counter 1.30s (3.60–4.90).
+- Empty-values counter is skipped and logged, not drawn as 0→0, not a crash.
+- `cited_fragment` is hashed even though the compositor does not draw it.
+- Stamp branches on light / dark / slab. Pivot still ignores treatment (the device IS a slab).
+- Latin compositor faces: spike CSS stack. Devanagari: vendored Noto. No new font file.
+
+**Deviations / contradictions found**
+
+- **Stamp pad 14 is not in the Year spike.** Year was bare type with no inset. Slab treatment needs a rectangle to draw and K4 needs the same rectangle to measure, so pad is the slab inset. On 720×1280 the stamp box is (0, 320, 720, 538) = font 190 + 2×14.
+- **Count lands at 0.95 of the actual hold, not `0.95 * fps` as in the spike.** The spike's 0.95s was for a 1.3s window. A hold clamped to remaining shot must scale; using a fixed 0.95s would overshoot a short shot.
+- **Latin faces depend on the host CSS stack** (`Segoe UI Black` / `Arial Black` / Impact), matching the spike. The plan also says not to depend on host fonts for compositor faces. Chose the spike stack over vendoring a new Latin file (K6 is done; do not add a font). Devanagari is bundled. Documented here rather than quietly inventing a Noto-Latin look the spike never had.
+- **Stamp combines Year's 1.45→1.0 whole-word scale with EmphasisOverlay's per-cluster stagger**, rather than picking one. The plan asked for both energies.
+- **Counter always draws `text` as the kicker.** Schema requires `text` min_length=1, so a kicker is always present. K9 should put the label in `text` and the number in `values`; if it puts the number in both, the kicker duplicates. Not this slice's planner.
+- Did not run a live Chromium render. Brief: unit tests, no Chromium required; a lost alpha is a black rectangle rather than a raise. Props-shape tests cover the contract.
+- Did not switch `SuvRetention.tsx` onto `Stamp.tsx` / `Counter.tsx`. Spike files left alone.
+
+**Not done (out of slice):** correction / question / meter-as-separate-device / comparison, K3 density, K5 palette, K8 charts, K9 LLM authoring, stamp/counter authoring in EmphasisPassStep, pivot look changes, SFX, pacing.
+
+No commit, no `git add`, no push. Working tree left dirty for review. Stopping.

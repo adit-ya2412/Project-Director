@@ -272,7 +272,9 @@ class RevealDirection(StrEnum):
 class EmphasisDevice(StrEnum):
     """On-screen punctuation device (retention_fast_kinetic_text.md).
     Enum is the full v1 set so later devices do not churn the model;
-    this slice only authors and renders `pivot`."""
+    this slice authors only `pivot` (K10). The compositor renders
+    `pivot`, `stamp`, and `counter` (K11); other devices are ignored
+    until they have a renderer."""
 
     STAMP = "stamp"
     COUNTER = "counter"

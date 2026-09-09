@@ -96,8 +96,10 @@ Devanagari file are the actual compositor inputs, and a cached
 no kinetic text (or the wrong contrast treatment) if those were not
 hashed. `emphasis_cue_hash` / `emphasis_font_hash` are that hook —
 NOT `cue_list_hash`, which already means CAPTION cues. Both present
-unconditionally, `None` when there is no pivot overlay. Palette hash
-is K5 and is not in this slice.
+unconditionally, `None` when there is no emphasis overlay. Palette hash
+is K5 and is not in this slice. `values` (a counter's target number)
+rides inside `emphasis_cue_hash` as of K11 — editing the figure must
+miss the cached `final.mp4`.
 
 Bookkeeping fields (`version`, `parent_version`, `produced_by`, `status`,
 `created_at`, `timeline_id`, `project_id`, `schema_version`) are

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
-from app.renderer.compositor import OverlayCue, pivot_band
+from app.renderer.compositor import OverlayCue, counter_band, pivot_band, stamp_band
 from app.renderer.emphasis_contrast import (
     DARK_MIN_LUMA,
     LIGHT_MAX_LUMA,
@@ -336,3 +336,99 @@ def test_unreadable_plate_still_returns_none_and_does_not_raise():
     assert choose_treatment(
         measure_plate_luma(b"garbage", device="pivot"), slab_default=False
     ) == "slab"
+
+
+def test_stamp_band_uses_local_box_not_frame_mean(tmp_path: Path):
+    """K11: stamp with a band is measured through THAT box, not the
+    pivot band and not the frame mean. Reuses the local-vs-frame-mean
+    fixture shape against the stamp rectangle."""
+    width, height = 720, 1280
+    band = stamp_band(width, height)
+    assert band is not None
+    box = band.box_on(width, height)
+    assert box == (0, 320, 720, 538)
+    x0, y0, x1, y1 = box
+
+    image = Image.new("RGB", (width, height), color=(255, 255, 255))
+    ImageDraw.Draw(image).rectangle((x0, y0, x1 - 1, y1 - 1), fill=(40, 40, 40))
+    plate = tmp_path / "sh_stamp.png"
+    image.save(plate, format="PNG")
+
+    cue = OverlayCue(
+        device="stamp",
+        text="2025",
+        text_register="en",
+        offset_s=0.0,
+        start_frame=0,
+        end_frame=26,
+        shot_id="sh_01",
+        treatment="slab",
+        band=band,
+    )
+    earned = apply_emphasis_treatments([cue], {"sh_01": plate}, slab_default=False)
+    assert earned[0].treatment == "light"
+    retained = apply_emphasis_treatments([cue], {"sh_01": plate}, slab_default=True)
+    assert retained[0].treatment == "slab"
+
+    data = plate.read_bytes()
+    box_luma = mean_luma(data, box=box)
+    frame_luma = mean_luma(data)
+    assert frame_luma > 200
+    assert abs(box_luma - 40) <= 1
+    assert measure_plate_luma(data, device="stamp", band=band) == pytest.approx(box_luma)
+
+
+def test_counter_without_a_band_uses_frame_mean():
+    """No band → frame mean, a measured 54-luma loss of precision.
+    Production always passes a band; this pins the fallback so it cannot
+    silently start measuring the pivot box instead."""
+    width, height = 720, 1280
+    pivot_box = pivot_band_box(width, height)
+    assert pivot_box is not None
+    x0, y0, x1, y1 = pivot_box
+    image = Image.new("RGB", (width, height), color=(255, 255, 255))
+    ImageDraw.Draw(image).rectangle((x0, y0, x1 - 1, y1 - 1), fill=(40, 40, 40))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    data = buffer.getvalue()
+
+    frame_luma = mean_luma(data)
+    assert frame_luma > 200
+    assert measure_plate_luma(data, device="counter") == pytest.approx(frame_luma)
+    assert measure_plate_luma(data, device="stamp") == pytest.approx(frame_luma)
+    # Pivot without a band still uses the diagnostic pivot box.
+    assert measure_plate_luma(data, device="pivot") == pytest.approx(
+        mean_luma(data, box=pivot_box)
+    )
+
+
+def test_counter_band_uses_its_own_box_not_the_pivot_box(tmp_path: Path):
+    width, height = 720, 1280
+    band = counter_band(width, height)
+    assert band is not None
+    box = band.box_on(width, height)
+    assert box == (150, 300, 570, 448)
+    x0, y0, x1, y1 = box
+
+    image = Image.new("RGB", (width, height), color=(255, 255, 255))
+    ImageDraw.Draw(image).rectangle((x0, y0, x1 - 1, y1 - 1), fill=(40, 40, 40))
+    plate = tmp_path / "sh_counter.png"
+    image.save(plate, format="PNG")
+
+    cue = OverlayCue(
+        device="counter",
+        text="lakh",
+        text_register="en",
+        offset_s=0.0,
+        start_frame=0,
+        end_frame=39,
+        shot_id="sh_01",
+        treatment="slab",
+        band=band,
+    )
+    earned = apply_emphasis_treatments([cue], {"sh_01": plate}, slab_default=False)
+    assert earned[0].treatment == "light"
+    data = plate.read_bytes()
+    assert measure_plate_luma(data, device="counter", band=band) == pytest.approx(
+        mean_luma(data, box=box), abs=1.0
+    )
