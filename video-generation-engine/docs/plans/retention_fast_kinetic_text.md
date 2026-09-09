@@ -67,7 +67,7 @@ and their disposition are below.
 | **K2** resolve timing from alignment | **done** — `resolve_emphasis_cue_offsets` in `narration_fit.py`, called from `NarrationStep` |
 | **K10** pivot detection | **done** — `timeline/pivot.py`, lexical, one per reel |
 | **K7** compositor seam | **proven end-to-end 2026-09-09** — `renderer/compositor.py` + props-driven `Pivot.tsx`/`Emphasis.tsx`. Fingerprint hooks (`emphasis_cue_hash`, `emphasis_font_hash`) are in and correctly separate from `cue_list_hash` |
-| **K9** emphasis pass | **implemented 2026-09-09, pending review** — whole-film LLM call authors `pivot`/`stamp`/`counter` plus the palette pair; K3 still enforces; lexical `attach_pivot_cue` is the pivot backstop |
+| **K9** emphasis pass | **implemented 2026-09-09; one of two review findings fixed and measured, the other measured and NOT reproduced** — whole-film LLM call authors `pivot`/`stamp`/`counter` plus the palette pair; K3 still enforces; lexical `attach_pivot_cue` is the pivot backstop. Stamps now prefer concrete nouns and the brand reaches the screen (3 of 5 live runs vs 0 of 2 before). Density: no prompt wording raised the delivered rate above the 8.51/min floor across 5 live runs; the binding number is `_build_user_content`'s `Target cue count`, not prose. See the 21:0x log entries |
 | **K3** enforcement rules | **implemented 2026-09-09, reviewed and the three findings fixed same day** — shared pass in `app/timeline/emphasis_rules.py`; `text_card` rule moved out of `pivot.py`; graphic signal is planner-authored `Shot.picture_is_graphic` (option 1). Safe-zone geometry deferred (no plate at authoring time). Review applied: `min_shot_gap` is an index distance (the off-by-one made the effective gap 4, measured 8.57/min instead of the band's 12.00/min); the citation matcher now reads spelled-out Hindi/English numbers and decimals, reusing `caption_romanizer.numerals`; the call site's two knobs are pinned by a step-level test |
 | **K4** contrast adaptation | **done 2026-09-09, reviewed same day** — render-time plate luma → light/dark/slab on OverlayCue. Slab default for retention_fast. The bright `2025` plate is never `light`. Review applied: band box is now Python-authoritative and travels through the props; `LIGHT_MAX_LUMA` 90 → 105 on six measured plates; the measurement is kept and logged under the slab policy; one decode per plate |
 | **K5** palette resolution | **implemented and reviewed 2026-09-09** (`4a8c00a`) — scenario A, planner-authored and recorded on the timeline (decision 7). The accent and the pivot ground are palette; white/ink stay K4's contrast treatments | Review: one finding, a near-white `pivot_ground` renders invisible white-on-white; fixed separately. Only the channel and band rungs are reachable today — see K5's task section.
@@ -2367,6 +2367,90 @@ K9 replaces the lexical-only stub: `EmphasisPassStep` runs one whole-film LLM ca
 - venv is at repo root, not `backend/.venv`.
 
 **Not done (out of slice):** correction/meter/comparison/question renderers, K8 charts, inferred extra years, SFX, pacing/camera/transitions, narrowing `EmphasisDevice`, guessing seconds.
+
+No commit, no `git add`, no push. Working tree left dirty for review. Stopping.
+
+### 21:05 — review findings 1 & 2, measured A/B on the identical script
+
+- decided: prove both findings with live re-runs of `tmp/k9_emphasis/verify_k9.py`'s exact 694-char script and 19-shot timeline (new driver `tmp/k9_prompt_fix/verify_prompt.py`, which takes the prompt file as an argument so the committed prompt and the edited one meet the same input). No Remotion — the question is which words get chosen, and K9 already proved the devices draw. All calls on one throwaway project per pass, `-test` suffixed, deleted afterwards. Baseline re-measured rather than trusted: the recorded 20:35 numbers are one sample and this model varies.
+- did: seven live calls. Baseline on the committed `d2f468b` prompt, then two prompt states, then a one-line code probe, then two calls on the state actually left in the tree. K3 drop rules captured off the `emphasis_rules.dropped` log records, not inferred from the diff.
+- projects: `60713a39-ea61-47f0-8838-305fcf6a85a1` (5 calls) and `e64d3c71-cfa0-4fd8-ac74-d43e90d67780` (2 calls), both `k9-prompt-fix-test` / `retention_fast`. Both deleted (project row + 7 and 2 `llm_call` rows; no `timeline_version` / `narration` rows were ever written — the driver never persists the timeline).
+- constant across every run: 694 chars, **35.24s**, 19 shots, 7 scenes, `min_shot_gap=3`, `emphasis_max_cues_per_minute=12.0`, `accent=#00D9FF` every single time, `pivot_ground` a deep purple every single time (luma always well under 140). The pivot landed on `sc_05_sh_01` in all seven.
+
+**Baseline — committed prompt (`old_a`)**
+
+| film idx | device | shot_id | text | anchor | values |
+|---|---|---|---|---|---|
+| 2 | counter | sc_02_sh_01 | `UNITS SOLD` | 1 | 200000 cited 1 |
+| 5 | stamp | sc_03_sh_01 | `king` | 1 | — |
+| 9 | counter | sc_04_sh_01 | `SAFETY RATING` | 1 | 5 cited 1 |
+| 12 | pivot | sc_05_sh_01 | `लेकिन` | 1 | — |
+| 15 | stamp | sc_06_sh_03 | `sawaal` | 3 | — |
+| 17 | stamp | sc_06_sh_05 | `dikhai` | 5 | — |
+
+Authored **6 = 10.22/min**; K3 dropped `sc_06_sh_05` (`min_gap`, idx 17 is 2 after 15); delivered **5 = 8.51/min**. No brand stamp. **The 20:35 figures reproduce to the digit** — 10.22 authored, 8.51 delivered, one `min_gap` drop, brand unstamped. Both findings' premises confirmed on fresh evidence, not just the recorded run.
+
+**Finding 1 (stamps are evaluative, not concrete) — REAL, and the fix holds**
+
+The stamp bullet gained a stated preference order (proper noun / brand / model name / the thing itself, with an evaluative adjective as the explicit fallback) — still one bullet, no banned-word list, prompt 73 → 76 lines. Both runs of the state now in the tree:
+
+| run | authored stamps | brand stamped? | survived K3? |
+|---|---|---|---|
+| `final_a` | `Creta` (idx 1), `SUV` (5), `safest` (16) | **yes** | **yes** |
+| `final_b` | `king` (5), `Creta` (14), `safest` (16) | **yes** | no — `min_gap`, idx 14 is 2 after the pivot at 12 |
+
+Brand stamped in **2 of 2** runs of the shipped prompt, and in 3 of 5 runs across every edited state tried, against **0 of 2** on the committed prompt (this baseline plus 20:35). `HYUNDAI CRETA` is on screen where `king` used to be. Not a clean sweep: `king` came back once and `safest` in both, and the counter kickers improved on their own (`SOLD IN 2025`, `SAFETY STARS`).
+
+**Finding 2 (K3 trims to the floor, so aim higher) — premise real, the prescribed fix is NOT. Reverted.**
+
+The observation is right: delivered sits on 8.51/min, the floor. The prescribed cause is not. Three prompt/code states, five runs:
+
+| state | authored | authored/min | delivered | delivered/min | K3 drops |
+|---|---|---|---|---|---|
+| committed (baseline) | 6 | 10.22 | 5 | **8.51** | `min_gap` ×1 |
+| + "Author at the TOP of it… the middle lands on the floor" (`new_a`) | 6 | 10.22 | 4 | **6.81** | `min_gap` ×2 |
+| same (`new_b`) | 6 | 10.22 | 4 | **6.81** | `values_citation`, `min_gap` |
+| + "**three or more shots between consecutive cues**" (`new_c`) | 5 | 8.51 | 5 | **8.51** | none |
+| same (`new_d`) | 6 | 10.22 | 4 | **6.81** | `values_citation`, `min_gap` |
+| same + `Target cue count` multiplier 10.0 → 12.0 (`new_e`) | 5 | 8.51 | 5 | **8.51** | none |
+
+Every state was worse than or equal to the baseline. Best case was 8.51 — the floor the finding was written to escape. Both edits reverted; the density section and `planner.py` are byte-identical to `d2f468b`.
+
+- found: **the model does not read the density instruction from the prompt. It reads a number from the user content.** `_build_user_content` states `Target cue count: 6` (`planner.py`, `round(duration_s / 60.0 * 10.0)` — the middle of the band), and the model authored exactly that count in every run where the number said 6, prose to the contrary in the same call notwithstanding. Prose cannot raise a count that code states as an integer.
+- found: raising that integer does not work either. At 12.0 the user content asked for **7** and the model authored **5** (`new_e`, and `new_c` at the old multiplier did the same). Told "three or more shots between cues" it picks 0/4/8/12/16 — spaced by 4, five cues, zero K3 drops — satisfying spacing over count. The count is not what the model is optimising.
+- found: **telling the model the spacing rule costs counters.** The two zero-drop runs (`new_c`, `new_e`) are also the only two runs with **no counter at all** and no brand — all-stamp reels of `traffic` / `city` / `family` / `safest`. Spacing freedom appears to be what lets it reach the shots where the numbers are.
+- found: **the shot after the pivot is structurally doomed on this timeline, and that is what eats the rate.** `sc_05` (the `Lekin` beat) is a single shot at film idx 12 and `sc_06` starts at 13, so with `min_shot_gap=3` any cue on idx 13/14 dies — 20:35's `best` at 13, `final_b`'s `Creta` at 14, `new_b`'s at 14. The model anchors one cue per scene head; on this timeline one scene head is always inside the pivot's gap. That is the pivot-rescue path working as designed, and no wording fixes it. Real headroom is there — 19 shots at gap 3 hold 7 cues (0/3/6/9/12/15/18 = 11.92/min) — but reaching it needs the authoring pass to know where the gap boundaries fall, which is placement information, not exhortation.
+- found: a second `values_citation` gap, not mine and not a hallucination. `new_d` cited `Do lakh.` for 200000 and was dropped: `_stated_numbers` reads Devanagari `दो लाख` and English `two lakh`, but not **romanised** Hindi number words (`do`, `das`). `new_b` lost `PRICE`/10 the same way — the narration says `das lakh` (= 1000000), so citing 10 was also the model's error there. Widen the matcher when it is worth measuring; the module docstring already says a drop is not evidence of invention.
+- tests: `python -m pytest tests/unit -q` → **1429 passed, 6 failed** in 125.51s. Identical to the recorded baseline: 5 in `test_sfx_overlays_diegetic.py`, 1 in `test_director_planner.py::test_every_attempt_is_recorded_as_an_llm_call`. No new failure. No test asserts on this prompt's text (checked), so nothing green went red and nothing was deleted to keep it green. `ruff check` clean on `app/planners/emphasis/`, `app/prompts/`, and the throwaway driver.
+- files: `backend/app/prompts/emphasis/v1.md` (stamp bullet only), this plan (K9 status row + this log). Live evidence, gitignored: `tmp/k9_prompt_fix/` (driver, `v1_old.md` snapshot, seven `report_*.json`).
+- next: finish / summary
+
+### 21:20 — finish / summary
+
+One of the two review findings is fixed and proved; the other is a real symptom with a misattributed cause, measured five times and reverted rather than forced.
+
+**Files changed (this pass)**
+
+- Prompt: `backend/app/prompts/emphasis/v1.md` — the `stamp` bullet, and nothing else. 73 → 76 lines.
+- This plan (K9 status row + the 21:05 and 21:20 entries)
+- Live evidence (gitignored): `tmp/k9_prompt_fix/`
+
+**Reverted after measurement, deliberately left out of the tree**
+
+- The density section's "author at the TOP" rewrite. Delivered 6.81/min twice, against a 8.51 baseline.
+- A follow-on "three or more shots between consecutive cues" line. Delivered 8.51 / 6.81, and both of its zero-drop runs authored no counter and no brand.
+- `planner.py`'s `Target cue count` multiplier at 12.0 instead of 10.0. Out of the brief's scope (it is code, not the prompt) and it did not work: the model authored 5 when asked for 7.
+
+**Deviations / contradictions found**
+
+- The brief located both findings in `v1.md`. Finding 2 does not live there. The number the model obeys is `Target cue count` in `_build_user_content`, and raising it did not help either — so finding 2 is not a wording problem at all. It is a placement problem: the authoring pass cannot see where `min_shot_gap`'s boundaries fall, and the shot after a one-shot pivot scene is unreachable by construction.
+- Finding 1's brand claim needed a caveat: the brand now reaches the screen every run, but K3 drops it when the model puts it on the shot right after the pivot (1 of 2 shipped-prompt runs).
+- The first version of this pass measured the brand improvement on a prompt that ALSO carried the density edit, so the state left in the tree had never itself been run. Re-run twice (`final_a`, `final_b`) before writing any of this down.
+- Console is cp1252 here; `PYTHONIOENCODING=utf-8` is required or printing `लेकिन` kills the driver after the LLM call has already been paid for. The driver writes its JSON before printing, so nothing was lost.
+- `verify_k9.py` names its project `k9-emphasis-live`, with no `-test` suffix, so it does not match the standing purge convention. The new driver uses `k9-prompt-fix-test`. Unrelated leaked `*-test` rows (many `shot-planner-test`, `asset-planner-test`, one `k7-pivot-test`) are still in the shared DB; not touched here.
+- Cost: seven live planning calls, roughly 7 cents.
+
+**Not done (out of slice):** any change to K3, the `retention_fast` band knobs, `emphasis_max_cues_per_minute`, `EmphasisDevice`, or the planner schema. No Remotion render (no stamp came close to overflowing its band — longest was `Hyundai Creta`, and the counter band is content-derived since K11). No widening of the `values_citation` matcher to romanised Hindi numerals.
 
 No commit, no `git add`, no push. Working tree left dirty for review. Stopping.
 
