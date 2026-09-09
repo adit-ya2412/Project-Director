@@ -3,8 +3,11 @@
 from datetime import UTC, datetime
 
 import pytest
+from pydantic import ValidationError
 
+from app.core.colour import hex_luma
 from app.schemas.timeline import (
+    PIVOT_GROUND_MAX_LUMA,
     EmphasisPalette,
     ProducedBy,
     Scene,
@@ -108,3 +111,23 @@ def test_garbage_channel_hex_raises():
         resolve_emphasis_palette(_timeline(), channel_accent="amber")
     with pytest.raises(ValueError, match="#RRGGBB"):
         resolve_emphasis_palette(_timeline(), channel_accent="")
+
+
+def test_every_resolved_ground_clears_the_pivot_ground_ceiling():
+    """The resolver builds an `EmphasisPalette`, so the schema's
+    `pivot_ground` ceiling (K5 review finding) guards the channel default
+    and the style band too — not just a planner-authored pair.
+
+    This is the regression that matters: change
+    `StylePacingBand.emphasis_pivot_ground` or
+    `settings.emphasis_pivot_ground` to something white type vanishes
+    into and the resolver stops resolving instead of shipping an
+    invisible pivot.
+    """
+    resolved = resolve_emphasis_palette(_timeline())
+    assert resolved.pivot_ground == EMPHASIS_SPIKE_PIVOT_GROUND
+    assert hex_luma(resolved.pivot_ground) <= PIVOT_GROUND_MAX_LUMA
+
+    with pytest.raises(ValidationError):
+        resolve_emphasis_palette(_timeline(), channel_pivot_ground="#FAFAFA")
+

@@ -21,6 +21,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.core.colour import hex_luma
+
 SCHEMA_VERSION = "1.0"
 
 
@@ -272,9 +274,9 @@ class RevealDirection(StrEnum):
 
 class EmphasisDevice(StrEnum):
     """On-screen punctuation device (retention_fast_kinetic_text.md).
-    Enum is the full v1 set so later devices do not churn the model;
-    this slice authors only `pivot` (K10). The compositor renders
-    `pivot`, `stamp`, and `counter` (K11); other devices are ignored
+    Enum is the full v1 set so later devices do not churn the model
+    (Decision 8). K9 v1 authors `pivot`, `stamp`, and `counter`; the
+    compositor renders those three (K11). Other devices are ignored
     until they have a renderer."""
 
     STAMP = "stamp"
@@ -742,6 +744,73 @@ class Scene(BaseModel):
 # not "unset" — that is `None` on the metadata fields below.
 _EMPHASIS_HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
+# retention_fast_kinetic_text.md K5 review finding, 2026-09-09. The
+# brightest Rec. 601 luma an authored `pivot_ground` may have.
+#
+# WHY THE PIVOT NEEDS THIS AND NOTHING ELSE DOES. `compositor/src/
+# Pivot.tsx` draws the pivot's type `color: WHITE` unconditionally, and
+# that is correct by design: the band IS the type's ground, so the
+# plate's luma is irrelevant and K4 deliberately does not intervene.
+# The consequence is that this ONE colour decides the pivot's contrast
+# by itself. K4's `apply_emphasis_treatments` cannot rescue a bad choice
+# because it measures the plate UNDER the cue, not the band's own fill.
+# Measured through the schema before this guard existed, a
+# `pivot_ground` of `#FFFFFF` (luma 255.0), `#FAFAFA` (250.0) or
+# `#FFF8F0` (249.2) was accepted and rendered white-on-white.
+#
+# Unreachable today — nothing authors a palette, so every reel resolves
+# to the style band pair. It is here BEFORE K9 (the LLM emphasis pass)
+# starts authoring palettes, which is the point of a guardrail.
+#
+# THE MEASUREMENT BEHIND 140.0. The number is the WCAG 3:1 large-text
+# contrast floor for `#FFFFFF` type, converted into this project's
+# Rec. 601 scale. 3:1 and not 4.5:1 because the pivot type is 132px at
+# 700-weight on a 720-wide canvas — large text by any definition; and
+# because 4.5:1 would reject the SHIPPED DEFAULT (`#FF2E2E` measures
+# 3.70:1), which is the strongest evidence available that 3:1 is the
+# operative floor here. Two ramps were computed over sRGB
+# (tmp/k5_pivot_luma/sweep_luma.py) and the boundary was then rendered
+# through real Chromium (tmp/k5_pivot_luma/verify_pivot_luma.py):
+#
+#   neutral grey ramp   last ground at/above 3:1 = grey 148  (luma 148.0)
+#   saturated red ramp  last ground at/above 3:1 = #FF5D5D   (luma 141.0)
+#   #FF2E2E (shipped)   luma 108.5   3.70:1   — valid, 31.5 units spare
+#   #5A00A8 (reviewed)  luma  46.1  10.50:1   — valid, 94 units spare
+#   #FFC300 (accent)    luma 190.7   1.61:1   — see the accent note below
+#
+# 140.0 sits below BOTH crossings: below the neutral one by 8 units and
+# just below the shipped default's own hue family, which is the
+# pessimistic of the two. Rounded down, never up — rounding up would
+# put the limit past a measured failure.
+#
+# WHAT THIS NUMBER IS NOT. It is not `DARK_MIN_LUMA` (180.0) from
+# `app/renderer/emphasis_contrast.py`, and it must not be "unified" with
+# it later. That constant answers the opposite polarity — "is this
+# surface bright enough that NEAR-BLACK type is safe?" — and a neutral
+# ground at luma 180 measures 2.07:1 against white, well under the
+# large-text floor. Nor is it `LIGHT_MAX_LUMA` (105.0), which would
+# reject `#FF2E2E` at 108.5: that threshold judges a PHOTOGRAPHIC PLATE
+# that bare type has to survive, where a mean hides a range; a band fill
+# is one flat known colour, so it can be held to the contrast figure
+# itself rather than to a conservative margin.
+#
+# KNOWN IMPRECISION, recorded rather than hidden. Rec. 601 luma of
+# gamma-encoded values is a PROXY for perceived contrast, and it
+# disagrees with WCAG by up to ~50 units at the 3:1 line: `#00AE00`
+# (luma 102.1) is already at 2.98:1 and this guard admits it, while
+# `#C37BC9` (luma 153.4) is exactly 3.00:1 and this guard rejects it. No
+# single Rec. 601 threshold can be both hue-exact and admit `#FF2E2E`
+# at 108.5, because a pure green crosses the floor BELOW the shipped
+# default. The choice is deliberate: one scale the whole feature speaks,
+# tuned to the hue family actually in use, catching the failure that
+# prompted the finding (a near-white band) with 100+ units to spare.
+#
+# THIS CONSTANT IS COUPLED TO `Pivot.tsx`. It is only correct while the
+# pivot's type is unconditionally white. If the type ever becomes a K4
+# treatment, this limit stops being a limit and becomes a band — change
+# both together or delete this.
+PIVOT_GROUND_MAX_LUMA = 140.0
+
 
 class EmphasisPalette(BaseModel):
     """The per-project kinetic-text colour pair (K5, decision 7).
@@ -749,6 +818,11 @@ class EmphasisPalette(BaseModel):
     `accent` is the stamp rule and the counter digits/meter.
     `pivot_ground` is the pivot band's fill. White (`#FFFFFF`) and ink
     (`#0A0A0B`) are K4 treatments, not palette, and do not live here.
+
+    `pivot_ground` carries a legibility ceiling the `accent` does NOT
+    — see `PIVOT_GROUND_MAX_LUMA` above for the measurement, and
+    `_pivot_ground_must_carry_white_type` for which resolution paths it
+    guards and why the accent is exempt.
     """
 
     accent: str
@@ -760,6 +834,64 @@ class EmphasisPalette(BaseModel):
         if not _EMPHASIS_HEX.fullmatch(value):
             raise ValueError("must be a #RRGGBB hex colour")
         return value.upper()
+
+    @field_validator("pivot_ground")
+    @classmethod
+    def _pivot_ground_must_carry_white_type(cls, value: str) -> str:
+        """Reject a band fill the pivot's white type disappears into.
+
+        Runs after `_hex_rrggbb` (pydantic applies same-field validators
+        in definition order), so `value` is already `#RRGGBB` and
+        uppercased.
+
+        WHY THE ACCENT IS NOT CHECKED HERE. Accent type is drawn on a
+        surface K4 measures and adapts — a stamp rule or counter digits
+        sit over the plate or over the slab, and
+        `apply_emphasis_treatments` picks light / dark / slab for them.
+        A light accent is therefore K4's problem, and a ceiling on it
+        here would be a second contrast system fighting the first (the
+        exact thing K5 is forbidden to become). The pivot is the one
+        device whose ground is authored rather than measured, which is
+        why it is the one field with a limit.
+
+        WHY THE SCHEMA AND NOT THE RESOLVER. This is the only place that
+        stops the illegible pair from being CONSTRUCTED — by a planner,
+        by a human override, by an API payload or by a test. Every
+        resolution path ends in an `EmphasisPalette(...)` call, so one
+        validator guards all of them:
+
+        - `TimelineMetadata.emphasis_palette` — K9's authoring target,
+          the path this guard exists for;
+        - `TimelineMetadata.emphasis_palette_override` — the human
+          override, exactly as capable of being wrong;
+        - the pair `resolve_emphasis_palette` builds from
+          `settings.emphasis_pivot_ground` (the channel default) and
+          from `StylePacingBand.emphasis_pivot_ground` (the style band)
+          — both plain `str | None` fields that nothing else validates,
+          so an illegible channel default now RAISES when RenderStep
+          resolves the palette instead of silently shipping an invisible
+          pivot. That is loud, but it is not startup-loud: `settings`
+          only holds the string, so the failure surfaces at the first
+          render that has an overlay cue. Accepted — an invisible pivot
+          that renders "successfully" is strictly worse than a render
+          that stops — but do not describe it as validated at boot,
+          because it is not.
+
+        One consequence worth naming: a stored timeline that already
+        carried an illegible palette would now fail to LOAD rather than
+        render wrong. No such document exists — nothing authors palettes
+        yet, which is why this landed before K9 rather than after.
+        """
+        luma = hex_luma(value)
+        if luma > PIVOT_GROUND_MAX_LUMA:
+            raise ValueError(
+                f"pivot_ground {value} has Rec.601 luma {luma:.1f}, above the "
+                f"{PIVOT_GROUND_MAX_LUMA:.1f} limit: the pivot band's type is "
+                "drawn #FFFFFF unconditionally (the band IS its ground, so "
+                "K4's plate contrast cannot rescue it), so white type would be "
+                "illegible on a fill this bright. Pick a darker band fill"
+            )
+        return value
 
 
 class TimelineMetadata(BaseModel):
@@ -872,14 +1004,13 @@ class TimelineMetadata(BaseModel):
     # and never re-checks after the step returns "ok" - an earlier
     # version of this comment claimed otherwise.
     caption_romanization_attempted: bool | None = None
-    # retention_fast_kinetic_text.md K10: True once EmphasisPassStep has
-    # attempted the lexical pivot attach, whether a cue was written or
-    # the covering shot already carried a text_card. None on every
-    # timeline that predates this field. `is_satisfied` prefers "cue
-    # already present / no attachable pivot" over this stamp; the stamp
-    # is the backstop for a no-op run so a resume cannot append another
-    # version. It is NOT a substitute for produced_by — Narration
-    # overwrites that.
+    # retention_fast_kinetic_text.md K9/K10: True once EmphasisPassStep
+    # has attempted the pass (LLM or dry-run lexical), whether any cue
+    # was written. None on every timeline that predates this field.
+    # `is_satisfied` keys off this stamp (and narration_locked / style),
+    # not "already has a pivot cue" and not "no pivot word" — those
+    # skipped stamps and counters. It is NOT a substitute for
+    # produced_by — Narration overwrites that.
     emphasis_pass_attempted: bool | None = None
     # retention_fast_kinetic_text.md K5 / decision 7: the per-project
     # kinetic-text palette, authored once and recorded. `None` means

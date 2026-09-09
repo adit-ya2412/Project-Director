@@ -67,7 +67,7 @@ and their disposition are below.
 | **K2** resolve timing from alignment | **done** — `resolve_emphasis_cue_offsets` in `narration_fit.py`, called from `NarrationStep` |
 | **K10** pivot detection | **done** — `timeline/pivot.py`, lexical, one per reel |
 | **K7** compositor seam | **proven end-to-end 2026-09-09** — `renderer/compositor.py` + props-driven `Pivot.tsx`/`Emphasis.tsx`. Fingerprint hooks (`emphasis_cue_hash`, `emphasis_font_hash`) are in and correctly separate from `cue_list_hash` |
-| **K9** emphasis pass | **stub** — `steps/emphasis_pass.py` exists and is style-gated, but runs only pivot detection. The LLM pass is not written |
+| **K9** emphasis pass | **implemented 2026-09-09, pending review** — whole-film LLM call authors `pivot`/`stamp`/`counter` plus the palette pair; K3 still enforces; lexical `attach_pivot_cue` is the pivot backstop |
 | **K3** enforcement rules | **implemented 2026-09-09, reviewed and the three findings fixed same day** — shared pass in `app/timeline/emphasis_rules.py`; `text_card` rule moved out of `pivot.py`; graphic signal is planner-authored `Shot.picture_is_graphic` (option 1). Safe-zone geometry deferred (no plate at authoring time). Review applied: `min_shot_gap` is an index distance (the off-by-one made the effective gap 4, measured 8.57/min instead of the band's 12.00/min); the citation matcher now reads spelled-out Hindi/English numbers and decimals, reusing `caption_romanizer.numerals`; the call site's two knobs are pinned by a step-level test |
 | **K4** contrast adaptation | **done 2026-09-09, reviewed same day** — render-time plate luma → light/dark/slab on OverlayCue. Slab default for retention_fast. The bright `2025` plate is never `light`. Review applied: band box is now Python-authoritative and travels through the props; `LIGHT_MAX_LUMA` 90 → 105 on six measured plates; the measurement is kept and logged under the slab policy; one decode per plate |
 | **K5** palette resolution | **implemented and reviewed 2026-09-09** (`4a8c00a`) — scenario A, planner-authored and recorded on the timeline (decision 7). The accent and the pivot ground are palette; white/ink stay K4's contrast treatments | Review: one finding, a near-white `pivot_ground` renders invisible white-on-white; fixed separately. Only the channel and band rungs are reachable today — see K5's task section.
@@ -2278,4 +2278,98 @@ K5 is the recording mechanism. A palette is a pair (accent + pivot_ground) on `T
 **Not done (out of slice):** K9 LLM authoring of the palette, K8, vision, sampling dominant hue at render, any change to white/ink, pivot type as accent, spike file hardcoded colours.
 
 No commit, no `git add`, no push. Working tree left dirty for review. Stopping.
+
+---
+
+## Work log — K9 LLM emphasis pass (2026-09-09)
+
+This section is an implementation diary, not a design change. Earlier sections above stay authoritative. Append only; never rewrite prior log entries.
+
+### 20:02 — read / assemble
+
+- read / opened: Decision 8 (~1175, v1 authors only pivot/stamp/counter; drop correction/meter/comparison/question in code, do not fail); K9 task (~804, one whole-film call after shot plan before narration, never seconds); device set (~380); Decision 4 register table (~1063, derive in code); K3 density 8–12/min pivot guaranteed (~1087); honesty/cited_fragment (~321); K12 strict-mode lesson; K5 leftover (`emphasis_palette` is K9's job); existing `emphasis_pass.py` (lexical stub); shot/director schemas; `run_structured_with_repair`; `romanize_captions.py` dry_run landmine; `pivot.py`; `emphasis_rules.py`; `EmphasisCue`/`EmphasisDevice` (do not narrow); `test_emphasis_pass_step.py`; `split_narration_fragments`; `EmphasisPalette` + `PIVOT_GROUND_MAX_LUMA` (schema already rejects near-white pivot_ground).
+- decided: planner output is a default-free pydantic model (`device` is a plain str, not the wide domain enum). Quantity checks in `validate()`: duplicate/unknown shot_id, fragment out of range. Unknown devices are NOT validate-failures (Decision 8: drop, do not fail the run) — mapper logs and skips. Register derived in code (pivot→hi, counter→en, stamp→script of `text`). Palette written via `EmphasisPalette(...)` so hex + luma guards apply; invalid → leave unset. `is_satisfied` keys off `emphasis_pass_attempted` / `narration_locked` / style / no timeline — not "no pivot word" and not "already has a pivot cue". Dry-run stays lexical attach + enforce + stamp, no LLM. Cheap-vs-terra: use the default planning model (creative authoring, not mechanical transliteration).
+- files: this plan (status row + this log header)
+- next: schema, prompt, planner, step, tests
+
+### 20:15 — schema / prompt / planner / step / tests
+
+- decided: planner schema is default-free (`device` is a plain str). `validate()` rejects duplicate/unknown shot_id and out-of-range fragments (repair). Unknown devices are mapper-drops, not validate-failures (Decision 8: do not fail the run). Register derived in code. Palette via `EmphasisPalette(...)` so hex + `PIVOT_GROUND_MAX_LUMA` apply; invalid → leave unset. `is_satisfied` no longer treats "no pivot word" or "already has a pivot cue" as done. Dry-run = lexical pivot + K3 + stamp, no LLM (this env's `DRY_RUN` is False, so step tests autouse-patch it True). Planner uses the default planning model.
+- files: `backend/app/planners/emphasis/schemas.py`, `planner.py`, `backend/app/prompts/emphasis/v1.md`, `backend/app/workflow/steps/emphasis_pass.py`, `backend/app/schemas/timeline.py` (docstrings only; `EmphasisDevice` not narrowed), `backend/tests/unit/planners/test_emphasis_planner.py`, `backend/tests/unit/workflow/test_emphasis_pass_step.py`
+- tests: 24 passed (`test_emphasis_planner.py` + `test_emphasis_pass_step.py`). Related pivot/rules/palette/render_only: 91 passed. Ruff clean on the K9 Python files.
+- next: live reel — real LLM, K3 before/after, overlay frames
+
+### 20:35 — live reel (real LLM + Remotion overlay)
+
+- did: `tmp/k9_emphasis/verify_k9.py` built a 19-shot timeline from a 694-char Hinglish script (one shot per fragment, durations clamped 0.8–3.5s off ~19 chars/s), created project `5be28b79-f986-4b3c-9553-37e744991c04` (`k9-emphasis-live`, `retention_fast`), called `run_structured_with_repair` through `OpenAIPlanningProvider` (not dry_run, real key), mapped, enforced K3, rendered via `render_or_reuse_emphasis_overlay` (real Chromium, ProRes 4444), extracted one RGBA frame per landed device. `tmp/` is gitignored.
+- project: `5be28b79-f986-4b3c-9553-37e744991c04`
+- duration: **35.24s**, 694 chars, 19 shots, 7 scenes
+- palette authored: `accent=#00D9FF` `pivot_ground=#4A145E` (cyan against a street/SUV world; purple ground luma 44.6, well under 140)
+
+**Cues BEFORE K3 (6)** — mapper output, registers derived in code, `offset_s=0.0`
+
+| device | shot_id | text | register | anchor_fragment | values |
+|---|---|---|---|---|---|
+| counter | sc_02_sh_01 | SOLD IN 2025 | en | 1 | 200000 cited 1 |
+| stamp | sc_03_sh_01 | king | en | 1 | — |
+| counter | sc_04_sh_01 | SAFETY RATING | en | 1 | 5 cited 1 |
+| pivot | sc_05_sh_01 | लेकिन | hi | 1 | — |
+| stamp | sc_06_sh_01 | best | en | 1 | — |
+| stamp | sc_07_sh_01 | skip | en | 1 | — |
+
+**Cues AFTER K3 (5)** — `min_gap` dropped `sc_06_sh_01` stamp "best" (film index 13, one shot after the pivot at 12). Citation kept both counters (`2 lakh` → 200000, `five stars` → 5). Pivot kept.
+
+Rate after K3: **8.51/min**. Floor of the 8–12 band; 5 cues in 35s is the bottom of "roughly 5–9 in a 35s reel". Not a miss. Pivot guaranteed.
+
+**Frames (watched)**
+
+| device | frame | path | what it shows |
+|---|---|---|---|
+| counter | 131 | `tmp/k9_emphasis/counter_0131.png` | cyan `1,76,874` counting toward 2,00,000, kicker `SOLD IN 2025`, slab ink. Band pixels `#00D9FF` (23622) / `#0A0A0B` |
+| stamp | 271 | `tmp/k9_emphasis/stamp_0271.png` | white `king` on slab, cyan rule. Band pixels `#FFFFFF` (30741) / `#00D9FF` (2316) / `#0A0A0B` |
+| pivot | 656 | `tmp/k9_emphasis/pivot_0656.png` | white `लेकिन` on purple full-bleed band. Band pixels `#4A145E` (79995, luma 44.6) / `#FFFFFF` (16364) |
+
+Overlay: `tmp/k9_emphasis/storage/5be28b79-f986-4b3c-9553-37e744991c04/overlays/fa388a20c4da5dad9bbef0e1e16104363071550fe23c8273584364d92b96f5dd.mov`
+
+Centre-pixel samples were transparent (bands are not at 360,640). Numbers above are opaque pixels inside each device band.
+
+### 20:40 — finish / summary
+
+K9 replaces the lexical-only stub: `EmphasisPassStep` runs one whole-film LLM call for `retention_fast`, maps v1 devices with Decision-4 registers derived in code, writes `metadata.emphasis_palette`, then K3. Lexical `attach_pivot_cue` remains the pivot backstop. Dry-run stays lexical + stamp.
+
+**Files changed (this slice)**
+
+- Schema (docstrings only; enum not narrowed): `backend/app/schemas/timeline.py`
+- Planner: `backend/app/planners/emphasis/schemas.py`, `planner.py`
+- Prompt: `backend/app/prompts/emphasis/v1.md`
+- Step: `backend/app/workflow/steps/emphasis_pass.py`
+- Tests: `backend/tests/unit/planners/test_emphasis_planner.py` (new), `backend/tests/unit/workflow/test_emphasis_pass_step.py`
+- This plan (K9 status row + this work log)
+- Live evidence (gitignored): `tmp/k9_emphasis/`
+
+**Decisions (also in the entries above)**
+
+- v1 authors `stamp`/`counter`/`pivot` only. `EmphasisDevice` stays wide. Unknown devices are mapper-drops, not validate-failures / not a failed run.
+- `text_register` is not on the LLM schema. Derived: pivot→hi, counter→en, stamp→script of `text`.
+- `validate()` repairs duplicate/unknown shot_id and out-of-range fragments. Density is K3, not the schema.
+- Palette written through `EmphasisPalette(...)` so hex + `PIVOT_GROUND_MAX_LUMA` apply; invalid → leave unset (band fallback).
+- `is_satisfied` keys off `emphasis_pass_attempted` / `narration_locked` / style / no timeline. Not "no pivot word". Not "already has a pivot cue".
+- Dry-run = lexical pivot + K3 + stamp, no LLM. The stamp locks a later real run out of the LLM pass on that project (romanize RV-R3 shape). Documented: dry-run timelines are fixtures.
+
+**Deviations / contradictions found**
+
+- Live shots were created one-per-fragment, not a Shot Planner LLM call. Allowed by the brief ("can reuse/create shots"); the emphasis call was real.
+- Overlay only, no plate composite. Devices are visible on transparent ProRes; that is enough to watch them.
+- The model did not stamp the brand (`Hyundai`/`Creta`); it stamped `king` / `best` / `skip`. Brand was in the script. Taste, not a drop.
+- After K3, 8.51/min is the floor of 8–12. Six authored, one `min_gap` drop next to the pivot. Pivot present.
+- This env's `DRY_RUN` is False; step tests autouse-patch it True so the lexical path still runs without a session.
+- HEAD moved to `598c4b3` (K5 Rec.601 extract) during the slice. Uncommitted K5 `PIVOT_GROUND_MAX_LUMA` + palette tests are also in the tree; K9's mapper relies on `EmphasisPalette`'s validator (near-white → leave unset) but did not author that guard.
+- venv is at repo root, not `backend/.venv`.
+
+**Not done (out of slice):** correction/meter/comparison/question renderers, K8 charts, inferred extra years, SFX, pacing/camera/transitions, narrowing `EmphasisDevice`, guessing seconds.
+
+No commit, no `git add`, no push. Working tree left dirty for review. Stopping.
+
+
+
 

@@ -1,0 +1,320 @@
+"""K9 emphasis planner: strict-mode schema, mapper, FakePlanningProvider."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+
+import pytest
+from pydantic import ValidationError
+
+from app.planners.emphasis.planner import (
+    EmphasisPlanner,
+    apply_emphasis_plan,
+    derive_text_register,
+)
+from app.planners.emphasis.schemas import (
+    EmphasisCuePlanOutput,
+    EmphasisPlannerOutput,
+    EmphasisValuePlanOutput,
+)
+from app.planners.fragments import split_narration_fragments
+from app.schemas.timeline import (
+    EmphasisDevice,
+    EmphasisRegister,
+    ProducedBy,
+    Scene,
+    Shot,
+    ShotIntent,
+    Timeline,
+    TimelineStatus,
+)
+from app.timeline.emphasis_rules import enforce_emphasis_rules
+
+from .helpers import FakePlanningProvider
+
+NARRATION = (
+    "Hyundai Creta dikhti hai har gali mein. "
+    "2025 mein 2 lakh models bikhe. "
+    "Lekin kya yeh safest hai? "
+    "Brochures kehte hain 9 lakh. "
+    "Comment karo abhi."
+)
+
+
+class _StubLlm:
+    async def insert(self, **kwargs):
+        return None
+
+
+def _cue(
+    shot_id: str,
+    device: str,
+    *,
+    anchor_fragment: int,
+    text: str,
+    values: list[EmphasisValuePlanOutput] | None = None,
+    replaced_text: str = "",
+) -> EmphasisCuePlanOutput:
+    return EmphasisCuePlanOutput(
+        shot_id=shot_id,
+        device=device,
+        anchor_fragment=anchor_fragment,
+        text=text,
+        values=values or [],
+        replaced_text=replaced_text,
+    )
+
+
+def _value(value: int, cited_fragment: int, unit: str = "") -> EmphasisValuePlanOutput:
+    return EmphasisValuePlanOutput(value=value, unit=unit, cited_fragment=cited_fragment)
+
+
+def _output(cues: list[EmphasisCuePlanOutput], **palette) -> EmphasisPlannerOutput:
+    return EmphasisPlannerOutput(
+        cues=cues,
+        accent=palette.get("accent", "#00C8FF"),
+        pivot_ground=palette.get("pivot_ground", "#5A00A8"),
+    )
+
+
+def _timeline() -> Timeline:
+    fragments = split_narration_fragments(NARRATION)
+    shots = [
+        Shot(
+            id=f"sc_01_sh_{fragment.index:02d}",
+            order=fragment.index - 1,
+            intent=ShotIntent.EXPLAIN,
+            duration_s=2.0,
+            narration_span=(fragment.start, fragment.end),
+            prompt=f"plate {fragment.index}",
+        )
+        for fragment in fragments
+    ]
+    return Timeline(
+        timeline_id="t1",
+        project_id="p1",
+        version=1,
+        produced_by=ProducedBy.SHOT_PLANNER,
+        status=TimelineStatus.DRAFT,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        scenes=[
+            Scene(
+                id="sc_01",
+                order=0,
+                title="hook",
+                narration_text=NARRATION,
+                duration_s=sum(shot.duration_s for shot in shots),
+                shots=shots,
+            )
+        ],
+    )
+
+
+def _canned_stamp_counter_pivot() -> list[EmphasisCuePlanOutput]:
+    return [
+        _cue("sc_01_sh_01", "stamp", anchor_fragment=1, text="Hyundai"),
+        _cue(
+            "sc_01_sh_02",
+            "counter",
+            anchor_fragment=2,
+            text="SOLD IN A YEAR",
+            values=[_value(200000, 2, unit="+")],
+        ),
+        _cue("sc_01_sh_03", "pivot", anchor_fragment=3, text="lekin"),
+    ]
+
+
+def test_narration_splits_into_five_fragments():
+    assert [f.text for f in split_narration_fragments(NARRATION)] == [
+        "Hyundai Creta dikhti hai har gali mein.",
+        "2025 mein 2 lakh models bikhe.",
+        "Lekin kya yeh safest hai?",
+        "Brochures kehte hain 9 lakh.",
+        "Comment karo abhi.",
+    ]
+
+
+def test_emphasis_planner_schema_has_no_defaults():
+    """OpenAI structured-output strict mode: a pydantic default drops
+    the field from `required`, and the model is then never asked."""
+    for model in (EmphasisValuePlanOutput, EmphasisCuePlanOutput, EmphasisPlannerOutput):
+        schema = model.model_json_schema()
+        for field in model.model_fields:
+            assert field in schema["required"], field
+            prop = schema["properties"][field]
+            assert "default" not in prop, field
+
+
+def test_emphasis_planner_output_rejects_a_missing_field():
+    payload = _output(_canned_stamp_counter_pivot()).model_dump()
+    payload.pop("accent")
+    with pytest.raises(ValidationError, match="accent"):
+        EmphasisPlannerOutput.model_validate(payload)
+    cue = payload["cues"][0]
+    cue.pop("replaced_text")
+    with pytest.raises(ValidationError, match="replaced_text"):
+        EmphasisCuePlanOutput.model_validate(cue)
+
+
+def test_derive_text_register_follows_decision_4():
+    assert derive_text_register("pivot", "lekin") is EmphasisRegister.HI
+    assert derive_text_register("counter", "SOLD IN A YEAR") is EmphasisRegister.EN
+    assert derive_text_register("stamp", "Hyundai") is EmphasisRegister.EN
+    assert derive_text_register("stamp", "झूठ") is EmphasisRegister.HI
+
+
+def test_mapper_lands_stamp_counter_pivot_with_derived_registers():
+    timeline = apply_emphasis_plan(_timeline(), _output(_canned_stamp_counter_pivot()))
+    shots = {shot.id: shot for shot in timeline.all_shots()}
+
+    stamp = shots["sc_01_sh_01"].emphasis_cue
+    assert stamp is not None
+    assert stamp.device is EmphasisDevice.STAMP
+    assert stamp.text == "Hyundai"
+    assert stamp.text_register is EmphasisRegister.EN
+    assert stamp.anchor_fragment == 1
+    assert stamp.offset_s == 0.0
+    assert stamp.values == []
+
+    counter = shots["sc_01_sh_02"].emphasis_cue
+    assert counter is not None
+    assert counter.device is EmphasisDevice.COUNTER
+    assert counter.text == "SOLD IN A YEAR"
+    assert counter.text_register is EmphasisRegister.EN
+    assert counter.values[0].value == 200000
+    assert counter.values[0].unit == "+"
+    assert counter.values[0].cited_fragment == 2
+
+    pivot = shots["sc_01_sh_03"].emphasis_cue
+    assert pivot is not None
+    assert pivot.device is EmphasisDevice.PIVOT
+    assert pivot.text == "लेकिन"
+    assert pivot.text_register is EmphasisRegister.HI
+
+    assert timeline.metadata.emphasis_palette is not None
+    assert timeline.metadata.emphasis_palette.accent == "#00C8FF"
+    assert timeline.metadata.emphasis_palette.pivot_ground == "#5A00A8"
+
+
+def test_mapper_drops_correction_and_unknown_shot():
+    cues = [
+        *_canned_stamp_counter_pivot(),
+        _cue("sc_01_sh_04", "correction", anchor_fragment=4, text="myth", replaced_text="truth"),
+        _cue("sc_99_sh_01", "stamp", anchor_fragment=1, text="ghost"),
+        _cue("sc_01_sh_05", "meter", anchor_fragment=5, text="bar"),
+    ]
+    timeline = apply_emphasis_plan(_timeline(), _output(cues))
+    shots = {shot.id: shot for shot in timeline.all_shots()}
+    assert shots["sc_01_sh_01"].emphasis_cue.device is EmphasisDevice.STAMP
+    assert shots["sc_01_sh_04"].emphasis_cue is None
+    assert shots["sc_01_sh_05"].emphasis_cue is None
+
+
+def test_mapper_skips_blocked_shot_and_empty_counter():
+    timeline = _timeline()
+    timeline.all_shots()[0].text_card = "THE MYTH"
+    timeline.all_shots()[3].picture_is_graphic = True
+    cues = [
+        _cue("sc_01_sh_01", "stamp", anchor_fragment=1, text="Hyundai"),
+        _cue("sc_01_sh_04", "stamp", anchor_fragment=4, text="Brochures"),
+        _cue("sc_01_sh_02", "counter", anchor_fragment=2, text="NO VALUES"),
+        _cue("sc_01_sh_03", "pivot", anchor_fragment=3, text="लेकिन"),
+    ]
+    mapped = apply_emphasis_plan(timeline, _output(cues))
+    shots = {shot.id: shot for shot in mapped.all_shots()}
+    assert shots["sc_01_sh_01"].emphasis_cue is None
+    assert shots["sc_01_sh_04"].emphasis_cue is None
+    assert shots["sc_01_sh_02"].emphasis_cue is None
+    assert shots["sc_01_sh_03"].emphasis_cue.device is EmphasisDevice.PIVOT
+
+
+def test_missing_pivot_is_filled_by_lexical_backstop():
+    cues = [
+        _cue("sc_01_sh_01", "stamp", anchor_fragment=1, text="Hyundai"),
+        _cue(
+            "sc_01_sh_02",
+            "counter",
+            anchor_fragment=2,
+            text="SOLD IN A YEAR",
+            values=[_value(200000, 2)],
+        ),
+    ]
+    timeline = apply_emphasis_plan(_timeline(), _output(cues))
+    pivot = timeline.all_shots()[2].emphasis_cue
+    assert pivot is not None
+    assert pivot.device is EmphasisDevice.PIVOT
+    assert pivot.text == "लेकिन"
+    assert pivot.text_register is EmphasisRegister.HI
+
+
+def test_uncitable_counter_survives_the_mapper_and_k3_drops_it():
+    cues = [
+        *_canned_stamp_counter_pivot(),
+        _cue(
+            "sc_01_sh_05",
+            "counter",
+            anchor_fragment=5,
+            text="FAKE",
+            values=[_value(999999, 5)],
+        ),
+    ]
+    mapped = apply_emphasis_plan(_timeline(), _output(cues))
+    assert mapped.all_shots()[4].emphasis_cue is not None
+    # Isolate the citation rule: density knobs off so a nearby pivot
+    # cannot be the reason the fake counter disappears.
+    enforced = enforce_emphasis_rules(mapped, min_shot_gap=None, max_cues_per_minute=None)
+    assert enforced.all_shots()[4].emphasis_cue is None
+    assert enforced.all_shots()[0].emphasis_cue.device is EmphasisDevice.STAMP
+    assert enforced.all_shots()[1].emphasis_cue.device is EmphasisDevice.COUNTER
+    assert enforced.all_shots()[2].emphasis_cue.device is EmphasisDevice.PIVOT
+
+
+def test_empty_unit_and_replaced_text_normalise_to_none():
+    cues = [
+        _cue(
+            "sc_01_sh_02",
+            "counter",
+            anchor_fragment=2,
+            text="SOLD",
+            values=[_value(200000, 2, unit="")],
+            replaced_text="",
+        )
+    ]
+    timeline = apply_emphasis_plan(_timeline(), _output(cues))
+    cue = timeline.all_shots()[1].emphasis_cue
+    assert cue is not None
+    assert cue.values[0].unit is None
+    assert cue.replaced_text is None
+
+
+def test_invalid_palette_is_left_unset():
+    mapped = apply_emphasis_plan(
+        _timeline(),
+        _output(_canned_stamp_counter_pivot(), accent="red", pivot_ground="#FFFFFF"),
+    )
+    assert mapped.metadata.emphasis_palette is None
+
+
+def test_near_white_pivot_ground_is_left_unset():
+    mapped = apply_emphasis_plan(
+        _timeline(),
+        _output(_canned_stamp_counter_pivot(), accent="#00C8FF", pivot_ground="#FAFAFA"),
+    )
+    assert mapped.metadata.emphasis_palette is None
+
+
+async def test_plan_threads_canned_output_through_fake_provider():
+    provider = FakePlanningProvider(responses=[_output(_canned_stamp_counter_pivot())])
+    planner = EmphasisPlanner(provider, _StubLlm())  # type: ignore[arg-type]
+    planned = await planner.plan(project_id=str(uuid.uuid4()), timeline=_timeline())
+    shots = {shot.id: shot for shot in planned.all_shots()}
+    assert shots["sc_01_sh_01"].emphasis_cue.device is EmphasisDevice.STAMP
+    assert shots["sc_01_sh_02"].emphasis_cue.text_register is EmphasisRegister.EN
+    assert shots["sc_01_sh_03"].emphasis_cue.text == "लेकिन"
+    assert len(provider.calls) == 1
+    user = provider.calls[0]["user_content"]
+    assert "sc_01_sh_01" in user
+    assert "1. Hyundai Creta dikhti hai har gali mein." in user
+    assert "Lexical turn: shot sc_01_sh_03" in user
+    assert "Never emit seconds" in provider.calls[0]["system_prompt"]
