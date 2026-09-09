@@ -163,6 +163,17 @@ class StylePacingBand:
     # site (RV2 / R1). Additive default False: styles with no cues do
     # not change behaviour.
     emphasis_slab_default: bool = False
+    # retention_fast_kinetic_text.md K3: minimum shots between kept
+    # emphasis cues. None = no gap rule (every style except
+    # retention_fast). Read through `resolve_emphasis_min_shot_gap`,
+    # never the band field at a use site (RV2 / R1). Additive default
+    # so other styles do not change.
+    emphasis_min_shot_gap: int | None = None
+    # Optional extra density ceiling in cues/minute. None = no rate
+    # cap. `retention_fast` sets 12.0, the top of the 8–12/min band
+    # the plan builds against. Read through
+    # `resolve_emphasis_max_cues_per_minute`.
+    emphasis_max_cues_per_minute: float | None = None
 
     @property
     def max_fragment_duration_s(self) -> float | None:
@@ -229,6 +240,23 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
         # contrast via the chooser with the policy off; here it never
         # does. The 2025 year stamp washed out at luma 216.
         emphasis_slab_default=True,
+        # K3 density. At target_shot_duration_s=1.75, 8–12 cues/min is
+        # one cue every 5–7.5s ≈ every 3–4 shots. The gap is an index
+        # distance in film order, so gap 3 keeps cues on shots 0, 3,
+        # 6, … → an interval of 1.75×3 = 5.25s → 60/5.25 ≈ 11.4/min
+        # between cues, inside the band. MEASURED 2026-09-09 (K3
+        # review, `tmp/k3_min_gap_probe.py`) on a reel with a cue
+        # authored on every shot: 20×1.75s = 35.0s → 7 cues kept =
+        # 12.00/min (8.57 before the off-by-one fix); 26×1.35s =
+        # 35.1s → 7 = 11.97/min; 17×2.05s = 34.85s → 6 = 10.33/min.
+        # A reel carries the cue at t=0 on top of the intervals, so a
+        # fully-authored reel measures AT the 12.0/min cap, not at
+        # 11.4 — the cap is the binding ceiling, and it is what holds
+        # shorter shots down (26 shots at 1.35s would keep 9 on the gap
+        # alone; the 0.8s floor would allow ~25/min at gap 3). Other
+        # styles leave both None, so the pass is a no-op for density.
+        emphasis_min_shot_gap=3,
+        emphasis_max_cues_per_minute=12.0,
     ),
     "archival_montage": StylePacingBand(
         # Feature B (style_extensions.md §4.3, decided 2026-08-25):
@@ -449,6 +477,33 @@ def resolve_emphasis_slab_default(style: str | None) -> bool:
     if band is None:
         return False
     return band.emphasis_slab_default
+
+
+def resolve_emphasis_min_shot_gap(style: str | None) -> int | None:
+    """Style-owned emphasis min-gap (retention_fast_kinetic_text.md K3).
+
+    None means the gap rule is a no-op. Unknown style names resolve to
+    None (there is no band to consult). An UNSET style resolves through
+    `settings.default_render_style`'s band — same fallback shape as
+    `resolve_emphasis_slab_default`. Resolve once in the emphasis-pass
+    caller (RV2) and pass the int in.
+    """
+    band = STYLE_PACING_BANDS.get(style or settings.default_render_style)
+    if band is None:
+        return None
+    return band.emphasis_min_shot_gap
+
+
+def resolve_emphasis_max_cues_per_minute(style: str | None) -> float | None:
+    """Style-owned emphasis rate cap (retention_fast_kinetic_text.md K3).
+
+    None means no rate cap. Unknown / unset follow the same fallback
+    as `resolve_emphasis_min_shot_gap`.
+    """
+    band = STYLE_PACING_BANDS.get(style or settings.default_render_style)
+    if band is None:
+        return None
+    return band.emphasis_max_cues_per_minute
 
 
 def resolve_sfx_whoosh_enabled(style: str | None) -> bool:

@@ -1,7 +1,7 @@
 """K10 stub of the emphasis pass (retention_fast_kinetic_text.md).
 
-This slice only runs lexical pivot detection. The LLM pass (K9) is a
-later task. Position in DEFAULT_PIPELINE is load-bearing: AFTER
+This slice runs lexical pivot detection and the K3 enforcement pass.
+The LLM pass (K9) is a later task. Position in DEFAULT_PIPELINE is load-bearing: AFTER
 `RomanizeCaptionsStep` (shots + fragments exist) and BEFORE
 `NarrationStep` - and so before `AwaitApprovalStep`, which the
 one-gate redesign (2026-08-16) moved to sit immediately AFTER
@@ -47,6 +47,11 @@ from __future__ import annotations
 
 from app.core.logging import get_logger
 from app.schemas.timeline import EmphasisDevice, ProducedBy, Timeline
+from app.script.styles import (
+    resolve_emphasis_max_cues_per_minute,
+    resolve_emphasis_min_shot_gap,
+)
+from app.timeline.emphasis_rules import enforce_emphasis_rules
 from app.timeline.pivot import attach_pivot_cue, detect_pivot
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
@@ -108,6 +113,12 @@ class EmphasisPassStep:
 
         def _record(base: Timeline) -> Timeline:
             updated = attach_pivot_cue(base)
+            style = updated.metadata.render_style
+            updated = enforce_emphasis_rules(
+                updated,
+                min_shot_gap=resolve_emphasis_min_shot_gap(style),
+                max_cues_per_minute=resolve_emphasis_max_cues_per_minute(style),
+            )
             updated.metadata.emphasis_pass_attempted = True
             return updated
 

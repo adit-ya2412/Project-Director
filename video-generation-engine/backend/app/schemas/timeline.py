@@ -485,6 +485,20 @@ class Shot(BaseModel):
     # exclusive with a non-empty `text_card` (measured: a stacked
     # correction on a title card was unreadable).
     emphasis_cue: EmphasisCue | None = None
+    # retention_fast_kinetic_text.md K3: planner-authored "this picture
+    # is already a graphic" (option 1 of the three ways to create the
+    # signal — not a prompt grep, not vision). The planner wrote the
+    # prompt that ASKED for an infographic, so it knows at authoring
+    # time. Shot-level so the enforcement pass does not depend on
+    # `asset_plan` being present. Default False is today's behaviour
+    # exactly (§3.1 isolation): constructing a shot the way every
+    # pre-K3 style does (no kwarg) yields False, and a missing field
+    # on a stored timeline cannot start dropping cues. K8 (data
+    # graphics) reuses this same signal at the opposite polarity —
+    # "is this a data shot? then DRAW it" — and is the higher-value
+    # consumer; this slice only *enforces* it. The Shot Planner / K9
+    # is what should set it.
+    picture_is_graphic: bool = False
     # long_form_direction.md A8 (2026-09-01): a planner-authored phrase
     # naming a sound the STORY wants at this shot's start ("faint Geiger
     # counter clicking, sparse and distant") - never style-derived (canon

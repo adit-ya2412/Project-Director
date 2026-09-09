@@ -68,7 +68,7 @@ and their disposition are below.
 | **K10** pivot detection | **done** — `timeline/pivot.py`, lexical, one per reel |
 | **K7** compositor seam | **proven end-to-end 2026-09-09** — `renderer/compositor.py` + props-driven `Pivot.tsx`/`Emphasis.tsx`. Fingerprint hooks (`emphasis_cue_hash`, `emphasis_font_hash`) are in and correctly separate from `cue_list_hash` |
 | **K9** emphasis pass | **stub** — `steps/emphasis_pass.py` exists and is style-gated, but runs only pivot detection. The LLM pass is not written |
-| **K3** enforcement rules | **partial** — only the `text_card` exclusion, inline in `pivot.py`. No density cap, no graphic-asset exclusion, no safe zones |
+| **K3** enforcement rules | **implemented 2026-09-09, reviewed and the three findings fixed same day** — shared pass in `app/timeline/emphasis_rules.py`; `text_card` rule moved out of `pivot.py`; graphic signal is planner-authored `Shot.picture_is_graphic` (option 1). Safe-zone geometry deferred (no plate at authoring time). Review applied: `min_shot_gap` is an index distance (the off-by-one made the effective gap 4, measured 8.57/min instead of the band's 12.00/min); the citation matcher now reads spelled-out Hindi/English numbers and decimals, reusing `caption_romanizer.numerals`; the call site's two knobs are pinned by a step-level test |
 | **K4** contrast adaptation | **done 2026-09-09, reviewed same day** — render-time plate luma → light/dark/slab on OverlayCue. Slab default for retention_fast. The bright `2025` plate is never `light`. Review applied: band box is now Python-authoritative and travels through the props; `LIGHT_MAX_LUMA` 90 → 105 on six measured plates; the measurement is kept and logged under the slab policy; one decode per plate |
 | **K5** palette resolution | **not started** (the commit says so explicitly) |
 | **K6** reach the vendored Bold | **done 2026-09-09** — was never a download |
@@ -318,10 +318,27 @@ choice is a crisp chart carrying more authority than its weakest number
 deserves.
 
 **1. Every chart must be anchored by a cited value.** At least one value
-carries `cited_fragment`, and code verifies those digits appear in that
-fragment's narration text. A chart made entirely of inferred numbers is
-rejected. In the SUV case `2,00,000` is the anchor and the five earlier
-years are inferred.
+carries `cited_fragment`, and code verifies that the fragment's narration
+text STATES that number — as digits (`200000`, `2,00,000`), as digits
+plus a scale word (`2 lakh`, `2.5 lakh`), or spelled out in Hindi or
+English (`दो लाख`, `two lakh`, `दो हजार छब्बीस`, `पाँच`). A chart made
+entirely of inferred numbers is rejected. In the SUV case `2,00,000` is
+the anchor and the five earlier years are inferred.
+
+Be precise about what that check proves, because the drop is logged as
+`rule=values_citation` and gets read as an accusation (corrected
+2026-09-09; the earlier wording here claimed only that a value's
+"digits appear", which was both too narrow — the narration spells
+numbers out, in two languages — and too strong). A KEPT value proves
+only that the number is FINDABLE in the cited fragment under the
+readings `emphasis_rules._fragment_contains_value` implements: not that
+the sentence is about it, and not that the number is true. A DROPPED
+value proves only that THIS matcher could not find it — it is not
+evidence the model invented a number. The matcher is deliberately
+lenient and still incomplete (English compounds like `twenty five
+lakh`, ordinals, fractions, ranges and percentages-of are not read), so
+widen it when a real miss is measured rather than treating it as a
+hallucination detector.
 
 **2. Inferred values must LOOK inferred, on frame.** This is a rendering
 requirement, not a data field. Stated values render solid; inferred ones
@@ -459,6 +476,7 @@ fragment indices, at the same seam `reconcile_spoken_durations` occupies.
 Do not build a second timing path.
 
 ### K3 — Enforcement pass (the fixed rules)
+**Status (2026-09-09): implemented, then reviewed and the three review findings fixed the same day.** Shared pass in `emphasis_rules.py`; graphic rule unblocked via planner-authored `Shot.picture_is_graphic`. Density is an INDEX distance (gap 3 keeps shots 0, 3, 6, …), values citation reads spelled-out numbers in Hindi and English, and the step's two band knobs are pinned against a silent swap.
 In code AFTER the planner returns, same discipline as
 `resolve_picture_path` and the same shape as the project-wide text-card
 spacing pass:
@@ -1273,8 +1291,10 @@ Reuse the session's method rather than trusting a status field:
   channel produces a black rectangle, not an error.
 - `signalstats` the plate under every cue; assert the chosen treatment
   clears the contrast floor. This is the check that was missing.
-- Assert every chart has at least one anchored value whose digits appear
-  in its cited fragment's narration text; reject charts with none.
+- Assert every chart has at least one anchored value that its cited
+  fragment's narration text states — digits, digits-plus-scale-word, or
+  spelled out in either language; reject charts with none. A pass here
+  means "citable", not "true" (see the guardrail note above).
 - Assert inferred values pass the plausibility check (magnitude,
   monotonicity when a trend is framed).
 - Grab a frame of every chart and confirm the `est.` marking is legible
@@ -1777,4 +1797,135 @@ Both defects were pixel facts and both are now numbers. The counter band is cont
 **Not done (out of slice):** K3 density, K5 palette, K8 charts, K9 LLM authoring, the other four devices, any change to the pivot, `SuvRetention.tsx` / `DirectedHook.tsx` (labelled spike proofs), stamp band content-derivation (`stamp_band` is full width already, so a stamp cannot overflow it horizontally).
 
 No commit, no `git add`, no push. Working tree left for review.
+
+---
+
+## Work log — K3 enforcement pass (2026-09-09)
+
+This section is an implementation diary, not a design change. Earlier sections above stay authoritative. Append only; never rewrite prior log entries.
+
+### 17:33 — starting
+
+- read / opened: this plan (K3 task, the graphic-asset blocker, sequencing note that K9 removes the one-cue guarantee, `_cap_text_cards` precedent, done-criteria); `backend/app/timeline/pivot.py` (inline `text_card` skip in `detect_pivot` + re-check in `attach_pivot_cue`); `backend/app/workflow/steps/emphasis_pass.py`; `Shot` / `EmphasisCue` / `_emphasis_cue_and_text_card_are_mutually_exclusive` in `backend/app/schemas/timeline.py`; `StylePacingBand` + `resolve_emphasis_slab_default` / `resolve_sfx_whoosh_enabled` in `backend/app/script/styles.py`; `_cap_text_cards` in `backend/app/planners/shot/planner.py`; `split_narration_fragments`; `compute_timeline_duration`; existing tests (`test_pivot.py`, `test_emphasis_cue.py`, `test_emphasis_pass_step.py`, `test_styles.py`).
+- decided: take the plan's recommended option 1 for the graphic rule — planner-authored `Shot.picture_is_graphic: bool = False`. Not a prompt grep, not vision. Additive default False so existing shots are not graphics and a missing field cannot start dropping cues. Shot-level so enforcement does not depend on `asset_plan`. K8 will reuse this signal; this slice only enforces it. Do not wire the Shot Planner prompt (K9 is not this task).
+- decided: do not invent per-shot safe-zone geometry here. Pictures do not exist at `EmphasisPassStep` (documented from the first real run: approval requires every shot filled BEFORE approval). Safe zones are a render-time / K4-adjacent problem. The Python-authoritative `band` already places type.
+- decided: K3's first job is a MOVE of the `text_card` rule out of `pivot.py` into a shared helper, keeping "first match is THE turn; a text_card on that shot means the reel has no pivot." Do not search for a later `but`.
+- files: this plan (status row + this log)
+- tests: none yet
+- next: schema field, shared module, MOVE, band knobs, step wiring, tests
+
+### 17:45 — MOVE of the text_card rule
+
+- decided: `shot_blocks_emphasis_cue(shot) -> str | None` is the one shot-level door. `detect_pivot` and `attach_pivot_cue` call it instead of `if shot.text_card`. First match is still THE turn; a blocked covering shot still means the reel has no pivot; do not search for a later `but`.
+- decided: the helper also returns `"graphic"` when `picture_is_graphic` is True. Same "the skipped match is THE turn" shape as text_card — a graphic on the covering shot means the reel has no pivot. Outcome matches attach-then-enforce-drop; doing it in the helper means attach never writes a cue the pass would immediately clear. Schema still allows graphic+cue (unlike text_card) because a stored timeline with the flag unset must not become unloadable; the pass is what drops it.
+- files: `backend/app/timeline/emphasis_rules.py` (`shot_blocks_emphasis_cue`), `backend/app/timeline/pivot.py`
+- tests: not yet
+- next: values citation, density, graphic field, step wiring
+
+### 17:48 — values citation
+
+- decided: empty `values` is not a failure (pivot/stamp). Any one `values[]` miss drops the whole cue. `cited_fragment` is 1-based via `split_narration_fragments` on the owning scene. Digits of `value` must appear, allowing comma/space grouping (`200000`, `2,00,000`). Scale words reconstruct the integer the digits do not spell: `2 lakh` == 200000 (also `lac`/`लाख`/`crore`/`करोड़`/`thousand`). An out-of-range `cited_fragment` is a miss.
+- files: `backend/app/timeline/emphasis_rules.py`
+- tests: not yet
+- next: density / min-gap
+
+### 17:50 — density / min-gap and rate cap
+
+- decided: `emphasis_min_shot_gap=3` on `retention_fast`. Arithmetic: 1.75s/shot × 3 = 5.25s between cues → 60/5.25 ≈ 11.4/min, inside the plan's 8–12/min band. `emphasis_max_cues_per_minute=12.0` is the top of that band, the ceiling when shots run shorter than the 1.75s target (the 0.8s floor would otherwise allow ~25/min at gap 3). Other styles leave both None so density is a no-op.
+- decided: min-gap mirrors `_cap_text_cards` with pivot in the chapter-card role: never drop a pivot; a non-pivot already kept yields to a later pivot inside the gap; two pivots inside the gap are both kept. Rate cap reserves a slot for every remaining pivot so a late pivot cannot push the reel back over after earlier stamps were kept; extras drop in film order (later non-pivots first, i.e. keep earliest that still fit). A lone pivot is always kept even if the hypothetical rate is exhausted.
+- decided: knobs resolved in `EmphasisPassStep` (RV2 / R1), not inside the pure function.
+- files: `backend/app/script/styles.py`, `backend/app/timeline/emphasis_rules.py`
+- tests: not yet
+- next: graphic field on Shot
+
+### 17:52 — graphic field (option 1)
+
+- decided: unblocked the graphic rule by taking the plan's recommended option 1; not a prompt grep, not vision. Field is `Shot.picture_is_graphic: bool = False` — shot-level so enforcement does not depend on `asset_plan`. Docstring says K8 reuses this signal and that the planner (K9 / shot planner) is what should set it; this slice only enforces. Did not wire the Shot Planner prompt.
+- decided: existing `_emphasis_cue_and_text_card_are_mutually_exclusive` validator stays. Did not add `treatment` or colours to EmphasisCue.
+- files: `backend/app/schemas/timeline.py`
+- tests: not yet
+- next: wire into EmphasisPassStep
+
+### 17:54 — wiring into EmphasisPassStep
+
+- decided: after `attach_pivot_cue`, run `enforce_emphasis_rules` with the resolved knobs, then stamp `emphasis_pass_attempted`. Same `append_version`. No new step, no pipeline-position change. Attach still refuses to write onto a blocked shot (shared helper) so a text_card collision cannot reach schema validation on append.
+- decided: per-shot safe-zone geometry is a deliberate deferral, not an accident. Pictures do not exist at EmphasisPassStep (approval requires every shot filled BEFORE approval). The Python-authoritative `band` already places type; a second layout system would drift. Safe zones are render-time / K4-adjacent.
+- files: `backend/app/workflow/steps/emphasis_pass.py`
+- tests: not yet
+- next: tests
+
+### 17:42 — tests
+
+- did: `backend/tests/unit/timeline/test_emphasis_rules.py` (new, pure); updated `test_pivot.py` not needed (imports unchanged, existing text_card test still passes); `test_emphasis_cue.py` pins `picture_is_graphic` default False; `test_styles.py` pins retention_fast knobs and the byte-for-byte band row; `test_emphasis_pass_step.py` pins a graphic covering the pivot word ends with no cue and still stamps the attempt.
+- found: wrapping a poked `text_card`+cue Shot in `Scene(...)` re-runs the mutual-exclusion validator, so the enforce test pokes the cue onto a shot that is *already* in a constructed Timeline. That is the path the pass actually has to correct (in-place assignment), not a construction the schema already refuses.
+- found: first rate-cap "keep one stamp + pivot" fixture was 4×1s = 4s, so 20/min allowed only 1.33 and every stamp dropped. Added two empty shots to make the 6s the comment claimed.
+- tests: `cd backend`; `.venv\Scripts\python.exe -m pytest tests/unit/timeline/test_emphasis_rules.py tests/unit/timeline/test_pivot.py tests/unit/timeline/test_emphasis_cue.py tests/unit/workflow/test_emphasis_pass_step.py tests/unit/script/test_styles.py -q` → **104 passed** in 2.36s.
+- ruff: clean on the K3 files. Pre-existing B905 in `test_styles.py` (unrelated `zip` without `strict=`) not touched.
+- next: finish / summary
+
+### 17:43 — finish / summary
+
+K3 is the shared door. `pivot.py` no longer owns the `text_card` rule inline. Graphic rule is option 1. Values citation drops uncitable counters. Density is on the `retention_fast` band with the pivot guaranteed. Safe zones deferred.
+
+**Files changed**
+
+- New shared pass: `backend/app/timeline/emphasis_rules.py`
+- MOVE: `backend/app/timeline/pivot.py` (`shot_blocks_emphasis_cue` instead of inline `text_card`)
+- Schema: `backend/app/schemas/timeline.py` (`Shot.picture_is_graphic: bool = False`)
+- Band knobs + resolvers: `backend/app/script/styles.py`
+- Step wiring: `backend/app/workflow/steps/emphasis_pass.py` (attach, then enforce, then stamp)
+- Tests: `backend/tests/unit/timeline/test_emphasis_rules.py` (new), `test_emphasis_cue.py`, `test_emphasis_pass_step.py`, `test_styles.py`
+- This plan (K3 status row, K3 heading one-liner, this work log)
+
+**Decisions (also in the entries above)**
+
+- Unblocked the graphic rule by taking the plan's recommended option 1; not a prompt grep, not vision.
+- `shot_blocks_emphasis_cue` is the one shot-level door (text_card AND graphic). Detect/attach call it. First match is still THE turn; do not search for a later `but`.
+- Gap 3 at 1.75s/shot ≈ 11.4/min; cap 12.0/min is the ceiling. Other styles None.
+- Rate cap reserves a slot for every remaining pivot and keeps the earliest non-pivots that still fit. A lone pivot is never dropped for density.
+- Safe-zone pixel geometry is a deliberate deferral: no plate at authoring time.
+
+**Deviations / contradictions found**
+
+- Helper covers graphic, not only `text_card`. Same "skipped match is THE turn" shape; a graphic on the covering shot means the reel has no pivot. Did not start searching for a second pivot.
+- Rate cap does not drop earliest-non-pivot-until-under as a post-pass strip. It walks film order once, keeping a non-pivot only when it plus remaining pivots still fit — same "keep earliest, important beats outrank" shape as `_cap_text_cards`. A post-pass strip of the earliest stamps would delete the hook to save a later one.
+- Nested `Scene(...)` re-validates, so a colliding plan used as *construct* input cannot reach the pass; a colliding plan used as *assignment* input can, and that is what the test pokes.
+- Did not wire the Shot Planner prompt (K9). Did not implement vision, prompt-grep, safe-zone geometry, compositor changes, SFX, pacing, K5, K8, or K9 LLM.
+
+**Not done (out of slice):** K9 LLM authoring, K5 palette, K8 charts, per-shot safe-zone geometry, setting `picture_is_graphic` from the planner.
+
+No commit, no `git add`, no push. Working tree left dirty for review. Stopping.
+
+### 18:07 — review finding 1: `min_shot_gap` was off by one
+
+- decided: the gap is an INDEX DISTANCE in film order — a cue is kept when `i - last_kept_index >= min_shot_gap` — not a count of shots seen since the keeper. `_apply_min_gap` set `shots_since_kept = 0` ON the kept shot and incremented only afterwards, so a candidate `d` shots away read `d - 1` and `shots_since_kept < min_shot_gap` dropped the boundary case. Effective gap was 4, not 3.
+- decided: fix the code, not the docs, and the reason is arithmetic that is already written down in two places. Index distance is what the module docstring's rule 5 already said ("fewer than `min_shot_gap` shots after the last KEPT cue"), it makes `styles.py`'s own `1.75 × 3 = 5.25s → 60/5.25 ≈ 11.4/min` true as written (under the off-by-one the real interval was 4 shots = 7.0s → 8.57/min, below the plan's 8–12/min band), and it makes the `12.0/min` cap the binding ceiling, which is the only job that comment gives the cap. Rewording the docs to match the code would have left the band knob describing a density the pass could never produce.
+- decided: pivot guarantees are unchanged and are not negotiable — never drop a `device=pivot` cue; a non-pivot already kept still yields to a later pivot GENUINELY inside the gap; two pivots inside the gap are both kept; a lone pivot is always kept. A dropped cue is not a keeper, so the gap keeps running from the last KEPT index and three colliding cues do not ratchet.
+- measured: `tmp/k3_min_gap_probe.py` (throwaway, gitignored) drives the real `enforce_emphasis_rules` with the real `resolve_emphasis_min_shot_gap("retention_fast")` = 3 / `resolve_emphasis_max_cues_per_minute("retention_fast")` = 12.0, on reels with a cue authored on EVERY shot. 20 shots × 1.75s = 35.00s → 7 cues kept = **12.00 cues/min**; 26 × 1.35s = 35.10s → 7 = **11.97/min**; 17 × 2.05s = 34.85s → 6 = **10.33/min**. Kept indices are 0, 3, 6, 9, 12, 15, 18 — the gap 3 the comment claims.
+- measured: the pre-fix numbers, by running the same probe at index gap 4 (which reproduces the old counter exactly on an all-stamp reel): 8.57/min, 11.97/min, 8.61/min. So the 20-shot reel moved 8.57 → 12.00, the 26-shot reel is unchanged because the RATE CAP binds there (gap alone would keep 9, the cap allows 7.02), and the 17-shot reel moved 8.61 → 10.33. Every number matches the review's expected list; nothing was tuned to fit.
+- found: the 26-shot row is the one that proves the cap is doing work rather than decorating the band — it is the only row where min-gap and cap disagree.
+- files: `backend/app/timeline/emphasis_rules.py` (`_apply_min_gap` + rule-5 docstring), `backend/app/script/styles.py` (`retention_fast` density comment now carries the three measured rows and says the cap, not the interval, is the ceiling)
+- tests: `tests/unit/timeline/test_emphasis_rules.py` — the boundary that was missing (every pre-review min_gap test used two ADJACENT shots, so nothing pinned it): distance 1 and 2 drop, distance 3 and 4 keep, `stamp@0 + pivot@3` at gap 3 keeps BOTH, two pivots inside the gap are both kept, a dropped cue does not restart the gap, and the 20-shot reel's 7 cues / 12.00 per minute is pinned through the real resolvers.
+- next: finding 2 — the citation matcher only reads digits
+
+### 18:07 — review finding 2: the narration spells its numbers out
+
+- found: an existing helper already owns this problem, so no new Hindi table was written. `app/planners/caption_romanizer/numerals.py` (§11 of caption_romanization.md) carries Hindi 0–99 plus the four multipliers `सौ`/`हजार`/`लाख`/`करोड़` with nukta variants, and `find_numeral_runs` / `word_value` / `is_multiplier` are public. It exists because §11 needed a value COMPUTED from a closed table instead of guessed by an LLM — exactly this rule's need. `_fragment_contains_value` now calls it; only the English words (one–twenty, round tens, hundred, thousand, lakh/lac, crore, million, billion) are new here.
+- decided: read the fragment as tokens rather than by regex alternation. A number word or numeral immediately followed by a scale word is one value and the pair is CONSUMED (`दो लाख` states 200000 — not 2, and not 100000), decimal coefficients are allowed (`2.5 lakh` == 250000) and non-integral products are ignored rather than rounded, and multi-word Hindi runs are handed to `numerals.find_numeral_runs` first with their words withheld from the pair reader, so `दो हजार छब्बीस` states 2026 and not also 2000 or 26. Citing a coefficient or a scale word alone therefore still drops: the rule keeps its teeth.
+- found: tokenising with the usual word classes is wrong for this text and silently so — Devanagari matras and the nukta are Unicode categories Mc/Mn, which those classes exclude, so `पाँच` shreds into two single letters and never matches the table. Measured, then replaced with a negative separator class (the full stop is not a separator; it carries `2.5`, and is stripped off token ends instead).
+- measured: `tmp/k3_citation_probe.py` (throwaway, gitignored) prints before/after with the pre-review matcher copied in verbatim. Unchanged CITED: `2,00,000 SUVs bikin`, `2 lakh SUVs sold`, `2 लाख SUVs bik`, `साल 2025 में`. DROPPED → CITED: 200000 in `दो लाख SUVs bik`, 200000 in `two lakh SUVs sold`, 500000 in `पाँच लाख गाड़ियाँ`, 250000 in `2.5 lakh cars`, 5 in `पाँच stars`, and both numbers of the user's own test line — 5 in `Safety rating में पाँच stars` and 1000000 in `price भी दस लाख से कम`. Still DROPPED: 200000 in `nice car, no figure here.`, 300000 and 2 in `दो लाख SUVs bik`, 100000 in `two lakh SUVs sold`.
+- decided: correct the honesty documentation in both places it was too narrow, because `rule=values_citation` in a log reads as "the model invented a number". The module docstring's rule 3 and the plan's §"permissive, with provenance" guardrail 1 (plus the verification checklist line) now say what the check proves: a KEPT value is FINDABLE in the cited fragment under the readings this module implements — not that the sentence is about it, not that it is true; a DROPPED value means only that this matcher could not find it. The matcher stays deliberately lenient and is still incomplete (English compounds, ordinals, fractions, ranges, percentages-of), so widen it on a measured miss.
+- files: `backend/app/timeline/emphasis_rules.py`, `docs/plans/retention_fast_kinetic_text.md`
+- tests: `tests/unit/timeline/test_emphasis_rules.py` — every DROPPED row above as a CITED case (plus `five crore views`, `ten thousand bookings`, `दो हजार छब्बीस` == 2026), and the teeth kept: a value stated nowhere drops, the coefficient alone drops, the scale word alone drops, 2000 / 26 against `दो हजार छब्बीस` drop, an out-of-range `cited_fragment` drops, and one miss among several values still drops the whole cue.
+- next: finding 3 — the silent argument swap
+
+### 18:07 — review finding 3: the call site's two knobs
+
+- decided: pin the values as actually passed, not a fixture whose outcome merely differs. `min_shot_gap` and `max_cues_per_minute` are both plain numbers, `min_shot_gap > 0` accepts `12.0`, and `3 == 3.0` / `12.0 == 12`, so a swap raises nothing and equality alone would not catch a swap of two numerically equal knobs. The test spies on `enforce_emphasis_rules` in the step's own module namespace and asserts `{"min_shot_gap": 3, "max_cues_per_minute": 12.0}` plus the two TYPES (`int` / `float`).
+- did: proved the test has teeth by swapping the two arguments at the call site, watching it fail (`{'min_shot_gap': 12.0} != {'min_shot_gap': 3}`), and restoring the call site — `git diff` on `emphasis_pass.py` is back to the K3 wiring, byte for byte.
+- files: `backend/tests/unit/workflow/test_emphasis_pass_step.py`
+- tests: `python -m pytest tests/unit/timeline tests/unit/workflow tests/unit/script -q` → **373 passed, 5 failed** in 16.76s. Baseline before this review was 347 passed / 5 failed; the same 5 failures are all in `tests/unit/workflow/test_sfx_overlays_diegetic.py`, are PRE-EXISTING (confirmed by the reviewer against a stashed K3), and were not touched. +26 tests, no new failure.
+- ruff: `python -m ruff check app/timeline/emphasis_rules.py app/script/styles.py tests/unit/timeline/test_emphasis_rules.py tests/unit/workflow/test_emphasis_pass_step.py` → **All checks passed!** No formatter was run (the Makefile is `ruff check` only; a `black` / `ruff format` pass reformats unrelated lines).
+- found: nothing in the plan contradicts these three fixes. The gap-3 arithmetic recorded at 17:50 (`1.75 × 3 = 5.25s ≈ 11.4/min`) described the INTENDED index distance all along — the code, not the record, was wrong; the one number that needed correcting is the implication that a fully-authored reel sits at ~11.4/min, when it sits AT the 12.0/min cap (a reel carries the cue at t=0 on top of the intervals).
+- next: report the three measured rates and the before/after rows to the reviewer. No commit, no `git add`, no push; tree left dirty. Probes live in `tmp/` (gitignored) and are throwaway.
 

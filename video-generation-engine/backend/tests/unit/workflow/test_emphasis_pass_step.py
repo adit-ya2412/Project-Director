@@ -16,6 +16,7 @@ from app.schemas.timeline import (
     Timeline,
     TimelineStatus,
 )
+from app.workflow.steps import emphasis_pass
 from app.workflow.steps.emphasis_pass import EmphasisPassStep
 
 
@@ -127,6 +128,51 @@ async def test_already_attached_is_satisfied():
 
 async def test_no_active_timeline_is_satisfied():
     assert await EmphasisPassStep().is_satisfied(_ctx(None))
+
+
+async def test_graphic_covering_the_pivot_word_ends_with_no_cue():
+    """K3: detect uses the shared blocker, so a graphic on the turn is
+    no pivot; run still stamps the attempt. Attach never writes the cue.
+    """
+    timeline = _timeline("bike. lekin kya Creta", render_style="retention_fast")
+    timeline.all_shots()[0].picture_is_graphic = True
+    ctx = _ctx(timeline)
+    step = EmphasisPassStep()
+    result = await step.run(ctx)
+    assert result.outcome == "ok"
+    assert ctx._store.timeline.all_shots()[0].emphasis_cue is None
+    assert ctx._store.timeline.metadata.emphasis_pass_attempted is True
+
+
+async def test_the_resolved_band_knobs_arrive_in_the_right_parameters(monkeypatch):
+    """A swap at the call site would otherwise be silent (review 2026-09-09).
+
+    `min_shot_gap` and `max_cues_per_minute` are both plain numbers and
+    `min_shot_gap > 0` happily accepts 12.0, so passing 12.0 as the gap
+    and 3 as the rate cap raises nothing and drops a different set of
+    cues. Pin the values (and their types) as actually passed.
+    """
+    captured: dict[str, object] = {}
+    real = emphasis_pass.enforce_emphasis_rules
+
+    def _spy(timeline, *, min_shot_gap, max_cues_per_minute):
+        captured["min_shot_gap"] = min_shot_gap
+        captured["max_cues_per_minute"] = max_cues_per_minute
+        return real(
+            timeline,
+            min_shot_gap=min_shot_gap,
+            max_cues_per_minute=max_cues_per_minute,
+        )
+
+    monkeypatch.setattr(emphasis_pass, "enforce_emphasis_rules", _spy)
+    ctx = _ctx(_timeline("bike. lekin kya Creta", render_style="retention_fast"))
+    result = await EmphasisPassStep().run(ctx)
+    assert result.outcome == "ok"
+    assert captured == {"min_shot_gap": 3, "max_cues_per_minute": 12.0}
+    # `3 == 3.0` and `12.0 == 12`, so equality alone would not catch a
+    # swap of two numerically-equal knobs; the shapes differ.
+    assert isinstance(captured["min_shot_gap"], int)
+    assert isinstance(captured["max_cues_per_minute"], float)
 
 
 async def test_narration_locked_is_skipped_so_a_resume_cannot_drop_audio():

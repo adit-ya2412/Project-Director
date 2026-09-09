@@ -27,6 +27,7 @@ from app.schemas.timeline import (
     Shot,
     Timeline,
 )
+from app.timeline.emphasis_rules import shot_blocks_emphasis_cue
 
 logger = get_logger(__name__)
 
@@ -102,9 +103,11 @@ def detect_pivot(timeline: Timeline) -> PivotHit | None:
     """First pivot token in film order, or None.
 
     Skips a match whose covering shot is missing (do not invent a shot)
-    or already carries a non-empty `text_card` (K3 mutual exclusion).
-    That skipped match is still THE turn — v1 does not search further,
-    so a text_card on the pivot shot means the reel has no pivot.
+    or is blocked by `shot_blocks_emphasis_cue` (K3: a non-empty
+    `text_card`, or `picture_is_graphic`). That skipped match is still
+    THE turn — v1 does not search further, so a title card or a graphic
+    on the pivot shot means the reel has no pivot. Do not look for a
+    later `but`; that is an open design question, not this slice.
     """
     for scene in sorted(timeline.scenes, key=lambda s: s.order):
         text = scene.narration_text or ""
@@ -123,13 +126,15 @@ def detect_pivot(timeline: Timeline) -> PivotHit | None:
                 },
             )
             return None
-        if shot.text_card:
+        blocked = shot_blocks_emphasis_cue(shot)
+        if blocked is not None:
             logger.info(
-                "pivot.skipped_text_card",
+                "pivot.skipped_blocked_shot",
                 extra={
                     "scene_id": scene.id,
                     "shot_id": shot.id,
                     "matched": match.group(0),
+                    "reason": blocked,
                 },
             )
             return None
@@ -175,7 +180,7 @@ def attach_pivot_cue(timeline: Timeline) -> Timeline:
         for shot in scene.shots:
             if shot.id != hit.shot_id:
                 continue
-            if shot.text_card:
+            if shot_blocks_emphasis_cue(shot) is not None:
                 return copy
             shot.emphasis_cue = EmphasisCue(
                 device=EmphasisDevice.PIVOT,

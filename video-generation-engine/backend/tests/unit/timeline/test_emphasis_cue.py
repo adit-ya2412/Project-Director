@@ -43,6 +43,13 @@ def test_emphasis_cue_defaults_to_none():
     assert _shot().emphasis_cue is None
 
 
+def test_picture_is_graphic_defaults_to_false():
+    """K3 isolation: constructing a shot the way every pre-K3 style does
+    (no kwarg) must not start dropping cues."""
+    assert _shot().picture_is_graphic is False
+    assert _shot().model_dump(mode="json")["picture_is_graphic"] is False
+
+
 def test_emphasis_cue_none_dumps_as_null_not_omitted():
     """Pydantic includes the default in `model_dump` — the same §3.4-
     shaped fingerprint leak `layers` already accepted. Pinning it so a

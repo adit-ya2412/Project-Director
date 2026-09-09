@@ -17,6 +17,8 @@ from app.script.styles import (
     frame_aspect_error,
     resolve_constraint_bundle,
     resolve_draft_format,
+    resolve_emphasis_max_cues_per_minute,
+    resolve_emphasis_min_shot_gap,
     resolve_emphasis_slab_default,
     resolve_generation_request_format,
     resolve_music_gains,
@@ -317,6 +319,24 @@ def test_retention_fast_opts_into_emphasis_slab_default():
     assert resolve_emphasis_slab_default("no_such_style") is False
 
 
+def test_retention_fast_opts_into_emphasis_density_knobs():
+    """K3: gap 3 at 1.75s/shot ≈ 11.4 cues/min; cap 12.0 is the top of
+    the 8–12/min band. Other styles leave both None so density is a
+    no-op."""
+    assert resolve_emphasis_min_shot_gap("retention_fast") == 3
+    assert resolve_emphasis_max_cues_per_minute("retention_fast") == 12.0
+    for style in (
+        "documentary_archival",
+        "stillness",
+        "archival_montage",
+        "illustrated_risograph",
+        None,
+        "no_such_style",
+    ):
+        assert resolve_emphasis_min_shot_gap(style) is None
+        assert resolve_emphasis_max_cues_per_minute(style) is None
+
+
 def test_documentary_archival_is_1280x720_and_retention_fast_stays_portrait():
     archival = resolve_render_format("documentary_archival")
     assert (archival.width, archival.height) == (1280, 720)
@@ -563,6 +583,8 @@ def test_existing_four_style_bands_are_byte_for_byte_unchanged():
         render_width=720,
         render_height=1280,
         emphasis_slab_default=True,
+        emphasis_min_shot_gap=3,
+        emphasis_max_cues_per_minute=12.0,
     )
     assert STYLE_PACING_BANDS["archival_montage"] == StylePacingBand(
         name="archival_montage",
