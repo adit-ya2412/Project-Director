@@ -66,7 +66,7 @@ and their disposition are below.
 | **K1** EmphasisCue schema | **done** — `schemas/timeline.py`, with `offset_s` split from `anchor_fragment` exactly as `ShotLayer.enter_on_fragment` does |
 | **K2** resolve timing from alignment | **done** — `resolve_emphasis_cue_offsets` in `narration_fit.py`, called from `NarrationStep` |
 | **K10** pivot detection | **done** — `timeline/pivot.py`, lexical, one per reel |
-| **K7** compositor seam | **partial** — `renderer/compositor.py` + props-driven `Pivot.tsx`/`Emphasis.tsx`. Fingerprint hooks (`emphasis_cue_hash`, `emphasis_font_hash`) are in and correctly separate from `cue_list_hash` |
+| **K7** compositor seam | **proven end-to-end 2026-09-09** — `renderer/compositor.py` + props-driven `Pivot.tsx`/`Emphasis.tsx`. Fingerprint hooks (`emphasis_cue_hash`, `emphasis_font_hash`) are in and correctly separate from `cue_list_hash` |
 | **K9** emphasis pass | **stub** — `steps/emphasis_pass.py` exists and is style-gated, but runs only pivot detection. The LLM pass is not written |
 | **K3** enforcement rules | **partial** — only the `text_card` exclusion, inline in `pivot.py`. No density cap, no graphic-asset exclusion, no safe zones |
 | **K4** contrast adaptation | **not started** |
@@ -78,6 +78,53 @@ and their disposition are below.
 device whose weight comes from its slab rather than its font, so a
 Regular-only Devanagari is enough for it and only for it. Every other
 Devanagari device needs K6.
+
+### Proven end-to-end 2026-09-09 (project `3b6dcf8b`, `k7-pivot-test`)
+
+First real workflow run carrying a cue. 30s target, 402-char Hinglish
+script with a pivot; 8 shots; the seven unfilled ones bound by uploading
+images from the SUV reel (`fba52b6d`) through
+`POST /shots/{id}/override`, which cost nothing. **Total spend: 21c.**
+
+What it proved, in order: `EmphasisPassStep` attached one pivot cue
+(v9, `emphasis_pass_attempted=True`); `NarrationStep` appended v10 with
+`narration_locked=True`; the render invoked the compositor for real,
+writing `overlays/ffaa2979....mov` (16.7 MB) plus its props sidecar; the
+props carried `startFrame: 302` = 10.07s, matching the cue's shot start
+exactly; and the production filter fragment composited it. The delivered
+frame at 10.55s shows the red band with a genuinely bold `लेकिन` on the
+narration's own beat.
+
+Four things this run corrected or exposed:
+
+- **The approval gate requires EVERY shot filled BEFORE approval.** This
+  document assumed the paid generation pass fills them after. It does not
+  — `approve_timeline` refuses with "these shots have no image yet" and
+  points at `override` / `generate`. The post-approval pass only upgrades
+  shots that already have a binding. Consequence for K9: when the
+  emphasis pass runs, pictures do not exist yet; when the RENDER runs,
+  they all do. Any rule that needs to know what a shot's picture IS (K3's
+  graphic-asset exclusion, K4's contrast measurement) can only run at
+  render time, not at authoring time.
+- **`offset_s = 0.0` is an ambiguous value, and it is a test-design
+  trap.** It is simultaneously the schema default and the CORRECT answer
+  whenever a cue anchors to its shot's first fragment — which is what
+  happened here, because that scene opens with `लेकिन`. So this run
+  verified K2's write path (`narration.py` line ~645 does set it) but NOT
+  its arithmetic. Any K2 test using a first-fragment cue proves nothing.
+  **Assert on a cue that lands MID-shot, where a correct resolver must
+  return non-zero.**
+- **The confirm-cost figure is not a ceiling.** The gate demanded
+  `confirmed_cost_cents=17` (5 spent + 12 estimated) and the run finished
+  at 21c, because the remaining estimate does not account for
+  `GenerateDiegeticSfxStep`. Harmless against a 1000c cap, but do not
+  read it as a budget.
+- **Length calibration:** 402 characters at `narration_speed=1.4`
+  produced 21.6s, i.e. roughly 19 chars/second of finished reel. A 30s
+  target wants ~560 characters.
+
+Captions are still burned in (romanized) — expected, since switching them
+off is deliberately sequenced after the cue system (Decision 1).
 
 ### Review findings from 175e0c9
 
