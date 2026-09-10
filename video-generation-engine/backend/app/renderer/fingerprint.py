@@ -63,6 +63,19 @@ present, `None` when moot" rule - a caption-off render and a caption-on
 render of the identical Timeline must never collide on one cache entry
 (docs/14_Captions_Plan.md §6/§8.5).
 
+**Caption highlight size/weight (retention_fast_kinetic_text.md K16.2,
+2026-09-10), the same gap `caption_font_hash` closes, one field over.**
+`caption_highlight_size_fraction`/`caption_highlight_bold` are resolved
+from the style band and burned into the ASS override's `\fs`/`\b1` tags
+exactly the way the configured font family is burned into the glyphs
+`caption_font_hash` stands in for - real pixel inputs read from config,
+invisible to `cue_list_hash` (cue text/timing only) and to the Timeline
+dump. Without them, retuning `caption_highlight_size_fraction` away from
+its reasoned-not-watched 0.08 default and re-rendering the same project
+would cache-HIT the old, smaller burn with no error. Both present
+unconditionally, `None` when `burn_captions` is `False` - same "always
+present, `None` when moot" rule as their two neighbours above.
+
 **Watermark (2026-08-17), same pattern again.**
 `watermark_enabled`/`watermark_asset_hash`/`watermark_params_hash`
 mirror the captions fields exactly, for the identical reason: the logo
@@ -205,6 +218,8 @@ def compute_render_fingerprint(
     burn_captions: bool,
     caption_font_hash: str | None,
     cue_list_hash: str | None,
+    caption_highlight_size_fraction: float | None,
+    caption_highlight_bold: bool | None,
     duck_envelope_hash: str | None,
     watermark_enabled: bool,
     watermark_asset_hash: str | None,
@@ -346,6 +361,14 @@ def compute_render_fingerprint(
         "burn_captions": burn_captions,
         "caption_font_hash": caption_font_hash,
         "cue_list_hash": cue_list_hash,
+        # K16.2 review finding (2026-09-10), same unconditional-presence
+        # rule as the two captions fields immediately above - see this
+        # module's own docstring. The resolved highlight size/weight are
+        # real ASS-override inputs (`\fs`/`\b1` on the stressed word)
+        # that neither `cue_list_hash` (text/timing) nor the Timeline dump
+        # can see.
+        "caption_highlight_size_fraction": caption_highlight_size_fraction,
+        "caption_highlight_bold": caption_highlight_bold,
         # OQ-1b (2026-08-28): alignment-derived duck windows are not
         # determined by scene structure alone (timeline dump) or by
         # narration audio bytes. When alignment is present the render

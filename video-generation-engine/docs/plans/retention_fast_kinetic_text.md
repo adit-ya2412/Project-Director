@@ -75,7 +75,8 @@ and their disposition are below.
 | **K11** device renderers (stamp, counter) | **implemented 2026-09-09; two render-found defects fixed same day** — stamp + counter renderers; unblocks K9. The counter band is now content-derived (its type overflowed a hardcoded 420 by 118px, measured) and `treatment="dark"` gained the light halo it never had |
 | **K8** data graphics | **not started** |
 | **K12** planner authors `picture_is_graphic` | **implemented and reviewed 2026-09-09** (`23f83e9`) — Shot Planner authors required `ShotPlanOutput.picture_is_graphic` (no default) and maps it onto `Shot`. Live re-plan: data shot True, ordinary shots False. K3 already enforces. K8 unblocked on the signal, not yet implemented |
-| **K16** captions carry the text | **K16.1 + K16.2 + K16.4 + K16.5 in 2026-09-10; finding 1 (captions-on wiring) FIXED with call-site spy; finding 3 (stamp_top resolve) moved into `render_video`. Awaiting watched reel — do not imply a render was done.** — captions ON; Feature A highlight `{\fs102\b1\c&H00FFFF&}` on retention_fast (0.08 → 102px on 720×1280, ~1.76×); `emphasis_slab_default=False` so measurement decides bare light/dark/slab; stamp top 0.18 resolved in render caller. **Not done:** K16.3 palette highlight colour, K16.6 translucent figure. Pivot/counter still 23–43%. LIGHT_MAX_LUMA/DARK_MIN_LUMA un-retuned (flicker risk 101–121). |
+| **K16.7 / K16.8** what the captioned reel showed | **not started, ADDED 2026-09-10** - bare type needs the caption's OUTLINE before the range can widen: with `slab_default` off, 6 of 8 cues still slabbed because plate lumas run 88-175 and the 105-180 band forbids bare type either way, so the slabs became inconsistent rather than gone. And a styling change does NOT trigger a re-render - `RenderStep.is_satisfied` never consults the fingerprint, so the first K16 re-render completed in 3s and served a pre-K16 file |
+| **K16** captions carry the text | **K16.1 + K16.2 + K16.4 + K16.5 in 2026-09-10; finding 1 (captions-on wiring) FIXED with call-site spy; finding 3 (stamp_top resolve) moved into `render_video`; the open fingerprint-hole finding (highlight size/weight not hashed) is now FIXED, proven by probe. Awaiting watched reel — do not imply a render was done.** — captions ON; Feature A highlight `{\fs102\b1\c&H00FFFF&}` on retention_fast (0.08 → 102px on 720×1280, ~1.76×); `emphasis_slab_default=False` so measurement decides bare light/dark/slab; stamp top 0.18 resolved in render caller. `caption_highlight_size_fraction`/`caption_highlight_bold` are now unconditional fingerprint inputs (`None` when `burn_captions` is False), so retuning 0.08 and re-rendering the same project misses the cache instead of silently reusing the old burn. **Not done:** K16.3 palette highlight colour, K16.6 translucent figure. Pivot/counter still 23–43%. LIGHT_MAX_LUMA/DARK_MIN_LUMA un-retuned (flicker risk 101–121). |
 | **K15** a multi-word stamp has no band | **DONE 2026-09-10, unwatched** - `stamp_band(w, h, text=, text_register=)` fits the phrase to ONE line (largest font inside `width - 4*pad`) and `Stamp.tsx` sets `whiteSpace: nowrap`, so a wrap is impossible even on a bad measurement. Devanagari widths are REAL metrics at the **wght=700** instance (the `hmtx` default is 8-10% narrow — the error that puts the wrap back); Latin reuses K11's measured Black stack, max of the two faces. Band tracks the fitted font, so K4 still measures inside the drawn ink; K4 thresholds unchanged. Character budget 10 Latin / 14 Devanagari in `emphasis/v1.md`, derived from a 90px floor on rendered frames. All 9 rendered cases one line, ink inside slab; the single-word control is byte-identical (same PNG md5, same cue and overlay hashes). Fallback NOT needed. Open, pre-existing and smaller than before: Devanagari matras clip 0.15 em against `lineHeight: 1` on a slab (`लेकिन` at 190 loses 15px today) |
 | **K14** the hook is empty | **implemented 2026-09-10, four review findings fixed same day, awaiting watched reel** — hook window 5.0s / gap 1; **K14.2 body-only 12.0/min cap** (hook cues extra; did not raise the whole-reel ceiling); K9 prompt + `Target cue count` front-load at 12.0/min with the hook floor now **clipped to how many shots start inside the window** (2 on the watched shape, not 3); the body gap counts from the last kept **BODY** cue, so the hook no longer opens a dead zone just past itself; stamp word delays scheduled against the cue's real window instead of a fixed 0/4/14/24. K14.6 not done. **The longest empty stretch did NOT improve on the probe (5.46s → 6.73s hold-aware): the body-only cap trims in film order, so the reel's LAST cue is what goes.** A NEW project is required (`34dd1ee1` cannot be re-authored). BLOCKS captions-off until the numbers beat 7.15s / 7.29 per min / 7.75s |
 | **K13** the counter has no reachable input | **not started, ADDED 2026-09-09, BLOCKING** — number-stating shots are planned as graphics, K3 rule 2 forbids cues there, so the counter is unreachable. First real reel produced 0 counters from 3 spoken numbers. Recommended fix: stop the Shot Planner making number shots into graphics (option B) |
@@ -3421,4 +3422,202 @@ different rectangles and no assertion can say which one a viewer sees.
 
 - next: hash the highlight params, then a watched reel against
   `tmp/ref/`.
+
+### — the fingerprint hole from the open finding (2026-09-10)
+
+- decided: `caption_highlight_size_fraction: float | None` /
+  `caption_highlight_bold: bool | None` become two more unconditional
+  `compute_render_fingerprint` payload keys, following the exact
+  `caption_font_hash`/`cue_list_hash` shape (R2 - always present, `None`
+  only when `burn_captions` is `False`, i.e. moot). Named after the
+  `StylePacingBand` fields they mirror
+  (`caption_highlight_size_fraction`/`caption_highlight_bold`), not after
+  `caption_font_hash`'s `_hash` suffix — there is no file to hash, these
+  are the same plain config values `music_bed_gain_db` already is.
+- did (RV2): resolved ONCE in `RenderStep.render_video`
+  (`backend/app/workflow/steps/render.py`), right next to
+  `caption_font_hash`'s own resolution and before the cache-hit check —
+  `resolve_caption_highlight_size_fraction`/`resolve_caption_highlight_bold`
+  gated on `render_settings.burn_captions`, same `if ... else None` shape
+  as `caption_font_hash`. The `CaptionStyle` built later in the same
+  function (the actual ASS `\fs`/`\b1` override) now reuses those two
+  resolved locals instead of re-resolving from the style band — one
+  value reaches both the fingerprint and the burn, so they cannot drift.
+  `compute_render_fingerprint`'s docstring gained one paragraph next to
+  the existing Captions paragraph explaining why (fingerprint.py
+  §51-78ish); the payload gained the two keys right after
+  `cue_list_hash`.
+- did NOT: touch `captions.py` (`CaptionStyle`/`cue_list_content_hash`
+  are unchanged — confirmed `cue_list_content_hash` really is text/timing
+  only, so the premise held); touch any highlight VALUE, the caption
+  look, `slab_default`, or a K4 threshold; add a project or render.
+- found (premise check, as instructed): before this change,
+  `compute_render_fingerprint` genuinely had no parameter shaped like
+  these two — `burn_captions`/`caption_font_hash`/`cue_list_hash` and
+  nothing else caption-shaped, exactly as the open finding said. Premise
+  confirmed, not a duplicate of existing coverage.
+- **probe (required, `tmp/k16_fingerprint_probe.py`, gitignored,
+  throwaway — deleted after this entry lands):** loaded HEAD (`93928ac`)
+  `fingerprint.py` under a private module name via `importlib` (git
+  history, not a revert in the tree) to get a real BEFORE alongside the
+  working tree's AFTER, same otherwise-identical payload both times.
+  Output:
+  - BEFORE (93928ac): old `compute_render_fingerprint` has no highlight
+    parameters at all, so a 0.08-vs-0.14 (or bold on/off) retune is not
+    even expressible — calling it twice with the identical remaining
+    payload necessarily collides. `differ = False` (both hashes
+    `8f3bf88b2d6bdc7476c6ffa50c83889e17bbb0741fbe6a7258e5b85f782ee081`).
+  - AFTER, `burn_captions=True`, size 0.08 vs 0.14 (bold held constant):
+    `differ = True`
+    (`41ffd4495a0c3561b7e6f596f1ffb5a6e1327e8cba217c9f292c3f4d74066190`
+    vs
+    `abfff0bcc5361da0ee801b4752779dffd2f5822adb5ddb4c7b7e8ac3568250e0`).
+  - AFTER, `burn_captions=True`, bold True vs False (size held constant):
+    `differ = True`
+    (`41ffd4495a0c3561b7e6f596f1ffb5a6e1327e8cba217c9f292c3f4d74066190`
+    vs
+    `78574da9203a847cd6ddf6d847fac32e742966c28d512d4d4339d5ed176a879a`).
+  - AFTER, `burn_captions=False`: ran the SAME conditional resolution
+    `render.py` uses for two styles whose highlight knobs genuinely
+    differ (`retention_fast` → 0.08/True, `documentary_archival` →
+    None/False); both resolve to `size=None bold=None` once captions are
+    off, and the two fingerprints collide — `differ = False` (moot,
+    correct; `burn_captions` itself is a separate always-hashed field,
+    so this collision cannot be mistaken for a caption-off/caption-on
+    collision).
+- tests: added
+  `test_caption_highlight_size_changes_the_fingerprint` and
+  `test_caption_highlight_bold_changes_the_fingerprint` to
+  `backend/tests/unit/renderer/test_fingerprint.py`, each a
+  `..._changes_the_fingerprint` test per new input, same shape as
+  `test_different_caption_font_changes_the_fingerprint`. Extended
+  `test_emphasis_keys_are_in_the_fingerprint_payload` (the payload-shape
+  test) with `'"caption_highlight_size_fraction"'` /
+  `'"caption_highlight_bold"'` source-string assertions. Updated the
+  three other `compute_render_fingerprint` call sites that build a full
+  kwargs dict and would otherwise TypeError on the two new required
+  kwargs: `backend/tests/unit/renderer/test_fingerprint_reveal.py`,
+  `backend/tests/unit/renderer/test_fingerprint_parallax.py`,
+  `backend/scripts/c8_probe.py` — all three get
+  `caption_highlight_size_fraction=None` / `caption_highlight_bold=None`
+  beside their existing `caption_font_hash=None` / `cue_list_hash=None`,
+  same "off" baseline. `pytest tests/unit -q` → **1600 passed, 6 failed**
+  — the same six pre-existing failures (5 `test_sfx_overlays_diegetic.py`
+  + 1 `test_director_planner.py::test_every_attempt_is_recorded_as_an_llm_call`),
+  no new failure; +2 over the 1598 baseline is exactly the two new tests.
+  `ruff check` clean on every touched file.
+- **consequence, stated plainly (accepted, same as every prior R2
+  addition — `test_emphasis_keys_are_in_the_fingerprint_payload`'s own
+  docstring says so):** adding two unconditional keys to the payload
+  changes every historical fingerprint. Every project re-renders once on
+  its next render. No attempt was made to avoid this with a conditional
+  key.
+- files: `backend/app/renderer/fingerprint.py`,
+  `backend/app/workflow/steps/render.py`,
+  `backend/tests/unit/renderer/test_fingerprint.py`,
+  `backend/tests/unit/renderer/test_fingerprint_reveal.py`,
+  `backend/tests/unit/renderer/test_fingerprint_parallax.py`,
+  `backend/scripts/c8_probe.py`, this plan (K16 status row + this log).
+  Probe in `tmp/` (gitignored, throwaway):
+  `tmp/k16_fingerprint_probe.py` + `tmp/_old_fingerprint_93928ac.py`.
+- next: the still-open items on the K16 status row — K16.3 (palette
+  highlight colour), K16.6 (translucent figure) — then the watched reel
+  against `tmp/ref/` that every slice so far has been deferring.
+
+---
+
+## K16.7 / K16.8 - What the first captioned reel showed  **(ADDED 2026-09-10)**
+
+`nexon-reel4-test` (`8c8ed7ff`) re-rendered on the SAME 18 plates, the
+same 8 cues and the same audio, with K16.1/16.2/16.4/16.5 in. Saved as
+`tmp/reel4/AFTER_k16.mp4`, with `BEFORE_k16.mp4` beside it.
+
+**What landed and is visible.** Captions are on, and the highlight is
+real: `Bharat mein har` / **`mahine`** / `laakhon log nai car kharidte
+hain.` with `mahine` plainly larger and bold. The bare counter reads
+far better than the bar it replaced - cyan `17,281+` counting toward
+20,000 with `SOLD EVERY MONTH` beneath it, over the mechanic, no
+ground.
+
+### K16.7 - bare type needs the OUTLINE, not a looser threshold
+
+`slab_default` is off and K4 is genuinely measuring. Treatments from
+that render's own log:
+
+| shot | device | plate luma | chosen |
+|---|---|---|---|
+| sc_01_sh_01 | stamp | 174.98 | slab |
+| sc_01_sh_02 | stamp | 88.48 | **light (bare)** |
+| sc_01_sh_03 | stamp | 157.49 | slab |
+| sc_02_sh_03 | counter | 101.40 | **light (bare)** |
+| sc_03_sh_01 | pivot | 121.36 | slab |
+| sc_04_sh_02 | stamp | 139.62 | slab |
+| sc_06_sh_01 | counter | 116.69 | slab |
+| sc_07_sh_02 | stamp | 166.16 | slab |
+
+**Six of eight are still slabbed**, because the plate lumas run 88 to
+175 and the 105-180 middle band is exactly where neither white nor ink
+is safe bare. So turning the policy off did not remove slabs - it made
+them INCONSISTENT shot to shot, which is arguably worse to watch than
+uniform, and it is the flicker risk this plan already recorded on
+2026-09-10.
+
+**The reference's mechanism is already in this codebase, on the other
+text layer.** `CaptionStyle` is documented as "white text, heavy black
+outline, no background box" - and those captions are legible over every
+plate in this reel INCLUDING the luma-175 showroom, in the same frame
+as a slabbed stamp. The emphasis devices instead use a drop SHADOW
+(`light`) and a HALO (`dark`), and neither is strong enough for K4 to
+permit bare type at 140-175.
+
+So the requirement is not a wider bare range on its own. It is: **give
+the emphasis devices the caption's outline treatment, and THEN widen
+the range, with the outline as the reason the wider range is safe.**
+Doing it in the other order is loosening a threshold and hoping.
+
+Measure it the way K4 was measured: render the same cue over the
+luma-175 plate with outline vs shadow, and report whether the type
+survives. `LIGHT_MAX_LUMA` / `DARK_MIN_LUMA` are K4's and must not move
+until the outline exists to justify it.
+
+### K16.8 - a styling change does not trigger a re-render
+
+Found while producing the reel above, and it is a pipeline bug rather
+than a kinetic-text one, but it BLOCKS iterating on this plan.
+
+`RenderStep.is_satisfied` returns satisfied when the project has a
+`video_path`, the file exists, and no `ShotBinding` was updated after
+it. **It never consults the render fingerprint.** So the first
+re-render attempt after K16 reported `workflow.completed` in three
+seconds and left a `final.mp4` from before any of K16 existed. The
+reel only got made because the stale file was moved aside by hand.
+
+Consequences worth stating plainly:
+
+- Every careful fingerprint input - including the highlight size and
+  weight just added - only decides whether the render PATH reuses
+  cached bytes. It cannot cause the step to run.
+- Both gates must open. Nothing today opens the first one on a code or
+  style change.
+- In the app this is the experience "I changed the style, re-rendered,
+  nothing happened", with no error and no signal.
+
+The obvious shape is for `is_satisfied` to compare the stored render's
+fingerprint against the one the current inputs produce, which is what
+the fingerprint is for. That is a bigger change than it sounds
+(`compute_render_fingerprint` needs most of `render_video`'s resolved
+inputs), so it wants its own slice rather than being bolted on here.
+
+### Still open from K16 itself
+
+- **K16.3 - the highlight colour is still the global yellow**, while
+  this project's accent is `#00D9FF`. Both appear in the 11.4s frame:
+  a cyan counter and a yellow caption highlight in one picture, two
+  accents fighting. K5 already resolves a per-project accent; feed it
+  in.
+- **K16.6** - the translucent low figure. Unstarted, lowest priority.
+- **The tuned numbers are reasoned, not watched.** `0.08` for the
+  highlight size (1.8x the 58px base) and `0.18` for the stamp top were
+  both derived rather than seen. Expect to change them after watching,
+  which is exactly what the fingerprint fix above makes possible.
 

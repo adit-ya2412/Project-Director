@@ -209,6 +209,8 @@ def main() -> None:
         burn_captions=False,
         caption_font_hash=None,
         cue_list_hash=None,
+        caption_highlight_size_fraction=None,
+        caption_highlight_bold=None,
         duck_envelope_hash=None,
         watermark_enabled=False,
         watermark_asset_hash=None,

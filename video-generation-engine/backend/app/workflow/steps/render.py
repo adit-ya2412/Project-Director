@@ -345,6 +345,24 @@ async def render_video(
     caption_font_hash = (
         caption_font_content_hash(settings.caption_font) if render_settings.burn_captions else None
     )
+    # K16.2 review finding: the highlighted word's size/weight are real
+    # ASS-override pixel inputs (`\fs`/`\b1`) with nowhere else to be
+    # caught, same gap `caption_font_hash` closes for the font file (see
+    # fingerprint.py's own docstring). Resolved ONCE here (RV2), before
+    # the cache-hit check, so the fingerprint and the `CaptionStyle` built
+    # from the SAME `render_style` below cannot drift. `None` when
+    # captions are off, mirroring `caption_font_hash`/`cue_list_hash`'s
+    # own "always present, None when moot" rule.
+    caption_highlight_size_fraction = (
+        resolve_caption_highlight_size_fraction(timeline.metadata.render_style)
+        if render_settings.burn_captions
+        else None
+    )
+    caption_highlight_bold = (
+        resolve_caption_highlight_bold(timeline.metadata.render_style)
+        if render_settings.burn_captions
+        else None
+    )
 
     # OQ-1b (2026-08-28): alignment-derived duck windows are pure (no
     # ffmpeg) — derive before the cache check so duck_envelope_hash can
@@ -497,6 +515,8 @@ async def render_video(
         burn_captions=render_settings.burn_captions,
         caption_font_hash=caption_font_hash,
         cue_list_hash=cue_hash,
+        caption_highlight_size_fraction=caption_highlight_size_fraction,
+        caption_highlight_bold=caption_highlight_bold,
         duck_envelope_hash=duck_envelope_hash,
         watermark_enabled=render_settings.watermark_enabled,
         watermark_asset_hash=watermark_asset_hash,
@@ -629,19 +649,18 @@ async def render_video(
         if caption_cues is not None:
             ass_path = work_dir / f"{output_path.stem}.ass"
             # K16.4: style-owned MarginV. None → CaptionStyle default 0.16.
-            # K16.2: highlight size/weight resolved once here (RV2);
-            # captions.py never reads the band.
+            # K16.2 review finding: highlight size/weight are resolved
+            # ONCE, above, before the cache-hit check (RV2), so the value
+            # burned into the ASS override here is provably the same one
+            # the fingerprint already hashed - reused, not re-resolved.
             render_style = timeline.metadata.render_style
             margin_v = resolve_caption_margin_v_fraction(render_style)
-            highlight_size = resolve_caption_highlight_size_fraction(render_style)
             style_kwargs: dict = {}
             if margin_v is not None:
                 style_kwargs["margin_v_fraction"] = margin_v
-            if highlight_size is not None:
-                style_kwargs["highlight_size_fraction"] = highlight_size
-            style_kwargs["highlight_bold"] = resolve_caption_highlight_bold(
-                render_style
-            )
+            if caption_highlight_size_fraction is not None:
+                style_kwargs["highlight_size_fraction"] = caption_highlight_size_fraction
+            style_kwargs["highlight_bold"] = bool(caption_highlight_bold)
             style = CaptionStyle(
                 resolution=(render_settings.width, render_settings.height),
                 font_family=settings.caption_font,
