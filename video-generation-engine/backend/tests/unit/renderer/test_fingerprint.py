@@ -75,6 +75,7 @@ def _fingerprint(**overrides) -> str:
         "caption_highlight_size_fraction": None,
         "caption_highlight_bold": None,
         "caption_highlight_colour": None,
+        "caption_placement_hash": None,
         "duck_envelope_hash": None,
         "watermark_enabled": False,
         "watermark_asset_hash": None,
@@ -342,6 +343,16 @@ def test_caption_highlight_colour_changes_the_fingerprint():
     )
 
 
+def test_caption_placement_hash_changes_the_fingerprint():
+    """K17: different placement hashes must miss; captions-off None matches."""
+    assert _fingerprint(
+        burn_captions=True, caption_placement_hash="a"
+    ) != _fingerprint(burn_captions=True, caption_placement_hash="b")
+    assert _fingerprint(burn_captions=False, caption_placement_hash=None) == _fingerprint(
+        burn_captions=False
+    )
+
+
 def test_cue_list_hash_still_means_captions_not_emphasis():
     """Naming trap: `cue_list_hash` is captions. Emphasis has its own
     key. Flipping one must not be mistaken for flipping the other."""
@@ -414,6 +425,7 @@ def test_emphasis_keys_are_in_the_fingerprint_payload():
     assert '"caption_highlight_size_fraction"' in source
     assert '"caption_highlight_bold"' in source
     assert '"caption_highlight_colour"' in source
+    assert '"caption_placement_hash"' in source
 
 
 def test_palette_hash_change_misses_the_cache():

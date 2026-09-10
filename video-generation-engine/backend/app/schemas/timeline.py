@@ -333,7 +333,11 @@ class EmphasisCue(BaseModel):
     values: list[EmphasisValue] = Field(default_factory=list)
     replaced_text: str | None = None
     # Seconds from THIS SHOT's start. Default 0.0 until K2 fills it
-    # from alignment; never authored by the planner.
+    # from alignment; never authored by the planner. K17: the seconds
+    # to the anchored WORD, found by locating `text` inside
+    # `anchor_fragment` — not to the fragment's own onset, which on a
+    # one-fragment-per-shot reel is 0.0 for every cue ever rendered
+    # (`app/timeline/narration_fit.py`'s own K17 section).
     offset_s: float = 0.0
 
 

@@ -411,6 +411,7 @@ async def test_is_satisfied_and_render_video_share_resolve_render_inputs(
             caption_highlight_size_fraction=None,
             caption_highlight_bold=None,
             caption_highlight_colour=None,
+            caption_placements=None,
             alignment_by_scene=None,
             text_card_cues=[],
             overlay_cues=[],

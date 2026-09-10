@@ -51,6 +51,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from app.core.logging import get_logger
 from app.models.narration import NarrationModel
@@ -715,16 +716,35 @@ def _highlight_override_ass(style: CaptionStyle, axis: int) -> str:
     return "{" + "".join(parts) + "}"
 
 
-def _plain_dialogue_line(cue: CaptionCue) -> str:
-    """The pre-Feature-A event line: whole cue, no overrides."""
+def _placement_margins_and_prefix(placement: Any | None) -> tuple[str, str, str, str]:
+    """MarginL/R/V strings and an optional ``{\\anN}`` text prefix.
+
+    ``placement is None`` keeps today's ``0,0,0`` and no ``\\an``
+    (byte-identical). Duck-typed so this module never imports
+    ``CaptionPlacement`` (that neighbour does I/O; importing it would
+    also cycle through ``CaptionCue``).
+    """
+    if placement is None:
+        return "0", "0", "0", ""
+    return (
+        str(placement.margin_l),
+        str(placement.margin_r),
+        str(placement.margin_v),
+        f"{{\\an{placement.an}}}",
+    )
+
+
+def _plain_dialogue_line(cue: CaptionCue, *, placement: Any | None = None) -> str:
+    """The pre-Feature-A event line: whole cue, no highlight overrides."""
+    ml, mr, mv, an_prefix = _placement_margins_and_prefix(placement)
     return (
         f"Dialogue: 0,{format_ass_time(cue.start_s)},{format_ass_time(cue.end_s)},"
-        f"Caption,,0,0,0,,{_escape_ass_text(cue.text)}"
+        f"Caption,,{ml},{mr},{mv},,{an_prefix}{_escape_ass_text(cue.text)}"
     )
 
 
 def _highlighted_dialogue_lines(
-    cue: CaptionCue, *, highlight_override: str
+    cue: CaptionCue, *, highlight_override: str, placement: Any | None = None
 ) -> list[str]:
     """Feature A (§3.3, Option 2 - N contiguous lines instead of karaoke
     tags):
@@ -737,7 +757,12 @@ def _highlighted_dialogue_lines(
     behaviour. A word whose alignment window collapses to zero duration
     gets NO line of its own (libass rejects zero-duration events); its
     instant is already covered by the neighbouring window. Cues without
-    words serialise byte-for-byte as they did before Feature A."""
+    words serialise byte-for-byte as they did before Feature A.
+
+    K17: every word-walk line of one cue shares the same margins / ``\\an``.
+    ``{\\anN}`` prefixes the existing highlight tags when a placement is set.
+    """
+    ml, mr, mv, an_prefix = _placement_margins_and_prefix(placement)
 
     def _line(highlight_index: int, start_s: float, end_s: float) -> str:
         tokens = [_escape_ass_word(w.text) for w in cue.words]
@@ -746,7 +771,7 @@ def _highlighted_dialogue_lines(
         )
         return (
             f"Dialogue: 0,{format_ass_time(start_s)},{format_ass_time(end_s)},"
-            f"Caption,,0,0,0,,{' '.join(tokens)}"
+            f"Caption,,{ml},{mr},{mv},,{an_prefix}{' '.join(tokens)}"
         )
 
     lines: list[str] = []
@@ -758,7 +783,7 @@ def _highlighted_dialogue_lines(
         lines.append(_line(index, start, end))
     # Degenerate alignment (every window zero-length) must not drop the
     # caption entirely - fall back to the plain whole-cue line.
-    return lines if lines else [_plain_dialogue_line(cue)]
+    return lines if lines else [_plain_dialogue_line(cue, placement=placement)]
 
 
 def _escape_ass_word(word: str) -> str:
@@ -770,9 +795,20 @@ def _escape_ass_word(word: str) -> str:
     return word.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
 
 
-def serialize_ass(cues: list[CaptionCue], style: CaptionStyle) -> str:
+def serialize_ass(
+    cues: list[CaptionCue],
+    style: CaptionStyle,
+    placements: list[Any | None] | None = None,
+) -> str:
     """Pure. Fixed decimal precision, stable ordering, no `datetime.now()`
-    or other non-deterministic content anywhere (I5, doc §5)."""
+    or other non-deterministic content anywhere (I5, doc §5).
+
+    ``placements`` is K17: one resolved block placement per cue (or None
+    slots). ``placements is None`` keeps every Dialogue line at
+    ``0,0,0`` with no ``\\an`` — byte-identical to pre-K17. A placement
+    emits ``MarginL/R/V`` on the event and prefixes ``{\\anN}`` on the
+    text (including word-less cues and Feature A word-walk lines).
+    """
     width, height = style.resolution
     # Long side so 720×1280 and 1280×720 get the same 58 px caption
     # (§19.3). Portrait keeps today's height-based size.
@@ -806,16 +842,23 @@ def serialize_ass(cues: list[CaptionCue], style: CaptionStyle) -> str:
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     highlight_override = _highlight_override_ass(style, axis)
-    for cue in cues:
+    for index, cue in enumerate(cues):
+        placement = None
+        if placements is not None and index < len(placements):
+            placement = placements[index]
         # Feature A (§3.3): cues carrying word-level alignment emit N
         # contiguous highlighted lines; hand-built word-less cues keep
         # today's single plain line exactly.
         if cue.words:
             lines.extend(
-                _highlighted_dialogue_lines(cue, highlight_override=highlight_override)
+                _highlighted_dialogue_lines(
+                    cue,
+                    highlight_override=highlight_override,
+                    placement=placement,
+                )
             )
         else:
-            lines.append(_plain_dialogue_line(cue))
+            lines.append(_plain_dialogue_line(cue, placement=placement))
 
     return "\n".join(lines) + "\n"
 

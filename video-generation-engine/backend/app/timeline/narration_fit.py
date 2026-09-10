@@ -120,14 +120,54 @@ callers, not a second copy of it (R1). F5's own clamp
 (`_clamp_reveal_window`) is correspondingly a WINDOW clamp: both the
 start and the finish must land strictly inside the shot's own duration,
 never merely the start.
+
+## K17 — an emphasis cue fires on its WORD, not on its fragment (2026-09-10)
+
+`resolve_emphasis_cue_offsets` (K2, bottom of this file) shipped
+resolving a cue to `_fragment_onset_offset_s` — the moment the anchor
+FRAGMENT starts being spoken. Every shot in a `retention_fast` reel
+covers about one fragment, so "fragment onset minus shot onset" is
+0.0 by construction, and every `offset_s` in every rendered reel was
+exactly 0.0: a stamp entered on the shot's first frame and its 0.86s
+hold had expired before the narrator reached the marked word. Measured
+on the real, rendered `833dfd54` ("The adani empire"), against its own
+karaoke word-walk in `work/final.ass`: `विदेशी सामान` was drawn
+0.00-0.87s for a word spoken at 0.94s, `Storage` 1.40s early,
+`Toll-Tax` 1.40s early, `Adani` 1.32s early. It looked correct on
+three of nine cues only because the anchored word happened to BE its
+fragment's first word (a counter's kicker label, the pivot, one
+stamp).
+
+So a cue needs one more step than a layer entry does: the anchor
+fragment localises the search, and the cue's own `text` — "copied from
+narration, not translated" (`app/prompts/emphasis/v1.md`) — is then
+found INSIDE that fragment and timed from its own first character
+(`_anchor_word_onset_offset_s`). The fragment stays the unit the
+planner authors, because a fragment index is all a model can predict;
+the word is the unit the alignment is asked about. A cue whose text is
+genuinely not in its fragment (a counter's invented kicker, a pivot
+canonicalised from `but` to `लेकिन`) falls back to the fragment onset
+— today's behaviour exactly — and says so in the log rather than
+silently mis-timing.
+
+Still open, and NOT fixed here: the clock mismatch recorded in
+`docs/plans/retention_fast_kinetic_text.md`. `offset_s` is seconds
+from this shot's own NARRATION (audio) onset, and
+`collect_emphasis_overlay_cues` adds it to a VIDEO-clock shot start
+from `compute_shot_start_times`. On a shot that follows a non-cut
+transition those two clocks differ by that transition's incoming
+overlap (measured: 0.49s early on a post-dissolve shot of
+`captions_test_project.json`). `833dfd54` is all hard cuts, so that
+bug is invisible in the numbers above and orthogonal to them.
 """
 
+import re
 from dataclasses import dataclass
 
 from app.core.errors import PermanentError
 from app.core.logging import get_logger
 from app.planners.fragments import NarrationFragment, split_narration_fragments
-from app.schemas.timeline import Scene, Shot, Timeline
+from app.schemas.timeline import EmphasisCue, Scene, Shot, Timeline
 from app.timeline.duration import group_into_runs
 
 logger = get_logger(__name__)
@@ -338,6 +378,90 @@ def _fragment_finish_offset_s(
     scene's very last shot's own offset above."""
     char_pos = fragments[fragment_index - 1].end - 1
     return alignment.character_end_times_seconds[char_pos] - onset
+
+
+def _word_start_char(text: str, char_pos: int) -> int:
+    """The first character of the whitespace-delimited token that
+    contains `char_pos`. K17: a cue marks a spoken WORD, so it must fire
+    as that word BEGINS, even when the cue's phrase was found part-way
+    into a token (`Tax` inside `Toll-Tax`, `Factories` inside
+    `Factories।`). Whitespace-delimited on purpose — the same unit
+    `app/renderer/captions.py`'s own word-walk highlights, which is what
+    makes a resolved cue checkable against a rendered `final.ass`."""
+    while char_pos > 0 and not text[char_pos - 1].isspace():
+        char_pos -= 1
+    return char_pos
+
+
+def _anchor_word_char_pos(
+    narration_text: str, fragment: NarrationFragment, phrase: str
+) -> int | None:
+    """Character position, in `narration_text`, of the word the cue's own
+    `phrase` marks — searched ONLY inside `fragment`'s own span, never
+    the whole scene. None when the phrase is not in the fragment at all.
+
+    Searching the fragment rather than the scene is what makes a
+    repeated word safe: `anchor_fragment` has already localised the beat
+    to one clause, so `find`'s first hit is the hit the planner meant.
+    Searching the whole scene would take the first TEXTUAL match instead
+    and could time a cue tens of seconds away from its own shot.
+
+    Case-insensitively as a second pass, via `re`, because a stamp is
+    frequently authored in display case (`EVERY 3rd`) against
+    lower-case narration; `re.IGNORECASE` is used rather than
+    `str.casefold` precisely because casefolding can change a string's
+    LENGTH (`ß` -> `ss`) and so cannot return an index into the
+    original."""
+    needle = phrase.strip()
+    if not needle:
+        return None
+    window = narration_text[fragment.start : fragment.end]
+    hit = window.find(needle)
+    if hit < 0:
+        match = re.search(re.escape(needle), window, re.IGNORECASE)
+        if match is None:
+            return None
+        hit = match.start()
+    return _word_start_char(narration_text, fragment.start + hit)
+
+
+def _anchor_word_onset_offset_s(
+    narration_text: str,
+    fragments: list[NarrationFragment],
+    cue: EmphasisCue,
+    alignment: SceneAlignment,
+    onset: float,
+    *,
+    shot_id: str,
+) -> float:
+    """K17: seconds from a shot's own onset to the moment the cue's own
+    ANCHORED WORD starts being spoken — `_fragment_onset_offset_s`'s
+    word-level sibling, and the one place that refinement lives.
+
+    Falls back to the fragment onset (K2's original behaviour, exactly)
+    when the cue's text is not findable in its own fragment, which is
+    not a defect but a real and expected shape: a counter's `text` is a
+    kicker LABEL the narration never says (`FOUNDED`), and a pivot's is
+    a canonical Devanagari form that may have been mapped from another
+    spelling (`but` -> `लेकिन`). Both then keep timing off the fragment,
+    which for those two devices is where the beat sits anyway. Logged at
+    info because a STAMP falling into this branch would mean the planner
+    did not in fact copy its text from narration, and that is worth
+    being able to see."""
+    fragment = fragments[cue.anchor_fragment - 1]
+    char_pos = _anchor_word_char_pos(narration_text, fragment, cue.text)
+    if char_pos is None:
+        logger.info(
+            "narration_fit.emphasis_anchor_word_not_in_fragment",
+            extra={
+                "shot_id": shot_id,
+                "device": cue.device.value,
+                "text": cue.text,
+                "anchor_fragment": cue.anchor_fragment,
+            },
+        )
+        return _fragment_onset_offset_s(fragments, cue.anchor_fragment, alignment, onset)
+    return alignment.character_start_times_seconds[char_pos] - onset
 
 
 def _clamp_entry_offset(raw_offset_s: float, *, duration_s: float, shot_id: str) -> float:
@@ -555,6 +679,14 @@ def resolve_emphasis_cue_offsets(
     THIS SHOT's own onset, clamped by `_clamp_entry_offset` so a cue
     cannot equal or exceed the shot's own (already-reconciled) duration.
 
+    K17: resolved to the anchored WORD, not to the anchor fragment's
+    own onset (`_anchor_word_onset_offset_s`, and the module docstring's
+    own K17 section for the measured reason — every shipped `offset_s`
+    was 0.0, and a stamp's hold expired before the narrator reached the
+    word it was marking). A cue whose text is not in its fragment still
+    resolves to the fragment onset, so a counter's kicker label and a
+    canonicalised pivot are unchanged.
+
     A shot with no cue is absent from the returned dict entirely, so a
     project that never uses kinetic text touches this function for zero
     shots. A cue whose scene has no alignment yet is not this function's
@@ -575,8 +707,13 @@ def resolve_emphasis_cue_offsets(
             assert shot.emphasis_cue is not None
             onset = alignment.character_start_times_seconds[shot.narration_span[0]]
             duration = reconciled_durations[shot.id]
-            raw_offset = _fragment_onset_offset_s(
-                fragments, shot.emphasis_cue.anchor_fragment, alignment, onset
+            raw_offset = _anchor_word_onset_offset_s(
+                scene.narration_text,
+                fragments,
+                shot.emphasis_cue,
+                alignment,
+                onset,
+                shot_id=shot.id,
             )
             offsets[shot.id] = _clamp_entry_offset(
                 raw_offset, duration_s=duration, shot_id=shot.id

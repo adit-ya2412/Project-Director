@@ -75,6 +75,10 @@ from app.models.generated_clip import GeneratedClipModel
 from app.models.narration import NarrationModel
 from app.providers.elevenlabs import compute_narration_content_hash
 from app.renderer.audio import mux_narration
+from app.renderer.caption_placement import (
+    apply_caption_placements,
+    caption_placement_content_hash,
+)
 from app.renderer.captions import (
     FONT_DIR,
     CaptionStyle,
@@ -264,6 +268,7 @@ class _ResolvedRenderInputs:
     caption_highlight_size_fraction: float | None
     caption_highlight_bold: bool | None
     caption_highlight_colour: str | None
+    caption_placements: object
     alignment_by_scene: list | None
     text_card_cues: list
     overlay_cues: list
@@ -513,6 +518,29 @@ async def resolve_render_inputs(
         resolved_palette.accent if render_settings.burn_captions and resolved_palette else None
     )
 
+    # K17: content-aware caption placement. Resolve ONCE here after
+    # overlay cues exist (need OverlayCue.band + timing), before the
+    # fingerprint, so is_satisfied / K16.8 see the change. Only
+    # retention_fast + burn_captions; other styles keep None (ASS stays
+    # at today's 0,0,0 margins).
+    caption_placements = None
+    caption_placement_hash = None
+    if (
+        render_settings.burn_captions
+        and timeline.metadata.render_style == "retention_fast"
+        and caption_cues is not None
+    ):
+        caption_placements = apply_caption_placements(
+            caption_cues,
+            shot_images,
+            overlay_cues,
+            shots=timeline.all_shots(),
+            canvas_width=render_settings.width,
+            canvas_height=render_settings.height,
+            fps=render_settings.fps,
+        )
+        caption_placement_hash = caption_placement_content_hash(caption_placements)
+
     ffmpeg_version = await get_ffmpeg_version(render_settings.ffmpeg_binary)
     # Leftover item 5: style-owned mix. Resolve once so the fingerprint
     # and the mux_music call cannot drift (R2's own lesson).
@@ -575,6 +603,7 @@ async def resolve_render_inputs(
         caption_highlight_size_fraction=caption_highlight_size_fraction,
         caption_highlight_bold=caption_highlight_bold,
         caption_highlight_colour=caption_highlight_colour,
+        caption_placement_hash=caption_placement_hash,
         duck_envelope_hash=duck_envelope_hash,
         watermark_enabled=render_settings.watermark_enabled,
         watermark_asset_hash=watermark_asset_hash,
@@ -628,6 +657,7 @@ async def resolve_render_inputs(
         caption_highlight_size_fraction=caption_highlight_size_fraction,
         caption_highlight_bold=caption_highlight_bold,
         caption_highlight_colour=caption_highlight_colour,
+        caption_placements=caption_placements,
         alignment_by_scene=alignment_by_scene,
         text_card_cues=text_card_cues,
         overlay_cues=overlay_cues,
@@ -678,6 +708,7 @@ async def render_video(
     caption_highlight_size_fraction = resolved.caption_highlight_size_fraction
     caption_highlight_bold = resolved.caption_highlight_bold
     caption_highlight_colour = resolved.caption_highlight_colour
+    caption_placements = resolved.caption_placements
     alignment_by_scene = resolved.alignment_by_scene
     text_card_cues = resolved.text_card_cues
     overlay_cues = resolved.overlay_cues
@@ -811,7 +842,10 @@ async def render_video(
                 font_family=settings.caption_font,
                 **style_kwargs,
             )
-            ass_path.write_text(serialize_ass(caption_cues, style), encoding="utf-8")
+            ass_path.write_text(
+                serialize_ass(caption_cues, style, placements=caption_placements),
+                encoding="utf-8",
+            )
             filter_fragments.append(
                 subtitles_filter_fragment(current_label, "captioned", ass_path, FONT_DIR)
             )

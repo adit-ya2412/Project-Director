@@ -75,7 +75,7 @@ and their disposition are below.
 | **K11** device renderers (stamp, counter) | **implemented 2026-09-09; two render-found defects fixed same day** — stamp + counter renderers; unblocks K9. The counter band is now content-derived (its type overflowed a hardcoded 420 by 118px, measured) and `treatment="dark"` gained the light halo it never had |
 | **K8** data graphics | **not started** |
 | **K12** planner authors `picture_is_graphic` | **implemented and reviewed 2026-09-09** (`23f83e9`) — Shot Planner authors required `ShotPlanOutput.picture_is_graphic` (no default) and maps it onto `Shot`. Live re-plan: data shot True, ordinary shots False. K3 already enforces. K8 unblocked on the signal, not yet implemented |
-| **K17** content-aware caption placement | **not started, ADDED 2026-09-10** - captions are pinned bottom-centre; only the content moves. Three demos built from the real reel, C (calmest of N candidate boxes) chosen over rotating. The demo also proved the load-bearing part: C collided with the stamp because it measured only the plate, so occupied cue bands MUST be excluded. Follow K4's shape - RenderStep passes the plate map in, resolves once, feeds ASS and fingerprint. One slice |
+| **K17** content-aware caption placement | **DONE 2026-09-10 (K17.1–K17.4; K17.5 is the user's watch)** — three demo boxes as fractions; occupied live `OverlayCue.band` excluded; Rec.601 luma **population** stdev (not mean); `caption_placement_hash` includes candidate table + per-cue choice; resolve once in `resolve_render_inputs` before fingerprint. No render this slice. |
 | **K16.7 / K16.8** what the captioned reel showed | **K16.7 DONE 2026-09-10; K16.8 DONE 2026-09-10 (awaiting review)** — outline FIRST then LIGHT_MAX_LUMA 105→175 (K16.7); `RenderStep.is_satisfied` now compares stored vs current render fingerprint via shared `resolve_render_inputs` (K16.8). Missing render row → unsatisfied. Binding mtime gate kept. Pivot.tsx untouched. |
 | **K16** captions carry the text | **K16.1 + K16.2 + K16.3 + K16.4 + K16.5 + K16.7 + K16.8 in 2026-09-10; finding 1 FIXED; finding 3 FIXED; highlight size/weight/colour fingerprint hole FIXED; is_satisfied fingerprint FIXED (awaiting review). Awaiting watched reel — do not imply a render was done.** — captions ON; Feature A highlight size/weight plus palette accent colour (`#00D9FF` → `{\fs102\b1\c&HFFD900&}`); `emphasis_slab_default=False`; stamp top 0.18; LIGHT_MAX_LUMA=175 after outline. `caption_highlight_size_fraction`/`caption_highlight_bold`/`caption_highlight_colour` are unconditional fingerprint inputs (`None` when `burn_captions` is False). **Not done:** K16.6 translucent figure. Pivot.tsx look unchanged. |
 | **K15** a multi-word stamp has no band | **DONE 2026-09-10, unwatched** - `stamp_band(w, h, text=, text_register=)` fits the phrase to ONE line (largest font inside `width - 4*pad`) and `Stamp.tsx` sets `whiteSpace: nowrap`, so a wrap is impossible even on a bad measurement. Devanagari widths are REAL metrics at the **wght=700** instance (the `hmtx` default is 8-10% narrow — the error that puts the wrap back); Latin reuses K11's measured Black stack, max of the two faces. Band tracks the fitted font, so K4 still measures inside the drawn ink; K4 thresholds unchanged. Character budget 10 Latin / 14 Devanagari in `emphasis/v1.md`, derived from a 90px floor on rendered frames. All 9 rendered cases one line, ink inside slab; the single-word control is byte-identical (same PNG md5, same cue and overlay hashes). Fallback NOT needed. Open, pre-existing and smaller than before: Devanagari matras clip 0.15 em against `lineHeight: 1` on a slab (`लेकिन` at 190 loses 15px today) |
@@ -3865,3 +3865,319 @@ left-aligned) so it is genuinely part of the look and worth doing
 later. But changing both axes at once means no way to tell which one
 improved anything. Ship block placement, watch it, then decide.
 
+
+---
+
+## Work log � K17 content-aware caption placement (2026-09-10)
+
+This section is an implementation diary, not a design change. Append only.
+No commit. No render. User will render 8c8ed7ff and review (K17.5).
+
+### � K17.1�K17.4 implemented (this slice)
+
+- decided (unchanged from the section): three candidate boxes from the
+  demo, as fractions of canvas so they scale � bottom-centre
+  (\an2, ML/MR/MV 20/20/205 on 720�1280, box (0, 0.72H, W, 0.88H)),
+  bottom-left (\an1, 60/20/205, (0, 0.72H, 0.7W, 0.88H)),
+  upper-centre (\an8, 20/20/300, (0, 0.22H, W, 0.38H)). Table order
+  is the stable tie-break. No fourth box; no per-line alignment.
+- decided: busyness is Rec. 601 luma **population** standard deviation
+  (divide by N, not N-1) per pixel in the box. Not K4's mean. Flat-plate
+  float dust is rounded to 6 dp before the sort so a full-width crop
+  cannot lose a true tie to a narrower one on `1e-14`.
+- decided: occupancy is AABB overlap against a **live** overlay's
+  `band.box_on(image_w, image_h)`. Live = overlay
+  `[start_frame/fps, end_frame/fps)` overlaps caption `[start_s, end_s)`.
+  No band ? does not occupy. All three occupied ? least-busy of the
+  three, logged. Missing/unreadable plate ? bottom-centre, logged.
+- decided: architecture copies K4 � new module
+  `backend/app/renderer/caption_placement.py` owns Path/PIL;
+  `captions.py` stays pure and only emits resolved margins + `\an`.
+  `resolve_render_inputs` resolves placements AFTER overlay cues and
+  BEFORE `compute_render_fingerprint`, stores them on
+  `_ResolvedRenderInputs`, feeds the same list to the fingerprint and
+  (on cache miss) `serialize_ass`. Style gate: `retention_fast` +
+  `burn_captions` only; other styles / captions-off ? placements None,
+  hash None.
+- decided: `caption_placement_hash` is unconditional in the fingerprint
+  payload; hash folds the candidate-box table (names + an + margin
+  fractions + box fractions) AND the per-cue chosen placement so retuning
+  a candidate fraction misses even when every sentence still picks the
+  same name.
+- ASS emission: `Dialogue: 0,start,end,Caption,,{ml},{mr},{mv},,{\anN}{text}`
+  (Name empty, Effect empty). `placements is None` / None slot ?
+  `0,0,0` and no `\an` (byte-identical). All word-walk lines of one
+  cue share one placement.
+- tests: `tests/unit/renderer/test_caption_placement.py` (occupancy
+  excludes upper-centre under live stamp at top 0.18; variance beats
+  mean; all-occupied ? least-busy; missing plate ? bottom-centre;
+  deterministic; serialize_ass with/without placement; captions.py has
+  no PIL / Path.read / Image.open); fingerprint helpers updated
+  (`test_fingerprint.py` / parallax / reveal / `c8_probe.py`).
+  Full `tests/unit -q` ? **1626 passed, 6 failed** � same six baseline
+  failures (5 sfx-diegetic, 1 director_planner every_attempt); +15 over
+  the 1611 baseline. No new failure. No integration/e2e. No seed.
+- files: `backend/app/renderer/caption_placement.py` (new),
+  `backend/app/renderer/captions.py`,
+  `backend/app/renderer/fingerprint.py`,
+  `backend/app/workflow/steps/render.py`,
+  `backend/tests/unit/renderer/test_caption_placement.py` (new),
+  `backend/tests/unit/renderer/test_fingerprint.py`,
+  `backend/tests/unit/renderer/test_fingerprint_parallax.py`,
+  `backend/tests/unit/renderer/test_fingerprint_reveal.py`,
+  `backend/tests/unit/workflow/test_render_step.py`,
+  `backend/scripts/c8_probe.py`, this plan (status row + this entry).
+- did NOT: render a project; call OpenAI; commit; git add; touch
+  Pivot.tsx / K16.6 / LIGHT_MAX_LUMA / candidate count / per-line
+  alignment; put I/O in captions.py.
+- next: K17.5 - user watches 8c8ed7ff; report chosen placement per
+  sentence and confirm no caption overlaps a cue band.
+
+### -- review (Grok 4.6)
+
+- K17.1-K17.4 match the section. Three demo boxes as fractions.
+  Occupancy excludes a live stamp band from upper-centre (the
+  frame_C_0.55 collision). Metric is Rec.601 population stdev, not
+  mean. `captions.py` still does no plate I/O. Resolve once in
+  `resolve_render_inputs` before the fingerprint; hash includes the
+  candidate table so retuning a box misses even if every sentence
+  still picks the same name.
+- Reviewer `tests/unit -q`: **1626 passed, 6 failed** (same six).
+  Targeted placement/captions/highlight/fingerprint/render_step: 137
+  passed.
+- Watch notes, not reverts: (1) occupancy uses overlay
+  start_frame/fps vs caption audio-concat time -- pre-existing two
+  clocks; (2) K4 and K17 each decode the plate (same map, two
+  passes); (3) live cache-MISS after retuning a box is yours on
+  8c8ed7ff -- unit tests already prove the hash changes.
+- No project, no render, no commit.
+
+### -- review finding 1: watch note (1) is a NON-ISSUE, and the probe says why
+
+- decided: outcome (a). `_overlay_live`'s two operands are ALREADY the
+  same clock, on every timeline, with or without transitions. Nothing
+  in the comparison changes; what was missing was the reason, so the
+  reason is now written at `_overlay_live` where the next reader will
+  hit it.
+- found (the argument, not the docstrings): `overlay.start_frame` is a
+  frame index into the composited video, so `start_frame / fps` is when
+  those pixels are painted. `cue.start_s` is the timestamp
+  `serialize_ass` writes into the ASS, and `render.py` burns that ASS
+  onto the SAME composited video through the `subtitles` filter with no
+  seek and no `setpts`, before `mux_narration` runs -- so it is when
+  those pixels are painted too. "Audio-track time" is usable as a video
+  timestamp because narration and picture share t=0 AND share a length:
+  `narration_fit.py` inflates every post-transition shot's `duration_s`
+  by exactly the overlap D5 subtracts.
+- found (probe, `tmp/k17_clock_probe.py`, throwaway, real
+  `captions_test_project.json` -- 19 shots, 12 dissolves + 2 fades,
+  5.20s of non-cut overlap, `duration_s` matching
+  `reconcile_timeline_durations` to 0.000000s):
+  `sum(scene narration durations) = 58.3290s`,
+  `compute_timeline_duration = 58.3290s`, delta `0.000000s`. Per shot,
+  `compute_shot_start_times - audio onset == -(incoming overlap)`
+  for all 19, no unexplained residue -- e.g. `sc_02_sh_02` audio
+  12.6900 / video 12.1900 (0.5s dissolve), `sc_05_sh_01` audio 43.9790
+  / video 43.4790 (the cross-scene 0.5s fade the `captions.py`
+  docstring already cites). So the functions DO disagree -- about a
+  shot's ONSET, which neither side of `_overlay_live` reads.
+- found: the divergence is NOT cumulative, so the feared "one dissolve
+  and everything after it is misaligned" cannot happen.
+  `compute_run_duration` restores the audio clock at every run
+  boundary, and within a run shot i's video start is exactly its audio
+  onset minus its own INCOMING overlap -- the earlier overlaps cancel.
+  Bound is one transition (<= 0.5s here), and it resets at every hard
+  cut.
+- found: the premise's alternative (b) -- "captions drift out of sync
+  with the picture on any reel with a transition" -- is FALSE, and that
+  is the part worth being loud about. Captions never go through
+  `compute_shot_start_times` at all. A shot's footage begins fading in
+  one overlap before its first spoken character and is fully opaque
+  exactly AT it, which is the intended edit, not drift.
+- found: `_shot_id_for_cue` is safe for the same reason, now commented.
+  A shot's video window is `[onset - incoming overlap, offset)`, which
+  strictly CONTAINS its `[onset, offset)` narration window, so a cue
+  always lands on the shot whose words it carries.
+- found (NEW, pre-existing, NOT K17, NOT fixed here -- see the separate
+  entry below): `collect_emphasis_overlay_cues` adds an AUDIO-relative
+  `offset_s` to a VIDEO-clock shot start, so a kinetic-text overlay on a
+  post-transition shot is painted early by that overlap. Probe:
+  `sc_02_sh_02` with `offset_s = 0.0` gives `start_frame/fps = 12.2000s`
+  while the anchored word is spoken at `12.6900s` -- 0.49s early
+  (0.50 minus frame quantisation).
+- did: comment at `_overlay_live` (why both operands are finished-video
+  time, and what the `captions.py` "Which clock" warning is actually
+  about); comment at `_shot_id_for_cue` (the containment property);
+  new tests. No behaviour change to the resolver.
+- tests: three added to
+  `tests/unit/renderer/test_caption_placement.py`, all on a timeline
+  that HAS overlap (every pre-existing test in that file is hard cuts
+  only, so the question was invisible):
+  `test_dissolve_shifts_shot_onset_but_not_timeline_length`
+  (sh_02 starts at 2.6s, total is still 5.0s == narration total),
+  `test_cue_on_a_post_dissolve_shot_reads_that_shot_s_plate`,
+  `test_overlay_live_uses_finished_video_time_across_a_dissolve` -- the
+  discriminating one: an overlay living only inside the 0.4s crossfade
+  (frames 78-87) does NOT occupy a caption painted at 3.0s, and the
+  same stamp extended across it (frames 78-104) does. Shifting either
+  side by the overlap to "convert clocks" flips the first case.
+  Full `tests/unit -q`: **1629 passed, 6 failed** -- the same six
+  baseline failures (5 sfx-diegetic, 1 director_planner
+  every_attempt), +3 over 1626. `ruff check` clean on every touched
+  file.
+- next: unchanged -- K17.5, user watches the reel.
+
+### -- review finding 2: two new ruff errors
+
+- did: `caption_placement.py` B023 silenced with `# noqa: B023` on the
+  `busyness.get` line plus a comment above `_sort_key` giving the
+  reason. Chose `noqa` over a default-argument rebind because the
+  closure is built, consumed by the `min()` two lines down, and dropped
+  inside ONE iteration -- it is never stored, returned, deferred or
+  collected, which is the bug B023 exists to catch -- and hiding
+  `busyness` in a default argument would silence the warning while
+  making the sort key read worse. The reason had to be written down
+  either way, so it is written where the closure is.
+- did: `render.py` I001 -- moved the `app.renderer.caption_placement`
+  import block above `app.renderer.captions` (it had been dropped after
+  `app.renderer.compositor`). Block move only, applied by hand; no
+  `ruff format`, no `black`.
+- tests: `python -m ruff check` clean on
+  `app/renderer/caption_placement.py`,
+  `app/workflow/steps/render.py`,
+  `tests/unit/renderer/test_caption_placement.py`.
+
+### -- NEW finding (pre-existing, outside K17): the overlay's own onset mixes clocks
+
+- found: `resolve_emphasis_cue_offsets` (narration_fit.py) resolves
+  `EmphasisCue.offset_s` as `alignment time of the anchor fragment -
+  the shot's own narration onset` -- an AUDIO-relative offset.
+  `collect_emphasis_overlay_cues` (compositor.py) then computes
+  `start_s = compute_shot_start_times[shot] + cue.offset_s`, adding
+  that audio-relative offset to a VIDEO-clock shot start. For any shot
+  that FOLLOWS a non-cut transition the video start is one overlap
+  earlier than the shot's first spoken character, so the pivot / stamp /
+  counter is painted that much before the word it is anchored to.
+  Correct film time is `starts[shot] + incoming_overlap + offset_s`.
+- evidence: probe, real fixture, `sc_02_sh_02` (0.5s dissolve in),
+  `offset_s = 0.0` -> `start_frame/fps = 12.2000s`, anchored word
+  spoken at `12.6900s`, 0.49s early. Bounded by one transition, not
+  cumulative.
+- why not fixed here: it is a compositor/emphasis-timing bug, not
+  caption placement, and the same `starts[shot] + audio_relative_offset`
+  shape may exist at the other `compute_shot_start_times` call sites
+  (`sfx.py`, `text_cards.py`, `metrics.py`, `resolve_assets.py`) --
+  worth one sweep with one shared helper rather than a patch here.
+  Fixing it also MOVES pixels, which needs a watched render, and this
+  slice is deliberately render-free.
+- why it does not change finding 1: occupancy asks "do these two
+  layers share a frame in the finished file". `_overlay_live` compares
+  where the overlay actually IS against where the caption actually IS,
+  which stays the right question even while the overlay's intended
+  onset is wrong. Fixing this later shifts one operand's VALUE, not its
+  clock, and `_overlay_live` needs no edit for it.
+- next: raise as its own slice; the reel on 8c8ed7ff is all hard cuts
+  (`{'cut': 18}`, 0.00s overlap) so K17.5's watch is unaffected.
+
+### -- the cue fires on its FRAGMENT, not on its word (fixed, 2026-09-10)
+
+- symptom, user-reported off a finished reel: kinetic text appears and
+  is gone before the narrator reaches the word it marks.
+- found (probe first, not assumed): `resolve_emphasis_cue_offsets`
+  resolved a cue with `_fragment_onset_offset_s` -- the moment the
+  ANCHOR FRAGMENT starts being spoken, minus the shot's own onset. A
+  `retention_fast` shot covers about one fragment, so that subtraction
+  is 0.0 by construction: **every `emphasis_cue.offset_s` on every reel
+  ever rendered was exactly 0.0**, on nine cues with
+  `anchor_fragment` 1/3/5/1/1/4/4/3/2. The word-level behaviour K2's
+  own schema comment describes ("WHICH WORD") was never implemented --
+  `anchor_fragment` was resolved as, and only as, a fragment.
+- ground truth: `833dfd54` ("The adani empire", rendered, 65.4s) and
+  its own karaoke word-walk `work/final.ass`, one event per word, the
+  highlighted span being that word's spoken window. Words matched to
+  events POSITIONALLY (Nth narration word -> Nth display token, with
+  `scene.caption_word_groups` collapsing the merged number runs: 203
+  narration words, 202 events) -- never on the first textual hit, which
+  is what briefly made a cue look 37s out.
+
+  ```
+  shot          device   cue text      f  word        spoken(ass)   before  after
+  sc_01_sh_01   stamp    विदेशी सामान  1  videshi     0.94-1.31       0.00   0.94
+  sc_01_sh_03   stamp    iPhone        3  iPhone.     4.57-5.19       3.79   4.57
+  sc_01_sh_05   stamp    Adani         5  Adani       8.27-8.54       6.95   8.27
+  sc_02_sh_01   counter  FOUNDED       1  1998       13.20-13.93     13.20  13.20
+  sc_03_sh_01   pivot    लेकिन         1  lekin      27.46-27.74     27.46  27.46
+  sc_03_sh_04   stamp    Storage       4  Storage    35.08-35.46     33.68  35.08
+  sc_04_sh_04   stamp    Factories     4  Factories. 43.65-44.31     42.95  43.65
+  sc_05_sh_03   stamp    Passive       3  Passive    50.24-50.73     50.24  50.24
+  sc_06_sh_02   stamp    Toll-Tax      2  Toll-Tax   60.50-60.94     59.10  60.50
+  ```
+
+  Error against the spoken onset: before, -0.70s to -1.40s on six cues
+  (the first stamp's whole 0.86s hold expired at 0.87s for a word at
+  0.94s); after, +0.00s on all nine. The three that already measured
+  correct -- the counter's label, the pivot, `Passive` -- did not move,
+  because in those cases the anchored word genuinely IS its fragment's
+  first word. That is also why this shipped looking fine.
+- decided: the fragment stays the unit the PLANNER authors (a model
+  cannot predict seconds, and K2's whole thesis stands), and the word
+  becomes the unit the ALIGNMENT is asked about. `anchor_fragment`
+  localises the search; the cue's own `text` -- "copied from narration,
+  not translated" per `app/prompts/emphasis/v1.md` -- is then found
+  inside that fragment's span and timed from its own first character
+  (`_anchor_word_onset_offset_s`). Searching the fragment, not the
+  scene, is what makes a repeated word safe.
+- decided: exact match first, then `re.IGNORECASE` (a stamp is often
+  authored in display case, `EVERY 3rd`); `re`, not `str.casefold`,
+  because casefolding can change a string's LENGTH and so cannot return
+  an index into the original. A hit part-way into a token snaps back to
+  the token's first character (`Tax` inside `Toll-Tax`) -- the cue marks
+  a spoken WORD, and that is also the unit `final.ass` highlights, which
+  is what keeps a resolved cue checkable against a real render.
+- decided: a cue whose text is genuinely not in its fragment falls back
+  to the fragment onset -- K2's behaviour exactly -- and logs
+  `narration_fit.emphasis_anchor_word_not_in_fragment`. Two real shapes
+  need it: a counter's `text` is a kicker LABEL the narration never says
+  (`FOUNDED`), and a pivot's is a canonical Devanagari form possibly
+  mapped from another spelling (`but` -> `लेकिन`). Not a silent
+  fallback, because a STAMP landing there means the planner did not in
+  fact copy its text from narration.
+- decided: fixed the word-onset bug ONLY; the clock mismatch in the
+  entry above is left recorded, not fixed. They are separate seams --
+  this one is `offset_s`'s VALUE, that one is which clock the value is
+  added to -- and only this one has rendered ground truth in hand.
+  `833dfd54` is all hard cuts, so the clock bug contributes 0.00s to
+  every number in the table above and cannot be measured from it;
+  fixing both in one value would have left the table unable to
+  attribute its own correction. That entry's own "one sweep, one shared
+  helper across the five `compute_shot_start_times` call sites" plan is
+  still the right shape for it.
+- did NOT: touch the holds (`STAMP_HOLD_S` 0.86 / `PIVOT_HOLD_S` 0.91 /
+  `COUNTER_HOLD_S` 1.30), K17 placement, or K16's treatments. No
+  re-render, no re-plan, no project, no LLM call, no commit, no
+  `git add`. `833dfd54`'s storage read only.
+- note: `offset_s` is persisted in the timeline document, so existing
+  projects keep their 0.0 values until `NarrationStep` runs again. That
+  re-run is free -- `_synthesize_scene_alignments` serves the alignment
+  from the `narration` row / sidecar, no new TTS spend -- and
+  `emphasis_cue_content_hash` already hashes `offset_s`, so the moved
+  cue correctly misses the render cache.
+- tests: `tests/unit/timeline/test_narration_fit.py` -- mid-fragment
+  anchor resolves to the word (1.5s) not the fragment start (0.0);
+  first-word anchor still 0.0 (the regression guard for the three cues
+  that were already right); case-insensitive match; a mid-token phrase
+  fires as its token begins; a word repeated in BOTH fragments resolves
+  inside its own (4.2s, not 1.5s first-hit, not 2.6s fragment onset);
+  offset relative to a non-zero shot onset; not-found falls back and
+  logs; `_clamp_entry_offset`'s ceiling still bites on a short shot.
+  Full `tests/unit -q` -> **1637 passed, 6 failed** -- the same six
+  baseline failures (5 sfx-diegetic, 1 director_planner
+  every_attempt), +8 over 1629, all eight the new pins. No new failure.
+  `python -m ruff check` clean on every touched file.
+- files: `backend/app/timeline/narration_fit.py`,
+  `backend/app/schemas/timeline.py` (the `offset_s` comment),
+  `backend/tests/unit/timeline/test_narration_fit.py`, this plan.
+  Probe in the gitignored `tmp/k2_word_onset_probe.py`.
+- next: the user re-runs a reel (narration step re-resolves from cached
+  audio) and watches whether the stamps now land on their words; then
+  the clock-mismatch slice.

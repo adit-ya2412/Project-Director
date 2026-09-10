@@ -78,6 +78,14 @@ error. All three present unconditionally, `None` when `burn_captions`
 is `False` - same "always present, `None` when moot" rule as their
 neighbours above.
 
+**Caption placement (retention_fast_kinetic_text.md K17, 2026-09-10).**
+`caption_placement_hash` folds the candidate-box table (names, ``\\an``,
+margin fractions, box fractions) AND the per-cue chosen placement so
+retuning a candidate box misses even when every sentence still picks
+the same name. Resolved once in `resolve_render_inputs` before the
+cache check (RV2 / K16.8). Present unconditionally, `None` when
+`burn_captions` is `False` or the style is not `retention_fast`.
+
 **Watermark (2026-08-17), same pattern again.**
 `watermark_enabled`/`watermark_asset_hash`/`watermark_params_hash`
 mirror the captions fields exactly, for the identical reason: the logo
@@ -223,6 +231,7 @@ def compute_render_fingerprint(
     caption_highlight_size_fraction: float | None,
     caption_highlight_bold: bool | None,
     caption_highlight_colour: str | None,
+    caption_placement_hash: str | None,
     duck_envelope_hash: str | None,
     watermark_enabled: bool,
     watermark_asset_hash: str | None,
@@ -373,6 +382,11 @@ def compute_render_fingerprint(
         "caption_highlight_size_fraction": caption_highlight_size_fraction,
         "caption_highlight_bold": caption_highlight_bold,
         "caption_highlight_colour": caption_highlight_colour,
+        # K17 (2026-09-10): candidate-box table + per-cue chosen
+        # placements. Same unconditional-presence rule as the highlight
+        # fields above — None when captions are off or the style does
+        # not resolve placements.
+        "caption_placement_hash": caption_placement_hash,
         # OQ-1b (2026-08-28): alignment-derived duck windows are not
         # determined by scene structure alone (timeline dump) or by
         # narration audio bytes. When alignment is present the render

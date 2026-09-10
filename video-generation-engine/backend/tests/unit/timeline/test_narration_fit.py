@@ -688,6 +688,129 @@ def test_emphasis_cue_offset_is_relative_to_a_non_zero_shot_onset():
     assert abs(offsets["sh2"] - 0.0) < 1 / 30
 
 
+# ---------------------------------------------------------------------------
+# K17 - a cue fires on its anchored WORD, not on its fragment's onset.
+# Measured on the rendered `833dfd54`: every `offset_s` ever shipped was
+# 0.0, because a `retention_fast` shot covers about one fragment, so
+# "fragment onset minus shot onset" is 0.0 by construction - and a
+# stamp's 0.86s hold had expired before the narrator said the word.
+# `_F4_TEXT` fragment 1 is "Coal built the factories." (chars 0-25);
+# "factories" starts at char 15, i.e. 1.5s into a 10 char/s alignment.
+# ---------------------------------------------------------------------------
+
+
+def _stamp_shot(
+    shot_id: str,
+    order: int,
+    span: tuple[int, int],
+    *,
+    fragment: int,
+    text: str,
+) -> Shot:
+    return Shot(
+        id=shot_id,
+        order=order,
+        intent=ShotIntent.EXPLAIN,
+        narration_span=span,
+        duration_s=1.0,  # placeholder - overwritten by reconciliation
+        emphasis_cue=EmphasisCue(
+            device=EmphasisDevice.STAMP,
+            anchor_fragment=fragment,
+            text=text,
+            text_register=EmphasisRegister.EN,
+        ),
+    )
+
+
+def _stamp_offset(text: str, *, fragment: int, narration: str = _F4_TEXT) -> float:
+    shot = _stamp_shot("sh1", 0, (0, len(narration)), fragment=fragment, text=text)
+    scene = _scene("sc1", 0, narration, [shot])
+    alignment = _uniform_alignment(narration, chars_per_second=10.0)
+    reconciled = reconcile_timeline_durations(_timeline([scene]), {"sc1": alignment})
+    return resolve_emphasis_cue_offsets([scene], {"sc1": alignment}, reconciled)["sh1"]
+
+
+def test_a_mid_fragment_anchor_resolves_to_the_word_not_the_fragment_start():
+    """THE bug: `factories` is the fourth word of fragment 1, spoken at
+    1.5s, and the cue used to fire at 0.0 with its fragment."""
+    assert _stamp_offset("factories", fragment=1) == pytest.approx(1.5)
+
+
+def test_a_first_word_anchor_still_resolves_to_zero():
+    """The regression guard: the three cues that measured correct on
+    `833dfd54` (a counter's label, the pivot, one stamp) were correct
+    precisely because the anchored word IS its fragment's first word.
+    They must not move."""
+    assert _stamp_offset("Coal", fragment=1) == pytest.approx(0.0)
+
+
+def test_an_anchor_word_is_matched_case_insensitively():
+    """A stamp is frequently authored in display case (`EVERY 3rd`)
+    against lower-case narration."""
+    assert _stamp_offset("FACTORIES", fragment=1) == pytest.approx(1.5)
+
+
+def test_a_phrase_found_part_way_into_a_token_still_fires_as_that_token_begins():
+    """`Tax` inside `Toll-Tax` on the real project. The cue marks a
+    spoken WORD, so it fires when the word starts, not mid-word."""
+    assert _stamp_offset("tories", fragment=1) == pytest.approx(1.5)
+
+
+def test_a_repeated_word_resolves_inside_its_own_fragment_not_the_first_hit():
+    """The trap the search is bounded to avoid: `factories` occurs in
+    BOTH fragments here, at 1.5s and at 4.2s. Anchored to fragment 2 it
+    must resolve to 4.2 - not to 1.5 (the first textual hit in the
+    scene) and not to 2.6 (fragment 2's own onset)."""
+    narration = "Coal built the factories. Steel built the factories."
+    assert _stamp_offset("factories", fragment=2, narration=narration) == pytest.approx(4.2)
+
+
+def test_an_anchor_word_offset_is_relative_to_a_non_zero_shot_onset():
+    shot1 = _shot("sh1", 0, (0, 26))
+    shot2 = _stamp_shot("sh2", 1, (26, 54), fragment=2, text="close")
+    scene = _scene("sc1", 0, _F4_TEXT, [shot1, shot2])
+    alignment = _uniform_alignment(_F4_TEXT, chars_per_second=10.0)
+
+    reconciled = reconcile_timeline_durations(_timeline([scene]), {"sc1": alignment})
+    offsets = resolve_emphasis_cue_offsets([scene], {"sc1": alignment}, reconciled)
+
+    # "close" starts at char 41 (4.1s); shot 2's own onset is char 26 (2.6s).
+    assert "sh1" not in offsets
+    assert offsets["sh2"] == pytest.approx(1.5)
+
+
+def test_a_cue_whose_text_is_not_in_its_fragment_falls_back_to_the_fragment_onset(caplog):
+    """A counter's `text` is a kicker LABEL the narration never says
+    (`FOUNDED`), and a pivot's is a canonical Devanagari form possibly
+    mapped from another spelling (`but` -> `लेकिन`). Both keep K2's
+    original fragment-onset behaviour, and say so."""
+    with caplog.at_level("INFO"):
+        offset = _stamp_offset("FOUNDED", fragment=2)
+    assert offset == pytest.approx(2.6)
+    records = [
+        r
+        for r in caplog.records
+        if r.message == "narration_fit.emphasis_anchor_word_not_in_fragment"
+    ]
+    assert len(records) == 1
+    assert records[0].shot_id == "sh1"
+    assert records[0].text == "FOUNDED"
+
+
+def test_a_word_anchored_at_the_very_end_of_a_shot_is_still_clamped_inside_it():
+    """`_clamp_entry_offset`'s ceiling still applies, now that a cue can
+    legitimately resolve close to its shot's end: "behind." is the last
+    word of the scene (char 47, 4.7s) on a shot whose reconciled
+    duration is 5.4s, so no clamp; on a shot ending sooner it would be
+    pulled in rather than dropped."""
+    assert _stamp_offset("behind", fragment=2) == pytest.approx(4.7)
+    shot = _stamp_shot("sh1", 0, (0, len(_F4_TEXT)), fragment=2, text="behind")
+    scene = _scene("sc1", 0, _F4_TEXT, [shot])
+    alignment = _uniform_alignment(_F4_TEXT, chars_per_second=10.0)
+    clamped = resolve_emphasis_cue_offsets([scene], {"sc1": alignment}, {"sh1": 2.0})
+    assert clamped["sh1"] == pytest.approx(2.0 - 0.05)
+
+
 def test_clamp_reveal_window_logs_only_when_it_actually_changes_something(caplog):
     with caplog.at_level("INFO"):
         _clamp_reveal_window(1.0, 2.0, duration_s=5.0, shot_id="sh1")
