@@ -3845,8 +3845,23 @@ sentence grouping, the occupancy check and the fingerprint. K4 itself
 took one implementation pass and a review that found three things;
 expect the same.
 
-The one genuinely open design question is how many candidate boxes and
-whether per-line alignment (the reference varies centred vs
-left-aligned) is in scope. Start with the demo's three and no per-line
-alignment.
+### Two things DECIDED, so nobody has to invent them
+
+**Three candidate boxes for the first pass: bottom-centre, bottom-left,
+upper-centre** - the demo's set. Not more. More boxes fit the picture
+better and make the reel less coherent: with the corners and mid-sides
+added, the caption can land somewhere odd like mid-right over a
+shoulder, and two neighbouring sentences can jump right across the
+frame, so the movement stops reading as judgement and starts reading as
+twitching. Three are visibly distinct and keep consecutive sentences
+near each other. If all three measure busy, take the least-bad rather
+than inventing a fourth.
+
+**No per-line alignment in this slice.** That is a DIFFERENT axis -
+where the lines sit relative to EACH OTHER (all centred on one axis, or
+all starting at the same left edge), not where the block sits in the
+frame. The reference does vary it (one shot centred, another
+left-aligned) so it is genuinely part of the look and worth doing
+later. But changing both axes at once means no way to tell which one
+improved anything. Ship block placement, watch it, then decide.
 
