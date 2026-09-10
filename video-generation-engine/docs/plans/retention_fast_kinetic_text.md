@@ -75,6 +75,7 @@ and their disposition are below.
 | **K11** device renderers (stamp, counter) | **implemented 2026-09-09; two render-found defects fixed same day** — stamp + counter renderers; unblocks K9. The counter band is now content-derived (its type overflowed a hardcoded 420 by 118px, measured) and `treatment="dark"` gained the light halo it never had |
 | **K8** data graphics | **not started** |
 | **K12** planner authors `picture_is_graphic` | **implemented and reviewed 2026-09-09** (`23f83e9`) — Shot Planner authors required `ShotPlanOutput.picture_is_graphic` (no default) and maps it onto `Shot`. Live re-plan: data shot True, ordinary shots False. K3 already enforces. K8 unblocked on the signal, not yet implemented |
+| **K15** a multi-word stamp has no band | **not started, ADDED 2026-09-10, BLOCKING K14.5** - `stamp_band()` takes no text and the font is pinned at 190, so a phrase overflows and CSS wraps it mid-word (`लाखों लोग` drew as `लाखों लो`/`ग`). 4 of 8 cues in the 40s reel render broken. Fit to one line + a character budget; follow K11's `_counter_content_width` precedent. Fallback: revert the stamp to one word, since the density win does not depend on it |
 | **K14** the hook is empty | **implemented 2026-09-10, four review findings fixed same day, awaiting watched reel** — hook window 5.0s / gap 1; **K14.2 body-only 12.0/min cap** (hook cues extra; did not raise the whole-reel ceiling); K9 prompt + `Target cue count` front-load at 12.0/min with the hook floor now **clipped to how many shots start inside the window** (2 on the watched shape, not 3); the body gap counts from the last kept **BODY** cue, so the hook no longer opens a dead zone just past itself; stamp word delays scheduled against the cue's real window instead of a fixed 0/4/14/24. K14.6 not done. **The longest empty stretch did NOT improve on the probe (5.46s → 6.73s hold-aware): the body-only cap trims in film order, so the reel's LAST cue is what goes.** A NEW project is required (`34dd1ee1` cannot be re-authored). BLOCKS captions-off until the numbers beat 7.15s / 7.29 per min / 7.75s |
 | **K13** the counter has no reachable input | **not started, ADDED 2026-09-09, BLOCKING** — number-stating shots are planned as graphics, K3 rule 2 forbids cues there, so the counter is unreachable. First real reel produced 0 counters from 3 spoken numbers. Recommended fix: stop the Shot Planner making number shots into graphics (option B) |
 
@@ -2824,4 +2825,120 @@ This section is an implementation diary, not a design change. Append only.
 - files: `backend/app/timeline/emphasis_rules.py`, `backend/app/planners/emphasis/planner.py`, `backend/app/script/styles.py` (knob comment only — no knob value changed), `compositor/src/stampWordTiming.ts` (new), `compositor/src/Stamp.tsx`, plus tests.
 - tests: `python -m pytest tests/unit -q` from `backend` → **1474 passed, 6 failed**, the same six pre-existing failures (5 `test_sfx_overlays_diegetic.py`, 1 `test_director_planner.py::test_every_attempt_is_recorded_as_an_llm_call`). New: `test_first_body_cue_survives_a_hook_cue`, `test_hook_cue_is_not_evicted_by_a_pivot_in_the_body`, `test_body_stamp_still_yields_to_a_body_pivot_inside_the_gap`, `test_two_body_pivots_inside_the_gap_are_both_kept`, `test_lone_late_pivot_survives_hook_and_cap_across_the_boundary`, `test_hook_capacity_bounds_what_enforcement_can_keep_in_the_hook`, `test_hook_request_never_exceeds_hook_capacity`, `test_hook_request_keeps_the_floor_when_the_hook_holds_enough_shots`, and `tests/unit/renderer/test_stamp_word_timing.py` (4 tests, which EXECUTE the real TS module through node's type stripping rather than re-implementing the arithmetic, and skip if node is missing). Updated, with the teeth kept: `test_retention_fast_knobs_measure_hook_plus_body_on_a_full_reel` (now 9 kept — the first body shot is no longer pushed away, and the body-only cap allows exactly 6 body cues), `test_body_adjacent_stamps_after_the_hook_still_drop` → `..._after_the_first_body_cue_still_drop` (adjacency still drops, one shot further along), `test_hook_membership_is_by_start_time_not_index` (a third shot now carries the membership difference, since the second is kept either way). `python -m ruff check` clean on every touched file.
 - next: nothing tunable left without a watched reel. Render a NEW `retention_fast` reel and report first-cue onset, hook rate, body rate and longest empty stretch. Then K14.6, and with it the two rate-cap questions above — the longest empty stretch is currently limited by body gap 3 and the film-order cap trim, not by the hook.
+
+---
+
+## K15 - A multi-word stamp has no band to live in  **(ADDED 2026-09-10, BLOCKING K14.5)**
+
+Found by watching `nexon-reel4-test` (`8c8ed7ff`), the 40.12s reel that
+proved K14's density work. The hook is fixed; **half the cues render
+broken.**
+
+### What the render showed
+
+Four of the eight stamps are multi-word, and every one of them wrapped
+mid-word:
+
+| authored | drawn | |
+|---|---|---|
+| `लाखों लोग` | `लाखों लो` / `ग` | splits a syllable, not just a word |
+| `Tata Nexon` | `Tata N` / `e` | |
+| `बिकने वाली SUV` | a tall, mostly-empty slab | mixed script, worst case |
+| `service centre` | wraps | |
+
+The pivot and both counters render correctly. So the reel is arguably
+LESS watchable than the 3-cue `nexon-reel3-test` before it: that one's
+three cues were clean, this one's eight are half mangled.
+
+### Root cause
+
+`stamp_band(canvas_width, canvas_height)` in `renderer/compositor.py`
+**takes no text.** The font is pinned at `_STAMP_REF_FONT = 190` scaled
+by canvas width, sized for the one short word a stamp used to be. K14.5
+then let the planner author a 2-4 word phrase and added word-level
+onsets, and nothing resized the band or the font. The overflow is
+wrapped by CSS, which breaks wherever it likes.
+
+K11 hit the same class of bug on the counter and fixed it with
+`_counter_content_width` - a content-derived width from per-face
+glyph-advance estimates, with `_COUNTER_MIN_BAND_WIDTH = 420` surviving
+as a floor. That is the precedent to follow. Nobody did it for the
+stamp because pre-K14 a stamp was always one word.
+
+**The stamp is harder than the counter in one way and easier in
+another.** Harder: the content is arbitrary words in two scripts, not
+digits and a separator, so glyph widths vary far more. Easier:
+**the Devanagari face is vendored on disk** -
+`backend/vendor/fonts/NotoSansDevanagari-Regular.ttf` and
+`compositor/public/NotoSansDevanagari-Regular.ttf` - so for Devanagari
+Python can read real `hmtx` advances instead of estimating, which is
+strictly better than the position K11 was in. Only the Latin stack
+(`Segoe UI Black` / `Arial Black` / Impact, resolved by Chromium, no
+file vendored) still needs estimates, and K11 already measured those.
+
+### The fix: fit the type to one line, and budget the phrase
+
+**Shrink to fit, never wrap.** Measure the phrase's width at the
+reference font size; if it exceeds the usable band width, scale the font
+down until it fits on ONE line. No wrapping, so no mid-word break and no
+split syllable, ever. The spike already did this by hand - its amber
+`3rd` sat at 168px against a single word's 190px.
+
+**Plus a character budget in the prompt**, so the type never shrinks far
+enough to stop being a punch. K14.5 widened the stamp device to "a 2-4
+word spoken phrase"; word count is the wrong unit, because `SUV` and
+`ज़्यादा` are not the same width. Give the model a character budget and
+say what happens past it.
+
+**Rejected, with reasons.** *Multi-line with explicit word breaks*: the
+band grows by line count and a 3-line stamp is a block of text rather
+than one hit, which is the opposite of what this device is for.
+*Truncating the phrase at authoring*: silently discards copy the model
+chose, and the writer never learns the limit. *Leaving CSS to wrap*: the
+bug.
+
+### Two things that will bite whoever builds it
+
+**The vendored Devanagari file is a VARIABLE font.** `compositor/src/font.ts`
+declares `{ weight: "100 900" }` and the stamp draws bold, so the
+advances that matter are the wght=700 instance - NOT the `hmtx` defaults
+a naive `fontTools` read returns. Instance the font (or read `HVAR`)
+before trusting a number, and say in the code which instance the
+measurement came from.
+
+**The band is what K4 measures.** `apply_emphasis_treatments` reads
+plate luma inside the band to choose light/dark/slab, so a band that no
+longer matches the drawn ink measures the wrong region. The plan already
+records a deliberate ~8% residue between the nominal band height and the
+drawn height (`PivotBand.as_props`, the 2d41298 decision); shrinking the
+font widens that gap. Decide explicitly whether the band tracks the
+fitted font size or stays the nominal strip, and record which - do not
+let it drift silently.
+
+### Verification - render and look at the frames
+
+Unit tests cannot catch this. K14.5's tests exercised the word-timing
+arithmetic through the real TypeScript module, which was the right
+instinct, and they were all green while every phrase on screen was
+broken. Timing is not layout.
+
+Render all four cases the reel actually produced and look at them:
+
+- 2-word Latin (`Tata Nexon`)
+- 2-word Devanagari (`लाखों लोग`)
+- 3-word mixed script (`बिकने वाली SUV`)
+- 1-word control (`Parts`), which must be BYTE-IDENTICAL to today
+
+Then measure, the way the K11 fix was measured: the drawn ink's
+bounding box against the band's own box, and report both. "Looks right"
+is not a result; `ink x A..B, band x C..D` is.
+
+### If it cannot be made to work
+
+Back out the phrase: return the stamp device in `prompts/emphasis/v1.md`
+to one stressed spoken word and drop the word stagger. **The density win
+is independent of K14.5** - the hook came from K14.1-14.4, and reel4's
+first cue at 0.00s, 8 cues and 11.96/min all survive without multi-word
+stamps. Losing the phrase costs the spike's `EVERY 3rd SUV` look and
+nothing else measured.
 
