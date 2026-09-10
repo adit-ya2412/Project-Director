@@ -75,6 +75,7 @@ and their disposition are below.
 | **K11** device renderers (stamp, counter) | **implemented 2026-09-09; two render-found defects fixed same day** — stamp + counter renderers; unblocks K9. The counter band is now content-derived (its type overflowed a hardcoded 420 by 118px, measured) and `treatment="dark"` gained the light halo it never had |
 | **K8** data graphics | **not started** |
 | **K12** planner authors `picture_is_graphic` | **implemented and reviewed 2026-09-09** (`23f83e9`) — Shot Planner authors required `ShotPlanOutput.picture_is_graphic` (no default) and maps it onto `Shot`. Live re-plan: data shot True, ordinary shots False. K3 already enforces. K8 unblocked on the signal, not yet implemented |
+| **K17** content-aware caption placement | **not started, ADDED 2026-09-10** - captions are pinned bottom-centre; only the content moves. Three demos built from the real reel, C (calmest of N candidate boxes) chosen over rotating. The demo also proved the load-bearing part: C collided with the stamp because it measured only the plate, so occupied cue bands MUST be excluded. Follow K4's shape - RenderStep passes the plate map in, resolves once, feeds ASS and fingerprint. One slice |
 | **K16.7 / K16.8** what the captioned reel showed | **K16.7 DONE 2026-09-10; K16.8 DONE 2026-09-10 (awaiting review)** — outline FIRST then LIGHT_MAX_LUMA 105→175 (K16.7); `RenderStep.is_satisfied` now compares stored vs current render fingerprint via shared `resolve_render_inputs` (K16.8). Missing render row → unsatisfied. Binding mtime gate kept. Pivot.tsx untouched. |
 | **K16** captions carry the text | **K16.1 + K16.2 + K16.3 + K16.4 + K16.5 + K16.7 + K16.8 in 2026-09-10; finding 1 FIXED; finding 3 FIXED; highlight size/weight/colour fingerprint hole FIXED; is_satisfied fingerprint FIXED (awaiting review). Awaiting watched reel — do not imply a render was done.** — captions ON; Feature A highlight size/weight plus palette accent colour (`#00D9FF` → `{\fs102\b1\c&HFFD900&}`); `emphasis_slab_default=False`; stamp top 0.18; LIGHT_MAX_LUMA=175 after outline. `caption_highlight_size_fraction`/`caption_highlight_bold`/`caption_highlight_colour` are unconditional fingerprint inputs (`None` when `burn_captions` is False). **Not done:** K16.6 translucent figure. Pivot.tsx look unchanged. |
 | **K15** a multi-word stamp has no band | **DONE 2026-09-10, unwatched** - `stamp_band(w, h, text=, text_register=)` fits the phrase to ONE line (largest font inside `width - 4*pad`) and `Stamp.tsx` sets `whiteSpace: nowrap`, so a wrap is impossible even on a bad measurement. Devanagari widths are REAL metrics at the **wght=700** instance (the `hmtx` default is 8-10% narrow — the error that puts the wrap back); Latin reuses K11's measured Black stack, max of the two faces. Band tracks the fitted font, so K4 still measures inside the drawn ink; K4 thresholds unchanged. Character budget 10 Latin / 14 Devanagari in `emphasis/v1.md`, derived from a 90px floor on rendered frames. All 9 rendered cases one line, ink inside slab; the single-word control is byte-identical (same PNG md5, same cue and overlay hashes). Fallback NOT needed. Open, pre-existing and smaller than before: Devanagari matras clip 0.15 em against `lineHeight: 1` on a slab (`लेकिन` at 190 loses 15px today) |
@@ -3747,4 +3748,105 @@ K16.7 + K16.3 dirty tree left in place; no revert, no commit.
   version, plate treatments). That is the cost of this slice.
 - No project created. No commit. An existing `final.mp4` with no
   matching render row should now re-run instead of reporting done.
+
+---
+
+## K17 - Content-aware caption placement  **(ADDED 2026-09-10, chosen from three demos)**
+
+The captions are pinned. `Alignment=2`, one fixed `MarginV`, every line
+of every shot in the same place - only the CONTENT moves (the karaoke
+word-walk, the highlight, the counter). The user's words: "the captions
+are fixed at the bottom, not very kinetic in placing, just the motion
+and stuff is kinetic".
+
+Three 10-second demos were built from the real reel - same plate, same
+emphasis overlay, same 128-event word-walk, differing ONLY in caption
+placement (`tmp/demo/placement_{A,B,C}.mp4`, throwaway):
+
+- **A** pinned bottom-centre (ships today)
+- **B** rotating: a different placement per sentence, cycled
+- **C** content-aware: per sentence, the calmest of three candidate
+  boxes by luma standard deviation
+
+**C was chosen.** B moves without meaning - nothing connects the
+position to the picture, so it reads as rhythm without reason. C's
+instinct was visibly right in the demo: it put the caption UP when the
+showroom floor was busy and DOWN when the wall was calm.
+
+### What the demo also proved, and it is the load-bearing part
+
+C collided. `tmp/demo/frame_C_0.55.png` shows the caption moved
+upper-centre and landed straight on top of the stamp - `लाखों लोग` and
+`Bharat mein har mahine` overprinted, both illegible.
+
+That is not a flaw in the idea. C measured THE PLATE and had no idea
+another text layer existed. **Any content-aware placement must treat
+the emphasis cue's own band as occupied**, and that is cheap because
+the band is already a resolved rectangle on `OverlayCue.band` before
+the render runs. Without this the feature is worse than A.
+
+### The architecture is already set by K4 - follow it exactly
+
+`captions.py` is deliberately pure: "Two pure responsibilities,
+deliberately free of I/O and config reads so they're testable without
+rendering anything". Placement needs plate pixels, so it must NOT go
+inside caption derivation.
+
+K4 already solved this shape for `treatment`:
+`apply_emphasis_treatments(cues, shot_images, *, slab_default, ...)`
+takes a `Mapping[str, Path]` of shot to plate that **RenderStep builds
+and passes in**, resolves once, and RenderStep hands the same list to
+both the fingerprint and the compositor (RV2). Mirror it:
+
+- a new resolver beside `apply_emphasis_treatments` taking the caption
+  cues, the same `shot_images` map, and the occupied cue bands
+- `serialize_ass(cues, style)` gains the resolved placements and stays
+  deterministic - it still does no I/O
+- `RenderStep` resolves ONCE (it already calls `serialize_ass` at one
+  site) and feeds both the ASS and the fingerprint
+
+### The parts
+
+**K17.1 - the resolver.** Candidate boxes (the demo used bottom-centre,
+bottom-left, upper-centre; the reference also varies per-line alignment,
+which is a later question). Per-SENTENCE granularity, never per word -
+the cues are one event per word sharing a base sentence, and moving
+mid-sentence would be unwatchable. Deterministic: same inputs, same
+placement (I5).
+
+**K17.2 - exclude occupied bands.** The collision fix. A candidate box
+overlapping a live `OverlayCue.band` at that moment is not a candidate.
+This is what makes C work at all.
+
+**K17.3 - the metric, and it is NOT K4's.** K4 measures MEAN luma to
+ask "can white type survive here". Placement asks "is this area busy",
+which is variance, not mean - the demo used luma standard deviation and
+it behaved. They are different questions about the same pixels and both
+are wanted; do not collapse them into one number.
+
+**K17.4 - fingerprint the chosen placements.** Third time this trap
+appears in this plan (palette, highlight size, now placement). If the
+placement is not hashed, retuning candidate boxes silently cache-hits
+the old burn. K16.8's `is_satisfied` comparison now depends on the
+fingerprint too, so an unhashed placement also means no re-render at
+all.
+
+**K17.5 - a watched reel.** Report the chosen placement per sentence
+with its measured busyness numbers, and confirm no caption overlaps a
+cue band.
+
+### Effort
+
+**One slice, comparable to K4.** The shape is not novel - K4 is the
+template, the ASS emission is already proven in the demo (`\an` plus
+per-event MarginL/R/V, no new renderer), and the band rectangles
+already exist. The work is the candidate-box measurement, the
+sentence grouping, the occupancy check and the fingerprint. K4 itself
+took one implementation pass and a review that found three things;
+expect the same.
+
+The one genuinely open design question is how many candidate boxes and
+whether per-line alignment (the reference varies centred vs
+left-aligned) is in scope. Start with the demo's three and no per-line
+alignment.
 
