@@ -17,6 +17,10 @@ from app.script.styles import (
     PicturePath,
     StylePacingBand,
     frame_aspect_error,
+    resolve_burn_captions,
+    resolve_caption_highlight_bold,
+    resolve_caption_highlight_size_fraction,
+    resolve_caption_margin_v_fraction,
     resolve_constraint_bundle,
     resolve_draft_format,
     resolve_emphasis_hook_min_shot_gap,
@@ -24,6 +28,7 @@ from app.script.styles import (
     resolve_emphasis_max_cues_per_minute,
     resolve_emphasis_min_shot_gap,
     resolve_emphasis_slab_default,
+    resolve_emphasis_stamp_top_fraction,
     resolve_generation_request_format,
     resolve_music_gains,
     resolve_narration_speed,
@@ -311,16 +316,79 @@ def test_retention_fast_gates_whoosh_off_and_others_stay_on():
     assert resolve_sfx_whoosh_enabled("no_such_style") is True
 
 
-def test_retention_fast_opts_into_emphasis_slab_default():
-    """K4: only this style's plates swung 93→216 in one hook. Unknown /
-    unset styles do not opt in (additive default)."""
-    assert resolve_emphasis_slab_default("retention_fast") is True
+def test_retention_fast_slab_default_is_off_so_measurement_decides():
+    """K16.5: retention_fast no longer short-circuits to slab; every
+    shipped style resolves False (additive default)."""
+    assert resolve_emphasis_slab_default("retention_fast") is False
     assert resolve_emphasis_slab_default("documentary_archival") is False
     assert resolve_emphasis_slab_default("stillness") is False
     assert resolve_emphasis_slab_default("archival_montage") is False
     assert resolve_emphasis_slab_default("illustrated_risograph") is False
     assert resolve_emphasis_slab_default(None) is False
     assert resolve_emphasis_slab_default("no_such_style") is False
+
+
+def test_resolve_burn_captions_retention_fast_forces_on(monkeypatch):
+    """K16.1: retention_fast resolves captions-on even when settings say
+    off. Other styles with None follow settings; unknown → settings."""
+    monkeypatch.setattr(settings, "burn_captions", False)
+    assert resolve_burn_captions("retention_fast") is True
+    assert resolve_burn_captions("documentary_archival") is False
+    assert resolve_burn_captions("stillness") is False
+    assert resolve_burn_captions("archival_montage") is False
+    assert resolve_burn_captions("illustrated_risograph") is False
+    assert resolve_burn_captions(None) is False
+    assert resolve_burn_captions("no_such_style") is False
+
+    monkeypatch.setattr(settings, "burn_captions", True)
+    assert resolve_burn_captions("retention_fast") is True
+    assert resolve_burn_captions("documentary_archival") is True
+    assert resolve_burn_captions("no_such_style") is True
+
+
+def test_draft_render_settings_still_default_burn_captions_off():
+    """K16.1: drafts omit the field; RenderSettings default stays False.
+    The final-render call-site pin lives in test_render_step.py."""
+    from app.renderer.slideshow import RenderSettings
+
+    draft = RenderSettings(
+        width=360, height=640, fps=30, pixel_format="yuv420p"
+    )
+    assert draft.burn_captions is False
+
+
+def test_retention_fast_owns_caption_margin_and_stamp_top():
+    """K16.4: only retention_fast sets placement fractions; others leave
+    both None so CaptionStyle / stamp_band keep today's defaults."""
+    assert resolve_caption_margin_v_fraction("retention_fast") == 0.16
+    assert resolve_emphasis_stamp_top_fraction("retention_fast") == 0.18
+    for style in (
+        "documentary_archival",
+        "stillness",
+        "archival_montage",
+        "illustrated_risograph",
+        None,
+        "no_such_style",
+    ):
+        assert resolve_caption_margin_v_fraction(style) is None
+        assert resolve_emphasis_stamp_top_fraction(style) is None
+
+
+def test_retention_fast_owns_caption_highlight_size_and_bold():
+    """K16.2: only retention_fast bumps highlight size/weight; others
+    keep colour-only Feature A (None / False)."""
+    assert resolve_caption_highlight_size_fraction("retention_fast") == 0.08
+    assert resolve_caption_highlight_bold("retention_fast") is True
+    for style in (
+        "documentary_archival",
+        "stillness",
+        "archival_montage",
+        "illustrated_risograph",
+        None,
+        "no_such_style",
+    ):
+        assert resolve_caption_highlight_size_fraction(style) is None
+        assert resolve_caption_highlight_bold(style) is False
 
 
 def test_retention_fast_records_the_spike_palette_pair():
@@ -606,13 +674,18 @@ def test_existing_four_style_bands_are_byte_for_byte_unchanged():
         whoosh_enabled=False,
         render_width=720,
         render_height=1280,
-        emphasis_slab_default=True,
+        emphasis_slab_default=False,
         emphasis_min_shot_gap=3,
         emphasis_max_cues_per_minute=12.0,
         emphasis_hook_s=5.0,
         emphasis_hook_min_shot_gap=1,
         emphasis_accent="#FFC300",
         emphasis_pivot_ground="#FF2E2E",
+        burn_captions=True,
+        caption_margin_v_fraction=0.16,
+        emphasis_stamp_top_fraction=0.18,
+        caption_highlight_size_fraction=0.08,
+        caption_highlight_bold=True,
     )
     assert STYLE_PACING_BANDS["archival_montage"] == StylePacingBand(
         name="archival_montage",

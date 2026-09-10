@@ -22,25 +22,25 @@ one value, not two derivations of it. See `PivotBand.as_props` for the
 one place they are still allowed to differ (line-height overshoot) and
 why that is deliberate.
 
-**Why the measurement is kept even when the policy discards it (review
-finding 1, 2026-09-09).** `retention_fast` sets
-`emphasis_slab_default=True`, so `choose_treatment` returns `slab` for
-every cue and the measured luma changes nothing about the frame. The
-decode is NOT skipped, and it must not be "optimised away" later:
+**Why the measurement is kept even when the policy would discard it
+(review finding 1, 2026-09-09; K16.5).** When `slab_default=True`,
+`choose_treatment` returns `slab` for every cue and the measured luma
+changes nothing about the frame. The decode is NOT skipped, and it must
+not be "optimised away" later:
 
 - The cost is nothing that matters. One PIL decode of one still is a few
   milliseconds against a render measured in minutes, and there is one
   cue per reel today.
-- The numbers are the point. The slab policy is a conservative guess
+- The numbers are the point. The slab policy was a conservative guess
   made after a 190px white `2025` washed out on a plate this module now
-  measures at 236.9. Relaxing that policy — letting a `stamp` earn bare
-  type on this style — needs evidence about what real plates under real
-  cue boxes actually look like. `apply_emphasis_treatments` logs every
+  measures at 236.9. K16.5 turns `slab_default` off for
+  `retention_fast` so measurement decides; the log of measured luma +
+  the policy-off counterfactual is how flicker across the 101–121
+  cluster will be judged. `apply_emphasis_treatments` logs every
   measurement with the treatment the thresholds ALONE would have picked
-  and whether the policy overrode it, so that evidence accumulates on
-  every render at zero cost. Finding 2's threshold move from 90 to 105
-  is exactly the kind of decision this data supports; skipping the
-  decode would have left it a guess.
+  and whether the policy overrode it. Finding 2's threshold move from
+  90 to 105 is exactly the kind of decision this data supports; skipping
+  the decode would have left it a guess.
 
 So a discarded value here is deliberate, and it is the cheapest
 calibration data this feature will ever get.
@@ -208,19 +208,18 @@ def choose_treatment(
     """Pick light / dark / slab from measured luma.
 
     Unmeasured (`None`) is always slab — never light. `slab_default=True`
-    (retention_fast) is always slab even when dark/light would be legal:
-    this style's plates swung 93→236 in one hook and bare type is the
-    exception. With the policy off, light still requires a dark plate
-    and dark a bright one; luma 216 cannot be light.
+    is always slab even when dark/light would be legal. With the policy
+    off (K16.5: retention_fast), light still requires a dark plate and
+    dark a bright one; luma 216 cannot be light.
 
-    The `slab_default` short-circuit means `luma` is measured and then
-    unused for every cue this style currently emits. That is on purpose
-    and it is not a candidate for optimisation — see the module
-    docstring's finding-1 note. The measured value is not thrown away
-    either: `apply_emphasis_treatments` logs it, alongside the treatment
-    this function would have returned with the policy off, precisely so
-    that relaxing the policy later is an argument from data rather than
-    another guess.
+    When `slab_default` short-circuits, `luma` is measured and then
+    unused for the drawn treatment. That is on purpose and it is not a
+    candidate for optimisation — see the module docstring's finding-1
+    note. The measured value is not thrown away either:
+    `apply_emphasis_treatments` logs it, alongside the treatment this
+    function would have returned with the policy off, precisely so
+    threshold retunes are an argument from data rather than another
+    guess.
 
     Kept a pure function of its arguments (no logging in here) so the
     thresholds stay trivially testable at any luma, including the

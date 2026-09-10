@@ -137,6 +137,12 @@ class CaptionStyle:
     font_size_fraction: float = 0.045
     outline_fraction: float = 0.006
     margin_v_fraction: float = 0.16
+    # retention_fast_kinetic_text.md K16.2: Feature A size/weight on the
+    # highlighted word. None / False keep the historical colour-only
+    # override byte-identical. Resolved once in the render caller (RV2)
+    # and passed in — captions.py never reads a style band.
+    highlight_size_fraction: float | None = None
+    highlight_bold: bool = False
 
 
 def derive_caption_cues(
@@ -669,10 +675,24 @@ def _escape_ass_text(text: str) -> str:
 
 # Feature A (style_extensions.md §3.3): word-level highlight colour, in
 # ASS's &HBBGGRR& order - yellow is B=00 G=FF R=FF. Applied to ALL styles
-# per decision §3.6; if a style ever needs a different highlight this is
-# the one constant to make style-keyed.
-_HIGHLIGHT_OVERRIDE_ASS = "{\\c&H00FFFF&}"
+# per decision §3.6. K16.2 adds size/weight around this colour via
+# `_highlight_override_ass`; K16.3 will make the colour style-keyed.
+_HIGHLIGHT_COLOUR_ASS = "\\c&H00FFFF&"
 _RESET_OVERRIDE_ASS = "{\\r}"
+
+
+def _highlight_override_ass(style: CaptionStyle, axis: int) -> str:
+    """Per-word ASS override. Tag order is stable: \\fs, then \\b1, then
+    colour. Defaults (no size, no bold) emit exactly `{\\c&H00FFFF&}` —
+    byte-identical to pre-K16.2 Feature A."""
+    parts: list[str] = []
+    if style.highlight_size_fraction is not None:
+        size = max(round(axis * style.highlight_size_fraction), 1)
+        parts.append(f"\\fs{size}")
+    if style.highlight_bold:
+        parts.append("\\b1")
+    parts.append(_HIGHLIGHT_COLOUR_ASS)
+    return "{" + "".join(parts) + "}"
 
 
 def _plain_dialogue_line(cue: CaptionCue) -> str:
@@ -683,7 +703,9 @@ def _plain_dialogue_line(cue: CaptionCue) -> str:
     )
 
 
-def _highlighted_dialogue_lines(cue: CaptionCue) -> list[str]:
+def _highlighted_dialogue_lines(
+    cue: CaptionCue, *, highlight_override: str
+) -> list[str]:
     """Feature A (§3.3, Option 2 - N contiguous lines instead of karaoke
     tags):
     word i's event spans [w_i.start, w_{i+1}.start) (the last word runs to
@@ -700,7 +722,7 @@ def _highlighted_dialogue_lines(cue: CaptionCue) -> list[str]:
     def _line(highlight_index: int, start_s: float, end_s: float) -> str:
         tokens = [_escape_ass_word(w.text) for w in cue.words]
         tokens[highlight_index] = (
-            f"{_HIGHLIGHT_OVERRIDE_ASS}{tokens[highlight_index]}{_RESET_OVERRIDE_ASS}"
+            f"{highlight_override}{tokens[highlight_index]}{_RESET_OVERRIDE_ASS}"
         )
         return (
             f"Dialogue: 0,{format_ass_time(start_s)},{format_ass_time(end_s)},"
@@ -763,12 +785,15 @@ def serialize_ass(cues: list[CaptionCue], style: CaptionStyle) -> str:
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
+    highlight_override = _highlight_override_ass(style, axis)
     for cue in cues:
         # Feature A (§3.3): cues carrying word-level alignment emit N
         # contiguous highlighted lines; hand-built word-less cues keep
         # today's single plain line exactly.
         if cue.words:
-            lines.extend(_highlighted_dialogue_lines(cue))
+            lines.extend(
+                _highlighted_dialogue_lines(cue, highlight_override=highlight_override)
+            )
         else:
             lines.append(_plain_dialogue_line(cue))
 

@@ -127,8 +127,13 @@ from app.repositories.shot_binding_repository import ShotBindingRepository
 from app.schemas.project import ProjectStatus
 from app.schemas.timeline import SfxKind, Timeline
 from app.script.styles import (
+    resolve_burn_captions,
+    resolve_caption_highlight_bold,
+    resolve_caption_highlight_size_fraction,
+    resolve_caption_margin_v_fraction,
     resolve_emphasis_palette,
     resolve_emphasis_slab_default,
+    resolve_emphasis_stamp_top_fraction,
     resolve_music_gains,
     resolve_narration_speed,
     resolve_render_format,
@@ -182,6 +187,10 @@ class RenderStep:
             timeline.metadata.render_style,
             frame_aspect=timeline.metadata.frame_aspect,
         )
+        # K16.1: style may force captions on even when BURN_CAPTIONS=false.
+        # Resolve once onto RenderSettings so the fingerprint hashes the
+        # same bool the burn path reads (RV2). Drafts still omit this
+        # field (RenderSettings default False) — see projects.py draft.
         render_settings = RenderSettings(
             width=frame.width,
             height=frame.height,
@@ -189,7 +198,7 @@ class RenderStep:
             pixel_format=settings.render_pixel_format,
             ffmpeg_binary=settings.ffmpeg_binary,
             ffprobe_binary=settings.ffprobe_binary,
-            burn_captions=settings.burn_captions,
+            burn_captions=resolve_burn_captions(timeline.metadata.render_style),
             watermark_enabled=settings.watermark_enabled,
             burn_text_cards=settings.burn_text_cards,
         )
@@ -395,11 +404,17 @@ async def render_video(
     # from. It used to be a hand-mirrored copy of the TSX's own
     # constants; a band moved in the TSX drifted silently past the
     # measurement.
+    # K16.4 finding 3: stamp top resolves here beside slab_default /
+    # palette (RV2), not inside the collector — keeps compositor free
+    # of a styles import.
     overlay_cues = collect_emphasis_overlay_cues(
         timeline,
         fps=render_settings.fps,
         width=render_settings.width,
         height=render_settings.height,
+        stamp_top_fraction=resolve_emphasis_stamp_top_fraction(
+            timeline.metadata.render_style
+        ),
     )
     overlay_cues = apply_emphasis_treatments(
         overlay_cues,
@@ -613,9 +628,24 @@ async def render_video(
 
         if caption_cues is not None:
             ass_path = work_dir / f"{output_path.stem}.ass"
+            # K16.4: style-owned MarginV. None → CaptionStyle default 0.16.
+            # K16.2: highlight size/weight resolved once here (RV2);
+            # captions.py never reads the band.
+            render_style = timeline.metadata.render_style
+            margin_v = resolve_caption_margin_v_fraction(render_style)
+            highlight_size = resolve_caption_highlight_size_fraction(render_style)
+            style_kwargs: dict = {}
+            if margin_v is not None:
+                style_kwargs["margin_v_fraction"] = margin_v
+            if highlight_size is not None:
+                style_kwargs["highlight_size_fraction"] = highlight_size
+            style_kwargs["highlight_bold"] = resolve_caption_highlight_bold(
+                render_style
+            )
             style = CaptionStyle(
                 resolution=(render_settings.width, render_settings.height),
                 font_family=settings.caption_font,
+                **style_kwargs,
             )
             ass_path.write_text(serialize_ass(caption_cues, style), encoding="utf-8")
             filter_fragments.append(

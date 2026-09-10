@@ -157,13 +157,12 @@ class StylePacingBand:
     # site - same R1 lesson `resolve_sfx_whoosh_enabled`'s own docstring
     # cites.
     picture_path: PicturePath = PicturePath.RETRIEVAL_LADDER
-    # retention_fast_kinetic_text.md K4: slab is the robust default for
-    # kinetic type on this style (plates swung 93→216 in one hook; white
-    # type on the 216 frame washed out). Bare type is legal only when
-    # this is False AND the plate earns the contrast floor. Read through
-    # `resolve_emphasis_slab_default`, never the band field at a use
-    # site (RV2 / R1). Additive default False: styles with no cues do
-    # not change behaviour.
+    # retention_fast_kinetic_text.md K4 / K16.5: when True, chooser
+    # always returns slab. When False, measurement decides light/dark/
+    # slab. K16.5 turns this off for retention_fast so the standalone
+    # word can go bare. Read through `resolve_emphasis_slab_default`,
+    # never the band field at a use site (RV2 / R1). Additive default
+    # False: styles with no cues do not change behaviour.
     emphasis_slab_default: bool = False
     # retention_fast_kinetic_text.md K3: minimum shots between kept
     # emphasis cues. None = no gap rule (every style except
@@ -209,6 +208,31 @@ class StylePacingBand:
     # not change.
     emphasis_accent: str | None = None
     emphasis_pivot_ground: str | None = None
+    # retention_fast_kinetic_text.md K16.1: None = fall through to
+    # `settings.burn_captions`. A bool overrides the env/settings
+    # toggle so a style can force captions on (or off) regardless of
+    # `BURN_CAPTIONS`. Read through `resolve_burn_captions`, never the
+    # band field at a use site (RV2 / R1). Drafts still omit the field
+    # on RenderSettings (default False) — this knob is final-render only.
+    burn_captions: bool | None = None
+    # retention_fast_kinetic_text.md K16.4: ASS MarginV as a fraction of
+    # frame height (Alignment=2: distance from frame bottom to the
+    # bottom of the last caption line). None = CaptionStyle's default
+    # 0.16. Read through `resolve_caption_margin_v_fraction`.
+    caption_margin_v_fraction: float | None = None
+    # retention_fast_kinetic_text.md K16.4: top of the stamp band as a
+    # fraction of canvas height. None = today's `_STAMP_REF_TOP` scale
+    # (320/1280 = 0.25). Read through
+    # `resolve_emphasis_stamp_top_fraction`.
+    emphasis_stamp_top_fraction: float | None = None
+    # retention_fast_kinetic_text.md K16.2: Feature A highlight size as
+    # a fraction of max(width, height). None = colour-only override
+    # (no \\fs). Read through `resolve_caption_highlight_size_fraction`.
+    caption_highlight_size_fraction: float | None = None
+    # retention_fast_kinetic_text.md K16.2: Feature A highlight bold.
+    # False = no \\b1 in the override. Read through
+    # `resolve_caption_highlight_bold`.
+    caption_highlight_bold: bool = False
 
     @property
     def max_fragment_duration_s(self) -> float | None:
@@ -271,10 +295,13 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
         whoosh_enabled=False,
         render_width=720,
         render_height=1280,
-        # K4: this style opts into slab-default. Bare type must earn
-        # contrast via the chooser with the policy off; here it never
-        # does. The 2025 year stamp washed out at luma 216.
-        emphasis_slab_default=True,
+        # K16.5: slab_default OFF so choose_treatment's measurement is
+        # used (bare light/dark when the plate earns it). K4's log of
+        # measured luma + policy-off counterfactual still runs. Do NOT
+        # retune LIGHT_MAX_LUMA/DARK_MIN_LUMA this slice — plates that
+        # cluster 101–121 may flicker light↔slab; measure on a watched
+        # reel before widening.
+        emphasis_slab_default=False,
         # K3 / K14 density. Body gap 3 at 1.75s/shot ≈ every 5.25s.
         # K14.1 adds a 5.0s hook with gap 1 so consecutive early shots
         # may both keep a cue (uniform gap 3 made two cues in the
@@ -294,6 +321,28 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
         # resort so the compositor is never asked to invent hexes.
         emphasis_accent="#FFC300",
         emphasis_pivot_ground="#FF2E2E",
+        # K16.1: captions ARE the text spine for this style. Force on
+        # even when a backend was started with BURN_CAPTIONS=false
+        # (the captions-off brief from decision 1 / K14 is cancelled).
+        burn_captions=True,
+        # K16.4 captions: MarginV = round(height * 0.16). On 720×1280
+        # that is 205px from the bottom → last-line baseline at 84%
+        # down. Font is 0.045 * max(w,h) = 58px; a 3-line block is
+        # ~174px ≈ 13.6% of height, so three lines occupy ~70–84%.
+        # Reference zone is ~70–88%; 0.16 is the reasoned starting
+        # fraction (not a fake-precise re-measure). Landscape still
+        # overrides to 4% inside serialize_ass (§19.3); this style is
+        # portrait so it never hits that branch.
+        caption_margin_v_fraction=0.16,
+        # K16.4 stamp: top of the band at 18% of height (230 on 1280).
+        # Reference standalone word sits ~18–25% down. With K16.5's
+        # bare stamp the type occupies roughly 18–28%, inside the zone.
+        emphasis_stamp_top_fraction=0.18,
+        # K16.2: stressed caption word ~1.76× base (0.08*1280=102 vs
+        # 0.045*1280=58). Bold on. Colour stays the global yellow
+        # until K16.3. Starting fraction, not a fake-precise re-measure.
+        caption_highlight_size_fraction=0.08,
+        caption_highlight_bold=True,
     ),
     "archival_montage": StylePacingBand(
         # Feature B (style_extensions.md §4.3, decided 2026-08-25):
@@ -497,10 +546,11 @@ def resolve_narration_speed(style: str | None) -> float:
 
 
 def resolve_emphasis_slab_default(style: str | None) -> bool:
-    """Style-owned kinetic-text slab policy (retention_fast_kinetic_text.md K4).
+    """Style-owned kinetic-text slab policy (retention_fast_kinetic_text.md K4 / K16.5).
 
     `True` means the chooser always returns slab, even when the plate
-    would earn light or dark type. Only `retention_fast` opts in.
+    would earn light or dark type. K16.5 sets `retention_fast` to False
+    so measurement decides; every other shipped style stays False.
 
     Unknown style names resolve to False (there is no band to consult,
     and no cue system on those styles). An UNSET style resolves through
@@ -514,6 +564,79 @@ def resolve_emphasis_slab_default(style: str | None) -> bool:
     if band is None:
         return False
     return band.emphasis_slab_default
+
+
+def resolve_burn_captions(style: str | None) -> bool:
+    """Style-owned burned-captions gate (retention_fast_kinetic_text.md K16.1).
+
+    Band `burn_captions` is None → fall through to `settings.burn_captions`
+    (the historical env/config toggle). A bool on the band overrides that
+    toggle so `retention_fast` stays captions-on even under
+    `BURN_CAPTIONS=false`. Unknown style names have no band → settings.
+    An UNSET style resolves through `settings.default_render_style`'s
+    band — same fallback shape as `resolve_emphasis_slab_default`.
+    Resolve once in the final-render caller (RV2) and put the bool on
+    `RenderSettings`; drafts keep `RenderSettings.burn_captions=False`.
+    """
+    band = STYLE_PACING_BANDS.get(style or settings.default_render_style)
+    if band is None or band.burn_captions is None:
+        return settings.burn_captions
+    return band.burn_captions
+
+
+def resolve_caption_margin_v_fraction(style: str | None) -> float | None:
+    """Style-owned ASS MarginV fraction (retention_fast_kinetic_text.md K16.4).
+
+    None means the caller should omit the override and keep
+    `CaptionStyle.margin_v_fraction`'s default (0.16). Unknown / unset
+    follow the same fallback shape as `resolve_emphasis_min_shot_gap`.
+    Resolve once in the render caller (RV2) and pass into CaptionStyle.
+    """
+    band = STYLE_PACING_BANDS.get(style or settings.default_render_style)
+    if band is None:
+        return None
+    return band.caption_margin_v_fraction
+
+
+def resolve_emphasis_stamp_top_fraction(style: str | None) -> float | None:
+    """Style-owned stamp band top as a height fraction (K16.4).
+
+    None means `stamp_band` keeps today's `_STAMP_REF_TOP` scale
+    (320/1280 = 0.25). Unknown / unset follow the same fallback shape
+    as `resolve_emphasis_min_shot_gap`. Resolve once in the render
+    caller beside the other emphasis knobs (RV2) and pass into
+    `collect_emphasis_overlay_cues` → `stamp_band`; do not read the
+    band field inside compositor / `stamp_band`.
+    """
+    band = STYLE_PACING_BANDS.get(style or settings.default_render_style)
+    if band is None:
+        return None
+    return band.emphasis_stamp_top_fraction
+
+
+def resolve_caption_highlight_size_fraction(style: str | None) -> float | None:
+    """Style-owned Feature A highlight size fraction (K16.2).
+
+    None means colour-only highlight (no \\fs). Unknown / unset follow
+    the same fallback shape as `resolve_emphasis_min_shot_gap`. Resolve
+    once in the render caller (RV2) and pass into CaptionStyle.
+    """
+    band = STYLE_PACING_BANDS.get(style or settings.default_render_style)
+    if band is None:
+        return None
+    return band.caption_highlight_size_fraction
+
+
+def resolve_caption_highlight_bold(style: str | None) -> bool:
+    """Style-owned Feature A highlight bold (K16.2).
+
+    False means no \\b1 in the override. Unknown / unset → False.
+    Resolve once in the render caller (RV2) and pass into CaptionStyle.
+    """
+    band = STYLE_PACING_BANDS.get(style or settings.default_render_style)
+    if band is None:
+        return False
+    return band.caption_highlight_bold
 
 
 def resolve_emphasis_min_shot_gap(style: str | None) -> int | None:

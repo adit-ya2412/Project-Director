@@ -296,3 +296,50 @@ def test_ass_text_escapes_braces_and_backslashes():
     style = CaptionStyle(resolution=(1080, 1920), font_family="Noto Sans Devanagari")
     ass = serialize_ass(cues, style)
     assert "a \\{b\\} c\\\\d" in ass
+
+
+def _style_margin_v(ass: str) -> int:
+    for line in ass.splitlines():
+        if line.startswith("Style: Caption,"):
+            # Format ends ...,MarginL,MarginR,MarginV,Encoding
+            return int(line.rsplit(",", 2)[1])
+    raise AssertionError("no Caption style line in ASS")
+
+
+def test_retention_fast_caption_margin_v_on_720x1280():
+    """K16.4: retention_fast's 0.16 fraction → MarginV 205 on 720×1280.
+
+    Arithmetic (also on the band): last-line bottom at 84% down; a
+    3-line block at 58px/line ≈ 13.6% of height occupies ~70–84%.
+    """
+    from app.script.styles import resolve_caption_margin_v_fraction
+
+    fraction = resolve_caption_margin_v_fraction("retention_fast")
+    assert fraction == 0.16
+    style = CaptionStyle(
+        resolution=(720, 1280),
+        font_family="Noto Sans Devanagari",
+        margin_v_fraction=fraction,
+    )
+    ass = serialize_ass([CaptionCue(start_s=0.0, end_s=1.0, text="hi")], style)
+    assert _style_margin_v(ass) == round(1280 * 0.16) == 205
+
+
+def test_default_caption_margin_v_and_landscape_override():
+    """Unset styles keep CaptionStyle's 0.16; landscape still forces 4%."""
+    portrait = CaptionStyle(
+        resolution=(720, 1280), font_family="Noto Sans Devanagari"
+    )
+    assert portrait.margin_v_fraction == 0.16
+    portrait_ass = serialize_ass(
+        [CaptionCue(start_s=0.0, end_s=1.0, text="hi")], portrait
+    )
+    assert _style_margin_v(portrait_ass) == round(1280 * 0.16) == 205
+
+    landscape = CaptionStyle(
+        resolution=(1280, 720), font_family="Noto Sans Devanagari"
+    )
+    landscape_ass = serialize_ass(
+        [CaptionCue(start_s=0.0, end_s=1.0, text="hi")], landscape
+    )
+    assert _style_margin_v(landscape_ass) == round(720 * 0.04) == 29

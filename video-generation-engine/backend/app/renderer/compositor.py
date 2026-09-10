@@ -543,13 +543,20 @@ def stamp_band(
     *,
     text: str = "",
     text_register: str = "en",
+    top_fraction: float | None = None,
 ) -> PivotBand | None:
     """Resolve the stamp box for a canvas, or None if it cannot be formed.
 
-    With no text (or a word that fits): (0, 320, 720, 538) on 720x1280 —
-    font 190 + 2*pad 14. Full width so K4 measures the vertical strip
-    the type actually sits in; the TSX may shrink the ink slab to the
-    word.
+    With no text (or a word that fits) and no `top_fraction`: (0, 320,
+    720, 538) on 720x1280 — font 190 + 2*pad 14. Full width so K4
+    measures the vertical strip the type actually sits in; the TSX may
+    shrink the ink slab to the word.
+
+    `top_fraction` (K16.4) is the style-resolved top of the band as a
+    fraction of canvas height. None keeps today's `_STAMP_REF_TOP`
+    scale so callers that pin 320 (and K15's single-word control) stay
+    byte-identical. When set, `top = round(top_fraction * canvas_height)`
+    — `retention_fast` uses 0.18 → 230 on 1280.
 
     With a phrase too wide for one line at 190 the FONT is what changes
     (K15): `_stamp_fitted_font_size` scales it down until the line fits
@@ -579,7 +586,10 @@ def stamp_band(
     if canvas_width <= 0 or canvas_height <= 0:
         return None
     ref_font = round(_STAMP_REF_FONT * (canvas_width / _STAMP_REF_WIDTH))
-    top = round(_STAMP_REF_TOP * (canvas_height / _STAMP_REF_HEIGHT))
+    if top_fraction is not None:
+        top = round(top_fraction * canvas_height)
+    else:
+        top = round(_STAMP_REF_TOP * (canvas_height / _STAMP_REF_HEIGHT))
     pad = round(_STAMP_REF_PAD * (canvas_height / _STAMP_REF_HEIGHT))
     usable_width = max(1, canvas_width - _STAMP_SLAB_INSETS * pad)
     font_size = _stamp_fitted_font_size(
@@ -854,6 +864,7 @@ def _band_for_device(
     values: tuple[OverlayValue, ...] = (),
     text: str = "",
     text_register: str = "en",
+    stamp_top_fraction: float | None = None,
 ) -> PivotBand | None:
     if device is EmphasisDevice.PIVOT:
         return pivot_band(canvas_width, canvas_height)
@@ -864,8 +875,14 @@ def _band_for_device(
         # register is part of the stamp's content, not decoration — it
         # picks the face, and Noto at wght=700 and the heavy Latin stack
         # are nowhere near the same width per character.
+        # `stamp_top_fraction` is style-resolved upstream (K16.4); this
+        # helper does not import styles.
         return stamp_band(
-            canvas_width, canvas_height, text=text, text_register=text_register
+            canvas_width,
+            canvas_height,
+            text=text,
+            text_register=text_register,
+            top_fraction=stamp_top_fraction,
         )
     if device is EmphasisDevice.COUNTER:
         # The one device whose band cannot be a function of the canvas
@@ -964,7 +981,12 @@ def emphasis_font_content_hash() -> str:
 
 
 def collect_emphasis_overlay_cues(
-    timeline: Timeline, *, fps: int, width: int, height: int
+    timeline: Timeline,
+    *,
+    fps: int,
+    width: int,
+    height: int,
+    stamp_top_fraction: float | None = None,
 ) -> list[OverlayCue]:
     """Film-absolute frames from each shot's resolved `offset_s`.
 
@@ -984,6 +1006,9 @@ def collect_emphasis_overlay_cues(
     render-time numbers — frames from fragment offsets — so geometry
     belongs here too, and a defaulted 720x1280 would be exactly the kind
     of unguarded assumption finding 3 removed.
+
+    `stamp_top_fraction` is style-resolved in the render caller (K16.4
+    finding 3 / RV2). None keeps today's `_STAMP_REF_TOP` scale (320).
     """
     shots = timeline.all_shots()
     if not shots:
@@ -1044,6 +1069,7 @@ def collect_emphasis_overlay_cues(
                     values=values,
                     text=cue.text,
                     text_register=cue.text_register.value,
+                    stamp_top_fraction=stamp_top_fraction,
                 ),
                 values=values,
             )

@@ -75,7 +75,7 @@ and their disposition are below.
 | **K11** device renderers (stamp, counter) | **implemented 2026-09-09; two render-found defects fixed same day** — stamp + counter renderers; unblocks K9. The counter band is now content-derived (its type overflowed a hardcoded 420 by 118px, measured) and `treatment="dark"` gained the light halo it never had |
 | **K8** data graphics | **not started** |
 | **K12** planner authors `picture_is_graphic` | **implemented and reviewed 2026-09-09** (`23f83e9`) — Shot Planner authors required `ShotPlanOutput.picture_is_graphic` (no default) and maps it onto `Shot`. Live re-plan: data shot True, ordinary shots False. K3 already enforces. K8 unblocked on the signal, not yet implemented |
-| **K16** captions carry the text | **K16.1 + K16.4 implemented AND REVIEWED 2026-09-10. Review finding: the captions-on wiring is UNPINNED — reverting the call site keeps the suite green; fix that first. Do NOT render until K16.2 and K16.5 land TOGETHER, or the reel gets captions AND mid-frame slabs.** — captions forced ON for `retention_fast` via style-band `burn_captions=True` (overrides `BURN_CAPTIONS=false`); caption MarginV owned at 0.16 (205px on 720×1280, ~70–84% for 3 lines); stamp top at 0.18 (230 on 1280). Captions-off brief CANCELLED. **Not done:** K16.2 size/weight in Feature A, K16.3 highlight from palette, K16.5 bare stamp, K16.6 translucent figure. Pivot/counter still 23–43% until later parts |
+| **K16** captions carry the text | **K16.1 + K16.2 + K16.4 + K16.5 in 2026-09-10; finding 1 (captions-on wiring) FIXED with call-site spy; finding 3 (stamp_top resolve) moved into `render_video`. Awaiting watched reel — do not imply a render was done.** — captions ON; Feature A highlight `{\fs102\b1\c&H00FFFF&}` on retention_fast (0.08 → 102px on 720×1280, ~1.76×); `emphasis_slab_default=False` so measurement decides bare light/dark/slab; stamp top 0.18 resolved in render caller. **Not done:** K16.3 palette highlight colour, K16.6 translucent figure. Pivot/counter still 23–43%. LIGHT_MAX_LUMA/DARK_MIN_LUMA un-retuned (flicker risk 101–121). |
 | **K15** a multi-word stamp has no band | **DONE 2026-09-10, unwatched** - `stamp_band(w, h, text=, text_register=)` fits the phrase to ONE line (largest font inside `width - 4*pad`) and `Stamp.tsx` sets `whiteSpace: nowrap`, so a wrap is impossible even on a bad measurement. Devanagari widths are REAL metrics at the **wght=700** instance (the `hmtx` default is 8-10% narrow — the error that puts the wrap back); Latin reuses K11's measured Black stack, max of the two faces. Band tracks the fitted font, so K4 still measures inside the drawn ink; K4 thresholds unchanged. Character budget 10 Latin / 14 Devanagari in `emphasis/v1.md`, derived from a 90px floor on rendered frames. All 9 rendered cases one line, ink inside slab; the single-word control is byte-identical (same PNG md5, same cue and overlay hashes). Fallback NOT needed. Open, pre-existing and smaller than before: Devanagari matras clip 0.15 em against `lineHeight: 1` on a slab (`लेकिन` at 190 loses 15px today) |
 | **K14** the hook is empty | **implemented 2026-09-10, four review findings fixed same day, awaiting watched reel** — hook window 5.0s / gap 1; **K14.2 body-only 12.0/min cap** (hook cues extra; did not raise the whole-reel ceiling); K9 prompt + `Target cue count` front-load at 12.0/min with the hook floor now **clipped to how many shots start inside the window** (2 on the watched shape, not 3); the body gap counts from the last kept **BODY** cue, so the hook no longer opens a dead zone just past itself; stamp word delays scheduled against the cue's real window instead of a fixed 0/4/14/24. K14.6 not done. **The longest empty stretch did NOT improve on the probe (5.46s → 6.73s hold-aware): the body-only cap trims in film order, so the reel's LAST cue is what goes.** A NEW project is required (`34dd1ee1` cannot be re-authored). BLOCKS captions-off until the numbers beat 7.15s / 7.29 per min / 7.75s |
 | **K13** the counter has no reachable input | **not started, ADDED 2026-09-09, BLOCKING** — number-stating shots are planned as graphics, K3 rule 2 forbids cues there, so the counter is unreachable. First real reel produced 0 counters from 3 spoken numbers. Recommended fix: stop the Shot Planner making number shots into graphics (option B) |
@@ -3296,4 +3296,129 @@ render caller", and this is the drift RV2 / R1 exists to catch.
 
 - next: pin the wiring (finding 1), then K16.2 + K16.5 together, then a
   watched reel against `tmp/ref/`.
+
+### — finding 1 + K16.2 + K16.5 + finding 3 (this slice, 2026-09-10)
+
+- decided (finding 1): replaced the weak
+  `test_retention_fast_final_render_settings_get_burn_captions_from_resolver`
+  (rebuilds `RenderSettings`) with a DB-free call-site spy in
+  `tests/unit/workflow/test_render_step.py` that stubs
+  `timeline_service` / `repo`, forces `settings.burn_captions=False`,
+  spies `app.workflow.steps.render.render_video`, and asserts the
+  `render_settings.burn_captions` that `RenderStep.run` actually
+  passes. Fallthrough pin: documentary_archival → False when env is
+  off. Draft default-False kept as a small styles test.
+- **teeth proof (required):** temporarily set
+  `burn_captions=settings.burn_captions` in `RenderStep.run`, ran
+  `pytest tests/unit/workflow/test_render_step.py::test_render_step_puts_resolved_burn_captions_on_render_video -q`
+  → **FAILED** with `assert False is True` (captured burn_captions was
+  False under env OFF). Restored
+  `burn_captions=resolve_burn_captions(...)`; same test **PASSED**.
+  Revert not left in the tree.
+- decided (K16.2): `CaptionStyle.highlight_size_fraction` /
+  `highlight_bold`; band knobs
+  `caption_highlight_size_fraction=0.08` /
+  `caption_highlight_bold=True` on retention_fast only; resolvers
+  return None/False for other styles. Override built in captions.py
+  from the style (never reads the band). Defaults emit exactly
+  `{\c&H00FFFF&}` (byte-identical). retention_fast on 720×1280:
+  **`{\fs102\b1\c&H00FFFF&}`** — tag order `\fs` then `\b1` then `\c`;
+  `round(1280 * 0.08) = 102` (~1.76× base 58px). Colour still global
+  yellow. Resolved once where CaptionStyle is built in `render_video`.
+- decided (K16.5): `emphasis_slab_default=False` on retention_fast so
+  `choose_treatment` uses measurement. Stamp.tsx already skips the
+  slab for light/dark — not edited. Pivot still draws its band (OUR
+  device). **Did NOT retune** `LIGHT_MAX_LUMA=105` /
+  `DARK_MIN_LUMA=180`: plates clustering 101–121 may flicker
+  light↔slab shot to shot; measure on a watched reel before widening.
+  K4's measured-luma + policy-off counterfactual log still runs.
+- decided (finding 3): `collect_emphasis_overlay_cues(...,
+  stamp_top_fraction=None)` — None keeps top 320. `render_video`
+  resolves once via `resolve_emphasis_stamp_top_fraction` and passes
+  it in (beside slab_default / palette). Removed
+  `compositor → styles` import. Call-site pin: spy collect from
+  `render_video` with binding/narration stubs, abort after collect;
+  retention_fast → 0.18, documentary_archival → None. Collect unit
+  tests pass the fraction explicitly.
+- did NOT: K16.3, K16.6; no pivot/counter retune; no Stamp.tsx edit;
+  no K4 threshold change; no project / OpenAI / watched reel / render.
+- tests: targeted workflow/styles/caption_highlight/captions/
+  stamp_fit/emphasis_contrast/compositor → **248 passed**. Full
+  `tests/unit -q` with Postgres up → **1598 passed, 6 failed** (same
+  six pre-existing: 5 sfx-diegetic + 1 director_planner
+  every_attempt). Baseline was 1590/6; +8 pins, no new failure.
+  `ruff check` on touched production files clean (pre-existing B905
+  in test_styles.py only).
+- next: watched reel against `tmp/ref/` (captions zone, bare stamp
+  zone, middle empty?, highlight size). Then K16.3 / K16.6.
+
+### — review (Grok 4.6, finding 1 + K16.2 + K16.5)
+
+- finding 1: spy is a real call site (`RenderStep.run` → `render_video`).
+  Re-ran `test_render_step.py` green. Implementer's teeth proof
+  (`assert False is True` under `settings.burn_captions`) is the
+  failure that test is built to produce; revert is not in the tree.
+- K16.2 + K16.5 shipped together. Override pin
+  `{\fs102\b1\c&H00FFFF&}`; other styles colour-only. Slab policy off;
+  thresholds un-retuned. Finding 3: compositor no longer imports
+  styles; `stamp_top_fraction` passed from `render_video`; spy pins
+  0.18 vs None.
+- Reviewer `tests/unit -q`: **1598 passed, 6 failed** (same six).
+  Targeted 248 passed.
+- Observation, not a revert: highlight size/bold are not fingerprint
+  inputs (`cue_list_hash` is cue text/timing, not the ASS override).
+  A NEW project is fine. Retuning 0.08 later, or re-rendering an
+  already-captioned retention_fast with nothing else changed, can
+  cache-hit the colour-only burn. Same shape as the K5 palette trap;
+  burn_captions itself IS hashed so K16.1 does not have this hole.
+- No project, no render. User watches a NEW reel vs `tmp/ref/`.
+
+### — review (orchestrator, finding 1 + K16.2 + K16.5)
+
+- verified: **1598 passed, 6 failed** (same pre-existing six), `ruff
+  check` clean on all five production files. Matches the implementer's
+  and reviewer's numbers exactly.
+- **finding 1 is genuinely fixed, proven by teeth.** Reverting the call
+  site to `burn_captions=settings.burn_captions` now turns
+  `test_render_step_puts_resolved_burn_captions_on_render_video` RED
+  (1 failed, 3 passed). The same revert left the whole suite green
+  before this slice. It is a real call-site pin, not a dataclass
+  rebuild.
+- **finding 3 is fixed.** `renderer/compositor.py` no longer imports
+  `app.script.styles` at all (grep count 0); `stamp_top_fraction` is
+  passed down from `render_video` beside `slab_default` and `palette`,
+  so the knob resolves in one layer like its siblings.
+- verified K16.2 / K16.5: the highlighted word resolves to **102px
+  against a 58px base — 1.8x** — plus bold, and other styles stay
+  colour-only (`documentary_archival` resolves `None`).
+  `resolve_emphasis_slab_default("retention_fast")` is now `False`, so
+  no slab is drawn.
+
+**OPEN FINDING (Grok flagged it, orchestrator confirmed, NOT fixed) —
+highlight size and weight are not fingerprint inputs.** Verified by
+signature: `compute_render_fingerprint` takes `burn_captions`,
+`caption_font_hash`, `cue_list_hash`, `emphasis_cue_hash` and nothing
+else caption-shaped; `cue_list_content_hash` is a function of cue text
+and timing only; and `render.py` passes the highlight size/bold into
+`CaptionStyle`, which is hashed nowhere. So **retuning
+`highlight_size_fraction` away from 0.08 and re-rendering the same
+project returns the OLD burn** — identical fingerprint, cache hit, no
+visible change, indistinguishable from "the code did not work".
+
+The precedent is in that same module: `caption_font_hash` exists
+BECAUSE the font changes pixels and is read from config (fingerprint.py
+§52-62). Highlight size and weight are the same shape.
+`burn_captions` IS hashed, so K16.1 has no such hole — only K16.2 does.
+It matters immediately rather than later, because 0.08 was reasoned and
+not watched, so retuning it is the very next operation and it is the one
+the hole breaks.
+
+**To check with eyes, not tests.** The stamp BAND still reads
+18%..35%, so on paper it crosses the protected middle. With the slab off
+only the type is drawn — roughly 18%..28% for a single word at font
+190 — so the middle should be visually clear. Band and drawn ink are
+different rectangles and no assertion can say which one a viewer sees.
+
+- next: hash the highlight params, then a watched reel against
+  `tmp/ref/`.
 

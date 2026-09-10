@@ -203,6 +203,57 @@ def test_highlighted_serialization_is_deterministic():
 
 
 # ---------------------------------------------------------------------------
+# K16.2: size + weight on the highlight (retention_fast only)
+# ---------------------------------------------------------------------------
+
+
+_RETENTION_HIGHLIGHT = CaptionStyle(
+    resolution=(720, 1280),
+    font_family="Noto Sans Devanagari",
+    highlight_size_fraction=0.08,
+    highlight_bold=True,
+)
+# 0.08 * max(720, 1280) = 0.08 * 1280 = 102
+_RETENTION_OVERRIDE = "{\\fs102\\b1\\c&H00FFFF&}"
+
+
+def test_default_caption_style_highlight_is_colour_only_no_fs_no_bold():
+    """K16.2: unset size/bold keep the historical yellow-only override."""
+    cue = _cue("no one", 0.0, 1.0, ("no", 0.0, 0.5), ("one", 0.5, 1.0))
+    dialogue = _dialogue_lines(serialize_ass([cue], _STYLE))
+    assert "{\\c&H00FFFF&}no{\\r}" in dialogue[0]
+    assert "\\fs" not in dialogue[0]
+    assert "\\b1" not in dialogue[0]
+
+
+def test_retention_fast_highlight_override_is_fs102_bold_yellow_on_720x1280():
+    """K16.2: pin the exact override string and the 102px arithmetic."""
+    cue = _cue("no one", 0.0, 1.0, ("no", 0.0, 0.5), ("one", 0.5, 1.0))
+    dialogue = _dialogue_lines(serialize_ass([cue], _RETENTION_HIGHLIGHT))
+    assert f"{_RETENTION_OVERRIDE}no{{\\r}}" in dialogue[0]
+    assert dialogue[0].count(_RETENTION_OVERRIDE) == 1
+    assert round(1280 * 0.08) == 102
+
+
+def test_word_less_cues_stay_byte_identical_under_retention_highlight_style():
+    """K16.2: size/weight only wrap worded cues; plain Dialogue lines
+    stay byte-identical to a same-resolution colour-only style."""
+    cue = CaptionCue(start_s=7.059, end_s=10.5, text="hello world")
+    same_res_plain = CaptionStyle(
+        resolution=(720, 1280), font_family="Noto Sans Devanagari"
+    )
+    retention_lines = _dialogue_lines(serialize_ass([cue], _RETENTION_HIGHLIGHT))
+    plain_lines = _dialogue_lines(serialize_ass([cue], same_res_plain))
+    assert retention_lines == [
+        "Dialogue: 0,0:00:07.06,0:00:10.50,Caption,,0,0,0,,hello world"
+    ]
+    assert retention_lines == plain_lines
+    assert serialize_ass([cue], _RETENTION_HIGHLIGHT) == serialize_ass(
+        [cue], same_res_plain
+    )
+
+
+# ---------------------------------------------------------------------------
 # Fingerprint coupling (style_extensions.md §9 RV-A1)
 # ---------------------------------------------------------------------------
 

@@ -43,6 +43,7 @@ from app.schemas.timeline import (
     Shot,
     ShotIntent,
     Timeline,
+    TimelineMetadata,
     TimelineStatus,
 )
 
@@ -372,7 +373,12 @@ def test_usable_width_matches_the_slab_the_tsx_draws():
 # ------------------------------------------------------------- the wiring
 
 
-def _timeline_with_stamp(text: str, register: EmphasisRegister) -> Timeline:
+def _timeline_with_stamp(
+    text: str,
+    register: EmphasisRegister,
+    *,
+    render_style: str | None = None,
+) -> Timeline:
     shot = Shot(
         id="sh_01",
         order=0,
@@ -394,6 +400,7 @@ def _timeline_with_stamp(text: str, register: EmphasisRegister) -> Timeline:
         produced_by=ProducedBy.NARRATION,
         status=TimelineStatus.DRAFT,
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        metadata=TimelineMetadata(render_style=render_style),
         scenes=[scene],
     )
 
@@ -460,3 +467,55 @@ def test_a_longer_phrase_misses_the_overlay_cache_of_a_shorter_one():
     )
     assert short[0].band.font_size != long[0].band.font_size
     assert emphasis_cue_content_hash(short) != emphasis_cue_content_hash(long)
+
+
+def test_stamp_band_default_top_stays_320_on_720x1280():
+    """K16.4 / K15 control: no top_fraction → today's 320 (25% down)."""
+    band = stamp_band(W, H)
+    assert band is not None
+    assert band.top == 320
+    assert band.top / H == 0.25
+
+
+def test_stamp_band_top_fraction_018_is_230_on_720x1280():
+    """K16.4: retention_fast's 0.18 → top 230 on 1280 (18% down)."""
+    band = stamp_band(W, H, top_fraction=0.18)
+    assert band is not None
+    assert band.top == round(0.18 * H) == 230
+
+
+def test_collect_stamp_top_fraction_018_is_230():
+    """K16.4 finding 3: collect no longer reads render_style; the caller
+    passes the resolved fraction. 0.18 → top 230 on 1280."""
+    cues = collect_emphasis_overlay_cues(
+        _timeline_with_stamp("Parts", EmphasisRegister.EN),
+        fps=30,
+        width=W,
+        height=H,
+        stamp_top_fraction=0.18,
+    )
+    assert len(cues) == 1
+    assert cues[0].band is not None
+    assert cues[0].band.top == 230
+
+
+def test_collect_without_stamp_top_fraction_keeps_320():
+    """None / omitted fraction → today's `_STAMP_REF_TOP` scale (320)."""
+    cues = collect_emphasis_overlay_cues(
+        _timeline_with_stamp("Parts", EmphasisRegister.EN),
+        fps=30,
+        width=W,
+        height=H,
+    )
+    assert cues[0].band is not None
+    assert cues[0].band.top == 320
+
+    cues_none = collect_emphasis_overlay_cues(
+        _timeline_with_stamp("Parts", EmphasisRegister.EN),
+        fps=30,
+        width=W,
+        height=H,
+        stamp_top_fraction=None,
+    )
+    assert cues_none[0].band is not None
+    assert cues_none[0].band.top == 320
