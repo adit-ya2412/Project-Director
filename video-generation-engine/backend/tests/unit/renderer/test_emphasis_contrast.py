@@ -57,10 +57,11 @@ def test_slab_default_and_floors_on_dark_bright_mid():
     assert choose_treatment(40.0, slab_default=False) == "light"
     assert choose_treatment(40.0, slab_default=True) == "slab"
     assert choose_treatment(255.0, slab_default=False) == "dark"
-    assert choose_treatment(128.0, slab_default=False) == "slab"
+    # K16.7: 128 sits under LIGHT_MAX_LUMA 175 → light (was slab at 105).
+    assert choose_treatment(128.0, slab_default=False) == "light"
     assert choose_treatment(LIGHT_MAX_LUMA, slab_default=False) == "light"
     assert choose_treatment(DARK_MIN_LUMA, slab_default=False) == "dark"
-    # Just inside the mid band: neither bare type has earned contrast.
+    # Just inside the mid band (176 until DARK_MIN 180): still slab.
     assert choose_treatment(LIGHT_MAX_LUMA + 1, slab_default=False) == "slab"
     assert choose_treatment(DARK_MIN_LUMA - 1, slab_default=False) == "slab"
 
@@ -173,6 +174,7 @@ def test_suv_fail_2025_png_is_never_light_when_present():
 
 # --------------------------------------------------------------------------
 # Review finding 2 (2026-09-09): LIGHT_MAX_LUMA 90.0 -> 105.0.
+# K16.7 (2026-09-10): LIGHT_MAX_LUMA 105.0 -> 175.0 (outline first).
 #
 # The six numbers below are the measured box luma of the six moments the
 # hand-built spike put type on screen, taken through the pivot band box
@@ -183,38 +185,62 @@ def test_suv_fail_2025_png_is_never_light_when_present():
 # literals against the real file whenever it happens to be there.
 REFERENCE_REEL_BOX_LUMA = [98.3, 108.6, 236.9, 190.1, 159.8, 132.2]
 
+# nexon-reel4-test plate lumas from the K16.7 table (still-slabbed under
+# the old 105 floor; now light under 175 with the caption outline).
+REEL4_BARE_LIGHT_LUMA = (174.98, 157.49, 139.62, 116.69, 166.16, 88.48)
+
 
 def test_new_light_threshold_admits_the_proven_plate_and_no_further():
-    good, untested = 98.3, 108.6
+    good = 98.3
     # 98.3 is the plate where bare white type was rendered, inspected,
     # and read well. The old 90.0 threshold called it slab.
     assert choose_treatment(good, slab_default=False) == "light"
     assert choose_treatment(good, slab_default=False, light_max_luma=90.0) == "slab"
-    # 108.6 is the next plate up and bare type there was NEVER tested —
-    # the spike drew a dark slab at that moment. It must stay slab.
-    assert choose_treatment(untested, slab_default=False) == "slab"
-    assert LIGHT_MAX_LUMA == 105.0
-    assert good < LIGHT_MAX_LUMA < untested
+    # K16.7: 108.6 is now light under 175 (was slab at 105). The outline
+    # is the reason the wider floor is safe — captions already survive
+    # the measured luma-175 showroom plate.
+    assert choose_treatment(108.6, slab_default=False) == "light"
+    assert choose_treatment(108.6, slab_default=False, light_max_luma=105.0) == "slab"
+    assert LIGHT_MAX_LUMA == 175.0
+    assert choose_treatment(174.98, slab_default=False) == "light"
+    assert choose_treatment(LIGHT_MAX_LUMA + 1, slab_default=False) == "slab"
     # The failure the whole feature exists to prevent is still nowhere
     # near the light branch.
     assert choose_treatment(236.9, slab_default=False) == "dark"
+    assert choose_treatment(216.0, slab_default=False) == "dark"
+    assert choose_treatment(SUV_T3_MEAN_LUMA, slab_default=False) == "dark"
     assert DARK_MIN_LUMA == 180.0
+
+
+def test_reel4_showroom_and_mid_plates_are_light_under_k16_7():
+    """K16.7 table: every still-slabbed stamp/counter row under 105 is
+    light once the floor is 175. Unmeasured stays slab; 216 stays dark."""
+    for luma in REEL4_BARE_LIGHT_LUMA:
+        assert choose_treatment(luma, slab_default=False) == "light"
+    assert choose_treatment(None, slab_default=False) == "slab"
+    assert choose_treatment(SUV_T3_MEAN_LUMA, slab_default=False) == "dark"
+    assert choose_treatment(SUV_T3_MEAN_LUMA, slab_default=False) != "light"
 
 
 def test_light_had_zero_coverage_on_real_plates_at_the_old_threshold():
     """Worth pinning because it is the argument for moving the number:
-    at 90.0 not one plate in the reference reel could ever be `light`,
-    so the branch had no coverage in real data at all. At 105.0 exactly
-    one does."""
-    old = [
+    at 90.0 not one plate in the reference reel could ever be `light`.
+    At 105.0 exactly one did; at 175.0 four of the six do (the two
+    washout plates stay dark)."""
+    at_90 = [
         choose_treatment(v, slab_default=False, light_max_luma=90.0)
         for v in REFERENCE_REEL_BOX_LUMA
     ]
-    new = [choose_treatment(v, slab_default=False) for v in REFERENCE_REEL_BOX_LUMA]
-    assert old.count("light") == 0
-    assert new.count("light") == 1
-    # Nothing else moved: the only reclassification is 98.3 slab -> light.
-    assert [o == n for o, n in zip(old, new, strict=True)] == [False, True, True, True, True, True]
+    at_105 = [
+        choose_treatment(v, slab_default=False, light_max_luma=105.0)
+        for v in REFERENCE_REEL_BOX_LUMA
+    ]
+    at_175 = [choose_treatment(v, slab_default=False) for v in REFERENCE_REEL_BOX_LUMA]
+    assert at_90.count("light") == 0
+    assert at_105.count("light") == 1
+    assert at_175.count("light") == 4
+    assert at_175.count("dark") == 2
+    assert LIGHT_MAX_LUMA == 175.0
 
 
 def test_reference_reel_plate_luma_when_present():

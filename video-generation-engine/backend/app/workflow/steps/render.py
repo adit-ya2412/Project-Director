@@ -56,6 +56,7 @@ different renders even of the identical Timeline content.
 """
 
 import uuid as uuid_module
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -127,6 +128,7 @@ from app.repositories.shot_binding_repository import ShotBindingRepository
 from app.schemas.project import ProjectStatus
 from app.schemas.timeline import SfxKind, Timeline
 from app.script.styles import (
+    MusicGains,
     resolve_burn_captions,
     resolve_caption_highlight_bold,
     resolve_caption_highlight_size_fraction,
@@ -172,36 +174,37 @@ class RenderStep:
         bindings = await binding_repo.list_for_version(
             uuid_module.UUID(ctx.project_id), timeline.version
         )
-        if not bindings:
-            return True
-        latest_binding_update = max(b.updated_at for b in bindings)
-        video_mtime = datetime.fromtimestamp(video_path.stat().st_mtime, tz=UTC)
-        return video_mtime >= latest_binding_update
+        if bindings:
+            latest_binding_update = max(b.updated_at for b in bindings)
+            video_mtime = datetime.fromtimestamp(video_path.stat().st_mtime, tz=UTC)
+            if video_mtime < latest_binding_update:
+                return False
+
+        # K16.8: the fingerprint, not just the file's existence, decides
+        # whether this step is done. A pre-fingerprint (or style-stale)
+        # final.mp4 must not look satisfied. Same helper as render_video
+        # so the two cannot drift (RV2).
+        render_settings = _final_render_settings(timeline)
+        resolved = await resolve_render_inputs(ctx, timeline, render_settings)
+        stored = await RenderRepository(ctx.session).get_latest_completed_for_output(
+            uuid_module.UUID(ctx.project_id),
+            output_path=project.video_path,
+            is_draft=False,
+        )
+        if stored is None or not stored.fingerprint:
+            return False
+        return stored.fingerprint == resolved.fingerprint
 
     async def run(self, ctx: RunContext) -> StepResult:
         timeline = await ctx.timeline_service.get_active(ctx.project_id)
         if timeline is None:
             return StepResult(outcome="failed", error="no active timeline to render")
 
-        frame = resolve_render_format(
-            timeline.metadata.render_style,
-            frame_aspect=timeline.metadata.frame_aspect,
-        )
         # K16.1: style may force captions on even when BURN_CAPTIONS=false.
         # Resolve once onto RenderSettings so the fingerprint hashes the
         # same bool the burn path reads (RV2). Drafts still omit this
         # field (RenderSettings default False) — see projects.py draft.
-        render_settings = RenderSettings(
-            width=frame.width,
-            height=frame.height,
-            fps=settings.render_fps,
-            pixel_format=settings.render_pixel_format,
-            ffmpeg_binary=settings.ffmpeg_binary,
-            ffprobe_binary=settings.ffprobe_binary,
-            burn_captions=resolve_burn_captions(timeline.metadata.render_style),
-            watermark_enabled=settings.watermark_enabled,
-            burn_text_cards=settings.burn_text_cards,
-        )
+        render_settings = _final_render_settings(timeline)
         try:
             output_path = await render_video(
                 ctx, timeline, render_settings, output_filename="final.mp4"
@@ -220,21 +223,73 @@ class RenderStep:
         return StepResult(outcome="ok")
 
 
-async def render_video(
+def _final_render_settings(timeline: Timeline) -> RenderSettings:
+    """RenderSettings for the automated final.mp4 path (RenderStep)."""
+    frame = resolve_render_format(
+        timeline.metadata.render_style,
+        frame_aspect=timeline.metadata.frame_aspect,
+    )
+    return RenderSettings(
+        width=frame.width,
+        height=frame.height,
+        fps=settings.render_fps,
+        pixel_format=settings.render_pixel_format,
+        ffmpeg_binary=settings.ffmpeg_binary,
+        ffprobe_binary=settings.ffprobe_binary,
+        burn_captions=resolve_burn_captions(timeline.metadata.render_style),
+        watermark_enabled=settings.watermark_enabled,
+        burn_text_cards=settings.burn_text_cards,
+    )
+
+
+@dataclass
+class _ResolvedRenderInputs:
+    """Everything resolved up to (and including) the render fingerprint.
+
+    Shared by ``RenderStep.is_satisfied`` and ``render_video`` so the two
+    cannot drift (K16.8 / RV2). Does not write placeholder PNGs — missing
+    shot media is absent from ``shot_images`` and treatments fall through
+    to unmeasured→slab. ``render_video`` writes placeholders only on a
+    real encode after a fingerprint miss.
+    """
+
+    fingerprint: str
+    shot_images: dict[str, Path]
+    shot_secondary_images: dict[str, Path]
+    shot_layer_images: dict[str, list[Path]]
+    shot_focals: dict[str, tuple[float, float] | None]
+    narration_paths: list[Path] | None
+    music_segments: list[tuple[Path, float]] | None
+    caption_cues: object
+    caption_highlight_size_fraction: float | None
+    caption_highlight_bold: bool | None
+    caption_highlight_colour: str | None
+    alignment_by_scene: list | None
+    text_card_cues: list
+    overlay_cues: list
+    overlay_palette: object
+    music_gains: MusicGains
+    music_gain_offset_db: float
+    music_amix_normalize: int
+    loudness_normalize: bool
+    loudness_target_lufs: float
+    loudness_true_peak_db: float
+    narration_level_match: bool
+    sfx_whoosh_enabled: bool
+    sfx_transition_structural_only: bool
+
+
+async def resolve_render_inputs(
     ctx: RunContext,
     timeline: Timeline,
     render_settings: RenderSettings,
-    *,
-    output_filename: str,
-    is_draft: bool = False,
-) -> Path:
-    """The whole render/mux pipeline, parameterised so `RenderStep` (the
-    automated `final.mp4`) and the on-demand draft endpoint (`draft.mp4`,
-    M8 step 6) are the same code path, never two - see this module's own
-    docstring for why. Checks the fingerprint (I5) BEFORE doing any real
-    work; a hit copies an existing render's bytes into this project's own
-    output path and returns immediately, a miss renders for real and then
-    records one."""
+) -> _ResolvedRenderInputs:
+    """Resolve every fingerprint input and return the fingerprint + the
+    intermediates ``render_video`` needs after the cache check.
+
+    Called by both ``RenderStep.is_satisfied`` and ``render_video`` (RV2).
+    Never writes work-dir files (no placeholder PNGs).
+    """
     project_uuid = uuid_module.UUID(ctx.project_id)
     binding_repo = ShotBindingRepository(ctx.session)
     bindings_by_shot = {
@@ -242,10 +297,6 @@ async def render_video(
     }
 
     project_dir = settings.storage_root / ctx.project_id
-    work_dir = project_dir / "work"
-    work_dir.mkdir(parents=True, exist_ok=True)
-    output_path = project_dir / "renders" / output_filename
-    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     media_content_hashes: dict[str, str] = {}
     secondary_content_hashes: dict[str, str] = {}
@@ -272,16 +323,16 @@ async def render_video(
         path, content_hash = await _resolved_path_and_hash(ctx.session, binding)
         if content_hash is not None:
             media_content_hashes[shot.id] = content_hash
-        if path is None:
-            path = work_dir / f"{shot.id}_placeholder.png"
-            path.write_bytes(
-                render_placeholder(shot.id, render_settings.width, render_settings.height)
-            )
-        # Classification (still vs a real motion clip, A1) and the
-        # GIF-flatten gate this comment used to describe both now live in
-        # `render_timeline` itself - the one place that needs to make
-        # that decision - see that function's own docstring.
-        shot_images[shot.id] = path
+        # K16.8: do not write placeholders here — is_satisfied must not
+        # scribble work-dir files. Missing media stays out of shot_images;
+        # apply_emphasis_treatments then takes unmeasured→slab. render_video
+        # writes placeholders only on a real encode after a fingerprint miss.
+        if path is not None:
+            # Classification (still vs a real motion clip, A1) and the
+            # GIF-flatten gate this comment used to describe both now live in
+            # `render_timeline` itself - the one place that needs to make
+            # that decision - see that function's own docstring.
+            shot_images[shot.id] = path
         sec_path, sec_hash = await _resolved_secondary_path_and_hash(ctx.session, binding)
         if sec_hash is not None:
             secondary_content_hashes[shot.id] = sec_hash
@@ -441,20 +492,26 @@ async def render_video(
     )
     emphasis_cue_hash = emphasis_cue_content_hash(overlay_cues)
     emphasis_font_hash = emphasis_font_content_hash() if overlay_cues else None
-    # K5: resolve ONCE so the fingerprint and the compositor cannot
-    # drift (RV2). Hash the resolved pair, not the raw metadata field
-    # — unset and an explicit band pair are the same pixels. None when
-    # this render has no overlay.
-    overlay_palette = (
+    # K5 + K16.3: resolve ONCE so the fingerprint, compositor, and
+    # CaptionStyle highlight colour cannot drift (RV2). Overlay still
+    # hashes None when there are no cues; captions still take the accent
+    # when burn_captions is on even without an overlay.
+    resolved_palette = (
         resolve_emphasis_palette(
             timeline,
             channel_accent=settings.emphasis_accent,
             channel_pivot_ground=settings.emphasis_pivot_ground,
         )
-        if overlay_cues
+        if overlay_cues or render_settings.burn_captions
         else None
     )
+    overlay_palette = resolved_palette if overlay_cues else None
     palette_hash = emphasis_palette_hash(overlay_palette)
+    # K16.3: Feature A `\c` from the same resolved accent the counter
+    # digits already use. None when captions are off.
+    caption_highlight_colour = (
+        resolved_palette.accent if render_settings.burn_captions and resolved_palette else None
+    )
 
     ffmpeg_version = await get_ffmpeg_version(render_settings.ffmpeg_binary)
     # Leftover item 5: style-owned mix. Resolve once so the fingerprint
@@ -517,6 +574,7 @@ async def render_video(
         cue_list_hash=cue_hash,
         caption_highlight_size_fraction=caption_highlight_size_fraction,
         caption_highlight_bold=caption_highlight_bold,
+        caption_highlight_colour=caption_highlight_colour,
         duck_envelope_hash=duck_envelope_hash,
         watermark_enabled=render_settings.watermark_enabled,
         watermark_asset_hash=watermark_asset_hash,
@@ -558,6 +616,81 @@ async def render_video(
         emphasis_font_hash=emphasis_font_hash,
         palette_hash=palette_hash,
     )
+    return _ResolvedRenderInputs(
+        fingerprint=fingerprint,
+        shot_images=shot_images,
+        shot_secondary_images=shot_secondary_images,
+        shot_layer_images=shot_layer_images,
+        shot_focals=shot_focals,
+        narration_paths=narration_paths,
+        music_segments=music_segments,
+        caption_cues=caption_cues,
+        caption_highlight_size_fraction=caption_highlight_size_fraction,
+        caption_highlight_bold=caption_highlight_bold,
+        caption_highlight_colour=caption_highlight_colour,
+        alignment_by_scene=alignment_by_scene,
+        text_card_cues=text_card_cues,
+        overlay_cues=overlay_cues,
+        overlay_palette=overlay_palette,
+        music_gains=music_gains,
+        music_gain_offset_db=music_gain_offset_db,
+        music_amix_normalize=music_amix_normalize,
+        loudness_normalize=loudness_normalize,
+        loudness_target_lufs=loudness_target_lufs,
+        loudness_true_peak_db=loudness_true_peak_db,
+        narration_level_match=narration_level_match,
+        sfx_whoosh_enabled=sfx_whoosh_enabled,
+        sfx_transition_structural_only=sfx_transition_structural_only,
+    )
+
+
+async def render_video(
+    ctx: RunContext,
+    timeline: Timeline,
+    render_settings: RenderSettings,
+    *,
+    output_filename: str,
+    is_draft: bool = False,
+) -> Path:
+    """The whole render/mux pipeline, parameterised so `RenderStep` (the
+    automated `final.mp4`) and the on-demand draft endpoint (`draft.mp4`,
+    M8 step 6) are the same code path, never two - see this module's own
+    docstring for why. Checks the fingerprint (I5) BEFORE doing any real
+    work; a hit copies an existing render's bytes into this project's own
+    output path and returns immediately, a miss renders for real and then
+    records one."""
+    project_uuid = uuid_module.UUID(ctx.project_id)
+    project_dir = settings.storage_root / ctx.project_id
+    work_dir = project_dir / "work"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    output_path = project_dir / "renders" / output_filename
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    resolved = await resolve_render_inputs(ctx, timeline, render_settings)
+    fingerprint = resolved.fingerprint
+    shot_images = resolved.shot_images
+    shot_secondary_images = resolved.shot_secondary_images
+    shot_layer_images = resolved.shot_layer_images
+    shot_focals = resolved.shot_focals
+    narration_paths = resolved.narration_paths
+    music_segments = resolved.music_segments
+    caption_cues = resolved.caption_cues
+    caption_highlight_size_fraction = resolved.caption_highlight_size_fraction
+    caption_highlight_bold = resolved.caption_highlight_bold
+    caption_highlight_colour = resolved.caption_highlight_colour
+    alignment_by_scene = resolved.alignment_by_scene
+    text_card_cues = resolved.text_card_cues
+    overlay_cues = resolved.overlay_cues
+    overlay_palette = resolved.overlay_palette
+    music_gains = resolved.music_gains
+    music_gain_offset_db = resolved.music_gain_offset_db
+    music_amix_normalize = resolved.music_amix_normalize
+    loudness_normalize = resolved.loudness_normalize
+    loudness_target_lufs = resolved.loudness_target_lufs
+    loudness_true_peak_db = resolved.loudness_true_peak_db
+    narration_level_match = resolved.narration_level_match
+    sfx_whoosh_enabled = resolved.sfx_whoosh_enabled
+    sfx_transition_structural_only = resolved.sfx_transition_structural_only
 
     render_repo = RenderRepository(ctx.session)
     cached = await render_repo.get_completed_by_fingerprint(fingerprint)
@@ -568,6 +701,15 @@ async def render_video(
         # to the source project's storage later.
         output_path.write_bytes(Path(cached.output_path).read_bytes())
     else:
+        # Placeholders for encode only — fingerprint already computed
+        # without them (see resolve_render_inputs / K16.8).
+        for shot in timeline.all_shots():
+            if shot.id not in shot_images:
+                path = work_dir / f"{shot.id}_placeholder.png"
+                path.write_bytes(
+                    render_placeholder(shot.id, render_settings.width, render_settings.height)
+                )
+                shot_images[shot.id] = path
         # The silent video always lands in the work dir first, never at
         # `output_path` directly - `narration_pairs`/`music_path` above
         # decide whether that silent file simply BECOMES the final
@@ -661,6 +803,9 @@ async def render_video(
             if caption_highlight_size_fraction is not None:
                 style_kwargs["highlight_size_fraction"] = caption_highlight_size_fraction
             style_kwargs["highlight_bold"] = bool(caption_highlight_bold)
+            # K16.3: same accent already hashed as caption_highlight_colour.
+            if caption_highlight_colour is not None:
+                style_kwargs["highlight_colour"] = caption_highlight_colour
             style = CaptionStyle(
                 resolution=(render_settings.width, render_settings.height),
                 font_family=settings.caption_font,

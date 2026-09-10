@@ -48,6 +48,7 @@ transition arithmetic.
 """
 
 import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -143,6 +144,10 @@ class CaptionStyle:
     # and passed in — captions.py never reads a style band.
     highlight_size_fraction: float | None = None
     highlight_bold: bool = False
+    # K16.3: Feature A highlight colour from the resolved palette accent
+    # (`#RRGGBB`). None keeps today's yellow (`{\c&H00FFFF&}`) so other
+    # styles / default CaptionStyle stay byte-identical.
+    highlight_colour: str | None = None
 
 
 def derive_caption_cues(
@@ -674,24 +679,39 @@ def _escape_ass_text(text: str) -> str:
 
 
 # Feature A (style_extensions.md §3.3): word-level highlight colour, in
-# ASS's &HBBGGRR& order - yellow is B=00 G=FF R=FF. Applied to ALL styles
-# per decision §3.6. K16.2 adds size/weight around this colour via
-# `_highlight_override_ass`; K16.3 will make the colour style-keyed.
+# ASS's &HBBGGRR& order - yellow is B=00 G=FF R=FF. Default when
+# `CaptionStyle.highlight_colour` is unset (K16.3); retention_fast feeds
+# the resolved palette accent instead.
 _HIGHLIGHT_COLOUR_ASS = "\\c&H00FFFF&"
 _RESET_OVERRIDE_ASS = "{\\r}"
+_HEX_RRGGBB = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+def highlight_colour_to_ass(hex_rrggbb: str | None) -> str:
+    """`#RRGGBB` → ASS `\\c&HBBGGRR&`. Invalid / missing → yellow.
+
+    `#00D9FF` (project cyan accent) → `\\c&HFFD900&`. Pin lives in
+    `test_caption_highlight.py`.
+    """
+    if hex_rrggbb is None or not _HEX_RRGGBB.fullmatch(hex_rrggbb):
+        return _HIGHLIGHT_COLOUR_ASS
+    r = hex_rrggbb[1:3]
+    g = hex_rrggbb[3:5]
+    b = hex_rrggbb[5:7]
+    return f"\\c&H{b.upper()}{g.upper()}{r.upper()}&"
 
 
 def _highlight_override_ass(style: CaptionStyle, axis: int) -> str:
     """Per-word ASS override. Tag order is stable: \\fs, then \\b1, then
-    colour. Defaults (no size, no bold) emit exactly `{\\c&H00FFFF&}` —
-    byte-identical to pre-K16.2 Feature A."""
+    colour. Defaults (no size, no bold, no colour) emit exactly
+    `{\\c&H00FFFF&}` — byte-identical to pre-K16.2 Feature A."""
     parts: list[str] = []
     if style.highlight_size_fraction is not None:
         size = max(round(axis * style.highlight_size_fraction), 1)
         parts.append(f"\\fs{size}")
     if style.highlight_bold:
         parts.append("\\b1")
-    parts.append(_HIGHLIGHT_COLOUR_ASS)
+    parts.append(highlight_colour_to_ass(style.highlight_colour))
     return "{" + "".join(parts) + "}"
 
 

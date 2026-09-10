@@ -788,11 +788,12 @@ _EMPHASIS_HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
 # it later. That constant answers the opposite polarity — "is this
 # surface bright enough that NEAR-BLACK type is safe?" — and a neutral
 # ground at luma 180 measures 2.07:1 against white, well under the
-# large-text floor. Nor is it `LIGHT_MAX_LUMA` (105.0), which would
-# reject `#FF2E2E` at 108.5: that threshold judges a PHOTOGRAPHIC PLATE
-# that bare type has to survive, where a mean hides a range; a band fill
-# is one flat known colour, so it can be held to the contrast figure
-# itself rather than to a conservative margin.
+# large-text floor. Nor is it `LIGHT_MAX_LUMA` (175.0), which would
+# reject `#FF2E2E` at 108.5 only if it were still 105: that threshold
+# judges a PHOTOGRAPHIC PLATE that bare type has to survive, where a
+# mean hides a range; a band fill is one flat known colour, so it can
+# be held to the contrast figure itself rather than to a conservative
+# margin.
 #
 # KNOWN IMPRECISION, recorded rather than hidden. Rec. 601 luma of
 # gamma-encoded values is a PROXY for perceived contrast, and it

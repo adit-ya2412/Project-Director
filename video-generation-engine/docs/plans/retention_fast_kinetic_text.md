@@ -75,8 +75,8 @@ and their disposition are below.
 | **K11** device renderers (stamp, counter) | **implemented 2026-09-09; two render-found defects fixed same day** — stamp + counter renderers; unblocks K9. The counter band is now content-derived (its type overflowed a hardcoded 420 by 118px, measured) and `treatment="dark"` gained the light halo it never had |
 | **K8** data graphics | **not started** |
 | **K12** planner authors `picture_is_graphic` | **implemented and reviewed 2026-09-09** (`23f83e9`) — Shot Planner authors required `ShotPlanOutput.picture_is_graphic` (no default) and maps it onto `Shot`. Live re-plan: data shot True, ordinary shots False. K3 already enforces. K8 unblocked on the signal, not yet implemented |
-| **K16.7 / K16.8** what the captioned reel showed | **not started, ADDED 2026-09-10** - bare type needs the caption's OUTLINE before the range can widen: with `slab_default` off, 6 of 8 cues still slabbed because plate lumas run 88-175 and the 105-180 band forbids bare type either way, so the slabs became inconsistent rather than gone. And a styling change does NOT trigger a re-render - `RenderStep.is_satisfied` never consults the fingerprint, so the first K16 re-render completed in 3s and served a pre-K16 file |
-| **K16** captions carry the text | **K16.1 + K16.2 + K16.4 + K16.5 in 2026-09-10; finding 1 (captions-on wiring) FIXED with call-site spy; finding 3 (stamp_top resolve) moved into `render_video`; the open fingerprint-hole finding (highlight size/weight not hashed) is now FIXED, proven by probe. Awaiting watched reel — do not imply a render was done.** — captions ON; Feature A highlight `{\fs102\b1\c&H00FFFF&}` on retention_fast (0.08 → 102px on 720×1280, ~1.76×); `emphasis_slab_default=False` so measurement decides bare light/dark/slab; stamp top 0.18 resolved in render caller. `caption_highlight_size_fraction`/`caption_highlight_bold` are now unconditional fingerprint inputs (`None` when `burn_captions` is False), so retuning 0.08 and re-rendering the same project misses the cache instead of silently reusing the old burn. **Not done:** K16.3 palette highlight colour, K16.6 translucent figure. Pivot/counter still 23–43%. LIGHT_MAX_LUMA/DARK_MIN_LUMA un-retuned (flicker risk 101–121). |
+| **K16.7 / K16.8** what the captioned reel showed | **K16.7 DONE 2026-09-10; K16.8 DONE 2026-09-10 (awaiting review)** — outline FIRST then LIGHT_MAX_LUMA 105→175 (K16.7); `RenderStep.is_satisfied` now compares stored vs current render fingerprint via shared `resolve_render_inputs` (K16.8). Missing render row → unsatisfied. Binding mtime gate kept. Pivot.tsx untouched. |
+| **K16** captions carry the text | **K16.1 + K16.2 + K16.3 + K16.4 + K16.5 + K16.7 + K16.8 in 2026-09-10; finding 1 FIXED; finding 3 FIXED; highlight size/weight/colour fingerprint hole FIXED; is_satisfied fingerprint FIXED (awaiting review). Awaiting watched reel — do not imply a render was done.** — captions ON; Feature A highlight size/weight plus palette accent colour (`#00D9FF` → `{\fs102\b1\c&HFFD900&}`); `emphasis_slab_default=False`; stamp top 0.18; LIGHT_MAX_LUMA=175 after outline. `caption_highlight_size_fraction`/`caption_highlight_bold`/`caption_highlight_colour` are unconditional fingerprint inputs (`None` when `burn_captions` is False). **Not done:** K16.6 translucent figure. Pivot.tsx look unchanged. |
 | **K15** a multi-word stamp has no band | **DONE 2026-09-10, unwatched** - `stamp_band(w, h, text=, text_register=)` fits the phrase to ONE line (largest font inside `width - 4*pad`) and `Stamp.tsx` sets `whiteSpace: nowrap`, so a wrap is impossible even on a bad measurement. Devanagari widths are REAL metrics at the **wght=700** instance (the `hmtx` default is 8-10% narrow — the error that puts the wrap back); Latin reuses K11's measured Black stack, max of the two faces. Band tracks the fitted font, so K4 still measures inside the drawn ink; K4 thresholds unchanged. Character budget 10 Latin / 14 Devanagari in `emphasis/v1.md`, derived from a 90px floor on rendered frames. All 9 rendered cases one line, ink inside slab; the single-word control is byte-identical (same PNG md5, same cue and overlay hashes). Fallback NOT needed. Open, pre-existing and smaller than before: Devanagari matras clip 0.15 em against `lineHeight: 1` on a slab (`लेकिन` at 190 loses 15px today) |
 | **K14** the hook is empty | **implemented 2026-09-10, four review findings fixed same day, awaiting watched reel** — hook window 5.0s / gap 1; **K14.2 body-only 12.0/min cap** (hook cues extra; did not raise the whole-reel ceiling); K9 prompt + `Target cue count` front-load at 12.0/min with the hook floor now **clipped to how many shots start inside the window** (2 on the watched shape, not 3); the body gap counts from the last kept **BODY** cue, so the hook no longer opens a dead zone just past itself; stamp word delays scheduled against the cue's real window instead of a fixed 0/4/14/24. K14.6 not done. **The longest empty stretch did NOT improve on the probe (5.46s → 6.73s hold-aware): the body-only cap trims in film order, so the reel's LAST cue is what goes.** A NEW project is required (`34dd1ee1` cannot be re-authored). BLOCKS captions-off until the numbers beat 7.15s / 7.29 per min / 7.75s |
 | **K13** the counter has no reachable input | **not started, ADDED 2026-09-09, BLOCKING** — number-stating shots are planned as graphics, K3 rule 2 forbids cues there, so the counter is unreachable. First real reel produced 0 counters from 3 spoken numbers. Recommended fix: stop the Shot Planner making number shots into graphics (option B) |
@@ -3610,14 +3610,141 @@ inputs), so it wants its own slice rather than being bolted on here.
 
 ### Still open from K16 itself
 
-- **K16.3 - the highlight colour is still the global yellow**, while
-  this project's accent is `#00D9FF`. Both appear in the 11.4s frame:
-  a cyan counter and a yellow caption highlight in one picture, two
-  accents fighting. K5 already resolves a per-project accent; feed it
-  in.
+- **K16.3 - DONE 2026-09-10** (same slice as K16.7): highlight colour
+  comes from the resolved K5 accent (`CaptionStyle.highlight_colour`,
+  fingerprinted as `caption_highlight_colour`). `#00D9FF` →
+  `{\c&HFFD900&}`. Default / unset stays yellow byte-identical.
 - **K16.6** - the translucent low figure. Unstarted, lowest priority.
+- **K16.8 - DONE 2026-09-10** (awaiting review): `RenderStep.is_satisfied`
+  compares stored vs current fingerprint via shared `resolve_render_inputs`.
 - **The tuned numbers are reasoned, not watched.** `0.08` for the
   highlight size (1.8x the 58px base) and `0.18` for the stamp top were
   both derived rather than seen. Expect to change them after watching,
   which is exactly what the fingerprint fix above makes possible.
+
+---
+
+## Work log — K16.7 outline-then-widen + K16.3 palette highlight (2026-09-10)
+
+This section is an implementation diary, not a design change. Append only.
+
+### — K16.7 Step A (outline) then Step B (105→175) + K16.3 (this slice)
+
+- decided (K16.7 order): outline FIRST on stamp/counter bare paths, THEN
+  raise `LIGHT_MAX_LUMA` 105→**175.0**. The outline is
+  `CaptionStyle.outline_fraction` 0.006 → `Math.max(1, round(max(w,h)*0.006))`
+  = **8px** on 720×1280, via `-webkit-text-stroke` + `paintOrder: "stroke fill"`.
+  Bare light AND bare dark both use white type (stamp) / accent digits +
+  white kicker (counter) with black outline — no SHADOW/HALO, no
+  `onDark ? INK`. Slab path unchanged (device ground, no outline).
+  **Pivot.tsx not edited** (full-bleed band + white type stays).
+  `DARK_MIN_LUMA` stays **180.0**. Unmeasured stays slab.
+- decided (K16.3): `CaptionStyle.highlight_colour: str | None = None`
+  (`#RRGGBB`). None → today's yellow `{\c&H00FFFF&}` byte-identical.
+  Helper `highlight_colour_to_ass`: `#00D9FF` → `\c&HFFD900&`;
+  invalid/missing → yellow. Tag order still `\fs` then `\b1` then `\c`.
+  `render_video` resolves palette when overlays OR `burn_captions`,
+  passes `resolved_palette.accent` into CaptionStyle when burning;
+  `palette_hash` still None when no overlay cues. Fingerprint adds
+  `caption_highlight_colour` unconditionally (`None` when captions off).
+- did NOT: K16.8 (`is_satisfied` fingerprint); K16.6; no Pivot.tsx /
+  SuvRetention / EmphasisOverlay edits; no project / OpenAI / full reel;
+  no commit.
+- tests: targeted emphasis_contrast/caption_highlight/fingerprint/
+  stamp_fit/captions/styles/compositor → **323 passed**. Full
+  `tests/unit -q` → **1605 passed, 6 failed** — same six baseline
+  failures (5 `test_sfx_overlays_diegetic.py` + 1
+  `test_director_planner.py::test_every_attempt_is_recorded_as_an_llm_call`);
+  +5 over the 1600 baseline (outline TSX pin, reel4 light pins,
+  hex→ASS conversion, cyan override string, fingerprint colour miss).
+  No new failure.
+- files: `compositor/src/Stamp.tsx`, `compositor/src/Counter.tsx`,
+  `backend/app/renderer/emphasis_contrast.py`,
+  `backend/app/renderer/captions.py`,
+  `backend/app/renderer/fingerprint.py`,
+  `backend/app/workflow/steps/render.py`,
+  `backend/app/script/styles.py`,
+  `backend/app/schemas/timeline.py`,
+  `backend/tests/unit/renderer/test_emphasis_contrast.py`,
+  `backend/tests/unit/renderer/test_caption_highlight.py`,
+  `backend/tests/unit/renderer/test_fingerprint.py`,
+  `backend/tests/unit/renderer/test_fingerprint_reveal.py`,
+  `backend/tests/unit/renderer/test_fingerprint_parallax.py`,
+  `backend/tests/unit/renderer/test_stamp_fit.py`,
+  `backend/scripts/c8_probe.py`, this plan (status rows + this entry).
+- next: K16.8 (is_satisfied vs fingerprint), then watched reel; K16.6
+  lowest priority.
+
+### — review (Grok 4.6)
+
+- Order is correct: outline on stamp/counter bare paths, then
+  LIGHT_MAX_LUMA 105→175 with the luma-175 caption plate as the reason.
+  DARK_MIN 180 untouched. Pivot.tsx diff empty. K16.8 not in.
+- K16.3: `#00D9FF` → `{\fs102\b1\c&HFFD900&}`; fingerprint colour miss
+  pinned. Yellow default byte-identical.
+- Reviewer `tests/unit -q`: **1605 passed, 6 failed** (same six).
+- Watch notes, not reverts: (1) CSS stroke is not libass outline — the
+  luma-175 stamp still has to be *seen*; (2) 176–179 remains a 4-unit
+  slab gap; (3) K16.8 still means an existing project's `final.mp4`
+  will not rebuild unless moved aside. New project is the clean verify.
+- No project created. No commit.
+
+---
+
+## Work log — K16.8 is_satisfied vs fingerprint (2026-09-10)
+
+This section is an implementation diary, not a design change. Append only.
+K16.7 + K16.3 dirty tree left in place; no revert, no commit.
+
+### — K16.8 RenderStep.is_satisfied consults the fingerprint (this slice)
+
+- decided: `is_satisfied` keeps the cheap gates (no project / no
+  video_path / file missing / no timeline → False; ShotBinding newer
+  than video mtime → False). Then compares stored completed-render
+  fingerprint for `project.video_path` (`is_draft=False`) against the
+  fingerprint current inputs produce. **Missing render row or empty
+  fingerprint → unsatisfied** (forces a run so a row is written — the
+  pre-K16 `final.mp4` 3-second skip). Mismatch → unsatisfied. Match →
+  satisfied.
+- decided: extract `resolve_render_inputs` in the same module; BOTH
+  `is_satisfied` and `render_video` call it (RV2). `_final_render_settings`
+  shared by `run` and `is_satisfied`. Repo method
+  `get_latest_completed_for_output(project_id, *, output_path, is_draft=False)`
+  so a draft row cannot satisfy a final.
+- decided (placeholders): helper never writes work-dir files. Missing
+  shot media is absent from `shot_images`; treatments fall through to
+  unmeasured→slab for the fingerprint. `render_video` writes
+  placeholders only on a real encode after a fingerprint miss. Finished
+  projects have every shot filled so this path is idle for is_satisfied.
+- did NOT: K16.6; Pivot.tsx; K16.7 threshold retune; no project /
+  OpenAI / reel; no commit; no `git add`.
+- tests: `tests/unit/workflow/test_render_step.py` — missing/stale
+  fingerprint → False; match → True; binding mtime still wins; helper
+  call wired; is_satisfied and render_video share the same function
+  identity. Full `tests/unit -q` → **1611 passed, 6 failed** — same six
+  baseline failures; +6 over the 1605 K16.7 baseline (the new K16.8
+  pins). No new failure. No integration/e2e run; comments in
+  `test_render_only_api.py` / `test_fixture_round_trip.py` /
+  `test_thumbnails.py` do not assert RenderStep.is_satisfied True on a
+  file-only fixture, so no test edits there.
+- files: `backend/app/workflow/steps/render.py`,
+  `backend/app/repositories/render_repository.py`,
+  `backend/tests/unit/workflow/test_render_step.py`, this plan
+  (status rows + this entry).
+- next: review; then watched reel; K16.6 lowest priority.
+
+### — review (Grok 4.6)
+
+- K16.8 matches the section: `is_satisfied` compares stored vs current
+  fingerprint via shared `resolve_render_inputs`; missing row → False
+  (the 3-second skip). Binding mtime kept. Drafts cannot satisfy final.
+  Helper writes no placeholders.
+- Reviewer `tests/unit -q`: **1611 passed, 6 failed** (same six).
+  Targeted render_step + fingerprint: 85 passed.
+- Watch notes, not reverts: (1) fingerprint for *unfilled* shots no
+  longer includes placeholder-plate luma — finished reels are
+  unaffected; (2) `is_satisfied` now does the full resolve (ffmpeg
+  version, plate treatments). That is the cost of this slice.
+- No project created. No commit. An existing `final.mp4` with no
+  matching render row should now re-run instead of reporting done.
 

@@ -297,10 +297,9 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
         render_height=1280,
         # K16.5: slab_default OFF so choose_treatment's measurement is
         # used (bare light/dark when the plate earns it). K4's log of
-        # measured luma + policy-off counterfactual still runs. Do NOT
-        # retune LIGHT_MAX_LUMA/DARK_MIN_LUMA this slice — plates that
-        # cluster 101–121 may flicker light↔slab; measure on a watched
-        # reel before widening.
+        # measured luma + policy-off counterfactual still runs. K16.7
+        # raised LIGHT_MAX_LUMA 105→175 after stamp/counter gained the
+        # caption outline; DARK_MIN_LUMA stays 180.
         emphasis_slab_default=False,
         # K3 / K14 density. Body gap 3 at 1.75s/shot ≈ every 5.25s.
         # K14.1 adds a 5.0s hook with gap 1 so consecutive early shots

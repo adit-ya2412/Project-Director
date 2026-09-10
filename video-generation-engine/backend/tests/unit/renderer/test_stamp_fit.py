@@ -406,6 +406,7 @@ def _timeline_with_stamp(
 
 
 STAMP_TSX = Path(__file__).resolve().parents[4] / "compositor" / "src" / "Stamp.tsx"
+COUNTER_TSX = Path(__file__).resolve().parents[4] / "compositor" / "src" / "Counter.tsx"
 
 
 def test_the_tsx_still_forbids_a_wrap_and_still_insets_the_slab_by_4_pad():
@@ -419,6 +420,26 @@ def test_the_tsx_still_forbids_a_wrap_and_still_insets_the_slab_by_4_pad():
     source = STAMP_TSX.read_text(encoding="utf-8")
     assert 'whiteSpace: "nowrap"' in source
     assert "padding: onSlab ? `${pad}px ${pad * 2}px` : 0," in source
+
+
+def test_bare_stamp_and_counter_use_caption_outline_not_shadow_or_halo():
+    """K16.7: bare paths take CaptionStyle.outline_fraction (0.006 → 8px
+    on 720×1280) via WebkitTextStroke + paintOrder; slab does not.
+    SHADOW/HALO are gone as the bare-type protection."""
+    stamp = STAMP_TSX.read_text(encoding="utf-8")
+    counter = COUNTER_TSX.read_text(encoding="utf-8")
+    for source in (stamp, counter):
+        assert "OUTLINE_FRACTION = 0.006" in source
+        assert "WebkitTextStroke" in source
+        assert 'paintOrder: "stroke fill"' in source
+        assert "CaptionStyle.outline_fraction" in source
+        assert "const SHADOW" not in source
+        assert "const HALO" not in source
+    # Slab skips the outline object.
+    assert "bareOutline = onSlab" in stamp
+    assert "bareOutline = onSlab" in counter
+    # Mirror the TSX: Math.max(1, Math.round(Math.max(w,h) * 0.006)).
+    assert max(1, round(max(720, 1280) * 0.006)) == 8
 
 
 def test_collect_passes_the_phrase_and_its_register_into_the_band():

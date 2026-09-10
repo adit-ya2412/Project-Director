@@ -74,6 +74,7 @@ def _fingerprint(**overrides) -> str:
         "cue_list_hash": None,
         "caption_highlight_size_fraction": None,
         "caption_highlight_bold": None,
+        "caption_highlight_colour": None,
         "duck_envelope_hash": None,
         "watermark_enabled": False,
         "watermark_asset_hash": None,
@@ -330,6 +331,17 @@ def test_caption_highlight_bold_changes_the_fingerprint():
     ) != _fingerprint(burn_captions=True, caption_highlight_bold=False)
 
 
+def test_caption_highlight_colour_changes_the_fingerprint():
+    """K16.3: swapping the resolved accent must miss the cached burn.
+    Captions-off keeps the field None (moot), same rule as size/bold."""
+    assert _fingerprint(
+        burn_captions=True, caption_highlight_colour="#00D9FF"
+    ) != _fingerprint(burn_captions=True, caption_highlight_colour="#FFC300")
+    assert _fingerprint(burn_captions=False, caption_highlight_colour=None) == _fingerprint(
+        burn_captions=False
+    )
+
+
 def test_cue_list_hash_still_means_captions_not_emphasis():
     """Naming trap: `cue_list_hash` is captions. Emphasis has its own
     key. Flipping one must not be mistaken for flipping the other."""
@@ -398,9 +410,10 @@ def test_emphasis_keys_are_in_the_fingerprint_payload():
     assert '"emphasis_font_hash"' in source
     assert '"palette_hash"' in source
     assert '"cue_list_hash"' in source
-    # K16.2 review finding: same unconditional-presence rule.
+    # K16.2 / K16.3: same unconditional-presence rule.
     assert '"caption_highlight_size_fraction"' in source
     assert '"caption_highlight_bold"' in source
+    assert '"caption_highlight_colour"' in source
 
 
 def test_palette_hash_change_misses_the_cache():

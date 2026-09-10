@@ -39,8 +39,9 @@ not be "optimised away" later:
   cluster will be judged. `apply_emphasis_treatments` logs every
   measurement with the treatment the thresholds ALONE would have picked
   and whether the policy overrode it. Finding 2's threshold move from
-  90 to 105 is exactly the kind of decision this data supports; skipping
-  the decode would have left it a guess.
+  90 to 105, and K16.7's 105 to 175 after the outline existed, are
+  exactly the kind of decision this data supports; skipping the decode
+  would have left it a guess.
 
 So a discarded value here is deliberate, and it is the cheapest
 calibration data this feature will ever get.
@@ -79,35 +80,28 @@ SUV_T3_MEAN_LUMA = 216.0
 # has only 39 units to 255 and failed. Light is legal only on a DARK
 # plate; dark only on a BRIGHT plate; the mid band stays slab.
 #
-# LIGHT_MAX_LUMA was 90.0 and is 105.0 as of the 2026-09-09 review
-# (finding 2). The number is otherwise arbitrary, so here is the
-# measurement behind it. Six plates, taken at the six moments the
-# hand-built spike put type on screen (t = 1.30, 2.20, 3.00, 4.30, 5.20,
-# 5.90 on `tmp/suv_test/plate_nocaptions.mp4`, 720x1280), each measured
-# through the pivot band box (0, 380, 720, 548):
+# LIGHT_MAX_LUMA history:
+# - 90.0 → 105.0 on 2026-09-09 (review finding 2). Six plates at the
+#   moments the hand-built spike put type on screen (t = 1.30, 2.20,
+#   3.00, 4.30, 5.20, 5.90 on `tmp/suv_test/plate_nocaptions.mp4`,
+#   720x1280), each measured through the pivot band box
+#   (0, 380, 720, 548): 98.3 / 108.6 / 236.9 / 190.1 / 159.8 / 132.2.
+#   At 98.3 bare white READ WELL (old 90 excluded it); at 236.9 bare
+#   white WASHED OUT. 105 admitted the proven-good case and stopped
+#   below the nearest unproven one (108.6). At 90.0, `light` never
+#   fired on ANY plate in that reel.
+# - 105.0 → 175.0 on 2026-09-10 (K16.7). AFTER the stamp/counter bare
+#   path gained the caption black outline (CaptionStyle.outline_fraction
+#   0.006 → 8px on 720×1280). Not a looser threshold on its own: the
+#   same captions already survive the measured luma-175 showroom plate
+#   in `nexon-reel4-test`, in the same frame as a slabbed stamp. With
+#   that outline as the protection, raising the light floor to 175 is
+#   the plate the other text layer already reads on. The mid-band
+#   105–180 had been slabbing 6 of 8 cues (lumas 88–175).
 #
-#     98.3   108.6   236.9   190.1   159.8   132.2
-#
-# - At box luma **98.3** bare white type was rendered, inspected, and it
-#   READ WELL. That is a measured good case, and the old 90.0 threshold
-#   excluded it.
-# - At box luma **236.9** bare white type WASHED OUT. That is the failure
-#   this whole feature exists to prevent; 105.0 still classifies it
-#   `dark`, with 132 units of clearance.
-# - The next plate above the good case is **108.6**, and bare type there
-#   was never tested — the spike drew a dark slab at that moment. So
-#   105.0 admits the one proven-good case with ~7 units of margin and
-#   stops below the nearest unproven one.
-#
-# Worth stating because it changes how much the old number was worth: at
-# 90.0, `light` never fired on ANY plate in the reference reel. The
-# branch had zero coverage in real data — only in synthetic test
-# fixtures — so the threshold was never a measured floor, just a
-# cautious one.
-#
-# DARK_MIN_LUMA stays at 180.0: 190.1 is the only reference plate above
-# it, dark type there was never inspected either, and unlike the light
-# side there is no measured good case asking for the boundary to move.
+# DARK_MIN_LUMA stays at 180.0: the 216/236 washout plate remains
+# `dark` (and dark now also draws white+outline, so it should survive
+# too). Do not lower DARK_MIN without a measured good case.
 #
 # There is a THIRD luma threshold in this feature and it is deliberately
 # not here: `PIVOT_GROUND_MAX_LUMA` in `app/schemas/timeline.py` caps
@@ -118,10 +112,7 @@ SUV_T3_MEAN_LUMA = 216.0
 # `DARK_MIN_LUMA`: see that constant's own comment for why the numbers
 # answer different questions and why reusing 180.0 there measures out at
 # 2.07:1 against white.
-#
-# Still conservative on purpose. Better to pick slab too often than to
-# ship another washed-out year stamp.
-LIGHT_MAX_LUMA = 105.0
+LIGHT_MAX_LUMA = 175.0
 DARK_MIN_LUMA = 180.0
 
 

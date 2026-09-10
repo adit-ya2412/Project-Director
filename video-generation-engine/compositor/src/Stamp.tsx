@@ -55,7 +55,8 @@ import { wordDelaySchedule } from "./stampWordTiming";
  * Hue: white `#FFFFFF` and ink `#0A0A0B` stay K4 literals. The rule
  * colour is K5 `accent`, passed from Python. `AMBER` below is a
  * spike-only fallback for standalone compositions that pass no palette;
- * production always passes `accent`.
+ * production always passes `accent`. Bare light/dark draw white type
+ * with the caption black outline (K16.7); slab keeps white-on-ink.
  */
 
 const WHITE = "#FFFFFF";
@@ -63,24 +64,10 @@ const INK = "#0A0A0B";
 // FALLBACK ONLY — standalone spike compositions. Production passes `accent`.
 const AMBER = "#FFC300";
 const HEAVY = "'Segoe UI Black','Arial Black',Impact,sans-serif";
-const SHADOW = "0 6px 0 rgba(0,0,0,0.35), 0 0 26px rgba(0,0,0,0.6)";
-// The `dark` half of the same protection, added 2026-09-09. Until then
-// `textShadow` was `treatment === "light" ? SHADOW : "none"`, which had
-// it exactly backwards: `light` means the plate measured DARK, so white
-// type already sits on a dark ground and a dark shadow adds almost
-// nothing, while `dark` means the plate measured BRIGHT (the 236.9 SUV
-// plate) and near-black type got NO protection at all — and a bright,
-// UNEVEN plate is precisely where black type loses its edges. So `dark`
-// gets a light halo, the analogue of what `light` gets. `slab` still
-// needs neither: the device brings its own ground.
-//
-// Two glows and no offset ledge, unlike SHADOW: SHADOW is a hard 6px
-// drop plus a wide blur, but offsetting a LIGHT halo under dark type
-// would protect one side of each glyph and leave the other bare, and an
-// uneven plate is uneven in no particular direction. Tight 10px at 0.95
-// buys the edge separation, wide 26px at 0.8 lifts the surround.
-// SHADOW itself is untouched — `light` was never the broken case.
-const HALO = "0 0 10px rgba(255,255,255,0.95), 0 0 26px rgba(255,255,255,0.8)";
+// CaptionStyle.outline_fraction — same 0.006 of the long side (8px on
+// 720×1280). Bare stamp/counter use the caption outline, not SHADOW/HALO;
+// that is what survived the luma-175 showroom plate (K16.7).
+const OUTLINE_FRACTION = 0.006;
 
 // FALLBACK ONLY — standalone spike compositions. See the note above.
 const SPIKE_WIDTH = 720;
@@ -163,14 +150,22 @@ export const Stamp: React.FC<StampProps> = ({
   const isHi = textRegister === "hi";
   const fontFamily = isHi ? `${DEVANAGARI}, sans-serif` : HEAVY;
   const letterSpacing = isHi ? 0 : 4;
-  const typeColor = treatment === "dark" ? INK : WHITE;
-  const accentColor = accent ?? AMBER;
-  // light -> dark plate -> white type + dark shadow.
-  // dark  -> bright plate -> ink type + light halo (see HALO above).
-  // slab  -> the device draws its own ground, so neither.
-  const textShadow =
-    treatment === "light" ? SHADOW : treatment === "dark" ? HALO : "none";
   const onSlab = treatment === "slab";
+  // Bare light AND bare dark: white + black outline (caption treatment).
+  // Ink+halo on bright plates failed; slab keeps white-on-ink box.
+  const typeColor = WHITE;
+  const accentColor = accent ?? AMBER;
+  // CaptionStyle.outline_fraction, not a second number.
+  const outlinePx = Math.max(
+    1,
+    Math.round(Math.max(width, height) * OUTLINE_FRACTION),
+  );
+  const bareOutline = onSlab
+    ? undefined
+    : ({
+        WebkitTextStroke: `${outlinePx}px #000000`,
+        paintOrder: "stroke fill",
+      } as const);
 
   return (
     <div
@@ -214,7 +209,7 @@ export const Stamp: React.FC<StampProps> = ({
             color: typeColor,
             letterSpacing,
             transform: `scale(${interpolate(s, [0, 1], [1.45, 1])})`,
-            textShadow,
+            ...bareOutline,
           }}
         >
           {words.map((word, wi) => {

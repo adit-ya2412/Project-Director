@@ -28,6 +28,7 @@ from app.renderer.captions import (
     cue_list_content_hash,
     derive_caption_cues,
     format_ass_time,
+    highlight_colour_to_ass,
     serialize_ass,
 )
 from app.renderer.video_filters import escape_ffmpeg_filter_path
@@ -227,12 +228,39 @@ def test_default_caption_style_highlight_is_colour_only_no_fs_no_bold():
 
 
 def test_retention_fast_highlight_override_is_fs102_bold_yellow_on_720x1280():
-    """K16.2: pin the exact override string and the 102px arithmetic."""
+    """K16.2: pin the exact override string and the 102px arithmetic.
+    Colour-only default stays yellow; palette accent is a separate pin."""
     cue = _cue("no one", 0.0, 1.0, ("no", 0.0, 0.5), ("one", 0.5, 1.0))
     dialogue = _dialogue_lines(serialize_ass([cue], _RETENTION_HIGHLIGHT))
     assert f"{_RETENTION_OVERRIDE}no{{\\r}}" in dialogue[0]
     assert dialogue[0].count(_RETENTION_OVERRIDE) == 1
     assert round(1280 * 0.08) == 102
+
+
+def test_highlight_colour_hex_to_ass_bbggrr():
+    """K16.3: `#RRGGBB` → ASS `&HBBGGRR&`; invalid/missing → yellow."""
+    assert highlight_colour_to_ass("#00D9FF") == "\\c&HFFD900&"
+    assert highlight_colour_to_ass("#FFC300") == "\\c&H00C3FF&"
+    assert highlight_colour_to_ass(None) == "\\c&H00FFFF&"
+    assert highlight_colour_to_ass("not-a-hex") == "\\c&H00FFFF&"
+    assert highlight_colour_to_ass("#00D9F") == "\\c&H00FFFF&"
+
+
+def test_retention_highlight_with_cyan_accent_is_fs102_bold_cyan():
+    """K16.3: CaptionStyle.highlight_colour `#00D9FF` + size 0.08 bold
+    → `{\\fs102\\b1\\c&HFFD900&}` on 720×1280."""
+    style = CaptionStyle(
+        resolution=(720, 1280),
+        font_family="Noto Sans Devanagari",
+        highlight_size_fraction=0.08,
+        highlight_bold=True,
+        highlight_colour="#00D9FF",
+    )
+    cue = _cue("no one", 0.0, 1.0, ("no", 0.0, 0.5), ("one", 0.5, 1.0))
+    dialogue = _dialogue_lines(serialize_ass([cue], style))
+    override = "{\\fs102\\b1\\c&HFFD900&}"
+    assert f"{override}no{{\\r}}" in dialogue[0]
+    assert "\\c&H00FFFF&" not in dialogue[0]
 
 
 def test_word_less_cues_stay_byte_identical_under_retention_highlight_style():

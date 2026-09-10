@@ -29,6 +29,31 @@ class RenderRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_latest_completed_for_output(
+        self,
+        project_id: uuid.UUID,
+        *,
+        output_path: str,
+        is_draft: bool = False,
+    ) -> RenderModel | None:
+        """Most recent completed render for this project at ``output_path``.
+
+        Lookup is by the project's own output path (e.g. ``final.mp4``) so
+        a draft row cannot satisfy a final check, and vice versa (K16.8).
+        """
+        result = await self._session.execute(
+            select(RenderModel)
+            .where(
+                RenderModel.project_id == project_id,
+                RenderModel.output_path == output_path,
+                RenderModel.status == "completed",
+                RenderModel.is_draft.is_(is_draft),
+            )
+            .order_by(RenderModel.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def list_completed_drafts_older_than(
         self, cutoff: datetime
     ) -> list[RenderModel]:
