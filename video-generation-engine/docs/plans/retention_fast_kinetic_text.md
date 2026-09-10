@@ -75,6 +75,7 @@ and their disposition are below.
 | **K11** device renderers (stamp, counter) | **implemented 2026-09-09; two render-found defects fixed same day** — stamp + counter renderers; unblocks K9. The counter band is now content-derived (its type overflowed a hardcoded 420 by 118px, measured) and `treatment="dark"` gained the light halo it never had |
 | **K8** data graphics | **not started** |
 | **K12** planner authors `picture_is_graphic` | **implemented and reviewed 2026-09-09** (`23f83e9`) — Shot Planner authors required `ShotPlanOutput.picture_is_graphic` (no default) and maps it onto `Shot`. Live re-plan: data shot True, ordinary shots False. K3 already enforces. K8 unblocked on the signal, not yet implemented |
+| **K18** long caption blocks read ahead of the voice | **not started, ADDED 2026-09-10** - captions are NOT mistimed (per-scene drift +0.000s, audio 65.259s vs captions 65.26s); each event shows the WHOLE sentence, so 8-11 word blocks are read before they are spoken. Chunk to a character budget inside `serialize_ass` (keeps one placement per sentence) and HASH the chunk knob or the render cache-hits |
 | **K17** content-aware caption placement | **DONE 2026-09-10 (K17.1–K17.4; K17.5 is the user's watch)** — three demo boxes as fractions; occupied live `OverlayCue.band` excluded; Rec.601 luma **population** stdev (not mean); `caption_placement_hash` includes candidate table + per-cue choice; resolve once in `resolve_render_inputs` before fingerprint. No render this slice. |
 | **K16.7 / K16.8** what the captioned reel showed | **K16.7 DONE 2026-09-10; K16.8 DONE 2026-09-10 (awaiting review)** — outline FIRST then LIGHT_MAX_LUMA 105→175 (K16.7); `RenderStep.is_satisfied` now compares stored vs current render fingerprint via shared `resolve_render_inputs` (K16.8). Missing render row → unsatisfied. Binding mtime gate kept. Pivot.tsx untouched. |
 | **K16** captions carry the text | **K16.1 + K16.2 + K16.3 + K16.4 + K16.5 + K16.7 + K16.8 in 2026-09-10; finding 1 FIXED; finding 3 FIXED; highlight size/weight/colour fingerprint hole FIXED; is_satisfied fingerprint FIXED (awaiting review). Awaiting watched reel — do not imply a render was done.** — captions ON; Feature A highlight size/weight plus palette accent colour (`#00D9FF` → `{\fs102\b1\c&HFFD900&}`); `emphasis_slab_default=False`; stamp top 0.18; LIGHT_MAX_LUMA=175 after outline. `caption_highlight_size_fraction`/`caption_highlight_bold`/`caption_highlight_colour` are unconditional fingerprint inputs (`None` when `burn_captions` is False). **Not done:** K16.6 translucent figure. Pivot.tsx look unchanged. |
@@ -4181,3 +4182,97 @@ No commit. No render. User will render 8c8ed7ff and review (K17.5).
 - next: the user re-runs a reel (narration step re-resolves from cached
   audio) and watches whether the stamps now land on their words; then
   the clock-mismatch slice.
+
+---
+
+## K18 - Long caption blocks read ahead of the voice  **(ADDED 2026-09-10)**
+
+The user watched the finished `833dfd54` reel and said the captions feel
+fast against the narration. They are not mistimed. Measured on that
+reel: total narration audio 65.259s, last caption event ends 65.26s,
+and per-scene drift is **+0.000s at every boundary**. The timestamps
+are exact.
+
+The problem is how much text is on screen at once. Every caption event
+carries the WHOLE sentence with one word highlighted, so at 0.00s the
+viewer already sees all nine words of "Bharat mein aap jo bhi videshi
+samaan kharidte hain." and reads it in about a second while the voice
+takes 2.40s. The eye finishes before the speech does.
+
+Measured distribution on that reel: **6.3 words per block on average,
+and 11 of 32 blocks are 8+ words**, the worst being 11. The blocks that
+already feel right are the short ones (`Chauk gaye?` 2 words,
+`Ya naya iPhone.` 3, `akele Adani Ports.` 3). The reference reel's
+blocks are 2-7 words throughout, which is why it does not have this
+problem - its sentences are short, and the caption unit is one
+sentence.
+
+### The fix: show a window, not the sentence
+
+Chunk a long sentence into groups of a few words and show one group at
+a time. The per-word highlight keeps walking INSIDE the group - that
+part works and is the karaoke feel; do not remove it.
+
+Timing needs no new data: `CaptionCue.words` already carries per-word
+onsets from the TTS alignment, so a group's window is its first word's
+onset to its last word's end.
+
+### WHERE you chunk decides two things - pick deliberately
+
+`apply_caption_placements` is documented as "One placement per caption
+cue, same order. **Per-cue, not per word-walk line**". So:
+
+**Option A - chunk into separate `CaptionCue`s.** Each chunk becomes a
+cue, so each chunk gets its OWN placement from K17. A single sentence
+could then jump from bottom-left to upper-centre mid-sentence, which
+reads as twitching rather than judgement. It also changes
+`cue_list_content_hash` automatically, so the re-render happens by
+itself.
+
+**Option B - chunk inside `serialize_ass`.** One cue per sentence is
+preserved, so K17 placement is untouched and a sentence keeps one
+position. Much less invasive. BUT `cue_list_content_hash` is a function
+of the CUES, so the chunk size would not enter the fingerprint, the
+render would cache-hit, and nothing would change on screen - the same
+trap as the palette, the highlight size and the placement table. The
+chunk knob MUST be hashed.
+
+**Recommended: B, plus hashing the chunk size.** A sentence should hold
+one position while its words walk; that is the reference's behaviour
+and it is also less risk. If A is chosen instead, the chunks of one
+sentence must be forced to share a placement, which is extra work for
+a worse result.
+
+### Chunk size: characters, not words
+
+K15 already learned this for stamps: word count is the wrong unit
+because `SUV` and `Infrastructure` are not the same width. Use a
+character budget with a word-boundary constraint (never split a word),
+and prefer a natural break - a comma or clause end - when one falls
+near the budget.
+
+Target: no block should take longer to READ than it takes to SPEAK.
+At roughly 4 words/second of reading against this reel's measured
+2.1-4.8 words/second of speech, blocks of about 4-5 words are matched.
+The existing short blocks confirm the feel at that size.
+
+**Do NOT reuse `Scene.caption_word_groups` for this.** That field
+merges several narration words into ONE display token (a Hindi number
+run), which is a different job at a different layer, and conflating
+them will produce a mess.
+
+### Verification - measurable before rendering
+
+The words-per-block distribution is readable straight out of the
+generated `.ass`, so the fix can be checked without a render: no block
+over the budget, and no gaps (that reel is currently 100% covered with
+zero gaps between consecutive events - that must hold). Then one free
+re-render of `833dfd54` to watch it, since its plates and narration are
+all cached.
+
+### Also seen in that reel, unrelated to chunking
+
+At 57.6s the caption reads **`FY25 mein 11 10001000 se zyada
+kamaaye`** - the romaniser has mangled a number into `11 10001000`.
+Visible gibberish on screen, worth its own look, not part of K18.
+
