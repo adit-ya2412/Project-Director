@@ -75,6 +75,7 @@ and their disposition are below.
 | **K11** device renderers (stamp, counter) | **implemented 2026-09-09; two render-found defects fixed same day** — stamp + counter renderers; unblocks K9. The counter band is now content-derived (its type overflowed a hardcoded 420 by 118px, measured) and `treatment="dark"` gained the light halo it never had |
 | **K8** data graphics | **not started** |
 | **K12** planner authors `picture_is_graphic` | **implemented and reviewed 2026-09-09** (`23f83e9`) — Shot Planner authors required `ShotPlanOutput.picture_is_graphic` (no default) and maps it onto `Shot`. Live re-plan: data shot True, ordinary shots False. K3 already enforces. K8 unblocked on the signal, not yet implemented |
+| **K16** captions carry the text | **not started, ADDED 2026-09-10, REVERSES decision 1** - the reference reel the user wants keeps captions ON and puts emphasis INSIDE them (bigger + bold + coloured word, in reading order), with no slab anywhere and the middle of the frame left empty: captions ~70-88% down, a standalone big word ~18-25%, ours all at 23-43%. Feature A already does per-word colour; it needs size and weight |
 | **K15** a multi-word stamp has no band | **DONE 2026-09-10, unwatched** - `stamp_band(w, h, text=, text_register=)` fits the phrase to ONE line (largest font inside `width - 4*pad`) and `Stamp.tsx` sets `whiteSpace: nowrap`, so a wrap is impossible even on a bad measurement. Devanagari widths are REAL metrics at the **wght=700** instance (the `hmtx` default is 8-10% narrow — the error that puts the wrap back); Latin reuses K11's measured Black stack, max of the two faces. Band tracks the fitted font, so K4 still measures inside the drawn ink; K4 thresholds unchanged. Character budget 10 Latin / 14 Devanagari in `emphasis/v1.md`, derived from a 90px floor on rendered frames. All 9 rendered cases one line, ink inside slab; the single-word control is byte-identical (same PNG md5, same cue and overlay hashes). Fallback NOT needed. Open, pre-existing and smaller than before: Devanagari matras clip 0.15 em against `lineHeight: 1` on a slab (`लेकिन` at 190 loses 15px today) |
 | **K14** the hook is empty | **implemented 2026-09-10, four review findings fixed same day, awaiting watched reel** — hook window 5.0s / gap 1; **K14.2 body-only 12.0/min cap** (hook cues extra; did not raise the whole-reel ceiling); K9 prompt + `Target cue count` front-load at 12.0/min with the hook floor now **clipped to how many shots start inside the window** (2 on the watched shape, not 3); the body gap counts from the last kept **BODY** cue, so the hook no longer opens a dead zone just past itself; stamp word delays scheduled against the cue's real window instead of a fixed 0/4/14/24. K14.6 not done. **The longest empty stretch did NOT improve on the probe (5.46s → 6.73s hold-aware): the body-only cap trims in film order, so the reel's LAST cue is what goes.** A NEW project is required (`34dd1ee1` cannot be re-authored). BLOCKS captions-off until the numbers beat 7.15s / 7.29 per min / 7.75s |
 | **K13** the counter has no reachable input | **not started, ADDED 2026-09-09, BLOCKING** — number-stating shots are planned as graphics, K3 rule 2 forbids cues there, so the counter is unreachable. First real reel produced 0 counters from 3 spoken numbers. Recommended fix: stop the Shot Planner making number shots into graphics (option B) |
@@ -1080,6 +1081,13 @@ on a NEW project.
 All eight answered — six on 2026-09-08, the palette (7) and K9's device
 scope (8) on 2026-09-09.
 Density (5) is defined by a test rather than a fixed number - see below.
+
+**1. Captions — ANSWERED 2026-09-08 (user), then STRENGTHENED, then
+REVERSED 2026-09-10 by K16. READ K16 BEFORE ACTING ON THIS.** The
+reference reel the user wants keeps captions ON and carries emphasis
+INSIDE them. What follows is the superseded reasoning, kept because
+its diagnosis of dense text was right even though its conclusion was
+not.
 
 **1. Captions — ANSWERED 2026-09-08 (user), then STRENGTHENED.**
 `retention_fast` ships with **no burned captions at all** - not "off when
@@ -2998,4 +3006,150 @@ This section is an implementation diary, not a design change. Append only.
 - files: `backend/app/renderer/compositor.py`, `compositor/src/Stamp.tsx`, `backend/app/prompts/emphasis/v1.md`, `backend/tests/unit/renderer/test_stamp_fit.py` (new), this section. Throwaway: `tmp/k15/verify_k15_stamp_fit.py`, `tmp/k15/probe_matra_clip.py`, frames under `tmp/k15/{before,after,matra}/`.
 - next: watch a NEW `retention_fast` reel — `8c8ed7ff` is narration-locked and cannot be re-authored. Report per stamp what it drew and at what size. Two things to judge from it, both deliberately left alone: whether the 10-character Latin budget is too tight for the hook (it forbids the spike's own 3-word phrase), and the Devanagari matra clip at 02:35, which is pre-existing, now smaller, and needs a `lineHeight`/`pad` change that would move the single-word look.
 - did NOT: touch the pivot look, K4's thresholds, K3's citation matcher, `EmphasisDevice`, the K14.1-14.4 density rules, `STAMP_HOLD_S`, or `stampWordTiming.ts`. No commit, no `git add`. No project, no LLM call, nothing deleted under `storage/`.
+
+---
+
+## K16 - The reference reel: captions carry the text, emphasis lives inside them, and the middle stays empty  **(ADDED 2026-09-10, REVERSES decision 1)**
+
+The user supplied a reel they want `retention_fast` to look like
+(`tmp/WhatsApp Video 2026-09-10 at 11.27.34.mp4`, 77.64s, 480x854,
+25fps; frames extracted to `tmp/ref/`). It is a Hindi political-speech
+edit with English inserts, and it is built on a different architecture
+from the one this plan has been implementing.
+
+### What it actually does
+
+**Four text devices, and captions are the spine.**
+
+1. **Continuous captions.** Small, white, BARE - no box, no bar - stacked
+   in one to three short lines, low in the frame.
+2. **Inline emphasis inside the caption.** The stressed word gets
+   BIGGER, bolder and coloured, sitting in the reading order of the
+   sentence. Observed:
+   - `और जो` / **`Structural Reforms`** (cream) / `बीते वर्षों में किए हैं`
+   - `भारत की` / **`Sovereign Ratings`** (mint) / `को`
+   - `साफ-साफ` (large) / `देख रहा हूं` (small)
+3. **A standalone big word near the TOP.** `Conflicts` in heavy red,
+   bare, roughly 18-25% down, over the speaker's shoulder.
+4. **A big translucent figure low in frame.** `7.8%`, ghosted white at
+   partial opacity, ~70-78% down, arriving with a scanline glitch on the
+   cut.
+
+Also present, and explicitly OUT of scope here: one shot inset in a
+rounded card on a light ground, and glitch/scanline cut treatments.
+
+**There is no slab, no box and no bar anywhere in the reference.** All
+type is bare, with an edge treatment for legibility.
+
+### Placement, measured
+
+| | where text sits |
+|---|---|
+| reference, captions | **~70-88% down** (the aerial frame measures 73-87% cleanly) |
+| reference, the standalone word | **~18-25% down** |
+| reference, the middle 30-70% | **empty** - that is the subject |
+| **ours: stamp** | 25-39% down |
+| **ours: counter** | 23-35% down |
+| **ours: pivot** | 30-43% down |
+
+So the reference keeps two zones and leaves the centre alone, and every
+one of our three devices lands in the zone it deliberately protects.
+That is why `लाखों लोग` sat across the showroom family's heads and
+`Parts` covered the car in `nexon-reel4-test`: our type competes with
+the picture instead of framing it.
+
+**Measurement caveat, recorded rather than hidden.** Only the aerial
+frame gave a clean automated read; the stage-lit frames defeated a
+brightness-threshold row detector, so the others were read by eye. The
+70-88% figure must be re-measured properly before it becomes a
+constant.
+
+### What this reverses
+
+**1. Decision 1 - `retention_fast` ships with no burned captions - is
+WRONG for this look, and is reversed.** That decision assumed dense
+kinetic text replaces captions. In the reference the captions ARE the
+text, continuously, and emphasis is a STYLE APPLIED TO A CAPTION WORD
+rather than a separate object placed on the frame. The K14 work log
+already recorded that captions-off made the hook emptier than before;
+this is the reason why.
+
+**2. The forced slab.** `emphasis_slab_default=True` on the
+`retention_fast` band makes every cue draw a ground. The reference uses
+none. This also settles the open slab question from 2026-09-10 (opaque
+vs 0.70 vs palette-tinted): the answer is no slab at all for the caption
+layer, and bare type for the standalone word.
+
+**3. Device placement.** `_STAMP_REF_TOP = 320`, the counter's 300 and
+the pivot's 380 are all mid-frame on a 1280 canvas.
+
+### What already exists, which is more than expected
+
+- `CaptionStyle` is documented as "white text, heavy black outline, no
+  background box, raised clear of the bottom ~12-15% platform-UI band" -
+  already the reference's look.
+- **Feature A (`style_extensions.md` §3.3) already does per-word
+  highlight COLOUR**: `CaptionWord`, `Scene.caption_word_groups`, and an
+  ASS override per word in `renderer/captions.py`.
+- The `stamp` device is already "one big word" - it just draws a slab and
+  sits mid-frame.
+
+### The parts
+
+**K16.1 - captions back ON for `retention_fast`.** Reverse decision 1 in
+the plan, and make sure the style resolves to captions-on. Whoever holds
+the captions-off brief must be told it is cancelled, not deferred.
+
+**K16.2 - Feature A gains SIZE and WEIGHT, not just colour.** This is
+the heart of the look: the stressed word is bigger. Today the highlight
+is one hardcoded constant (`_HIGHLIGHT_OVERRIDE_ASS =
+"{\c&H00FFFF&}"`). ASS supports per-span font size and weight
+overrides, so this is an extension of an existing mechanism rather than
+a new renderer.
+
+**K16.3 - the highlight colour comes from the palette.** That constant
+is applied to ALL styles today, with a comment saying it is "the one
+constant to make style-keyed" if a style ever needs a different one.
+That time is now: the reference varies it (cream, mint, red), and K5
+already resolves a per-project `accent`. Feed the accent in.
+
+**K16.4 - placement zones.** Captions in the bottom quarter, the
+standalone word in the top fifth, the middle never. Resolved per style
+like every other knob (RV2 / R1), not hardcoded per device.
+
+**K16.5 - the standalone word goes BARE.** No slab. This is where K4
+earns its keep rather than being short-circuited: bare type needs the
+light/dark decision to be real, so `emphasis_slab_default` should come
+off for this style and `choose_treatment`'s measurement should actually
+be used. Note the risk already recorded on 2026-09-10: this reel's plate
+lumas cluster 101-121 straddling `LIGHT_MAX_LUMA = 105`, so the
+bare/slab choice would flicker shot to shot. Widening the bare range,
+or leaning on a stronger edge treatment, is the thing to measure.
+
+**K16.6 - the translucent figure (lower priority).** Close to our
+`counter` but ghosted at partial opacity and placed low. Sequence after
+16.1-16.5.
+
+### What this does to the work already done
+
+Not invalidated, but re-weighted, and this should be said plainly:
+
+- **K14's density work still applies.** Cues still need to be early and
+  frequent; the hook window and the regime-scoped gap are about WHEN, not
+  WHAT, and the reference front-loads too.
+- **K15's fit-to-one-line still applies** to the standalone word.
+- **K12, K13 are unaffected.**
+- **K3, K4, K5, K9, K11 become punctuation on top of a caption spine**
+  rather than the only text layer. The cue devices stop carrying the reel
+  on their own. That is a reduction in their importance, not a deletion:
+  the pivot band was the best frame in `nexon-reel4-test` and the
+  reference has no equivalent, so it stays as OUR device.
+
+### Verification
+
+Render a `retention_fast` reel and compare against the reference frames
+at matched moments. Report the text-zone percentages measured the same
+way as the table above, the caption line count and lengths, and which
+word in each caption took the emphasis style. A green suite proves
+nothing about a look.
 
