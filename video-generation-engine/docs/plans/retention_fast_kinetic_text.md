@@ -75,7 +75,7 @@ and their disposition are below.
 | **K11** device renderers (stamp, counter) | **implemented 2026-09-09; two render-found defects fixed same day** — stamp + counter renderers; unblocks K9. The counter band is now content-derived (its type overflowed a hardcoded 420 by 118px, measured) and `treatment="dark"` gained the light halo it never had |
 | **K8** data graphics | **not started** |
 | **K12** planner authors `picture_is_graphic` | **implemented and reviewed 2026-09-09** (`23f83e9`) — Shot Planner authors required `ShotPlanOutput.picture_is_graphic` (no default) and maps it onto `Shot`. Live re-plan: data shot True, ordinary shots False. K3 already enforces. K8 unblocked on the signal, not yet implemented |
-| **K16** captions carry the text | **not started, ADDED 2026-09-10, REVERSES decision 1** - the reference reel the user wants keeps captions ON and puts emphasis INSIDE them (bigger + bold + coloured word, in reading order), with no slab anywhere and the middle of the frame left empty: captions ~70-88% down, a standalone big word ~18-25%, ours all at 23-43%. Feature A already does per-word colour; it needs size and weight |
+| **K16** captions carry the text | **K16.1 + K16.4 implemented 2026-09-10, awaiting watched reel** — captions forced ON for `retention_fast` via style-band `burn_captions=True` (overrides `BURN_CAPTIONS=false`); caption MarginV owned at 0.16 (205px on 720×1280, ~70–84% for 3 lines); stamp top at 0.18 (230 on 1280). Captions-off brief CANCELLED. **Not done:** K16.2 size/weight in Feature A, K16.3 highlight from palette, K16.5 bare stamp, K16.6 translucent figure. Pivot/counter still 23–43% until later parts |
 | **K15** a multi-word stamp has no band | **DONE 2026-09-10, unwatched** - `stamp_band(w, h, text=, text_register=)` fits the phrase to ONE line (largest font inside `width - 4*pad`) and `Stamp.tsx` sets `whiteSpace: nowrap`, so a wrap is impossible even on a bad measurement. Devanagari widths are REAL metrics at the **wght=700** instance (the `hmtx` default is 8-10% narrow — the error that puts the wrap back); Latin reuses K11's measured Black stack, max of the two faces. Band tracks the fitted font, so K4 still measures inside the drawn ink; K4 thresholds unchanged. Character budget 10 Latin / 14 Devanagari in `emphasis/v1.md`, derived from a 90px floor on rendered frames. All 9 rendered cases one line, ink inside slab; the single-word control is byte-identical (same PNG md5, same cue and overlay hashes). Fallback NOT needed. Open, pre-existing and smaller than before: Devanagari matras clip 0.15 em against `lineHeight: 1` on a slab (`लेकिन` at 190 loses 15px today) |
 | **K14** the hook is empty | **implemented 2026-09-10, four review findings fixed same day, awaiting watched reel** — hook window 5.0s / gap 1; **K14.2 body-only 12.0/min cap** (hook cues extra; did not raise the whole-reel ceiling); K9 prompt + `Target cue count` front-load at 12.0/min with the hook floor now **clipped to how many shots start inside the window** (2 on the watched shape, not 3); the body gap counts from the last kept **BODY** cue, so the hook no longer opens a dead zone just past itself; stamp word delays scheduled against the cue's real window instead of a fixed 0/4/14/24. K14.6 not done. **The longest empty stretch did NOT improve on the probe (5.46s → 6.73s hold-aware): the body-only cap trims in film order, so the reel's LAST cue is what goes.** A NEW project is required (`34dd1ee1` cannot be re-authored). BLOCKS captions-off until the numbers beat 7.15s / 7.29 per min / 7.75s |
 | **K13** the counter has no reachable input | **not started, ADDED 2026-09-09, BLOCKING** — number-stating shots are planned as graphics, K3 rule 2 forbids cues there, so the counter is unreachable. First real reel produced 0 counters from 3 spoken numbers. Recommended fix: stop the Shot Planner making number shots into graphics (option B) |
@@ -3099,6 +3099,10 @@ the pivot's 380 are all mid-frame on a 1280 canvas.
 **K16.1 - captions back ON for `retention_fast`.** Reverse decision 1 in
 the plan, and make sure the style resolves to captions-on. Whoever holds
 the captions-off brief must be told it is cancelled, not deferred.
+**CANCELLED 2026-09-10:** the captions-off brief (decision 1 / K14
+blocking note / one-off `BURN_CAPTIONS=false` on the dedicated backend)
+is cancelled. Captions stay on for this style; do not implement a
+captions-off path.
 
 **K16.2 - Feature A gains SIZE and WEIGHT, not just colour.** This is
 the heart of the look: the stressed word is bigger. Today the highlight
@@ -3152,4 +3156,144 @@ at matched moments. Report the text-zone percentages measured the same
 way as the table above, the caption line count and lengths, and which
 word in each caption took the emphasis style. A green suite proves
 nothing about a look.
+
+---
+
+## Work log — K16.1 + K16.4 captions on + placement zones (2026-09-10)
+
+This section is an implementation diary, not a design change. Append only.
+
+### — K16.1 captions-on + K16.4 placement (this slice)
+
+- decided (K16.1): `StylePacingBand.burn_captions: bool | None = None` —
+  None falls through to `settings.burn_captions`; `retention_fast` sets
+  `True`. `resolve_burn_captions(style)` returns the band value when not
+  None, else settings; unknown style → settings. `RenderStep` puts the
+  resolved bool on `RenderSettings` (fingerprint already hashes it).
+  Drafts still omit the field (`RenderSettings.burn_captions` defaults
+  False). **Captions-off brief cancelled** — not deferred; no
+  captions-off path was implemented. Decision 1's superseded reasoning
+  is kept under the REVERSED marker.
+- decided (K16.4 captions): `caption_margin_v_fraction=0.16` on
+  `retention_fast`. Arithmetic: MarginV = round(1280 * 0.16) = **205px**;
+  last-line bottom at 84% down; font 58px; 3-line block ≈ 174px ≈ 13.6%
+  of height → three lines occupy ~70–84%, inside the reference ~70–88%
+  band. Landscape still overrides to 4% in `serialize_ass` (§19.3).
+  Outline / colour / Alignment / Feature A highlight untouched.
+- decided (K16.4 stamp): `emphasis_stamp_top_fraction=0.18` →
+  `top = round(0.18 * 1280) = **230**`. `stamp_band(..., top_fraction=)`
+  keeps today's `_STAMP_REF_TOP` scale when None so
+  `stamp_band(720, 1280)` stays top 320 (K15 control). Collect resolves
+  once from `timeline.metadata.render_style` and passes through
+  `_band_for_device`. Slab still extends ~17% below the top (font 190 +
+  2*14 pad ≈ 218px → box reaches ~35%) until K16.5 drops the slab —
+  expected in this slice.
+- recorded: pivot (30–43%) and counter (23–35%) still occupy the middle
+  until later K16 parts; "middle never" is not fully true yet. Counter
+  low translucent placement is K16.6.
+- did NOT: K16.2, K16.3, K16.5, K16.6; no pivot/counter retune; no
+  `Stamp.tsx` edit; no captions-off feature; no project / OpenAI /
+  watched reel.
+- tests: targeted styles/captions/stamp_fit/compositor → **202 passed**.
+  Full `tests/unit -q`: Postgres was down (Docker Desktop not running;
+  `docker compose up -d postgres` failed on the engine pipe), so 67
+  planner/asset setup fixtures errored with ConnectionRefused — those
+  are not regressions. Non-DB slice (`--ignore=tests/unit/planners`
+  plus the two asset LLM-repo fixtures) → **1336 passed, 5 failed**,
+  the same five pre-existing `test_sfx_overlays_diegetic.py` failures.
+  The sixth baseline failure
+  (`test_director_planner.py::test_every_attempt_is_recorded_as_an_llm_call`)
+  lives under planners and was among the ConnectionRefused errors.
+  +9 new pins in this slice; no new failure among runnable tests.
+  With Postgres up the expected shape is ≥1581 passed / same 6 failed.
+- ruff: `ruff check` on touched Python files — no new issues in
+  `styles.py` / `render.py` / `compositor.py` (pre-existing I001/F401/
+  B905 noise in the two test files only).
+- files: `backend/app/script/styles.py`, `backend/app/workflow/steps/render.py`,
+  `backend/app/renderer/compositor.py`, `backend/tests/unit/script/test_styles.py`,
+  `backend/tests/unit/renderer/test_captions.py`,
+  `backend/tests/unit/renderer/test_stamp_fit.py`, this plan (K16 status
+  row + this entry). Decision 1 superseded reasoning kept.
+- next: watched reel verification (orchestrator/user). Then K16.2–16.6.
+
+### — review (Grok 4.6)
+
+- K16.1 and K16.4 match the section. Captions-off brief cancelled in
+  code (`retention_fast` forces `burn_captions=True` onto
+  `RenderSettings`) and in the plan. Decision 1 superseded reasoning
+  kept. Stamp.tsx not edited. Pivot/counter geometry not retuned.
+- Reviewer re-ran targeted files **223 passed**. Full `tests/unit`:
+  **1524 passed, 5 failed, 67 errors** (Postgres down). Same 5
+  sfx-diegetic failures; director-planner is among the 67 errors.
+  Arithmetic with DB up: 1524+66 = **1590 passed / 6 failed** (1581+9
+  pins). No new failure.
+- Look this slice actually changes: captions ON, stamp top 320→230
+  (18%). Caption MarginV 0.16 is today's default, now a style knob —
+  not a placement move. Stamp slab still reaches ~35% until K16.5.
+  Middle is not empty yet.
+- Observation, not a revert: the RenderSettings construction test
+  rebuilds the dataclass; it would not catch `RenderStep` swapping
+  back to `settings.burn_captions`. Weaker than the K14 call-site spy.
+- No project created. User renders a NEW `retention_fast` reel and
+  compares `tmp/ref/` frames: caption zone, stamp zone, middle empty?
+  K16.2 is not in, so inline emphasis is still colour-only.
+
+### — review (orchestrator, 2026-09-10)
+
+- verified: **1590 passed, 6 failed** with Postgres UP — exactly the
+  number the agent's own reviewer projected by arithmetic while the DB
+  was down (1524 + 66). Same six pre-existing failures. `ruff check`
+  clean on `styles.py` / `render.py` / `compositor.py`.
+- verified: captions resolve to **~70–84% down** (3-line block at
+  MarginV 0.16) against the reference's 70–88%. `burn_captions=True` on
+  the band genuinely overrides a backend started with
+  `BURN_CAPTIONS=false`. It is resolved onto `RenderSettings`, so the
+  fingerprint hashes the same bool the burn path reads — the trap K5 hit
+  with the palette, handled here. `top_fraction=None` keeps 320, so
+  K15's byte-identical single-word control survives.
+- credited: the agent said plainly that MarginV 0.16 was ALREADY the
+  default, so K16.4's caption half is a knob and not a placement move.
+  That is the honest reading and it is what the numbers show.
+
+**FINDING 1 (real, fix before anything else) — the captions-on wiring is
+not pinned.** The agent's own reviewer suspected this; measured, it is
+true. Reverting the call site to `burn_captions=settings.burn_captions`
+and running the caption / styles / workflow / fingerprint suites gives
+**5 failed, 232 passed** — the same five pre-existing sfx failures, and
+NOTHING new fails. So `RenderStep` can be put back on the env toggle
+with the suite fully green, captions silently return to env control, and
+a `retention_fast` reel rendered on a `BURN_CAPTIONS=false` backend
+comes out with no captions at all — the exact regression K16.1 exists to
+prevent. The K16.1 test rebuilds the `RenderSettings` dataclass rather
+than watching the call site. Fix with the pattern K14 already
+established: a call-site spy, as in
+`test_the_resolved_band_knobs_arrive_in_the_right_parameters`.
+
+**FINDING 2 (sequencing, not a defect) — do not render between here and
+K16.5.** Only K16.1 and K16.4 landed. K16.2 is not in, so the highlight
+is still colour-only and still the one global yellow — and K16.2 is the
+part this section calls the heart of the look, because the stressed word
+being BIGGER is what makes it read as emphasis rather than as a
+highlighter pen. K16.5 is not in either, so the slab remains and the
+stamp still spans **18%→35%**, crossing the 30–70% zone the reference
+protects. That overrun is the slab's height and not the type's: with the
+slab gone, a single word at font 190 occupies roughly 18–28% and sits
+inside the zone. A render taken now therefore has captions at the bottom
+AND black slabs across the middle — two competing text layers, arguably
+worse to watch than either the old look or the target. Ship K16.2 and
+K16.5 as a pair, then render.
+
+**FINDING 3 (minor, consistency) — the new knob resolves in a different
+layer from its siblings.** `resolve_emphasis_stamp_top_fraction` is
+called inside `collect_emphasis_overlay_cues`
+(`renderer/compositor.py`), while `resolve_emphasis_slab_default` and
+`resolve_emphasis_palette` are called in `workflow/steps/render.py` and
+passed down. Same class of style knob, two layers, plus a new
+`compositor → styles` import that did not exist before. There is no
+import cycle and the collector does resolve it exactly once, so it
+works — but every other emphasis knob follows "resolve once in the
+render caller", and this is the drift RV2 / R1 exists to catch.
+
+- next: pin the wiring (finding 1), then K16.2 + K16.5 together, then a
+  watched reel against `tmp/ref/`.
 
