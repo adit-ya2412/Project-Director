@@ -38,6 +38,14 @@ import { wordDelaySchedule } from "./stampWordTiming";
  * constants survive only as a fallback for standalone spike compositions
  * that pass no band; production always passes `band`.
  *
+ * K15: `band.fontSize` is therefore no longer one number per canvas —
+ * Python measures the phrase and hands down the largest size that fits
+ * on ONE line inside `band.width - 4 * pad`. A single word that fits at
+ * the reference 190 is unchanged, which is the control the whole change
+ * is checked against. This file adds `whiteSpace: nowrap` so a wrap
+ * cannot happen even if that measurement is wrong; see the note at the
+ * property.
+ *
  * Latin faces: the spike used Segoe/Arial Black. No Latin file is
  * vendored (K6 is the Devanagari variable font only), so `en` keeps that
  * CSS stack. `hi` uses the bundled Noto so compositor faces never depend
@@ -189,6 +197,20 @@ export const Stamp: React.FC<StampProps> = ({
             fontWeight: isHi ? 700 : 900,
             fontSize,
             lineHeight: 1,
+            // K15: A WRAP IS NEVER ACCEPTABLE HERE. Every grapheme
+            // cluster below is its own `display:inline-block` span, and
+            // CSS may break the line between inline-blocks — so the
+            // U+00A0 joining the words was not protection at all, and a
+            // phrase too wide for the band broke INSIDE a word:
+            // `लाखों लोग` drew as `लाखों लो` / `ग`, splitting a cluster,
+            // on 4 of the 8 cues of the 40.12s reel. `stamp_band` now
+            // fits the font to one line, and this is the guarantee that
+            // holds even when that measurement is wrong: too-small type
+            // is a bad look, an orphaned syllable is a broken frame, so
+            // the failure that survives is the harmless one (the line
+            // overflows the slab and stays readable) rather than the
+            // broken one.
+            whiteSpace: "nowrap",
             color: typeColor,
             letterSpacing,
             transform: `scale(${interpolate(s, [0, 1], [1.45, 1])})`,
