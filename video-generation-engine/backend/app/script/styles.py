@@ -233,6 +233,11 @@ class StylePacingBand:
     # False = no \\b1 in the override. Read through
     # `resolve_caption_highlight_bold`.
     caption_highlight_bold: bool = False
+    # retention_fast_kinetic_text.md K18: character budget for chunking
+    # long Feature A karaoke lines inside serialize_ass. None = no
+    # chunking (whole-sentence karaoke, today's behaviour). Read through
+    # `resolve_caption_chunk_chars`.
+    caption_chunk_chars: int | None = None
 
     @property
     def max_fragment_duration_s(self) -> float | None:
@@ -342,6 +347,10 @@ STYLE_PACING_BANDS: dict[str, StylePacingBand] = {
         # until K16.3. Starting fraction, not a fake-precise re-measure.
         caption_highlight_size_fraction=0.08,
         caption_highlight_bold=True,
+        # K18: ~4–5 Hinglish words. "Bharat mein aap jo" = 4 words /
+        # 18 chars; five typical 5-char words + 4 spaces ≈ 29. Pin 28
+        # (not MAX_CHARS_PER_CUE=70 — that is derivation segmentation).
+        caption_chunk_chars=28,
     ),
     "archival_montage": StylePacingBand(
         # Feature B (style_extensions.md §4.3, decided 2026-08-25):
@@ -636,6 +645,19 @@ def resolve_caption_highlight_bold(style: str | None) -> bool:
     if band is None:
         return False
     return band.caption_highlight_bold
+
+
+def resolve_caption_chunk_chars(style: str | None) -> int | None:
+    """Style-owned Feature A chunk character budget (K18).
+
+    None means whole-sentence karaoke (no chunking). Unknown / unset
+    follow the same fallback shape as `resolve_caption_highlight_size_fraction`.
+    Resolve once in the render caller (RV2) and pass into CaptionStyle.
+    """
+    band = STYLE_PACING_BANDS.get(style or settings.default_render_style)
+    if band is None:
+        return None
+    return band.caption_chunk_chars
 
 
 def resolve_emphasis_min_shot_gap(style: str | None) -> int | None:

@@ -238,6 +238,21 @@ def test_counter_citable_value_is_kept(narration: str):
         ("2.5 lakh cars.", 250_000),
         # multi-word Hindi numeral, parsed by `caption_romanizer.numerals`
         ("दो हजार छब्बीस में launch.", 2026),
+        # K19: compound tiers multiply (was summed to 10011000 / 10200000)
+        ("ग्यारह हज़ार करोड़", 110_000_000_000),
+        ("दो लाख करोड़", 2_000_000_000_000),
+        # K19 measured coupling: after `_parse_run` refuses multiplier-only
+        # `हज़ार करोड़` / `लाख करोड़`, those words are not consumed by
+        # `find_numeral_runs`, so K3's pair reader still product-multiplies
+        # scale*scale. Pin the measured products; do not rewrite the pair
+        # reader in this slice.
+        ("हज़ार करोड़", 10_000_000_000),
+        ("लाख करोड़", 1_000_000_000_000),
+        # K19.1: pending units then bigger tier (was 260002000 / 5000001000 /
+        # 500010000 under the current-vs-total branches)
+        ("दो हज़ार छब्बीस करोड़", 20_260_000_000),
+        ("एक हज़ार पांच सौ करोड़", 15_000_000_000),
+        ("दस हज़ार पचास करोड़", 100_500_000_000),
     ],
 )
 def test_spelled_out_and_decimal_values_are_cited(narration: str, value: int):
@@ -292,6 +307,16 @@ def test_spelled_out_and_decimal_values_are_cited(narration: str, value: int):
         ("do lakh SUVs bik gayi.", 100_000),
         # digits are still bounded: `2025` does not state `202`
         ("saal 2025 mein.", 202),
+        # K19: old wrong compound sums must not cite; new products only
+        ("ग्यारह हज़ार करोड़", 10_011_000),
+        ("दो लाख करोड़", 10_200_000),
+        # K19: pre-fix invented multiplier-only merges must not cite
+        ("हज़ार करोड़", 10_001_000),
+        ("लाख करोड़", 10_100_000),
+        # K19.1: old wrong pending-units compounds must not cite
+        ("दो हज़ार छब्बीस करोड़", 260_002_000),
+        ("एक हज़ार पांच सौ करोड़", 5_000_001_000),
+        ("दस हज़ार पचास करोड़", 500_010_000),
     ],
 )
 def test_the_rule_still_has_teeth_on_a_genuine_miss(narration: str, value: int):

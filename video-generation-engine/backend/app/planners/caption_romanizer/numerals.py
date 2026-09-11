@@ -207,9 +207,20 @@ def _parse_run(words: Sequence[str]) -> int | None:
     malformed or ambiguous run is refused rather than guessed at
     (§11.5 rule 3) — e.g. the same multiplier tier appearing twice in
     one run (`हजार ... हजार`) is not a real Hindi numeral and is left
-    alone rather than assigned an arbitrary value."""
+    alone rather than assigned an arbitrary value.
+
+    Non-`सौ` multipliers are magnitude-ordered: track the largest such
+    tier applied so far. A new tier larger than every prior non-`सौ`
+    tier (including "no tier yet") scales everything accumulated
+    (`total = (total + current) * v`); otherwise it closes a chunk
+    (`total += current * v`). Refuse when both `total` and `current`
+    are 0 (no invented `1`). `सौ` still multiplies `current` in place
+    and is not magnitude-tracked. Compound tiers like
+    `ग्यारह हज़ार करोड़` and pending-units shapes like
+    `दो हज़ार छब्बीस करोड़` are therefore products, not sums."""
     total = 0
     current = 0
+    max_tier = 0
     seen_multiplier_values: set[int] = set()
     for word in words:
         value = word_value(word)
@@ -221,8 +232,14 @@ def _parse_run(words: Sequence[str]) -> int | None:
             seen_multiplier_values.add(value)
             if value == 100:
                 current = (current or 1) * 100
+            elif total == 0 and current == 0:
+                return None
+            elif max_tier == 0 or value > max_tier:
+                total = (total + current) * value
+                current = 0
+                max_tier = value
             else:
-                total += (current or 1) * value
+                total += current * value
                 current = 0
         else:
             current += value

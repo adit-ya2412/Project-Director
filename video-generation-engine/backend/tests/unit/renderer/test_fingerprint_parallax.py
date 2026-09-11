@@ -101,6 +101,7 @@ def _render_fingerprint(**overrides) -> str:
         "caption_highlight_bold": None,
         "caption_highlight_colour": None,
         "caption_placement_hash": None,
+        "caption_chunk_chars": None,
         "duck_envelope_hash": None,
         "watermark_enabled": False,
         "watermark_asset_hash": None,

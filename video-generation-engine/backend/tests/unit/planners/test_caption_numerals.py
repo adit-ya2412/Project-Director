@@ -6,8 +6,11 @@ is still the required invocation (§4, §11.7), even though nothing here
 touches a database.
 """
 
+import pytest
+
 from app.planners.caption_romanizer.numerals import (
     NumeralRun,
+    _parse_run,
     apply_numeral_merging,
     find_numeral_runs,
     trailing_punctuation,
@@ -142,3 +145,144 @@ def test_apply_numeral_merging_groups_sum_to_narration_word_count():
     assert sum(groups) == len(narration_words)
     assert caption_text == " ".join(display_words)
     assert groups == [1] * len(narration_words)
+
+
+# ---- K19 / K19.1: magnitude-ordered tiers; multiplier-only runs refuse ----
+# K19: 13 verified cases. K19.1 replaces current-vs-total with
+# magnitude-ordered tiers (22/22). Three flips vs shipped K19 for the
+# pending-units-then-bigger-tier shape.
+
+
+@pytest.mark.parametrize(
+    ("run", "expected"),
+    [
+        # K19 (must not regress)
+        ("दो हज़ार छब्बीस", 2026),
+        ("ग्यारह हज़ार", 11000),
+        ("पचास लाख", 5000000),
+        ("सौ करोड़", 1000000000),
+        ("पांच सौ", 500),
+        ("दो सौ पचास", 250),
+        ("तीन करोड़", 30000000),
+        ("एक लाख बीस हज़ार", 120000),
+        ("दो हज़ार", 2000),
+        ("ग्यारह हज़ार करोड़", 110000000000),
+        ("दो लाख करोड़", 2000000000000),
+        ("हज़ार करोड़", None),
+        ("लाख करोड़", None),
+        # reviewer extras
+        ("दो सौ करोड़", 2000000000),
+        ("करोड़ हज़ार", None),
+        ("पचास हज़ार करोड़", 500000000000),
+        ("एक करोड़ बीस लाख", 12000000),
+        ("दो हज़ार पांच सौ", 2500),
+        # K19.1 flips (pending units then bigger tier)
+        ("दो हज़ार छब्बीस करोड़", 20260000000),
+        ("एक हज़ार पांच सौ करोड़", 15000000000),
+        ("दस हज़ार पचास करोड़", 100500000000),
+        # control: units consumed by smaller हज़ार before करोड़
+        ("एक लाख बीस हज़ार करोड़", 1200000000000),
+    ],
+)
+def test_k19_parse_run_thirteen_verified_cases(run: str, expected: int | None):
+    assert _parse_run(run.split()) == expected
+
+
+def test_k19_compound_gayarah_hazaar_crore_finds_correct_run():
+    words = "ग्यारह हज़ार करोड़".split()
+    assert find_numeral_runs(words) == [
+        NumeralRun(start=0, end=2, value=110000000000)
+    ]
+
+
+def test_k19_compound_do_lakh_crore_finds_correct_run():
+    words = "दो लाख करोड़".split()
+    assert find_numeral_runs(words) == [
+        NumeralRun(start=0, end=2, value=2000000000000)
+    ]
+
+
+def test_k19_multiplier_only_hazaar_crore_is_refused():
+    assert find_numeral_runs("हज़ार करोड़".split()) == []
+
+
+def test_k19_multiplier_only_lakh_crore_is_refused():
+    assert find_numeral_runs("लाख करोड़".split()) == []
+
+
+def test_k19_apply_refused_multiplier_only_leaves_display_unmerged():
+    narration_words = "हज़ार करोड़".split()
+    display_words = "hazaar crore".split()
+    caption_text, groups = apply_numeral_merging(narration_words, display_words)
+    assert caption_text == "hazaar crore"
+    assert groups == [1, 1]
+
+
+def test_k19_apply_compound_emits_raw_integer_no_commas():
+    # Look decision still open: raw int, not "11,000 crore". Pin current
+    # emission so a readability ceiling cannot land silently.
+    narration_words = "ग्यारह हज़ार करोड़".split()
+    display_words = "gyaarah hazaar crore".split()
+    caption_text, groups = apply_numeral_merging(narration_words, display_words)
+    assert caption_text == "110000000000"
+    assert groups == [3]
+
+
+def test_k19_fy25_bare_digit_then_hazaar_crore_does_not_merge_to_10001000():
+    # Live garble on 833dfd54: digit 11 stays out of TABLE; हज़ार करोड़
+    # is refused; caption must not become "... 11 10001000 ...".
+    narration_words = "FY25 में 11 हज़ार करोड़ से ज़्यादा कमाए।".split()
+    display_words = "FY25 mein 11 hazaar crore se zyada kamaaye.".split()
+    assert find_numeral_runs(narration_words) == []
+    caption_text, groups = apply_numeral_merging(narration_words, display_words)
+    assert "10001000" not in caption_text
+    assert caption_text == "FY25 mein 11 hazaar crore se zyada kamaaye."
+    assert groups == [1] * len(narration_words)
+
+
+@pytest.mark.parametrize(
+    ("run", "expected"),
+    [
+        ("दो हज़ार छब्बीस करोड़", 20260000000),
+        ("एक हज़ार पांच सौ करोड़", 15000000000),
+        ("दस हज़ार पचास करोड़", 100500000000),
+    ],
+)
+def test_k19_1_pending_units_then_bigger_tier_finds_correct_run(
+    run: str, expected: int
+):
+    words = run.split()
+    assert find_numeral_runs(words) == [
+        NumeralRun(start=0, end=len(words) - 1, value=expected)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("narration", "display", "expected"),
+    [
+        (
+            "दो हज़ार छब्बीस करोड़",
+            "do hazaar chhabbis crore",
+            "20260000000",
+        ),
+        (
+            "एक हज़ार पांच सौ करोड़",
+            "ek hazaar paanch sau crore",
+            "15000000000",
+        ),
+        (
+            "दस हज़ार पचास करोड़",
+            "das hazaar pachaas crore",
+            "100500000000",
+        ),
+    ],
+)
+def test_k19_1_apply_emits_raw_integer_no_commas(
+    narration: str, display: str, expected: str
+):
+    # Ceiling still not done: correct values are bigger and still raw.
+    narration_words = narration.split()
+    display_words = display.split()
+    caption_text, groups = apply_numeral_merging(narration_words, display_words)
+    assert caption_text == expected
+    assert groups == [len(narration_words)]

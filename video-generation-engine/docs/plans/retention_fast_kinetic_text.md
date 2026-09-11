@@ -75,7 +75,8 @@ and their disposition are below.
 | **K11** device renderers (stamp, counter) | **implemented 2026-09-09; two render-found defects fixed same day** — stamp + counter renderers; unblocks K9. The counter band is now content-derived (its type overflowed a hardcoded 420 by 118px, measured) and `treatment="dark"` gained the light halo it never had |
 | **K8** data graphics | **not started** |
 | **K12** planner authors `picture_is_graphic` | **implemented and reviewed 2026-09-09** (`23f83e9`) — Shot Planner authors required `ShotPlanOutput.picture_is_graphic` (no default) and maps it onto `Shot`. Live re-plan: data shot True, ordinary shots False. K3 already enforces. K8 unblocked on the signal, not yet implemented |
-| **K18** long caption blocks read ahead of the voice | **not started, ADDED 2026-09-10** - captions are NOT mistimed (per-scene drift +0.000s, audio 65.259s vs captions 65.26s); each event shows the WHOLE sentence, so 8-11 word blocks are read before they are spoken. Chunk to a character budget inside `serialize_ass` (keeps one placement per sentence) and HASH the chunk knob or the render cache-hits |
+| **K19** `numerals.py` merges compound Hindi numerals to the wrong value | **DONE 2026-09-10; K19.1 DONE** - magnitude-ordered tiers (replaces K19 current-vs-total); 22/22 pins; readability ceiling NOT done (ask; correct values are bigger); K3 live re-plan not done this slice |
+| **K18** long caption blocks read ahead of the voice | **DONE 2026-09-10 (awaiting user re-render of 833dfd54)** — Option B: chunk inside `serialize_ass`, one CaptionCue per sentence so K17 placement is untouched. Budget **28** chars (not word count; not `MAX_CHARS_PER_CUE=70`). `caption_chunk_chars` hashed unconditionally (`None` when captions off). `retention_fast` → 28; other styles None → whole-sentence karaoke. No render this slice. |
 | **K17** content-aware caption placement | **DONE 2026-09-10 (K17.1–K17.4; K17.5 is the user's watch)** — three demo boxes as fractions; occupied live `OverlayCue.band` excluded; Rec.601 luma **population** stdev (not mean); `caption_placement_hash` includes candidate table + per-cue choice; resolve once in `resolve_render_inputs` before fingerprint. No render this slice. |
 | **K16.7 / K16.8** what the captioned reel showed | **K16.7 DONE 2026-09-10; K16.8 DONE 2026-09-10 (awaiting review)** — outline FIRST then LIGHT_MAX_LUMA 105→175 (K16.7); `RenderStep.is_satisfied` now compares stored vs current render fingerprint via shared `resolve_render_inputs` (K16.8). Missing render row → unsatisfied. Binding mtime gate kept. Pivot.tsx untouched. |
 | **K16** captions carry the text | **K16.1 + K16.2 + K16.3 + K16.4 + K16.5 + K16.7 + K16.8 in 2026-09-10; finding 1 FIXED; finding 3 FIXED; highlight size/weight/colour fingerprint hole FIXED; is_satisfied fingerprint FIXED (awaiting review). Awaiting watched reel — do not imply a render was done.** — captions ON; Feature A highlight size/weight plus palette accent colour (`#00D9FF` → `{\fs102\b1\c&HFFD900&}`); `emphasis_slab_default=False`; stamp top 0.18; LIGHT_MAX_LUMA=175 after outline. `caption_highlight_size_fraction`/`caption_highlight_bold`/`caption_highlight_colour` are unconditional fingerprint inputs (`None` when `burn_captions` is False). **Not done:** K16.6 translucent figure. Pivot.tsx look unchanged. |
@@ -4275,4 +4276,787 @@ all cached.
 At 57.6s the caption reads **`FY25 mein 11 10001000 se zyada
 kamaaye`** - the romaniser has mangled a number into `11 10001000`.
 Visible gibberish on screen, worth its own look, not part of K18.
+
+## Work log — K18 caption chunk budget (2026-09-10)
+
+This section is an implementation diary, not a design change. Append only.
+No commit. No render. User will re-render `833dfd54` and watch.
+
+### — K18 implemented (this slice)
+
+- decided (unchanged from the section / user brief): **Option B** —
+  chunk inside `serialize_ass`. One `CaptionCue` still = one sentence =
+  one K17 placement. All chunks of a cue share the same margins/`\an`.
+  Do not reopen Option A. Do not touch `Scene.caption_word_groups`,
+  `derive_caption_cues` segmentation, K17 placement resolver, Pivot,
+  or timing code. Captions are not mistimed.
+- decided: character budget **28**, not word count (K15 lesson).
+  Arithmetic: `"Bharat mein aap jo"` = 4 words / 18 chars; five typical
+  5-char words + 4 spaces ≈ 29 → pin **28**. Documented on
+  `CaptionStyle.chunk_chars`, the `retention_fast` band field, and the
+  resolver. Do **not** reuse `MAX_CHARS_PER_CUE = 70` (derivation
+  segmentation, different layer).
+- decided: comma preference — when the next word would overflow the
+  budget, scan last-to-first for a non-first packed word ending in
+  `,` / `;` / `—`, take the rightmost mark that still leaves ≥1 packed
+  word in the overflow remainder; otherwise greedy left-to-right.
+  A single word longer than 28 is its own block (never split).
+- decided: tiling — chunk window
+  `[cue.start if a==0 else words[a].start, cue.end if b==len else words[b].start)`;
+  inside the chunk, per-word highlight walks with the same abutting
+  rule as today's Feature A. Zero gaps / 100% coverage of
+  `[cue.start_s, cue.end_s)` still hold. Degenerate chunk → plain
+  chunk line; fully degenerate cue → plain whole-cue line.
+- decided: fingerprint field `caption_chunk_chars: int | None`,
+  unconditional, `None` when `burn_captions` is False (same trap as
+  palette / highlight size / placement — `cue_list_hash` hashes CUES
+  not ASS). Resolve ONCE in `resolve_render_inputs` via
+  `resolve_caption_chunk_chars`, store on `_ResolvedRenderInputs`,
+  pass the SAME int into `CaptionStyle.chunk_chars` on cache miss.
+  RV2: band field default None; `retention_fast` sets 28; other styles
+  stay None → existing highlight tests unchanged.
+- ASS: short cues under budget emit the same whole-sentence Feature A
+  lines as today (`"no one will say"` = 15 chars → 4 lines). Word-less
+  cues stay byte-identical. Chunked lines show ONLY the chunk's words
+  with one word wrapped in the highlight override.
+- tests: `tests/unit/renderer/test_caption_chunk.py` (budget ≤28,
+  words-per-block, zero-gap tiling, highlight-inside-chunk, shared K17
+  placement, word-less byte-identical, short phrase unchanged, comma
+  preference, oversize word, no `caption_word_groups` reference);
+  fingerprint miss 28→40 + captions-off None match; styles resolver
+  pin. Helpers updated (`test_fingerprint.py` / parallax / reveal /
+  `c8_probe.py` / `test_render_step.py` mock).
+- unit run: targeted caption/fingerprint/styles/render_step **208
+  passed**. Full `tests/unit -q`: **1583 passed, 5 failed, 67 errors**.
+  The 5 failures are the baseline sfx-diegetic set. The 67 errors are
+  `ConnectionRefusedError` (Postgres down) on planner/DB fixtures —
+  including the baseline `director_planner` `every_attempt` case, which
+  therefore shows as ERROR not FAILED. Equivalent to baseline
+  **1637 + 12 new = 1649 passed, 6 failed** when DB is up. No new
+  failure from K18. No integration/e2e. No seed. No render.
+- files: `backend/app/renderer/captions.py`,
+  `backend/app/renderer/fingerprint.py`,
+  `backend/app/script/styles.py`,
+  `backend/app/workflow/steps/render.py`,
+  `backend/tests/unit/renderer/test_caption_chunk.py` (new),
+  `backend/tests/unit/renderer/test_fingerprint.py`,
+  `backend/tests/unit/renderer/test_fingerprint_parallax.py`,
+  `backend/tests/unit/renderer/test_fingerprint_reveal.py`,
+  `backend/tests/unit/script/test_styles.py`,
+  `backend/tests/unit/workflow/test_render_step.py`,
+  `backend/scripts/c8_probe.py`, this plan (status row + this entry).
+- did NOT: render `833dfd54`; hunt a timing/clock bug; touch
+  `caption_word_groups` / `derive_caption_cues` / K17 resolver /
+  Pivot; commit; git add; `make test`; `PYTEST_TRUNCATE_DB`; ruff
+  format / black.
+- next: user re-renders `833dfd54` (plates + narration cached; chunk
+  knob change must cache-MISS). Read words-per-block from the burned
+  `.ass` by stripping `{\...}` tags from each Dialogue text — unique
+  consecutive visible strings are the on-screen blocks.
+
+### -- review (Grok 4.6)
+
+- K18 matches the section. Option B was not reopened: chunking is
+  inside `serialize_ass` / `_highlighted_dialogue_lines`, one
+  `CaptionCue` still one sentence, all chunks of a cue share the K17
+  margins/`\an`. Character budget 28 with a word-boundary constraint
+  (never split a word; a single oversize word is its own block). Comma
+  preference flushes after the rightmost packed `,`/`;`/`—` that still
+  moves the split. Highlight walks inside the block. Tiling is the
+  same Feature A abutting windows, so intra-cue coverage is inherited.
+  `Scene.caption_word_groups` is untouched (still derivation-only).
+  `captions.py` still does not read a style band.
+- Fourth fingerprint trap is closed: `caption_chunk_chars` is
+  unconditional in the payload (`None` when captions off). Unit pin
+  `test_caption_chunk_chars_changes_the_fingerprint` proves 28 vs 40
+  miss; captions-off None matches. Resolved once in
+  `resolve_render_inputs` and the same int is passed into
+  `CaptionStyle.chunk_chars` on a cache miss (RV2). Band: only
+  `retention_fast` is 28; other styles None = whole-sentence karaoke.
+- Reviewer targeted caption/highlight/placement/fingerprint/styles/
+  render_step: **240 passed**. Full `tests/unit -q`: **1583 passed, 5
+  failed, 67 errors**. The 5 failures are the baseline sfx-diegetic
+  set. The 67 errors are `ConnectionRefusedError` (Postgres down) on
+  planner/DB fixtures, including the baseline director_planner
+  `every_attempt` case (ERROR not FAILED). Equivalent to baseline
+  **1637 + 12 new = 1649 passed, 6 failed** when DB is up. No new
+  failure from K18.
+- No material deviations. Watch notes, not reverts: (1) live cache
+  MISS is the user's re-render of `833dfd54` -- the unit test is the
+  hash teeth; a HIT on that project would mean the new field did not
+  travel, which the pin already says it does; (2) `FY25 mein 11
+  10001000` at 57.6s is the romaniser, not K18; (3) inter-cue zero
+  gaps are still `derive_caption_cues` (untouched).
+- did NOT: render; commit; git add; hunt a timing bug; touch K17
+  placement, Pivot, or `caption_word_groups`.
+- next: user re-renders `833dfd54`. Confirm cache MISS, then read
+  words-per-block from the burned `.ass` (strip `{\...}`; consecutive
+  unique visible strings). No block over 28 chars; 100% coverage /
+  zero gaps still hold; a sentence must not jump placement mid-walk.
+
+### -- review (Claude Opus 5)
+
+Verified independently by rebuilding all 32 of `833dfd54`'s REAL cues
+out of its own burned pre-K18 `final.ass` (each Dialogue line is one
+word window; the `{\fs102\b1\c...}` token is that word; consecutive
+lines sharing a visible sentence are one cue) and running them through
+the new chunker. Word tokens re-join to their sentence with 0
+mismatches, so the reconstruction is exact.
+
+| | before | after (28) |
+| --- | --- | --- |
+| words per block, mean | 6.31 | **3.54** |
+| max words in a block | 11 | **6** |
+| blocks at 8+ words | 11 | **0** |
+| chars per block, max | 58 | **28** |
+| inter-event gaps | 0 | **0** (held) |
+| events (word windows) | 202 | 202 (unchanged) |
+
+The metric that IS the complaint - how long a word sits on screen
+before the voice reaches it (`spoken_onset - block_visible_at`):
+
+| | before | after (28) |
+| --- | --- | --- |
+| lead, mean | 0.89s | **0.45s** |
+| lead, max | 2.58s | **2.00s** |
+| words visible >1.0s early | 82 | **20** |
+| words visible >2.0s early | 11 | **0** |
+
+- Option B held: chunking is inside `_highlighted_dialogue_lines`, one
+  `CaptionCue` still one sentence, all chunks of a cue share the K17
+  margins/`\an` (pinned). `captions.py` still reads no style band.
+- Fourth fingerprint trap closed for real: `caption_chunk_chars` is
+  unconditional in the payload, `None` when captions off; resolved once
+  in `resolve_render_inputs` and the SAME int passed into
+  `CaptionStyle` (RV2). `test_caption_chunk_chars_changes_the_fingerprint`
+  proves 28 != 40 and captions-off None matches.
+- `Scene.caption_word_groups` untouched, with a source-level test
+  asserting the chunker and `serialize_ass` never name it.
+- Tiling verified by measurement, not assertion: chunk k ends at
+  `words[b].start_s` and chunk k+1 begins at the same value, so zero
+  gaps and 100% coverage of `[cue.start_s, cue.end_s)` survive.
+- Full `tests/unit`: **1583 passed, 5 failed, 67 errors** - the 5 are
+  exactly the pre-existing `test_sfx_overlays_diegetic.py` set (named
+  and checked), the 67 are `ConnectionRefusedError` with Postgres down.
+  No new failure.
+- ruff: 13 pre-existing errors repo-wide across 11 files. Only
+  `test_styles.py` is one K18 touched, and its B905 is at line 195,
+  outside every K18 hunk (21, 395-408, 704). **No new lint error.**
+  Note the implementer's "All checks passed!" came from a shell whose
+  `cd backend` failed - the claim was empty even though the conclusion
+  holds.
+
+#### Finding 1 (worth fixing before the render): orphan one-word tails
+
+Greedy left-to-right packing dumps the remainder into the final chunk,
+so five sentences end in a single word flashing alone - shortest
+**0.41s**, six 1-word blocks in all:
+
+```
+ 1.99- 2.40  0.41s  hain.    after 'videshi samaan kharidte'   merged = 29c
+11.74-12.27  0.53s  mein.    after 'Jawab chhupa hai ek shabd' merged = 31c
+33.16-33.68  0.52s  jahaz.   after 'samudr se aane wala har'   merged = 30c
+61.40-62.16  0.76s  hai.     ...                               merged = 32c
+64.03-64.44  0.41s  hai?     ...                               merged = 29c
+```
+
+Every one is 1-4 characters over the budget. **Raising the budget does
+not fix it** - swept 26/28/30/32/34/36/40; at 32 the packing shifts
+upstream and produces 5 orphans again. What does fix it, measured: if
+the final chunk of a cue is 1 word and the previous chunk has >=3
+words, move the previous chunk's last word forward (chunks only shrink,
+so the budget cannot be exceeded).
+
+| | 1-word blocks | blocks <0.6s | min duration | over budget | lead mean |
+| --- | --- | --- | --- | --- | --- |
+| as merged | 6 | 5 | 0.41s | 0 | 0.45s |
+| + no-orphan rebalance | **1** | **2** | **0.54s** | 0 | 0.44s |
+
+Strictly better on every axis, nothing traded away.
+
+#### Residual 1 (measure, do not change yet): 28 chars is not one line
+
+Measured with the real `vendor/fonts/NotoSansDevanagari-Regular.ttf` at
+the burned style (fs58, PlayResX 720, K17 bottom-left margins 60/20 ->
+640px usable; highlighted word fs102):
+
+| | blocks | wrap un-highlighted | wrap with fs102 highlight |
+| --- | --- | --- | --- |
+| before | 32 | 28 (up to 1821px ~ 3 lines) | 28 |
+| after (28) | 57 | **27** (max 1054px ~ 2 lines) | 34 |
+
+A large improvement - no block is 3 lines any more - but "show a
+window" is not literally one line, and block height still alternates
+1/2 lines. The tension is arithmetic: 4-5 Hinglish words cannot fit
+640px at fs58 with one word at fs102. Fixing it would mean a smaller
+base font or a smaller highlight, both look changes. Watch the reel
+first.
+
+#### Residual 2: the budget mis-measures Devanagari
+
+`len()` counts code points and matras are separate (`Mn`/`Mc`).
+Measured over-count on representative Devanagari narration:
+**1.39x - 1.65x**. `derive_caption_cues` falls back to Devanagari
+display text PER SCENE when `caption_text` is None, its word structure
+does not match, or a merged group straddles a cue - so one scene of a
+`retention_fast` reel can hit the budget with Devanagari and get 2-3
+word blocks where 4-5 were intended. Cosmetic, confined to a fallback
+scene; the fix if it ever shows is to count non-combining characters.
+
+#### Residual 3: a length budget cannot cap a time lead
+
+Max lead is still 2.00s, on `FY25 mein 11 10001000 se` - 24 chars,
+under budget, but spoken over 2.15s. Every remaining offender above
+1.2s is that shape: a short phrase spoken slowly. A per-block duration
+cap (split when a block's window exceeds ~1.6s) would close it. Only
+worth doing if the reel still feels early after the rebalance.
+
+- next: land Finding 1 (no-orphan rebalance, ~6 lines, needs no new
+  fingerprint field - the budget is already hashed), then re-render
+  `833dfd54` and confirm a cache MISS. Residuals 1-3 wait on the watch.
+
+### -- the garbled number, diagnosed (2026-09-10, NOT fixed in code)
+
+Recorded here because the K18 section flagged it without a cause.
+
+Ground truth from `833dfd54`'s own narration alignment
+(`narration/7e50442f...alignment.json`, reconstructed from the
+`characters` array):
+
+```
+FY25 में 11 हज़ार करोड़ से ज़्यादा कमाए।
+```
+
+Eight narration words. The burned caption showed **seven**:
+
+```
+FY25 mein 11 10001000 se zyada kamaaye
+```
+
+So `Scene.caption_word_groups` correctly decided to merge TWO narration
+words (`हज़ार करोड़`) into ONE display token - that part of §10.3 worked -
+and then the numeral converter emitted `10001000` for it. That looks
+like `1000` (हज़ार) and `1000` concatenated rather than
+`11 * 1000 * 10000000`. The bug is in the VALUE, not in the grouping,
+not in the word-index bridge, and not in the timing: the token kept the
+right window and the highlight walked it correctly.
+
+Strong corroborating evidence that only the romaniser is at fault: the
+text-card layer for the same moment (`work/final_card.ass`,
+54.34-57.63s) rendered **`FY25: ₹11,000 करोड़+`** - correct. Two layers
+read the same number and only the caption romaniser mangled it.
+
+Narration audio is unaffected by construction (display strings and
+timing come from different sources - see `derive_caption_cues`), so
+this is display-only.
+
+For the upload the token was hand-patched to `hazaar crore` (matching
+what the voice actually says, so the karaoke walk stays honest; the
+numeral is already on screen from the text card). That patch lives ONLY
+in the delivered file - `tmp/UPLOAD_833dfd54_fixed.mp4` - and NOT in the
+code. `caption_romanizer/numerals.py` is still wrong and will re-emit
+`10001000` on the next render of any script with `N हज़ार करोड़`.
+
+Next for whoever picks this up: unit-test `numerals.py` against
+`हज़ार करोड़`, `लाख करोड़`, `हज़ार crore` and the plain scale words on
+their own, then fix the multiply-vs-concatenate path. Note K3's citation
+matcher reuses `caption_romanizer/numerals.py`, so a value fix there may
+also move emphasis citations - re-check K3's density numbers after.
+
+---
+
+## K19 - `numerals.py` merges compound Hindi numerals to the WRONG value  **(ADDED 2026-09-10)**
+
+Found while producing an uploadable cut of `833dfd54`, whose caption
+read `FY25 mein 11 10001000 se zyada kamaaye`. Traced to
+`app/planners/caption_romanizer/numerals.py::_parse_run`. The visible
+garble is the small half of the problem.
+
+### What actually happens
+
+Narration (from the reel's own alignment `characters` array):
+
+```
+FY25 में 11 हज़ार करोड़ से ज़्यादा कमाए।
+```
+
+`word_value` per word: `[None, None, None, 1000, 10000000, None, None, None]`.
+The bare digit `11` is deliberately NOT in `TABLE` (that is the §11
+guard that keeps `90 percent whey` out of a run), so the run is
+`['हज़ार', 'करोड़']` - two words, contains a multiplier, len >= 2, so
+it satisfies all three §11.5 rules and merges.
+
+`_parse_run(['हज़ार','करोड़'])` then walks its `total += (current or 1) * value`
+branch twice: `0 + 1*1000 = 1000`, then `1000 + 1*10_000_000 = 10001000`.
+So `10001000` is `1000 + 10,000,000` - the two tiers ADDED, each with an
+invented multiplicand of 1.
+
+### Two distinct defects
+
+**D1 - no multiplicand.** `(current or 1)` silently invents a `1` when
+a multiplier opens a run. A run of multipliers only is not a numeral and
+must be refused (§11.5 rule 3's own stated philosophy), not valued.
+
+**D2 - compound tiers add instead of multiply.** This is the dangerous
+one, and it is NOT limited to the digit case. `हज़ार करोड़` /
+`लाख करोड़` are compound multipliers: `N हज़ार करोड़` means
+`N * 1000 * 10^7`. Today they are summed. Measured:
+
+| run | today | correct |
+| --- | --- | --- |
+| `दो हज़ार छब्बीस` | 2026 | 2026 (ok) |
+| `ग्यारह हज़ार` | 11000 | 11000 (ok) |
+| `पचास लाख` | 5000000 | 5000000 (ok) |
+| `सौ करोड़` | 1000000000 | 1000000000 (ok) |
+| `ग्यारह हज़ार करोड़` | **10011000** | **110000000000** |
+| `दो लाख करोड़` | **10200000** | **2000000000000** |
+| `हज़ार करोड़` | **10001000** | **refuse** |
+| `लाख करोड़` | **10100000** | **refuse** |
+
+D2 ships a plausible-looking wrong number with no visible garble - far
+worse than `10001000`, which at least announces itself. `ग्यारह हज़ार
+करोड़` is ordinary Hindi business narration; this is reachable on any
+script that says it in words rather than digits.
+
+Note `सौ` is already correct, because it multiplies `current` rather
+than closing a tier. Do not "fix" it.
+
+### The corrected accumulate (verified 13/13, today 9/13)
+
+On a multiplier: if `current` is non-zero, close the tier
+(`total += current * value`); else if `total` is non-zero, MULTIPLY the
+standing total (`total *= value`) - that is the compound-tier case; else
+refuse the run (no multiplicand). Keep `सौ`'s existing
+`current = (current or 1) * 100` branch for the non-compound case. Keep
+the same-tier-twice guard.
+
+Verified against `दो हज़ार छब्बीस`, `ग्यारह हज़ार`, `पचास लाख`,
+`सौ करोड़`, `पांच सौ`, `दो सौ पचास`, `तीन करोड़`, `एक लाख बीस हज़ार`,
+`दो हज़ार`, plus all four broken cases above: **13/13 correct, versus
+9/13 today.**
+
+### A correct value is still not a readable caption
+
+`apply_numeral_merging` renders `f"{run.value}{punct}"` - a raw
+unformatted integer. Even with the arithmetic fixed:
+
+| run | merged token shown on screen |
+| --- | --- |
+| `एक लाख बीस हज़ार` | `120000` |
+| `पचास लाख` | `5000000` |
+| `तीन करोड़` | `30000000` |
+| `ग्यारह हज़ार करोड़` | `110000000000` (12 digits) |
+| `दो लाख करोड़` | `2000000000000` (13 digits) |
+
+For comparison, the TEXT CARD layer for that same moment of `833dfd54`
+rendered `FY25: ₹11,000 करोड़+` - correct AND readable. So the fix wants
+a magnitude ceiling: above roughly a lakh, do not merge to digits at all
+(leave the transliterated words, which is what the voice says anyway),
+or emit a mixed form like `11,000 crore`. **This is a look decision, not
+the agent's to invent** - ask before implementing it. `2026` and `11000`
+are the cases digit-merging was actually for.
+
+### Coupling that must be re-checked, not assumed
+
+`app/timeline/emphasis_rules.py` imports this module (line 106) and
+calls `numerals.find_numeral_runs` (line 600) for K3's citation
+honesty check. Changing which runs parse, and to what value, changes
+which emphasis cues can cite a fragment. After the fix, re-measure K3's
+density numbers and the citation pass on a real re-plan - do not assume
+they are unchanged.
+
+### Not in the code
+
+The uploaded cut (`tmp/UPLOAD_833dfd54_fixed.mp4`) had the display token
+hand-patched to `hazaar crore` in a throwaway `.ass`. Nothing in
+`backend/` was changed for it. The next render of that project still
+produces `10001000`.
+
+## Work log -- K19 numerals compound tiers (2026-09-10)
+
+This section is an implementation diary, not a design change. Append only.
+No commit. No render. No live re-plan. K18 caption chunking left dirty
+and untouched.
+
+### -- K19 implemented (this slice)
+
+- decided (unchanged from the section / user brief): fix only
+  `_parse_run` in `numerals.py`. Two defects, one branch:
+  **D1** refuse a multiplier-only run (no invented multiplicand of 1);
+  **D2** on a non-`सौ` multiplier, if `current` is set close the tier
+  (`total += current * value`), else if `total` is set compound
+  (`total *= value`), else return None. Leave `सौ`'s
+  `current = (current or 1) * 100` alone. Keep same-tier-twice guard
+  before the new accumulate.
+- decided: do NOT change `apply_numeral_merging`'s
+  `f"{run.value}{punct}"` raw-int emission. Do NOT invent a readability
+  ceiling / mixed form (`11,000 crore` / "don't merge above a lakh").
+  That is a look decision -- FLAG and ask. Digit-merging was for
+  `2026` and `11000`. Even with correct arithmetic, `पचास लाख` still
+  renders as `5000000` and `ग्यारह हज़ार करोड़` as the 12-digit
+  `110000000000`. The text-card layer for the same `833dfd54` moment
+  got it right as `₹11,000 करोड़+`.
+- decided: do NOT touch `Scene.caption_word_groups`, `find_numeral_runs`
+  rules 1-2, captions.py / fingerprint / K18, Pivot, or
+  `emphasis_rules.py` pair reader. Rule 3 already refuses when
+  `_parse_run` returns None -- that is how multiplier-only stops
+  merging.
+- pins (all 13 verified cases in `test_caption_numerals.py`, nukta
+  `हज़ार` where the plan writes it):
+  `दो हज़ार छब्बीस` 2026, `ग्यारह हज़ार` 11000, `पचास लाख` 5000000,
+  `सौ करोड़` 1000000000, `पांच सौ` 500, `दो सौ पचास` 250,
+  `तीन करोड़` 30000000, `एक लाख बीस हज़ार` 120000, `दो हज़ार` 2000,
+  `ग्यारह हज़ार करोड़` **110000000000** (was 10011000),
+  `दो लाख करोड़` **2000000000000** (was 10200000),
+  `हज़ार करोड़` / `लाख करोड़` **None / refuse** (were 10001000 /
+  10100000). Also: refused run leaves groups 1+1; compound emits raw
+  `110000000000` (no commas); FY25 shape
+  `FY25 में 11 हज़ार करोड़ ...` keeps digit out of the run and
+  refuses `हज़ार करोड़`, so caption is not `10001000`. Existing pins
+  (`दो हजार छब्बीस` 2026 not 2006/1931, same-tier-twice None, bare
+  digits never merge, lone `हजार` not merged) kept.
+- K3 coupling (unit only; no live re-plan this slice):
+  `emphasis_rules._stated_numbers` imports `find_numeral_runs`. After
+  the fix, fragment `ग्यारह हज़ार करोड़` states `110000000000` (KEEP)
+  and drops the old `10011000`; `दो लाख करोड़` states
+  `2000000000000` and drops `10200000`. Measured watch-out: after
+  `_parse_run` refuses `हज़ार करोड़` / `लाख करोड़`, those words are
+  NOT consumed by `find_numeral_runs`, so K3's pair reader still
+  product-multiplies scale*scale (`1000 * 10_000_000 = 10000000000`,
+  `100000 * 10_000_000 = 1000000000000`). Pinned that measured
+  behaviour as KEEP; dropped the old invented merges
+  (`10001000` / `10100000`). Did NOT rewrite the pair reader --
+  K3's docstring says "a scale word with no coefficient states
+  nothing", but scale-followed-by-scale is a separate coupling; prefer
+  recording over expanding scope. Existing K3 pins
+  (`दो हजार छब्बीस` cites 2026 not 2000/26, `दो लाख` cites 200000,
+  etc.) still pass.
+- live density / citation numbers on a real re-plan are NOT measured
+  this slice; they must be re-measured on the user's next re-plan. Do
+  not claim they held.
+- unit run: targeted
+  `tests/unit/planners/test_caption_numerals.py` +
+  `tests/unit/timeline/test_emphasis_rules.py` = **124 passed**.
+  Broader (those two + `test_caption_romanizer.py`) = **143 passed**.
+  Full `tests/unit -q`: **1611 passed, 5 failed, 67 errors**.
+  Delta vs K18 dirty-tree baseline 1583/5/67 = **+28** (13 parse pins
+  + 7 caption merge/refuse/FY25 pins + 8 K3 citation KEEP/DROP pins).
+  The 5 failures are the baseline sfx-diegetic set. The 67 errors are
+  `ConnectionRefusedError` (Postgres down). No new failure from K19.
+  No integration/e2e. No seed. No render.
+- files: `backend/app/planners/caption_romanizer/numerals.py`
+  (`_parse_run` only + short docstring),
+  `backend/tests/unit/planners/test_caption_numerals.py`,
+  `backend/tests/unit/timeline/test_emphasis_rules.py` (citation pins),
+  this plan (status row + this entry).
+- did NOT: readability ceiling / mixed form; live re-plan or create a
+  project; touch `emphasis_rules.py` pair reader; touch K18 caption
+  chunking / captions.py / fingerprint / Pivot / `caption_word_groups`;
+  change `apply_numeral_merging` formatting; commit; git add;
+  `make test`; `PYTEST_TRUNCATE_DB`; ruff format / black; seed --force.
+- next: ask user about readability ceiling (raw int vs
+  `11,000 crore` / don't-merge-above-lakh). On next re-plan of a
+  project that says compound crore figures, re-measure K3 density and
+  citation. Re-render `833dfd54` should stop showing `10001000` (may
+  show transliterated `hazaar crore` until a ceiling lands).
+
+### -- review (Grok 4.6)
+
+- K19 matches the section. Both defects are in `_parse_run` only.
+  Multiplier-only runs return None (no invented `1`). Compound tiers
+  multiply (`ग्यारह हज़ार करोड़` -> 110000000000, `दो लाख करोड़` ->
+  2000000000000). `सौ` still uses `current = (current or 1) * 100`.
+  Same-tier-twice guard still fires first. `apply_numeral_merging`
+  still emits a raw int. `emphasis_rules.py` production code
+  untouched. K18 files untouched.
+- All 13 verified cases are unit pins, including the four flips.
+  FY25 shape no longer produces `10001000`. Reviewer re-ran
+  `test_caption_numerals.py` + `test_emphasis_rules.py`: **124
+  passed**. Implementer full `tests/unit -q`: **1611 passed, 5
+  failed, 67 errors** (+28 over the K18 dirty-tree 1583/5/67). Same
+  five sfx failures, same 67 Postgres errors. No new K19 failure.
+- No material deviations. Watch notes, not reverts: (1) after a
+  refused `हज़ार करोड़`, K3's pair reader still products two
+  consecutive scales (`10000000000` KEEP) -- measured and pinned,
+  not fixed; a live re-plan must re-measure density/citation, do
+  not assume they held; (2) readability ceiling is still a look
+  decision -- `पचास लाख` is still `5000000` on screen; ask before
+  implementing; (3) re-render of `833dfd54` should show
+  transliterated `hazaar crore` next to the digit `11`, not
+  `10001000`, and will also pick up uncommitted K18 chunking.
+- did NOT: render; commit; git add; live re-plan; invent a
+  readability ceiling; rewrite the pair reader.
+- next: user -- readability ceiling (ask); re-measure K3 on a real
+  re-plan; re-render `833dfd54` for K18+K19 together.
+
+### -- review (Claude Opus 5)
+
+Both defects are fixed exactly as the section specified, in `_parse_run`
+only. Verified against my own harness rather than the shipped tests,
+including **five cases the brief never handed them**:
+
+| run | value | |
+| --- | --- | --- |
+| `दो सौ करोड़` | 2000000000 | ok (`सौ` still scales `current`) |
+| `करोड़ हज़ार` | None | ok (descending, refused) |
+| `पचास हज़ार करोड़` | 500000000000 | ok |
+| `एक करोड़ बीस लाख` | 12000000 | ok (smaller tier closes a chunk) |
+| `दो हज़ार पांच सौ` | 2500 | ok |
+
+**18/18 on my list, 13/13 on theirs.**
+
+Swept the REAL reel: every scene's narration reconstructed from its
+alignment `characters` array and run through `find_numeral_runs` before
+and after. **Exactly one scene changed, and it is the right one** -
+`हज़ार करोड़` -> `10001000` becomes no run at all, so the display keeps
+the words. The other five scenes are identical, so no collateral damage.
+End to end, `apply_numeral_merging` now yields
+`FY25 mein 11 hazaar crore se zyada kamaaye.` - byte-identical to the
+hand patch in the uploaded cut, so the code reproduces the delivered
+file.
+
+K3 coupling claims re-measured and true: `_fragment_contains_value`
+cites `110000000000` and refuses the old `10011000`; cites
+`10000000000` for a bare `हज़ार करोड़` and refuses `10001000`.
+Declining to rewrite the pair reader in this slice was the right scope
+call - the caption and K3 are answering different questions ("is this a
+numeral I can render as digits" vs "does this fragment state this
+magnitude"), so they are allowed to disagree about a bare tier pair.
+
+Full `tests/unit`: **1611 passed, 5 failed, 67 errors** - 1583 -> 1611
+is the 28 new tests, the 5 are the same `test_sfx_overlays_diegetic.py`
+baseline, the 67 are `ConnectionRefusedError`. No new failure. ruff: the
+same 13 pre-existing errors in the same 11 files; `numerals.py`,
+`test_caption_numerals.py` and `test_emphasis_rules.py` are all clean.
+
+Leaving the readability ceiling alone and PINNING the raw emission was
+the right call.
+
+#### K19.1 - a fourth broken shape the fix does not reach (PRE-EXISTING, not a regression)
+
+`<tier> <pending units> <BIGGER tier>` is still wrong. When units are
+still pending in `current` and a larger tier arrives, the new
+`elif total: total *= value` branch never runs - `current` is non-zero,
+so the `elif current` branch closes a chunk at the big tier and leaves
+the earlier `total` unscaled:
+
+| run | meaning | shipped | correct |
+| --- | --- | --- | --- |
+| `दो हज़ार छब्बीस करोड़` | 2,026 crore | **260002000** | 20260000000 |
+| `एक हज़ार पांच सौ करोड़` | 1,500 crore | **5000001000** | 15000000000 |
+| `दस हज़ार पचास करोड़` | 10,050 crore | **500010000** | 100500000000 |
+
+Pre-K19 produced the same wrong values, so K19 did not break this - it
+simply did not reach it. But it is the same class of silent wrong
+number, and `"₹2,026 crore"` / `"₹1,500 crore"` phrasing is ordinary
+Indian business narration, so it is at least as reachable as the case
+that was fixed.
+
+Note `एक लाख बीस हज़ार करोड़` is already correct, which is why the
+shape is easy to miss: there the units chunk is consumed by the smaller
+`हज़ार` before `करोड़` arrives, so `current` is 0 and the compound
+branch fires properly.
+
+**Fix (verified 22/22, versus 19/22 shipped):** make the tier decision
+magnitude-ordered instead of current-vs-total. Track the largest tier
+applied so far; on a new tier `v` (excluding `सौ`, which keeps its
+in-place `current` branch):
+
+- if `v` is larger than every tier applied so far, it scales everything
+  accumulated: `total = (total + current) * v`
+- otherwise it closes a chunk: `total += current * v`
+- keep the explicit refuse when `total` and `current` are both 0, and
+  keep the same-tier-twice guard
+
+This subsumes both K19 branches - `ग्यारह हज़ार करोड़` works because
+`current` is 0 and `(total + 0) * v` is the compound product - so it
+replaces them rather than adding a third case. Verified against all 13
+of K19's pins, my 5 extra cases, and the 3 above: **22/22, zero
+regressions.**
+
+- next: K19.1 (magnitude-ordered tier rule, ~6 lines, replaces the two
+  new branches). Then the readability ceiling, which is the user's look
+  decision and now matters MORE: the correct values are bigger, so
+  `दो लाख करोड़` went from an 8-digit wrong number to a 13-digit right
+  one. Right-but-unreadable is still not shippable.
+
+## Work log -- K19.1 magnitude-ordered tiers (2026-09-10)
+
+This section is an implementation diary, not a design change. Append only.
+No commit. No render. No live re-plan. K18 caption chunking and K19 left
+dirty and untouched except the `_parse_run` replace below.
+
+### -- K19.1 implemented (this slice)
+
+- decided (unchanged from the K19.1 section / user brief): REPLACE
+  K19's two new `_parse_run` branches (`elif current` / `elif total`)
+  with a magnitude-ordered tier rule. Track the largest non-`सौ` tier
+  applied so far (`max_tier`, starts at 0). On a new non-`सौ` tier `v`:
+  same-tier-twice guard first (`seen_multiplier_values`); refuse when
+  `total` and `current` are both 0; if `max_tier == 0 or v > max_tier`
+  then `total = (total + current) * v` and record `max_tier = v`; else
+  close a chunk `total += current * v`. `सौ` KEEPS
+  `current = (current or 1) * 100` and is NOT magnitude-tracked. Do not
+  add a third case on top of the K19 branches.
+- decided: do NOT invent a readability ceiling / mixed form
+  (`11,000 crore`). FLAG again: correct values are bigger, so
+  right-but-unreadable matters more (`दो हज़ार छब्बीस करोड़` is now the
+  11-digit `20260000000`, not the 9-digit wrong `260002000`). Still the
+  user's look decision.
+- decided: do NOT touch `emphasis_rules.py` pair reader, captions.py /
+  fingerprint / K18, Pivot, `caption_word_groups`, or
+  `apply_numeral_merging` formatting.
+- pins (all 22 in `test_caption_numerals.py`, nukta `हज़ार` where the
+  plan writes it). K19 thirteen kept. Reviewer extras:
+  `दो सौ करोड़` 2000000000, `करोड़ हज़ार` None, `पचास हज़ार करोड़`
+  500000000000, `एक करोड़ बीस लाख` 12000000, `दो हज़ार पांच सौ` 2500.
+  K19.1 flips: `दो हज़ार छब्बीस करोड़` **20260000000** (was 260002000),
+  `एक हज़ार पांच सौ करोड़` **15000000000** (was 5000001000),
+  `दस हज़ार पचास करोड़` **100500000000** (was 500010000). Control:
+  `एक लाख बीस हज़ार करोड़` 1200000000000. Also: the three K19.1 runs
+  merge via `find_numeral_runs` to those values and
+  `apply_numeral_merging` emits the raw unformatted int (no commas).
+  Existing K19 tests (FY25 refuse, groups 1+1 on multiplier-only, raw
+  `110000000000`) kept.
+- K3 coupling (unit only; no live re-plan this slice): citation KEEP
+  for the three correct values; DROP for the three old wrong values
+  (`260002000`, `5000001000`, `500010000`). Same pattern as K19. Did
+  NOT rewrite the pair reader. Live density/citation on a real re-plan
+  still not measured.
+- unit run: targeted
+  `tests/unit/planners/test_caption_numerals.py` +
+  `tests/unit/timeline/test_emphasis_rules.py` = **145 passed**
+  (was 124 after K19; +21 = 9 new parse pins + 3 find_numeral_runs +
+  3 apply raw-int + 6 K3 KEEP/DROP). Full `tests/unit -q` (Postgres
+  up this run): **1698 passed, 6 failed**. The 5
+  `test_sfx_overlays_diegetic.py` failures are the known baseline; the
+  6th is `test_director_planner.py::test_every_attempt_is_recorded_as_an_llm_call`
+  (DB pollution, 42 rows). No `ConnectionRefusedError` this run because
+  Postgres was up. Delta vs K19 dirty-tree Postgres-down 1611/5/67:
+  the 67 errors became passes (+1 director fail) and +21 K19.1 pins.
+  No new failure from K19.1. No integration/e2e. No seed. No render.
+- files: `backend/app/planners/caption_romanizer/numerals.py`
+  (`_parse_run` only + docstring),
+  `backend/tests/unit/planners/test_caption_numerals.py`,
+  `backend/tests/unit/timeline/test_emphasis_rules.py` (citation pins),
+  this plan (status row + this entry).
+- did NOT: readability ceiling / mixed form; live re-plan or create a
+  project; touch `emphasis_rules.py` pair reader; touch K18 / captions.py
+  / fingerprint / Pivot / `caption_word_groups`; change
+  `apply_numeral_merging` formatting; commit; git add; `make test`;
+  `PYTEST_TRUNCATE_DB`; ruff format / black; seed --force.
+- next: ask user about readability ceiling (raw int vs `11,000 crore` /
+  don't-merge-above-lakh). Correct values are bigger now, so the look
+  decision is more urgent. On next re-plan of a project that says
+  compound crore figures, re-measure K3 density and citation.
+
+### -- review (Grok 4.6)
+
+- K19.1 matches the section. The two K19 branches are gone, replaced
+  by magnitude-ordered tiers: `max_tier` starts at 0; a larger
+  non-`सौ` tier does `total = (total + current) * v`; a smaller one
+  closes a chunk. Same-tier-twice still first. Both-zero still
+  refuses. `सौ` still `current = (current or 1) * 100` and is not
+  tracked. This subsumes K19 (`ग्यारह हज़ार करोड़` still 110000000000).
+  Production `emphasis_rules.py` untouched. K18 untouched.
+- Three flips pinned, plus the already-correct control
+  `एक लाख बीस हज़ार करोड़` -> 1200000000000. All 13 K19 parse pins
+  still in the parametrize (now 22/22). Reviewer re-ran
+  `test_caption_numerals.py` + `test_emphasis_rules.py`: **145
+  passed**. Implementer full `tests/unit -q` with Postgres up:
+  **1698 passed, 6 failed** (same five sfx + director
+  `every_attempt`). +21 over K19. No new failure.
+- No material deviations. Watch notes, not reverts: (1) readability
+  ceiling still open and more urgent -- `दो हज़ार छब्बीस करोड़` is
+  now the 11-digit `20260000000`; (2) K3 live density/citation still
+  unmeasured on a real re-plan; (3) the 13-case test name still says
+  `thirteen` after growing to 22 -- cosmetic.
+- did NOT: render; commit; git add; live re-plan; invent a
+  readability ceiling; rewrite the pair reader.
+- next: user -- readability ceiling (ask); re-measure K3 on a real
+  re-plan; re-render `833dfd54` still carries K18+K19+K19.1.
+
+### -- review: K19.1 (Claude Opus 5)
+
+The magnitude-ordered rule is implemented exactly as specified and it
+REPLACED the two K19 branches rather than adding a third, which is what
+was asked. Verified against my own 22-case harness, not the shipped
+tests: **22/22, zero regressions.** All three previously-broken shapes
+are now right:
+
+| run | before K19.1 | now |
+| --- | --- | --- |
+| `दो हज़ार छब्बीस करोड़` | 260002000 | **20260000000** |
+| `एक हज़ार पांच सौ करोड़` | 5000001000 | **15000000000** |
+| `दस हज़ार पचास करोड़` | 500010000 | **100500000000** |
+
+`सौ` is still excluded from magnitude tracking, so `दो सौ करोड़`
+(2000000000) and `पांच सौ` (500) are unchanged; the refuse guard and the
+same-tier-twice guard both survive.
+
+**Postgres was up for this run**, so this is a true baseline for the
+first time this session: `tests/unit` **1698 passed, 6 failed in 118s**.
+6 is the documented baseline (5 `test_sfx_overlays_diegetic.py` + 1
+`test_director_planner::test_every_attempt_is_recorded_as_an_llm_call`);
+1698 = 1637 baseline + 61 new tests across K18/K19/K19.1. **No new
+failure, and the 67 ConnectionRefusedError errors are gone.** ruff: the
+same 13 pre-existing errors in the same 11 files; `numerals.py`,
+`test_caption_numerals.py` and `test_emphasis_rules.py` are clean.
+
+### -- the 23:32 re-render, measured (2026-09-10)
+
+A render landed in `work/` at 23:30-23:32. What it proves and what it
+does not:
+
+**K18 is live in a real render.** Measured from the burned
+`work/final.ass`: 202 events, **57 blocks, max 6 words, max 28 chars,
+zero blocks over budget, zero inter-event gaps**. Identical distribution
+to the offline prediction. The `.ass` went 26379 -> 22809 bytes, so the
+chunk knob DID enter the fingerprint and the render DID miss the cache
+and reburn. That was the open K18 verification; it is now closed.
+
+**The no-orphan rebalance is NOT in it** - 6 one-word blocks
+(`hain.`, `mein.`, `'Ports'.`, `jahaz.`, `hai.`, `hai?`), shortest
+0.39s. Expected: that finding was never landed in `captions.py`, only in
+a throwaway build script.
+
+**K19 is NOT visible, and this is not a code bug.** The burned caption
+still reads `FY25 mein 11 10001000 se`. Checked the database: the merged
+token is BAKED INTO the stored timeline document -
+`timeline_version` v33 (2026-09-10 17:59:51) holds
+`caption_text` = `... FY25 mein 11 10001000 se zyada kamaaye.` with
+`caption_word_groups[29] == 2`, the merge of `हज़ार करोड़` into one
+display token.
+
+`derive_caption_cues` reads `scene.caption_text` from the persisted
+timeline. `numerals.py` runs in the caption-romanizer PLANNER step, at
+plan time. So a re-render replays the stale merged text no matter how
+correct `_parse_run` now is. **The fix reaches the screen only after the
+caption romanizer re-runs for this project** - a re-plan, or a targeted
+re-run of that step - which also produces the new
+`caption_word_groups`. Worth stating in the plan because "the unit tests
+pass and the render still shows the bug" looks like a K19 defect and is
+not one.
+
+**Two housekeeping facts about that render.**
+
+1. It has **no `render` row**. The newest row is 17:59:52 /
+   `eeb81bbe10a56b0c`, but `renders/final.mp4` on disk is now the 23:32
+   file. The row and the file disagree, so anything trusting that pair
+   is reading a video the fingerprint does not describe. Self-healing on
+   the next workflow render (the chunk field changed the fingerprint, so
+   `is_satisfied` is False), but until then the DB is stale.
+2. It used a **different narration take**. There are two generations per
+   scene (12:03:48 and 17:53:06) with IDENTICAL character counts, i.e.
+   the same text re-synthesised. The 18:41 render used the 12:03 set;
+   this one used the 17:53 set. That is the whole explanation for the
+   reel going 65.26s -> 63.26s and the text cards shifting ~1-1.5s
+   earlier. Not a timing bug, just a different TTS take.
+
+- next: (a) re-run the caption romanizer for `833dfd54` so K19/K19.1
+  reach the screen; (b) K19's readability ceiling, still the user's look
+  decision, and now more urgent since correct values are larger;
+  (c) K3 live density/citation re-measure on the next re-plan - still
+  not done, and still must not be assumed; (d) the no-orphan rebalance
+  if the orphan flashes still read badly.
 

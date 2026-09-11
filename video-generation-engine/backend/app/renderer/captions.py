@@ -149,6 +149,13 @@ class CaptionStyle:
     # (`#RRGGBB`). None keeps today's yellow (`{\c&H00FFFF&}`) so other
     # styles / default CaptionStyle stay byte-identical.
     highlight_colour: str | None = None
+    # K18: character budget for chunking long karaoke lines. None / ≤0
+    # keeps whole-sentence Feature A. Resolved once in the render caller
+    # (RV2) and passed in — captions.py never reads a style band.
+    # Arithmetic pin (retention_fast = 28): "Bharat mein aap jo" is 4
+    # words / 18 chars; five typical 5-char words + 4 spaces ≈ 29 → 28.
+    # Not MAX_CHARS_PER_CUE (70) — that is derivation segmentation.
+    chunk_chars: int | None = None
 
 
 def derive_caption_cues(
@@ -743,13 +750,60 @@ def _plain_dialogue_line(cue: CaptionCue, *, placement: Any | None = None) -> st
     )
 
 
+# Clause-end marks for K18's natural-break preference. A word ending in
+# one of these may flush a chunk early when the next word would overflow.
+_CHUNK_CLAUSE_MARKS = (",", ";", "—")
+
+
+def _chunk_word_ranges(
+    words: tuple[CaptionWord, ...], budget: int
+) -> list[tuple[int, int]]:
+    """Half-open word-index ranges that fit a character budget (K18).
+
+    Counts display characters of the joined block (spaces between words
+    included). Never splits a word; a single oversize word is its own
+    block. Greedy left-to-right; when the next word would overflow and a
+    non-first packed word ends with ``,`` / ``;`` / ``—``, flush after
+    the rightmost such mark that still leaves ≥1 packed word in the
+    overflow remainder (scan last-to-first).
+    """
+    n = len(words)
+    if n == 0:
+        return []
+    ranges: list[tuple[int, int]] = []
+    i = 0
+    while i < n:
+        end = i + 1
+        while end < n:
+            candidate = " ".join(w.text for w in words[i : end + 1])
+            if len(candidate) <= budget:
+                end += 1
+            else:
+                break
+        # Prefer a clause break when the next word overflowed the budget.
+        if end < n and end > i + 1:
+            # Rightmost clause mark that is not the first word and leaves
+            # ≥1 packed word after it (so the split actually moves).
+            for j in range(end - 2, i, -1):
+                if words[j].text.endswith(_CHUNK_CLAUSE_MARKS):
+                    end = j + 1
+                    break
+        ranges.append((i, end))
+        i = end
+    return ranges
+
+
 def _highlighted_dialogue_lines(
-    cue: CaptionCue, *, highlight_override: str, placement: Any | None = None
+    cue: CaptionCue,
+    *,
+    highlight_override: str,
+    placement: Any | None = None,
+    chunk_chars: int | None = None,
 ) -> list[str]:
     """Feature A (§3.3, Option 2 - N contiguous lines instead of karaoke
     tags):
     word i's event spans [w_i.start, w_{i+1}.start) (the last word runs to
-    the cue's end) and re-emits the WHOLE phrase with only word i wrapped
+    the cue's end) and re-emits the phrase with only word i wrapped
     in the highlight override. The windows tile the cue exactly - full
     coverage, zero overlap, and no karaoke arithmetic for libass to
     mis-scale. A highlighted word stays lit through any inter-word pause
@@ -761,26 +815,53 @@ def _highlighted_dialogue_lines(
 
     K17: every word-walk line of one cue shares the same margins / ``\\an``.
     ``{\\anN}`` prefixes the existing highlight tags when a placement is set.
+
+    K18: when ``chunk_chars`` is set and >0, long cues are split into
+    character-budget groups; each group shows only its own words while
+    the highlight walks inside the group. Short cues under the budget
+    keep one group = the whole sentence (byte-identical Feature A).
     """
     ml, mr, mv, an_prefix = _placement_margins_and_prefix(placement)
+    words = cue.words
+    if chunk_chars is not None and chunk_chars > 0:
+        ranges = _chunk_word_ranges(words, chunk_chars)
+    else:
+        ranges = [(0, len(words))]
 
-    def _line(highlight_index: int, start_s: float, end_s: float) -> str:
-        tokens = [_escape_ass_word(w.text) for w in cue.words]
-        tokens[highlight_index] = (
-            f"{highlight_override}{tokens[highlight_index]}{_RESET_OVERRIDE_ASS}"
-        )
+    def _line(
+        a: int, b: int, highlight_index: int, start_s: float, end_s: float
+    ) -> str:
+        tokens = [_escape_ass_word(w.text) for w in words[a:b]]
+        local = highlight_index - a
+        tokens[local] = f"{highlight_override}{tokens[local]}{_RESET_OVERRIDE_ASS}"
         return (
             f"Dialogue: 0,{format_ass_time(start_s)},{format_ass_time(end_s)},"
             f"Caption,,{ml},{mr},{mv},,{an_prefix}{' '.join(tokens)}"
         )
 
+    def _plain_chunk_line(a: int, b: int, start_s: float, end_s: float) -> str:
+        text = " ".join(_escape_ass_word(w.text) for w in words[a:b])
+        return (
+            f"Dialogue: 0,{format_ass_time(start_s)},{format_ass_time(end_s)},"
+            f"Caption,,{ml},{mr},{mv},,{an_prefix}{text}"
+        )
+
     lines: list[str] = []
-    for index, word in enumerate(cue.words):
-        start = cue.start_s if index == 0 else word.start_s
-        end = cue.end_s if index == len(cue.words) - 1 else cue.words[index + 1].start_s
-        if end <= start + 1e-9:
-            continue
-        lines.append(_line(index, start, end))
+    for a, b in ranges:
+        chunk_start = cue.start_s if a == 0 else words[a].start_s
+        chunk_end = cue.end_s if b == len(words) else words[b].start_s
+        chunk_lines: list[str] = []
+        for i in range(a, b):
+            start = chunk_start if i == a else words[i].start_s
+            end = chunk_end if i == b - 1 else words[i + 1].start_s
+            if end <= start + 1e-9:
+                continue
+            chunk_lines.append(_line(a, b, i, start, end))
+        if chunk_lines:
+            lines.extend(chunk_lines)
+        elif chunk_end > chunk_start + 1e-9:
+            # Degenerate alignment inside this chunk — keep coverage.
+            lines.append(_plain_chunk_line(a, b, chunk_start, chunk_end))
     # Degenerate alignment (every window zero-length) must not drop the
     # caption entirely - fall back to the plain whole-cue line.
     return lines if lines else [_plain_dialogue_line(cue, placement=placement)]
@@ -855,6 +936,7 @@ def serialize_ass(
                     cue,
                     highlight_override=highlight_override,
                     placement=placement,
+                    chunk_chars=style.chunk_chars,
                 )
             )
         else:

@@ -18,6 +18,7 @@ from app.script.styles import (
     StylePacingBand,
     frame_aspect_error,
     resolve_burn_captions,
+    resolve_caption_chunk_chars,
     resolve_caption_highlight_bold,
     resolve_caption_highlight_size_fraction,
     resolve_caption_margin_v_fraction,
@@ -391,6 +392,20 @@ def test_retention_fast_owns_caption_highlight_size_and_bold():
         assert resolve_caption_highlight_bold(style) is False
 
 
+def test_retention_fast_owns_caption_chunk_chars():
+    """K18: only retention_fast sets the chunk budget (28); others None."""
+    assert resolve_caption_chunk_chars("retention_fast") == 28
+    for style in (
+        "documentary_archival",
+        "stillness",
+        "archival_montage",
+        "illustrated_risograph",
+        None,
+        "no_such_style",
+    ):
+        assert resolve_caption_chunk_chars(style) is None
+
+
 def test_retention_fast_records_the_spike_palette_pair():
     """K5: only this style has kinetic text. Other styles leave both
     None; the resolver, not the band field, is what use sites read."""
@@ -686,6 +701,7 @@ def test_existing_four_style_bands_are_byte_for_byte_unchanged():
         emphasis_stamp_top_fraction=0.18,
         caption_highlight_size_fraction=0.08,
         caption_highlight_bold=True,
+        caption_chunk_chars=28,
     )
     assert STYLE_PACING_BANDS["archival_montage"] == StylePacingBand(
         name="archival_montage",

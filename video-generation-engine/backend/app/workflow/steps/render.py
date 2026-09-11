@@ -134,6 +134,7 @@ from app.schemas.timeline import SfxKind, Timeline
 from app.script.styles import (
     MusicGains,
     resolve_burn_captions,
+    resolve_caption_chunk_chars,
     resolve_caption_highlight_bold,
     resolve_caption_highlight_size_fraction,
     resolve_caption_margin_v_fraction,
@@ -268,6 +269,7 @@ class _ResolvedRenderInputs:
     caption_highlight_size_fraction: float | None
     caption_highlight_bold: bool | None
     caption_highlight_colour: str | None
+    caption_chunk_chars: int | None
     caption_placements: object
     alignment_by_scene: list | None
     text_card_cues: list
@@ -416,6 +418,14 @@ async def resolve_render_inputs(
     )
     caption_highlight_bold = (
         resolve_caption_highlight_bold(timeline.metadata.render_style)
+        if render_settings.burn_captions
+        else None
+    )
+    # K18: chunk budget is a real serialize_ass input invisible to
+    # cue_list_hash (cues stay one-per-sentence). Resolve ONCE here
+    # (RV2) so the fingerprint and CaptionStyle cannot drift.
+    caption_chunk_chars = (
+        resolve_caption_chunk_chars(timeline.metadata.render_style)
         if render_settings.burn_captions
         else None
     )
@@ -604,6 +614,7 @@ async def resolve_render_inputs(
         caption_highlight_bold=caption_highlight_bold,
         caption_highlight_colour=caption_highlight_colour,
         caption_placement_hash=caption_placement_hash,
+        caption_chunk_chars=caption_chunk_chars,
         duck_envelope_hash=duck_envelope_hash,
         watermark_enabled=render_settings.watermark_enabled,
         watermark_asset_hash=watermark_asset_hash,
@@ -657,6 +668,7 @@ async def resolve_render_inputs(
         caption_highlight_size_fraction=caption_highlight_size_fraction,
         caption_highlight_bold=caption_highlight_bold,
         caption_highlight_colour=caption_highlight_colour,
+        caption_chunk_chars=caption_chunk_chars,
         caption_placements=caption_placements,
         alignment_by_scene=alignment_by_scene,
         text_card_cues=text_card_cues,
@@ -708,6 +720,7 @@ async def render_video(
     caption_highlight_size_fraction = resolved.caption_highlight_size_fraction
     caption_highlight_bold = resolved.caption_highlight_bold
     caption_highlight_colour = resolved.caption_highlight_colour
+    caption_chunk_chars = resolved.caption_chunk_chars
     caption_placements = resolved.caption_placements
     alignment_by_scene = resolved.alignment_by_scene
     text_card_cues = resolved.text_card_cues
@@ -837,6 +850,9 @@ async def render_video(
             # K16.3: same accent already hashed as caption_highlight_colour.
             if caption_highlight_colour is not None:
                 style_kwargs["highlight_colour"] = caption_highlight_colour
+            # K18: same budget already hashed as caption_chunk_chars.
+            if caption_chunk_chars is not None:
+                style_kwargs["chunk_chars"] = caption_chunk_chars
             style = CaptionStyle(
                 resolution=(render_settings.width, render_settings.height),
                 font_family=settings.caption_font,

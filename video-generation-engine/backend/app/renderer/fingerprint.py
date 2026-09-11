@@ -86,6 +86,13 @@ the same name. Resolved once in `resolve_render_inputs` before the
 cache check (RV2 / K16.8). Present unconditionally, `None` when
 `burn_captions` is `False` or the style is not `retention_fast`.
 
+**Caption chunk budget (retention_fast_kinetic_text.md K18, 2026-09-10).**
+`caption_chunk_chars` is the character budget `serialize_ass` uses to
+split long Feature A karaoke lines into on-screen groups. Invisible to
+`cue_list_hash` (cues stay one-per-sentence) — without this field,
+retuning 28→40 would cache-HIT the old whole-group burn. Present
+unconditionally, `None` when `burn_captions` is `False`.
+
 **Watermark (2026-08-17), same pattern again.**
 `watermark_enabled`/`watermark_asset_hash`/`watermark_params_hash`
 mirror the captions fields exactly, for the identical reason: the logo
@@ -232,6 +239,7 @@ def compute_render_fingerprint(
     caption_highlight_bold: bool | None,
     caption_highlight_colour: str | None,
     caption_placement_hash: str | None,
+    caption_chunk_chars: int | None,
     duck_envelope_hash: str | None,
     watermark_enabled: bool,
     watermark_asset_hash: str | None,
@@ -387,6 +395,11 @@ def compute_render_fingerprint(
         # fields above — None when captions are off or the style does
         # not resolve placements.
         "caption_placement_hash": caption_placement_hash,
+        # K18 (2026-09-10): character budget for chunking Feature A
+        # karaoke lines inside serialize_ass. Invisible to cue_list_hash
+        # (cues stay one-per-sentence). Same unconditional-presence rule
+        # — None when captions are off.
+        "caption_chunk_chars": caption_chunk_chars,
         # OQ-1b (2026-08-28): alignment-derived duck windows are not
         # determined by scene structure alone (timeline dump) or by
         # narration audio bytes. When alignment is present the render
