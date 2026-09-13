@@ -42,6 +42,7 @@ import { translateError } from "@/lib/errors";
 import { assetSourceFromDetail } from "@/lib/asset-source";
 import { CAMERA_LABEL, TRANSITION_LABEL } from "@/lib/styles";
 import { AssetSourceBadge } from "@/components/AssetSourceBadge";
+import { CopyButton } from "@/components/CopyButton";
 import { ResolutionWarningBadge } from "@/components/ResolutionWarning";
 import { computeResolutionWarning, frameAspectClass } from "@/lib/resolution";
 import { Button } from "@/components/ui/button";
@@ -61,43 +62,115 @@ import { useToast } from "@/components/ui/toast";
 import {
   SCENE_GROUP_SHOT_THRESHOLD,
   type Camera,
+  type OverridePanel,
   type SceneProgress,
   type Shot,
   type ShotAssetDetail,
   type ShotClipDetail,
+  type ShotLayerPanel,
   type ShotProgress,
 } from "@/lib/types";
 
-// P3a: which half of a `split_frame` shot a control acts on. Every OTHER
-// shot only ever has a `"primary"` — this union exists so a caller can
-// never accidentally construct `"secondary"` for a shot whose backend
-// binding has no such column meaning anything (`_OVERRIDE_PANELS`,
-// `app/api/projects.py`, 400s exactly that case).
-type Panel = "primary" | "secondary";
+// P3a/P3b: which panel a control acts on — primary, split-frame
+// secondary, or a parallax plane (`layer:N`). Backend
+// `_parse_override_panel` accepts exactly these forms.
+type Panel = OverridePanel;
 
 // Mirrors `_TERMINAL_SHOT_STATES` in `app/api/projects.py` exactly — a
-// shot counts as filled when search found it, a human overrode it, or it
-// was generated (on demand here, or by the pipeline). Approval is blocked
-// server-side until every shot is in one of these two states (Task 2 of
-// the one-gate redesign), so the button below mirrors that check
-// client-side rather than making a human discover it via a 400.
+// PANEL counts as filled when search found it, a human overrode it, or
+// it was generated (on demand here, or by the pipeline).
 const TERMINAL_STATES = new Set(["resolved", "generated"]);
 
-function isFilled(shot: ShotProgress): boolean {
+/** Does THIS shot's own primary/fallback panel already have media —
+ * i.e. does `shot.state` (the primary binding's raw state) say so.
+ *
+ * gate_panel_overrides.md §7.5 addendum, 2026-09-13 CORRECTION: this is
+ * NOT "can the shot be approved" — a parallax shot can have every PLANE
+ * resolved while its own primary/fallback binding sits at
+ * `awaiting_generation` forever (planes have no binding column at all,
+ * §2), so `isFilled` below must never be substituted here. Used only
+ * for primary-panel-specific UI: the badge/label on the fallback image,
+ * "Replace"/"Upload" button copy, and gating "Generate video" (which
+ * needs the PRIMARY image as its source frame, not the planes). */
+function isPrimaryFilled(shot: ShotProgress): boolean {
   return TERMINAL_STATES.has(shot.state);
 }
 
-/** P3a: the same "filled" check as `isFilled`, but for whichever panel a
- * control actually targets — the override dialog's own copy ("replaces
- * the current image" vs "locks the shot") has to describe the panel
- * being uploaded to, not the shot's primary state, or a bottom-panel
- * upload on a shot whose TOP panel already resolved would wrongly say
- * "replaces" for a bottom panel that has nothing yet. */
+/** Can this shot be approved — read directly off `shot.filled`, the
+ * field `_shot_progress_entry` computes server-side via the SAME
+ * predicate the approval guard uses (`_shot_is_filled`,
+ * app/api/projects.py). Never re-derived here from `state` or from
+ * `layers` — a frontend copy of "are all planes resolved" would be a
+ * fourth encoding of this question, and the first three already
+ * disagreed once (that is the whole reason this field exists). */
+function isFilled(shot: ShotProgress): boolean {
+  return shot.filled;
+}
+
+/** P3a/P3b: the same "does this ONE panel have media" check as
+ * `isPrimaryFilled`, but for whichever panel a control actually
+ * targets — dialog copy ("replaces" vs "locks") must describe the
+ * panel being uploaded to, never the shot's overall approval
+ * readiness. */
 function isPanelFilled(shot: ShotProgress, panel: Panel): boolean {
   if (panel === "secondary") {
     return !!shot.secondary?.state && TERMINAL_STATES.has(shot.secondary.state);
   }
-  return isFilled(shot);
+  if (panel.startsWith("layer:")) {
+    const index = Number(panel.slice("layer:".length));
+    const layer = shot.layers?.[index];
+    return !!layer?.state && TERMINAL_STATES.has(layer.state);
+  }
+  return isPrimaryFilled(shot);
+}
+
+/** Role → gate label. Driven by `layer.role`, not hardcoded to index
+ * 0/1, so F3's third plane gets a real name without another edit. */
+function layerRoleLabel(role: string): string {
+  switch (role) {
+    case "background":
+      return "Background plane";
+    case "subject":
+      return "Subject plane";
+    case "foreground":
+      return "Foreground plane";
+    default:
+      return `${role} plane`;
+  }
+}
+
+function panelOverrideTitle(shot: ShotProgress, panel: Panel): string {
+  if (shot.layers != null) {
+    if (panel === "primary") return "Supply this shot's fallback image";
+    if (panel.startsWith("layer:")) {
+      const index = Number(panel.slice("layer:".length));
+      const role = shot.layers[index]?.role ?? "plane";
+      return `Supply this shot's ${layerRoleLabel(role).toLowerCase()}`;
+    }
+  }
+  if (shot.secondary) {
+    return panel === "secondary"
+      ? "Supply this shot's bottom panel"
+      : "Supply this shot's top panel";
+  }
+  return "Supply this shot's image";
+}
+
+function panelOverrideToast(shot: ShotProgress, panel: Panel): string {
+  if (shot.layers != null) {
+    if (panel === "primary") {
+      return "This shot's fallback image is locked to your upload.";
+    }
+    if (panel.startsWith("layer:")) {
+      const index = Number(panel.slice("layer:".length));
+      const role = shot.layers[index]?.role ?? "plane";
+      return `This shot's ${layerRoleLabel(role).toLowerCase()} is locked to your image.`;
+    }
+  }
+  if (panel === "secondary") {
+    return "This shot's bottom panel is locked to your image.";
+  }
+  return "This shot is locked to your image.";
 }
 
 function GenerateDialog({
@@ -164,10 +237,8 @@ function ShotImage({
 }: {
   projectId: string;
   shotId: string;
-  // P3a: which panel this instance renders — `"primary"` renders and
-  // behaves exactly as this component always has (same URL, same
-  // props); `"secondary"` is new and only ever passed for a split_frame
-  // shot's bottom panel.
+  // P3a/P3b: `"primary"` keeps today's URL (no query); `"secondary"` /
+  // `layer:N` append `?panel=...`.
   panel: Panel;
   asset: ShotAssetDetail | null;
   clip: ShotClipDetail | null;
@@ -207,11 +278,9 @@ function ShotImage({
     );
   }
 
-  // P3a: `/clip` (the endpoint that actually plays a bound motion clip)
-  // has no `panel` param yet — see `ImageLightbox`'s own comment. A
-  // secondary panel bound to a clip is real and playable server-side via
-  // `ffprobe`/`ffmpeg` directly, just not through this frontend today, so
-  // the "click to play" affordance is only honest for the primary.
+  // `/clip` has no `panel` param yet — see `ImageLightbox`. Layer planes
+  // are stills (P1 400s video-on-layer); secondary motion also cannot
+  // play through this UI today. Only primary is honest as playable.
   const isPlayableClip = panel === "primary" && Boolean(clip);
   return (
     <div className="w-36 shrink-0 space-y-1">
@@ -269,25 +338,36 @@ function ImageLightbox({
 }) {
   const shot = target?.shot ?? null;
   const panel = target?.panel ?? "primary";
-  const media =
-    panel === "secondary"
-      ? {
-          asset: shot?.secondary?.asset ?? null,
-          clip: shot?.secondary?.clip ?? null,
-          state: shot?.secondary?.state ?? null,
-        }
-      : { asset: shot?.asset ?? null, clip: shot?.clip ?? null, state: shot?.state ?? null };
-  // P3a: `GET .../clip` (the endpoint that streams REAL playable video
-  // bytes, R10) has no `panel` param on the backend today —
-  // `get_shot_clip` always resolves the PRIMARY binding
-  // (`_resolve_bound_media_path(session, binding)`, no `panel=`
-  // forwarded). Extending it is a backend change this frontend-only
-  // slice does not make, so a motion clip bound to the BOTTOM panel is
-  // shown as `/asset`'s extracted still frame (which `get_shot_asset`
-  // already does for any video-typed panel) rather than played — correct
-  // and never a dead end, just less rich than the primary's own lightbox
-  // until `/clip` learns `panel` too (a natural follow-up, not part of
-  // this slice's brief).
+  let media: {
+    asset: ShotAssetDetail | null;
+    clip: ShotClipDetail | null;
+    state: string | null;
+  };
+  if (panel === "secondary") {
+    media = {
+      asset: shot?.secondary?.asset ?? null,
+      clip: shot?.secondary?.clip ?? null,
+      state: shot?.secondary?.state ?? null,
+    };
+  } else if (panel.startsWith("layer:")) {
+    // Layers are stills — do not treat them as playable clips
+    // (`GET /clip` has no panel; P1 rejects video-on-layer).
+    const index = Number(panel.slice("layer:".length));
+    const layer = shot?.layers?.[index];
+    media = {
+      asset: layer?.asset ?? null,
+      clip: layer?.clip ?? null,
+      state: layer?.state ?? null,
+    };
+  } else {
+    media = {
+      asset: shot?.asset ?? null,
+      clip: shot?.clip ?? null,
+      state: shot?.state ?? null,
+    };
+  }
+  // P3a/P3b: `GET .../clip` has no `panel` param — only primary is
+  // playable here. Secondary/layer media show as `/asset` stills.
   const isPlayableClip = panel === "primary" && Boolean(media.clip);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -540,6 +620,72 @@ function SecondaryPanelBlock({
   );
 }
 
+/** P3b: one parallax plane. Posted as `panel=layer:${index}`. Generate
+ * controls stay on the fallback primary (POST .../generate has no
+ * panel) — same asymmetry SecondaryPanelBlock documents for P3a. */
+function LayerPanelBlock({
+  projectId,
+  shot,
+  layer,
+  camera,
+  onExpand,
+  onOverride,
+}: {
+  projectId: string;
+  shot: ShotProgress;
+  layer: ShotLayerPanel;
+  camera: Camera | undefined;
+  onExpand: () => void;
+  onOverride: () => void;
+}) {
+  const panel = `layer:${layer.index}` as const;
+  const source = assetSourceFromDetail(layer.asset, layer.clip);
+  const filled = layer.state != null && TERMINAL_STATES.has(layer.state);
+  const flag = translateError(layer.last_error);
+  const roleLabel = layerRoleLabel(layer.role);
+  return (
+    <div className="flex gap-4 border-t border-border pt-3 first:border-t-0 first:pt-0">
+      <ShotImage
+        projectId={projectId}
+        shotId={shot.shot_id}
+        panel={panel}
+        asset={layer.asset}
+        clip={layer.clip}
+        state={layer.state}
+        camera={camera}
+        onExpand={onExpand}
+      />
+      <div className="min-w-0 flex-1 space-y-1.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-muted-foreground">
+            {roleLabel}
+          </span>
+          {filled && <AssetSourceBadge source={source} />}
+          {!filled && layer.state !== "failed" && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
+              {layer.state == null ? "No picture yet" : "Headed for generation"}
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground">{layer.prompt}</p>
+        {flag && (
+          <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs text-warning-foreground/90">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+            <span>{flag.headline}</span>
+          </div>
+        )}
+        <div className="flex flex-wrap gap-2 pt-1">
+          <CopyButton text={layer.prompt} label="Copy prompt" />
+          <Button variant="outline" size="sm" onClick={onOverride}>
+            <ImagePlus className="h-3.5 w-3.5" />
+            {filled ? `Replace ${roleLabel.toLowerCase()}` : `Upload ${roleLabel.toLowerCase()}`}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ShotCard({
   projectId,
   shot,
@@ -565,7 +711,10 @@ function ShotCard({
 }) {
   const source = assetSourceFromDetail(shot.asset, shot.clip);
   const flag = translateError(shot.last_error);
-  const filled = isFilled(shot);
+  // Primary/fallback panel semantics here (badges, "Replace"/"Upload"
+  // copy, generate-video gating) — NOT the shot's overall approval
+  // readiness. See `isPrimaryFilled`'s own docstring.
+  const filled = isPrimaryFilled(shot);
   const camera = plan?.camera;
   const transition = plan?.transition_out;
   const textCard = plan?.text_card?.trim() || null;
@@ -577,6 +726,155 @@ function ShotCard({
       : null,
     textCard ? `text card: “${textCard}”` : null,
   ].filter(Boolean);
+  const hasLayers = shot.layers != null;
+
+  // Shared header bits (says / intent / plan / sfx) — identical copy for
+  // parallax and non-parallax; only the image+upload layout diverges.
+  const metaBlock = (
+    <>
+      <div className="flex flex-wrap items-center gap-2">
+        {!hasLayers && filled && <AssetSourceBadge source={source} />}
+        {!hasLayers && !filled && shot.state !== "failed" && (
+          <span className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
+            {shot.state === "pending"
+              ? "Still searching"
+              : "Headed for generation"}
+          </span>
+        )}
+        {shot.locked && (
+          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+            <Lock className="h-3 w-3" /> Locked by you
+          </span>
+        )}
+        <span className="text-xs text-muted-foreground">
+          {formatDuration(shot.starts_at_s)}–
+          {formatDuration((shot.starts_at_s ?? 0) + shot.duration_s)} (
+          {shot.duration_s.toFixed(1)}s)
+        </span>
+      </div>
+      {shot.says && <p className="text-sm text-foreground">"{shot.says}"</p>}
+      <p className="text-xs text-muted-foreground">
+        <span className="font-medium">{shot.intent}</span> — {shot.prompt}
+      </p>
+      {planBits.length > 0 && (
+        <p className="text-xs text-muted-foreground">{planBits.join(" · ")}</p>
+      )}
+      {sfxCue && (
+        <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2 py-1.5 text-xs">
+          <Volume2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 text-muted-foreground">
+            Sound effect (~6¢ when approved): “{sfxCue}”
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 shrink-0 px-2 text-xs"
+            onClick={onClearSfxCue}
+            disabled={clearingSfxCue}
+          >
+            <VolumeX className="h-3.5 w-3.5" />
+            {clearingSfxCue ? "Clearing…" : "Clear"}
+          </Button>
+        </div>
+      )}
+    </>
+  );
+
+  // P3b: when `shot.layers != null`, lead with plane slots — not the
+  // primary thumbnail + "Upload your own" (that invites wasting an
+  // upload on the fallback). Primary lives in a collapsed native
+  // `<details>` (not `Disclosure.tsx` — that component is monospace
+  // technical-dump styling, wrong for a picture).
+  if (hasLayers) {
+    return (
+      <Card className="space-y-3 p-3">
+        <div className="min-w-0 space-y-1.5">{metaBlock}</div>
+        <p className="text-xs text-muted-foreground">
+          Keep one image provider for every plane in this film — mixing
+          providers inside one project reintroduces the mismatch these
+          slots exist to close.
+        </p>
+        <div className="space-y-3">
+          {shot.layers!.map((layer) => (
+            <LayerPanelBlock
+              key={layer.index}
+              projectId={projectId}
+              shot={shot}
+              layer={layer}
+              camera={camera}
+              onExpand={() => onExpand(`layer:${layer.index}`)}
+              onOverride={() => onOverride(`layer:${layer.index}`)}
+            />
+          ))}
+        </div>
+        <details className="rounded-md border border-border bg-muted/20">
+          <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-muted-foreground">
+            Fallback image — used only if a plane fails
+          </summary>
+          <div className="flex gap-4 border-t border-border p-3">
+            <ShotImage
+              projectId={projectId}
+              shotId={shot.shot_id}
+              panel="primary"
+              asset={shot.asset}
+              clip={shot.clip}
+              state={shot.state}
+              camera={camera}
+              onExpand={() => onExpand("primary")}
+            />
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <div className="flex flex-wrap items-center gap-2">
+                {filled && <AssetSourceBadge source={source} />}
+                {!filled && shot.state !== "failed" && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
+                    {shot.state === "pending"
+                      ? "Still searching"
+                      : "Headed for generation"}
+                  </span>
+                )}
+              </div>
+              {flag && (
+                <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs text-warning-foreground/90">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+                  <span>{flag.headline}</span>
+                </div>
+              )}
+              <div className="flex flex-wrap gap-2 pt-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onOverride("primary")}
+                >
+                  <ImagePlus className="h-3.5 w-3.5" />
+                  {filled ? "Replace fallback" : "Upload fallback"}
+                </Button>
+                <Button variant="outline" size="sm" onClick={onGenerate}>
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  {filled ? "Edit prompt & regenerate" : "Generate now"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={onGenerateVideo}
+                  disabled={!filled || videoPending}
+                >
+                  <Film className="h-3.5 w-3.5" />
+                  {videoPending
+                    ? "Generating video…"
+                    : shot.clip
+                      ? "Regenerate video"
+                      : "Generate video"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </details>
+      </Card>
+    );
+  }
+
+  // Non-parallax body — same JSX/copy/props as P3a (including
+  // split_frame secondary). Do not fold this into the layers branch.
   return (
     <Card className="space-y-3 p-3">
       <div className="flex gap-4">
@@ -591,51 +889,7 @@ function ShotCard({
           onExpand={() => onExpand("primary")}
         />
         <div className="min-w-0 flex-1 space-y-1.5">
-          <div className="flex flex-wrap items-center gap-2">
-            {filled && <AssetSourceBadge source={source} />}
-            {!filled && shot.state !== "failed" && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
-                {shot.state === "pending"
-                  ? "Still searching"
-                  : "Headed for generation"}
-              </span>
-            )}
-            {shot.locked && (
-              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                <Lock className="h-3 w-3" /> Locked by you
-              </span>
-            )}
-            <span className="text-xs text-muted-foreground">
-              {formatDuration(shot.starts_at_s)}–
-              {formatDuration((shot.starts_at_s ?? 0) + shot.duration_s)} (
-              {shot.duration_s.toFixed(1)}s)
-            </span>
-          </div>
-          {shot.says && <p className="text-sm text-foreground">"{shot.says}"</p>}
-          <p className="text-xs text-muted-foreground">
-            <span className="font-medium">{shot.intent}</span> — {shot.prompt}
-          </p>
-          {planBits.length > 0 && (
-            <p className="text-xs text-muted-foreground">{planBits.join(" · ")}</p>
-          )}
-          {sfxCue && (
-            <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2 py-1.5 text-xs">
-              <Volume2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 text-muted-foreground">
-                Sound effect (~6¢ when approved): “{sfxCue}”
-              </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 shrink-0 px-2 text-xs"
-                onClick={onClearSfxCue}
-                disabled={clearingSfxCue}
-              >
-                <VolumeX className="h-3.5 w-3.5" />
-                {clearingSfxCue ? "Clearing…" : "Clear"}
-              </Button>
-            </div>
-          )}
+          {metaBlock}
 
           {flag && (
             <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs text-warning-foreground/90">
@@ -1033,10 +1287,15 @@ export function AssetReviewGate() {
       { shotId, file, description: description || undefined, panel },
       {
         onSuccess: () => {
+          const shotForToast =
+            overrideTarget?.shot.shot_id === shotId
+              ? overrideTarget.shot
+              : null;
           toast({
             title: "Image saved",
-            description:
-              panel === "secondary"
+            description: shotForToast
+              ? panelOverrideToast(shotForToast, panel)
+              : panel === "secondary"
                 ? "This shot's bottom panel is locked to your image."
                 : "This shot is locked to your image.",
             variant: "success",
@@ -1515,24 +1774,15 @@ export function AssetReviewGate() {
         <OverrideDialog
           open={!!overrideTarget}
           onOpenChange={(o) => !o && setOverrideTarget(null)}
-          // P3a: a split_frame shot's title/copy names which panel is
-          // being supplied; every other shot's copy is BYTE-IDENTICAL to
-          // before this change (`overrideTarget.shot.secondary` is only
-          // non-null for a split_frame shot — see `ShotSecondaryPanel`'s
-          // own docstring in lib/types.ts).
-          title={
-            overrideTarget.shot.secondary
-              ? overrideTarget.panel === "secondary"
-                ? "Supply this shot's bottom panel"
-                : "Supply this shot's top panel"
-              : "Supply this shot's image"
-          }
+          // P3a/P3b: split_frame and parallax name the panel/plane;
+          // every other shot's copy stays as before.
+          title={panelOverrideTitle(overrideTarget.shot, overrideTarget.panel)}
           description={
-            overrideTarget.shot.secondary
+            overrideTarget.shot.layers != null || overrideTarget.shot.secondary
               ? isPanelFilled(overrideTarget.shot, overrideTarget.panel)
                 ? "This replaces this panel's current image. It's free and instant."
                 : "This locks this panel to your image — generation never runs for it, so it costs nothing."
-              : isFilled(overrideTarget.shot)
+              : isPrimaryFilled(overrideTarget.shot)
                 ? "This replaces the current image. It's free and instant."
                 : "This locks the shot to your image — generation never runs for it, so it costs nothing."
           }

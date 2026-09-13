@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -105,6 +106,7 @@ from app.assets.music_upload import music_upload_warnings
 from app.assets.prompt_export import build_prompt_export_entries, render_prompt_export_text
 from app.assets.sfx_levels import measure_peak_dbfs
 from app.assets.sfx_override import apply_sfx_clip_override
+from app.assets.substrate_crop import fit_upload_to_canvas
 from app.assets.thumbnails import (
     cached_resized_image,
     cached_video_frame,
@@ -128,6 +130,7 @@ from app.providers.fakes.image import FakeImageProvider
 from app.providers.fal_image import FalImageProvider
 from app.providers.fal_video import FalVideoProvider
 from app.providers.openai_provider import OpenAIPlanningProvider
+from app.renderer.parallax import ParallaxKeyGuardError, guard_subject_plane_bytes
 from app.renderer.retention import purge_expired_drafts
 from app.renderer.slideshow import RenderSettings
 from app.repositories.asset_repository import AssetRepository
@@ -151,6 +154,7 @@ from app.schemas.script_preflight import (
 )
 from app.schemas.timeline import (
     CameraMovement,
+    LayerRole,
     MusicTrackSelection,
     ProducedBy,
     SfxClipSelection,
@@ -164,6 +168,8 @@ from app.script.styles import (
     STYLE_PACING_BANDS,
     frame_aspect_error,
     resolve_draft_format,
+    resolve_generation_request_format,
+    resolve_render_format,
     style_accepts_frame_aspect,
 )
 from app.script.suggestions import suggest_breaks
@@ -175,7 +181,10 @@ from app.workflow.render_only import RENDER_ONLY_STEPS, render_precondition_gap
 from app.workflow.steps.render import render_video
 from app.workflow.steps.resolve_assets import (
     generate_image_real,
+    layer_prompt_hash,
+    layer_styled_prompt,
     poll_video_job,
+    resolved_layer_clips,
     submit_video_generation,
 )
 from app.workflow.trigger import WorkflowTriggerResult, start_workflow_run
@@ -185,16 +194,126 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 _TERMINAL_SHOT_STATES = ("resolved", "generated")
+# Membership-testable primary/secondary only. Layer planes use `layer:N`
+# (index form), parsed separately — role names like `background`/`subject`
+# are rejected so F3's third plane and repeated roles stay addressable
+# (gate_panel_overrides.md P1).
 _OVERRIDE_PANELS = frozenset({"primary", "secondary"})
+_LAYER_PANEL_RE = re.compile(r"^layer:(\d+)$")
 
 
-def _unfilled_shot_ids(shots, bindings_by_shot: dict) -> list[str]:
-    return [
-        shot.id
-        for shot in shots
-        if bindings_by_shot.get(shot.id) is None
-        or bindings_by_shot[shot.id].state not in _TERMINAL_SHOT_STATES
-    ]
+def _parse_override_panel(panel: str) -> tuple[str, int | None]:
+    """Shared by `override_shot_asset` and `get_shot_asset`.
+
+    Returns `("primary"|"secondary", None)` or `("layer", index)`.
+    Shape checks against the shot (SPLIT_FRAME / `len(layers)`) stay at
+    the call site — this only names the target.
+    """
+    if panel in _OVERRIDE_PANELS:
+        return panel, None
+    match = _LAYER_PANEL_RE.fullmatch(panel)
+    if match is not None:
+        return "layer", int(match.group(1))
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"panel must be one of {sorted(_OVERRIDE_PANELS)} or layer:<index>, "
+            f"got {panel!r}"
+        ),
+    )
+
+
+async def _shot_is_filled(
+    shot,
+    binding,
+    *,
+    timeline: Timeline | None,
+    session: AsyncSession,
+    clip_repo: GeneratedClipRepository | None = None,
+) -> bool:
+    """THE single "is this shot ready to approve" predicate - shared by
+    the money guard (`_unfilled_shot_ids`), `/progress`'s own per-scene
+    counters (`get_progress`'s `unfilled_in_scene`/`completed_in_scene`),
+    and each shot's own `filled` field (`_shot_progress_entry`).
+
+    Gate_panel_overrides.md §7.5 addendum, 2026-09-13 CORRECTION: the
+    first pass of this fix only changed the guard. `/progress`'s scene
+    counters and the frontend's own `isFilled` were left reading
+    `binding.state` directly, so a layered shot with every plane
+    resolved reported "1 still needs a picture" on its scene and kept
+    the Approve button disabled, even though the guard itself would
+    have accepted it - three encodings of the same question that had
+    started to disagree, which is worse than the original bug (the
+    backend and the UI now disagreed about whether a film was ready).
+    This function is now the ONLY place that question is answered.
+
+    `binding.state in _TERMINAL_SHOT_STATES` is right for every shot
+    EXCEPT a layered (`Shot.layers` non-empty) one: `ShotBindingModel`
+    deliberately has no per-layer column (see `layer_prompt_hash`'s own
+    docstring), so uploading or generating a plane never touches
+    `binding.state` at all - that binding sits at `awaiting_generation`
+    forever even once every plane is done. Measured live on project
+    `48086fed-02a0-46ba-be58-e2c5cf99db9e` ("adi shankracharya decoded"):
+    11 shots reported unfilled by `binding.state` alone, 10 of which
+    already had BOTH layer clips `completed`.
+
+    So: a shot only gets the layer path checked when `shot.layers` is
+    non-empty AND a `timeline` was supplied (needed for `creative_
+    context`/`style`/`frame_aspect` to recompute the hash) - gating on
+    `camera.movement == PARALLAX` instead would be wrong, since
+    `_cap_parallax_layers` leaves plenty of shots at `movement=parallax,
+    layers=[]` (rendered as a plain still, needing its ordinary primary
+    image same as any other shot). A shot with layers counts as filled
+    only when EVERY one of them resolves (`resolved_layer_clips` returns
+    `None` on any partial set - `build_two_layer_parallax_filter_
+    complex` cannot composite a partial pair either) - never on
+    `binding.state` for that shot, which stays `awaiting_generation` and
+    would otherwise still block it. This is strictly PERMISSIVE: it can
+    only turn an unfilled shot into a filled one, never the reverse, so
+    it cannot let a genuinely incomplete shot through (I6 - erring
+    toward blocking is the safe direction for a money gate).
+
+    Deliberately unchanged: a `split_frame` shot with only its primary
+    (top) panel filled still counts as filled here, because this only
+    ever reads `binding.state`, never `binding.secondary_state`, for
+    anything other than the layer case above - see gate_panel_
+    overrides.md §7.5 for why that half is left for the user to opt into
+    separately.
+    """
+    if binding is not None and binding.state in _TERMINAL_SHOT_STATES:
+        return True
+    if shot.layers and timeline is not None:
+        repo = clip_repo if clip_repo is not None else GeneratedClipRepository(session)
+        clips = await resolved_layer_clips(
+            shot,
+            project_uuid=uuid.UUID(timeline.project_id),
+            creative_context=timeline.creative_context,
+            style=timeline.metadata.render_style,
+            frame_aspect=timeline.metadata.frame_aspect,
+            clip_repo=repo,
+        )
+        if clips is not None:
+            return True
+    return False
+
+
+async def _unfilled_shot_ids(
+    shots, bindings_by_shot: dict, *, timeline: Timeline, session: AsyncSession
+) -> list[str]:
+    """The money guard's own "is this shot actually ready" check
+    (`approve_timeline`/`approve_scene`, Task 2 / I6) - a thin wrapper
+    around `_shot_is_filled` (see that function's own docstring for the
+    full reasoning and the measured numbers this fix responds to)."""
+    clip_repo = GeneratedClipRepository(session)
+    unfilled: list[str] = []
+    for shot in shots:
+        binding = bindings_by_shot.get(shot.id)
+        filled = await _shot_is_filled(
+            shot, binding, timeline=timeline, session=session, clip_repo=clip_repo
+        )
+        if not filled:
+            unfilled.append(shot.id)
+    return unfilled
 
 
 def _merge_approved_scenes(timeline: Timeline, add: list[str]) -> list[str]:
@@ -272,6 +391,7 @@ async def _shot_progress_entry(
     binding,
     locked: bool,
     start_times: dict,
+    timeline: Timeline | None = None,
 ) -> dict:
     asset_detail, clip_detail = await _resolved_media_detail(
         session, asset_id=binding.asset_id, clip_id=binding.clip_id
@@ -333,6 +453,91 @@ async def _shot_progress_entry(
             "clip": secondary_clip_detail,
         }
 
+    # P3b (docs/plans/gate_panel_overrides.md): same A12 lesson as
+    # `secondary` above — `camera_movement` alone is not enough for the
+    # gate to render plane slots. Timeline IR has `Shot.layers` (unstyled
+    # prompts, no media); the gate reads `/progress`. Without `layers`
+    # HERE the frontend would invent a field with no counterpart and the
+    # TypeScript build would still pass.
+    #
+    # `layers` is `None` when the shot has no planes (empty list, or no
+    # timeline to resolve hashes against) — the frontend's single
+    # "this shot has plane slots" signal, matching `shot.secondary !=
+    # null`. When present it is a list in `Shot.layers` index order;
+    # each entry's `prompt` is `layer_styled_prompt(...)` with the SAME
+    # `frame=resolve_render_format(style, frame_aspect)` generation uses
+    # (the string the user copies into Grok), never the raw
+    # `layer.prompt`. Clip lookup is the SAME path render.py uses:
+    # `layer_prompt_hash` + `GeneratedClipRepository.get_by_prompt_hash`
+    # — no binding column (gate_panel_overrides.md §2). Layers are
+    # clips, not assets (`asset` stays null). `state` maps clip.status
+    # completed→"generated" / failed→"failed" / missing→None so the gate
+    # can tell absent from unresolved the same way secondary does.
+    layers = None
+    if timeline is not None and shot.layers:
+        frame = resolve_render_format(
+            timeline.metadata.render_style,
+            frame_aspect=timeline.metadata.frame_aspect,
+        )
+        project_uuid = uuid.UUID(timeline.project_id)
+        clip_repo = GeneratedClipRepository(session)
+        layers = []
+        for index, layer in enumerate(shot.layers):
+            prompt = layer_styled_prompt(
+                shot, layer, timeline.creative_context, frame=frame
+            )
+            phash = layer_prompt_hash(
+                shot,
+                layer,
+                layer_index=index,
+                project_uuid=project_uuid,
+                creative_context=timeline.creative_context,
+                style=timeline.metadata.render_style,
+                frame_aspect=timeline.metadata.frame_aspect,
+            )
+            clip = await clip_repo.get_by_prompt_hash(phash)
+            layer_clip_detail = None
+            layer_state = None
+            layer_last_error = None
+            if clip is not None:
+                layer_clip_detail = {
+                    "provider": clip.provider,
+                    "model_id": clip.model_id,
+                    "status": clip.status,
+                    "local_path": clip.local_path,
+                }
+                if clip.status == "completed":
+                    layer_state = "generated"
+                elif clip.status == "failed":
+                    layer_state = "failed"
+                layer_last_error = clip.error
+            layers.append(
+                {
+                    "index": index,
+                    "role": layer.role.value,
+                    "prompt": prompt,
+                    "state": layer_state,
+                    "last_error": layer_last_error,
+                    "asset": None,
+                    "clip": layer_clip_detail,
+                }
+            )
+
+    # gate_panel_overrides.md §7.5 addendum, 2026-09-13 CORRECTION: `state`
+    # above is `binding.state` - honest, and the UI still needs it for
+    # "still searching" / "headed for generation" / "failed" labelling on
+    # the PRIMARY panel specifically. It is NOT "can this shot be
+    # approved" - a layered shot with every plane resolved can sit at
+    # `state="awaiting_generation"` forever (no per-layer binding column,
+    # §2) while genuinely being done. `filled` is that separate question,
+    # answered by the SAME predicate the approval guard uses
+    # (`_shot_is_filled` - one predicate, shared by `_unfilled_shot_ids`,
+    # `/progress`'s own scene counters, and this field), never re-derived
+    # here from `layers` or from `state` - a second copy of "are all
+    # layers resolved" is exactly the drift this correction exists to
+    # remove. The frontend's own `isFilled` reads this field directly.
+    filled = await _shot_is_filled(shot, binding, timeline=timeline, session=session)
+
     return {
         "shot_id": binding.shot_id,
         "scene_id": scene.id,
@@ -354,6 +559,8 @@ async def _shot_progress_entry(
         # panel-shaped movement gets this for free.
         "camera_movement": shot.camera.movement,
         "secondary": secondary,
+        "layers": layers,
+        "filled": filled,
         # A12 added the cue to the frontend `Shot` type and rendered a row
         # for it at the review gate, but never here - so `shot.sfx_cue` was
         # always `undefined` in the browser and the row silently never
@@ -1389,7 +1596,9 @@ async def approve_timeline(
             uuid.UUID(project_id), active.version
         )
     }
-    unfilled_shot_ids = _unfilled_shot_ids(active.all_shots(), bindings_by_shot)
+    unfilled_shot_ids = await _unfilled_shot_ids(
+        active.all_shots(), bindings_by_shot, timeline=active, session=session
+    )
     if unfilled_shot_ids:
         raise HTTPException(
             status_code=400,
@@ -1482,7 +1691,9 @@ async def approve_scene(
             uuid.UUID(project_id), active.version
         )
     }
-    unfilled_shot_ids = _unfilled_shot_ids(scene.shots, bindings_by_shot)
+    unfilled_shot_ids = await _unfilled_shot_ids(
+        scene.shots, bindings_by_shot, timeline=active, session=session
+    )
     if unfilled_shot_ids:
         raise HTTPException(
             status_code=400,
@@ -1621,7 +1832,18 @@ async def regenerate_failed_in_scene(
 def apply_override_to_binding(binding, asset, *, panel: str) -> None:
     """Write a human upload onto the primary or the split-screen bottom
     panel. R16: assignment is already in the render fingerprint, so
-    swapping the bottom panel misses the cache."""
+    swapping the bottom panel misses the cache.
+
+    Layer planes (`panel=layer:N`) must NOT reach here — there is no
+    per-layer binding column, and the primary fall-through below would
+    silently rebind the wrong plane. Callers write a `GeneratedClip`
+    under `layer_prompt_hash` instead (gate_panel_overrides.md §2).
+    """
+    if panel not in _OVERRIDE_PANELS:
+        raise ValueError(
+            f"apply_override_to_binding only accepts {sorted(_OVERRIDE_PANELS)}, "
+            f"got {panel!r} — layer planes persist via GeneratedClip, not binding"
+        )
     if panel == "secondary":
         binding.secondary_asset_id = asset.id
         binding.secondary_clip_id = None
@@ -1670,19 +1892,27 @@ async def override_shot_asset(
     free, instant swap, never a paid re-narration.
 
     `panel=secondary` writes the split-screen bottom still and does
-    not change the top panel's binding. The shot is still
-    `asset_locked` (A25) regardless of panel — a later re-plan cannot
-    change this shot's `prompt` / `asset_plan` / `secondary_*` either.
-    That is conservative (the upload survives) and is the same lock a
-    primary override has always taken. Refuses unless the shot is
-    `split_frame`. Default `panel=primary` is the original contract.
+    not change the top panel's binding. `panel=layer:N` writes a
+    completed `GeneratedClip` under `layer_prompt_hash` so render.py's
+    existing lookup finds it — there is no per-layer binding column
+    (gate_panel_overrides.md §2). The shot is still `asset_locked` (A25)
+    regardless of panel — a later re-plan cannot change this shot's
+    `prompt` / `asset_plan` / `secondary_*` either. That is conservative
+    (the upload survives) and is the same lock a primary override has
+    always taken. `secondary` refuses unless the shot is `split_frame`;
+    `layer:N` refuses unless `0 <= N < len(shot.layers)`. Default
+    `panel=primary` is the original contract.
 
     Validated and hashed on arrival exactly like the general upload
-    endpoint (A27). If the plan was already approved, the new locked
-    version is immediately re-approved too - the same "belt and braces"
-    pattern `NarrationStep` already uses to append-then-approve in two
-    commits - so resuming does not demand a redundant second human click.
-    A project that had never been approved yet is left in DRAFT and the
+    endpoint (A27). Still uploads (every panel) are fit to the style
+    canvas via scale-to-cover then `center_crop_to_canvas` before hash
+    and store — bare centre-crop on an arbitrary upload was measured to
+    destroy Qwen output (gate_panel_overrides.md §4.4 / P1 CORRECTION).
+    If the plan was already approved, the new locked version is
+    immediately re-approved too - the same "belt and braces" pattern
+    `NarrationStep` already uses to append-then-approve in two commits -
+    so resuming does not demand a redundant second human click. A
+    project that had never been approved yet is left in DRAFT and the
     workflow is NOT resumed: `NarrationStep.is_satisfied` keys off
     `produced_by == NARRATION`, so a HUMAN override would look like
     "narration is stale" and bounce the review UI to /progress. Approve
@@ -1703,7 +1933,8 @@ async def override_shot_asset(
     never blocks the upload - a focal is an improvement, not a
     precondition. Providing only one of the two coordinates, or a
     non-finite value, is a 400 (`normalize_focal` cannot validate a
-    half-answer into something usable).
+    half-answer into something usable). Layer panels skip focal/vision
+    entirely — Ken Burns does not run on keyed planes.
     """
     await _get_project_or_404(project_id, repo)
     active = await timeline_service.get_active(project_id)
@@ -1714,32 +1945,46 @@ async def override_shot_asset(
         raise HTTPException(
             status_code=404, detail=f"shot {shot_id} not found in the active timeline"
         )
-    if panel not in _OVERRIDE_PANELS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"panel must be one of {sorted(_OVERRIDE_PANELS)}, got {panel!r}",
-        )
-    if panel == "secondary" and shot.camera.movement != CameraMovement.SPLIT_FRAME:
+    panel_kind, layer_index = _parse_override_panel(panel)
+    if panel_kind == "secondary" and shot.camera.movement != CameraMovement.SPLIT_FRAME:
         raise HTTPException(
             status_code=400,
             detail=f"shot {shot_id} is not split_frame; cannot override the bottom panel",
         )
+    if panel_kind == "layer":
+        assert layer_index is not None
+        if not shot.layers:
+            raise HTTPException(
+                status_code=400,
+                detail=f"shot {shot_id} has no layers; cannot override panel=layer:{layer_index}",
+            )
+        if layer_index < 0 or layer_index >= len(shot.layers):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"shot {shot_id} has {len(shot.layers)} layer(s); "
+                    f"layer:{layer_index} is out of range"
+                ),
+            )
 
     # A13b: a human stating the focal directly outranks a vision guess -
     # validated with `normalize_focal`'s own rules (finite, both-or-
     # neither), not a new bounds check. A half-answer (one coordinate
     # supplied, or a non-finite value) is a clear 4xx here rather than a
-    # silent fall-through to A13a's vision call or to a centre.
+    # silent fall-through to A13a's vision call or to a centre. Layer
+    # panels ignore focals (Ken Burns never aims a keyed plane).
     focal_coords_supplied = focal_x is not None or focal_y is not None
-    human_focal = normalize_focal(focal_x, focal_y) if focal_coords_supplied else None
-    if focal_coords_supplied and human_focal is None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "focal_x and focal_y must both be supplied as finite numbers "
-                f"in 0..1, got focal_x={focal_x!r} focal_y={focal_y!r}"
-            ),
-        )
+    human_focal = None
+    if panel_kind != "layer":
+        human_focal = normalize_focal(focal_x, focal_y) if focal_coords_supplied else None
+        if focal_coords_supplied and human_focal is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "focal_x and focal_y must both be supplied as finite numbers "
+                    f"in 0..1, got focal_x={focal_x!r} focal_y={focal_y!r}"
+                ),
+            )
 
     content = await file.read()
     # A human may hand over a MOTION clip, not only a still (2026-09-02,
@@ -1775,90 +2020,62 @@ async def override_shot_asset(
             ) from video_exc
         media_type = "video"
 
-    project_uuid = uuid.UUID(project_id)
-    asset_repo = AssetRepository(session)
-    content_hash = hashlib.sha256(content).hexdigest()
-    assets_dir = settings.storage_root / project_id / "assets"
-    asset = await asset_repo.get_by_content_hash(project_uuid, content_hash)
-    if asset is None:
-        assets_dir.mkdir(parents=True, exist_ok=True)
-        path = assets_dir / f"{content_hash}.{ext}"
-        path.write_bytes(content)
-        asset = await asset_repo.insert(
-            project_id=project_uuid,
-            provider="project_assets",
-            source_url=None,
-            type=media_type,
-            local_path=str(path),
-            licence="human_override",
-            attribution=None,
-            content_hash=content_hash,
-            confidence=1.0,
-            description=description.strip() or None,
+    # Parallax planes are chroma-keyed stills (`should_composite_parallax`);
+    # a motion clip cannot be a layer.
+    if panel_kind == "layer" and media_type == "video":
+        raise HTTPException(
+            status_code=400,
+            detail=f"panel=layer:{layer_index} requires a still image, not a video",
         )
 
-    # long_form_direction.md A13: this endpoint used to bypass focal
-    # entirely - a human-uploaded photo aimed its Ken Burns move at the
-    # geometric centre, a framing the engine never examined (unlike a
-    # searched asset, which always runs `locate_subject_focal`). Keyed by
-    # `content_hash` exactly like `resolve_assets.py`'s own sidecar, so a
-    # repeat upload of identical bytes (or a second override of the same
-    # photo) never re-pays for a vision call.
-    #
-    # A focal point is meaningless for a MOTION clip - it aims a Ken Burns
-    # crop over a fixed image, and the renderer never runs Ken Burns on a
-    # clip (`motion.py` sends it down the duration-fit branch instead). The
-    # search rung applies exactly this guard as `not is_video_candidate`;
-    # since 2026-09-02 this endpoint accepts video too, so the guard has to
-    # be real here rather than satisfied by construction.
-    if media_type == "video":
-        human_focal = None
-    elif human_focal is not None:
-        # A13b: a human answer always wins - written last, unconditionally,
-        # overwriting any prior vision (or earlier human) sidecar for this
-        # hash. Same "human decision outranks everything computed"
-        # precedent `asset_locked` sets for a re-plan.
-        write_focal_sidecar(
-            assets_dir,
-            content_hash,
-            focal_x=human_focal[0],
-            focal_y=human_focal[1],
-            source=FOCAL_SOURCE_HUMAN,
+    # gate_panel_overrides.md §4.4 / P1 CORRECTION: every still upload
+    # (primary, secondary, AND layers) is scaled to COVER the
+    # generation-request size then centre-cropped to canvas. Bare
+    # `center_crop_to_canvas` on a Qwen 1536×2688 took a 720×1280 centre
+    # window that landed on a shirt (2/5 keyed); cover-then-crop keyed
+    # 5/5. Cover size comes from `resolve_generation_request_format`
+    # (never read the oversize fraction here — R1). Changes shipped
+    # primary/secondary upload bytes from this release on.
+    if media_type == "image":
+        frame = resolve_render_format(
+            active.metadata.render_style, frame_aspect=active.metadata.frame_aspect
         )
-    elif read_focal_sidecar(assets_dir, content_hash) is None:
-        # A13a: the same two calls `resolve_assets.py:1352-1370` already
-        # makes for a searched asset's top candidate. A focal is an
-        # improvement to a shot, not a precondition for having one - any
-        # failure here (a refusal, a provider error already swallowed
-        # inside `locate_subject_focal`, or anything unexpected from this
-        # new call site) degrades silently to today's centred behaviour
-        # and must never fail the upload itself.
-        vision_focal: tuple[float, float] | None = None
+        cover = resolve_generation_request_format(active.metadata.render_style, frame)
         try:
-            vision_provider = None if settings.dry_run else OpenAIPlanningProvider()
-            vision_focal = await locate_subject_focal(
-                provider=vision_provider,
-                llm_call_repo=LlmCallRepository(session),
-                project_id=project_uuid,
-                image=content,
-                image_content_type=mime_type_for_extension(ext),
-                shot_id=shot_id,
+            content = fit_upload_to_canvas(
+                content,
+                cover_width=cover.width,
+                cover_height=cover.height,
+                canvas_width=frame.width,
+                canvas_height=frame.height,
             )
-        except Exception:
-            logger.warning(
-                "focal.override_vision_call_failed",
-                extra={"shot_id": shot_id, "content_hash": content_hash},
-                exc_info=True,
-            )
-            vision_focal = None
-        if vision_focal is not None:
-            persist_vision_focal(
-                assets_dir,
-                content_hash,
-                focal_x=vision_focal[0],
-                focal_y=vision_focal[1],
-                shot_id=shot_id,
-            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        ext, _width, _height = validate_and_identify_image(content)
+
+    # gate_panel_overrides.md P2: reject a SUBJECT plane that will not
+    # chroma-key, at upload. Render already degrades the same failure
+    # minutes later (`slideshow.py`); the gate is where the human can
+    # still retry. Fit-then-guard (§7.4): top-strip sample of a
+    # paper-edged upload reads cream. BACKGROUND is unkeyed; primary/
+    # secondary are the flat fallback — only SUBJECT/FOREGROUND run
+    # the production sequence. Reject BEFORE append_version so a bad
+    # upload neither locks the shot nor writes a clip (same shape as
+    # the video-on-layer 400 above).
+    if panel_kind == "layer" and media_type == "image":
+        assert layer_index is not None
+        layer = shot.layers[layer_index]
+        if layer.role in (LayerRole.SUBJECT, LayerRole.FOREGROUND):
+            try:
+                guard_subject_plane_bytes(
+                    content,
+                    shot_id=shot_id,
+                    layer_role=layer.role.value,
+                )
+            except ParallaxKeyGuardError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    project_uuid = uuid.UUID(project_id)
 
     # See the identical comment in `_resume_after_human_correction` above
     # for why `produced_by == ProducedBy.NARRATION` is no longer treated
@@ -1870,12 +2087,12 @@ async def override_shot_asset(
 
     def _lock_shot(base: Timeline) -> Timeline:
         # R22: `asset_locked` is shot-wide, not per panel. A bottom-panel
-        # override still freezes prompt/asset_plan/secondary_* against
-        # later re-plans so the upload cannot be planned away.
+        # or layer override still freezes prompt/asset_plan/secondary_*
+        # against later re-plans so the upload cannot be planned away.
         for scene in base.scenes:
-            for shot in scene.shots:
-                if shot.id == shot_id:
-                    shot.asset_locked = True
+            for locked_shot in scene.shots:
+                if locked_shot.id == shot_id:
+                    locked_shot.asset_locked = True
         return base
 
     new_timeline = await timeline_service.append_version(
@@ -1885,10 +2102,153 @@ async def override_shot_asset(
         owns=frozenset({"scenes"}),
     )
 
-    binding_repo = ShotBindingRepository(session)
-    binding = await binding_repo.get_or_create_pending(project_uuid, new_timeline.version, shot_id)
-    apply_override_to_binding(binding, asset, panel=panel)
-    await session.flush()
+    if panel_kind == "layer":
+        assert layer_index is not None
+        layer = shot.layers[layer_index]
+        frame = resolve_render_format(
+            active.metadata.render_style, frame_aspect=active.metadata.frame_aspect
+        )
+        prompt = layer_styled_prompt(
+            shot, layer, active.creative_context, frame=frame
+        )
+        # SAME call render.py uses — lookup must resolve to this clip.
+        prompt_hash = layer_prompt_hash(
+            shot,
+            layer,
+            layer_index=layer_index,
+            project_uuid=project_uuid,
+            creative_context=active.creative_context,
+            style=active.metadata.render_style,
+            frame_aspect=active.metadata.frame_aspect,
+        )
+        clips_dir = settings.storage_root / project_id / "clips"
+        clips_dir.mkdir(parents=True, exist_ok=True)
+        clip_path = clips_dir / f"{prompt_hash}.{ext}"
+        clip_path.write_bytes(content)
+        clip_repo = GeneratedClipRepository(session)
+        existing = await clip_repo.get_by_prompt_hash(prompt_hash)
+        if existing is not None:
+            # prompt_hash is UNIQUE globally. A fal.ai plane already under
+            # this hash must be overwritten in place, not inserted (unique
+            # collision). Safe as a human override of THIS project's plane
+            # only because real-mode `layer_prompt_hash` folds
+            # `_layer_seed(_project_seed(project_uuid), layer_index)` — a
+            # hash that dropped the project seed would turn this overwrite
+            # into a cross-project cache poison (gate_panel_overrides.md
+            # §4.3). DRY_RUN hashes are not project-scoped; that is fine
+            # for tests, never for production traffic.
+            existing.local_path = str(clip_path)
+            existing.status = "completed"
+            existing.provider = "human_override"
+            existing.model_id = "human_override"
+            existing.cost_cents = 0
+            existing.error = None
+            existing.prompt = prompt
+        else:
+            await clip_repo.insert(
+                project_id=project_uuid,
+                shot_id=shot_id,
+                provider="human_override",
+                model_id="human_override",
+                prompt=prompt,
+                prompt_hash=prompt_hash,
+                duration_s=None,
+                local_path=str(clip_path),
+                cost_cents=0,
+                status="completed",
+            )
+        await session.flush()
+    else:
+        asset_repo = AssetRepository(session)
+        content_hash = hashlib.sha256(content).hexdigest()
+        assets_dir = settings.storage_root / project_id / "assets"
+        asset = await asset_repo.get_by_content_hash(project_uuid, content_hash)
+        if asset is None:
+            assets_dir.mkdir(parents=True, exist_ok=True)
+            path = assets_dir / f"{content_hash}.{ext}"
+            path.write_bytes(content)
+            asset = await asset_repo.insert(
+                project_id=project_uuid,
+                provider="project_assets",
+                source_url=None,
+                type=media_type,
+                local_path=str(path),
+                licence="human_override",
+                attribution=None,
+                content_hash=content_hash,
+                confidence=1.0,
+                description=description.strip() or None,
+            )
+
+        # long_form_direction.md A13: this endpoint used to bypass focal
+        # entirely - a human-uploaded photo aimed its Ken Burns move at the
+        # geometric centre, a framing the engine never examined (unlike a
+        # searched asset, which always runs `locate_subject_focal`). Keyed by
+        # `content_hash` exactly like `resolve_assets.py`'s own sidecar, so a
+        # repeat upload of identical bytes (or a second override of the same
+        # photo) never re-pays for a vision call.
+        #
+        # A focal point is meaningless for a MOTION clip - it aims a Ken Burns
+        # crop over a fixed image, and the renderer never runs Ken Burns on a
+        # clip (`motion.py` sends it down the duration-fit branch instead). The
+        # search rung applies exactly this guard as `not is_video_candidate`;
+        # since 2026-09-02 this endpoint accepts video too, so the guard has to
+        # be real here rather than satisfied by construction.
+        if media_type == "video":
+            human_focal = None
+        elif human_focal is not None:
+            # A13b: a human answer always wins - written last, unconditionally,
+            # overwriting any prior vision (or earlier human) sidecar for this
+            # hash. Same "human decision outranks everything computed"
+            # precedent `asset_locked` sets for a re-plan.
+            write_focal_sidecar(
+                assets_dir,
+                content_hash,
+                focal_x=human_focal[0],
+                focal_y=human_focal[1],
+                source=FOCAL_SOURCE_HUMAN,
+            )
+        elif read_focal_sidecar(assets_dir, content_hash) is None:
+            # A13a: the same two calls `resolve_assets.py:1352-1370` already
+            # makes for a searched asset's top candidate. A focal is an
+            # improvement to a shot, not a precondition for having one - any
+            # failure here (a refusal, a provider error already swallowed
+            # inside `locate_subject_focal`, or anything unexpected from this
+            # new call site) degrades silently to today's centred behaviour
+            # and must never fail the upload itself.
+            vision_focal: tuple[float, float] | None = None
+            try:
+                vision_provider = None if settings.dry_run else OpenAIPlanningProvider()
+                vision_focal = await locate_subject_focal(
+                    provider=vision_provider,
+                    llm_call_repo=LlmCallRepository(session),
+                    project_id=project_uuid,
+                    image=content,
+                    image_content_type=mime_type_for_extension(ext),
+                    shot_id=shot_id,
+                )
+            except Exception:
+                logger.warning(
+                    "focal.override_vision_call_failed",
+                    extra={"shot_id": shot_id, "content_hash": content_hash},
+                    exc_info=True,
+                )
+                vision_focal = None
+            if vision_focal is not None:
+                persist_vision_focal(
+                    assets_dir,
+                    content_hash,
+                    focal_x=vision_focal[0],
+                    focal_y=vision_focal[1],
+                    shot_id=shot_id,
+                )
+
+        binding_repo = ShotBindingRepository(session)
+        binding = await binding_repo.get_or_create_pending(
+            project_uuid, new_timeline.version, shot_id
+        )
+        apply_override_to_binding(binding, asset, panel=panel_kind)
+        await session.flush()
 
     if was_already_approved:
         await timeline_service.approve(project_id, new_timeline.version)
@@ -2997,6 +3357,12 @@ async def get_progress(
 
     include_shots = expand == "shots"
     approved_set = set(timeline.metadata.approved_scenes)
+    # gate_panel_overrides.md §7.5 addendum, 2026-09-13 CORRECTION: shared
+    # across the whole scene loop below so `_shot_is_filled` (the one
+    # "can this shot be approved" predicate, also used by the approval
+    # guard `_unfilled_shot_ids`) does not construct a fresh repository
+    # per shot - the same lazy-once pattern `_unfilled_shot_ids` uses.
+    clip_repo = GeneratedClipRepository(session)
     shots_detail = []
     scenes_detail = []
     for scene in timeline.scenes:
@@ -3011,16 +3377,30 @@ async def get_progress(
             start = start_times.get(shot.id)
             if scene_starts_at is None and start is not None:
                 scene_starts_at = start
-            if b is None:
-                unfilled_in_scene += 1
-                continue
-            if b.state in _TERMINAL_SHOT_STATES:
-                completed_in_scene += 1
-            elif b.state == "failed":
+            # `filled` (NOT `b.state in _TERMINAL_SHOT_STATES` directly)
+            # decides the completed/unfilled split from here down - the
+            # exact fix this correction makes: a layered shot with every
+            # plane resolved must count as "completed" and drop out of
+            # "N still need a picture" even while `b.state` itself sits
+            # at `awaiting_generation` forever (no per-layer binding
+            # column, §2). `b is None` is handled the same way as any
+            # other unresolved shot - `_shot_is_filled` already treats a
+            # missing binding as "not yet terminal" and falls through to
+            # the layer check.
+            filled = await _shot_is_filled(
+                shot, b, timeline=timeline, session=session, clip_repo=clip_repo
+            )
+            if b is not None and b.state == "failed":
                 failed_in_scene += 1
-                unfilled_in_scene += 1
+            if filled:
+                completed_in_scene += 1
             else:
                 unfilled_in_scene += 1
+            if b is None:
+                # No binding row at all - `_shot_progress_entry` needs
+                # one (asset_id/clip_id/state/etc.), so there is nothing
+                # further to build for this shot yet, same as before.
+                continue
 
             if include_shots:
                 shots_detail.append(
@@ -3031,6 +3411,7 @@ async def get_progress(
                         binding=b,
                         locked=locked_by_shot.get(b.shot_id, False),
                         start_times=start_times,
+                        timeline=timeline,
                     )
                 )
 
@@ -3129,6 +3510,7 @@ async def get_scene_shots(
                 binding=b,
                 locked=locked_by_shot.get(b.shot_id, False),
                 start_times=start_times,
+                timeline=timeline,
             )
         )
     return {"scene_id": scene_id, "shots": shots_detail}
@@ -3227,25 +3609,67 @@ async def get_shot_asset(
     param - that would fix only clients that remember to do it."""
     await _get_project_or_404(project_id, repo)
     timeline = await timeline_service.get_active(project_id)
-    if timeline is None or shot_id not in {s.id for s in timeline.all_shots()}:
+    shot = (
+        next((s for s in timeline.all_shots() if s.id == shot_id), None)
+        if timeline is not None
+        else None
+    )
+    if shot is None:
         raise HTTPException(
             status_code=404, detail=f"shot {shot_id} not found in the active timeline"
         )
-    if panel not in _OVERRIDE_PANELS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"panel must be one of {sorted(_OVERRIDE_PANELS)}, got {panel!r}",
+    panel_kind, layer_index = _parse_override_panel(panel)
+    no_cache_headers = {"Cache-Control": "no-cache"}
+
+    if panel_kind == "layer":
+        assert layer_index is not None
+        if not shot.layers:
+            raise HTTPException(
+                status_code=400,
+                detail=f"shot {shot_id} has no layers; cannot fetch panel=layer:{layer_index}",
+            )
+        if layer_index < 0 or layer_index >= len(shot.layers):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"shot {shot_id} has {len(shot.layers)} layer(s); "
+                    f"layer:{layer_index} is out of range"
+                ),
+            )
+        # Layers resolve by recomputing `layer_prompt_hash` — the same
+        # path render.py uses. No binding column to read (gate_panel_
+        # overrides.md §2). Stills only, so skip the video-thumbnail branch.
+        project_uuid = uuid.UUID(project_id)
+        phash = layer_prompt_hash(
+            shot,
+            shot.layers[layer_index],
+            layer_index=layer_index,
+            project_uuid=project_uuid,
+            creative_context=timeline.creative_context,
+            style=timeline.metadata.render_style,
+            frame_aspect=timeline.metadata.frame_aspect,
+        )
+        clip = await GeneratedClipRepository(session).get_by_prompt_hash(phash)
+        if clip is None or not clip.local_path or not Path(clip.local_path).exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"shot {shot_id} has no layer:{layer_index} media yet",
+            )
+        path = Path(clip.local_path)
+        return FileResponse(
+            path,
+            media_type=mime_type_for_extension(path.suffix.lstrip(".")),
+            headers=no_cache_headers,
         )
 
     binding = await ShotBindingRepository(session).get(
         uuid.UUID(project_id), timeline.version, shot_id
     )
-    path = await _resolve_bound_media_path(session, binding, panel=panel)
+    path = await _resolve_bound_media_path(session, binding, panel=panel_kind)
     if path is None or not path.exists():
-        which = "bottom panel" if panel == "secondary" else "resolved media"
+        which = "bottom panel" if panel_kind == "secondary" else "resolved media"
         raise HTTPException(status_code=404, detail=f"shot {shot_id} has no {which} yet")
 
-    no_cache_headers = {"Cache-Control": "no-cache"}
     if is_video_file(path):
         cache_path = shot_frame_cache_path(project_id, shot_id)
         served_path = await cached_video_frame(

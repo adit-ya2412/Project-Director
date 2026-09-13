@@ -16,6 +16,12 @@ export function assetSourceFromDetail(
   asset: ShotAssetDetail | null,
   clip: ShotClipDetail | null,
 ): AssetSource {
+  // P1 stores layer overrides as GeneratedClip with
+  // provider="human_override" (no binding asset column for planes). A
+  // bare `if (clip) return "generated"` would badge a hand-supplied
+  // plane as AI — wrong, and the thing the user reacts to most
+  // (F4/F6). Classify before the generic clip branch.
+  if (clip?.provider === 'human_override') return 'uploaded'
   if (clip) return 'generated'
   if (asset) {
     switch (asset.provider) {

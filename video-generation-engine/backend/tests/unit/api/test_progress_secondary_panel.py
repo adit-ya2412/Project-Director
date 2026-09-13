@@ -89,6 +89,9 @@ async def test_non_split_shot_has_no_secondary_and_is_otherwise_unchanged():
 
     assert entry["camera_movement"] == "static"
     assert entry["secondary"] is None
+    # P3b: layers is None on every non-layer shot (same existence signal
+    # as secondary). Harmless addition; exact-key callers must expect it.
+    assert entry["layers"] is None
     # Every field the payload returned before P3a, unmoved.
     assert entry["prompt"] == "a coal mine"
     assert entry["asset"] is None
@@ -122,6 +125,8 @@ async def test_split_frame_shot_reports_split_even_with_empty_layers():
     # the presence of the dict, and from "resolved" by these being None.
     assert entry["secondary"]["asset"] is None
     assert entry["secondary"]["clip"] is None
+    # split_frame is not parallax — plane slots stay absent.
+    assert entry["layers"] is None
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as api from "./api";
 import {
   SCENE_GROUP_SHOT_THRESHOLD,
+  type OverridePanel,
   type ProgressResponse,
   type SfxKind,
 } from "./types";
@@ -219,9 +220,10 @@ export function useOverrideShot(projectId: string) {
       shotId: string;
       file: File;
       description?: string;
-      // P3a: omitted means `"primary"` (api.overrideShot's own default) —
-      // every call site that predates split-screen support is unaffected.
-      panel?: "primary" | "secondary";
+      // P3a/P3b: omitted means `"primary"` (api.overrideShot's own
+      // default) — every call site that predates split-screen / layer
+      // support is unaffected. Accepts `secondary` and `layer:N`.
+      panel?: OverridePanel;
     }) => api.overrideShot(projectId, shotId, file, description, panel),
     onSettled: () => invalidateAfterTrigger(qc, projectId),
   });

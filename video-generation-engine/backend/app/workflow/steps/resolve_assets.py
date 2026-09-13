@@ -622,6 +622,67 @@ def layer_prompt_hash(
     )
 
 
+async def resolved_layer_clips(
+    shot: Shot,
+    *,
+    project_uuid: uuid_module.UUID,
+    creative_context: CreativeContext,
+    style: str | None,
+    frame_aspect: str | None,
+    clip_repo: GeneratedClipRepository,
+) -> list[GeneratedClipModel] | None:
+    """Every one of `shot.layers`' resolved `GeneratedClip`s, in layer-index
+    order, or `None` unless ALL of them resolve.
+
+    The single place that walks `shot.layers` recomputing `layer_prompt_hash`
+    per layer and looking each one up (`GeneratedClipRepository.
+    get_by_prompt_hash`) - `render.py`'s `resolve_render_inputs` and the
+    approval gate's `_unfilled_shot_ids` (`app/api/projects.py`,
+    gate_panel_overrides.md §7.5 addendum) both need this exact walk and
+    must reach the same verdict about which layered shots are ready; a
+    second copy here would be the R1 mistake this codebase already avoids
+    everywhere else - if the two copies ever drifted, the render step and
+    the money gate could disagree about whether a shot is safe to approve.
+
+    Returns `None` (never a partial list) for a shot with no layers at all,
+    and equally for a shot with layers where even ONE fails to resolve -
+    `build_two_layer_parallax_filter_complex` accepts only an exact
+    `[background, subject]` pair, so a partial set cannot be composited and
+    must never be reported as "found enough" by any caller, gate included.
+
+    A layer only counts as resolved when its clip exists, has
+    `status == "completed"` (the ONLY status the cache-hit convention
+    trusts elsewhere - `GeneratedClipModel`'s own docstring), and its
+    `local_path` file is still actually on disk - a `submitted`/`failed`/
+    `rejected` row is not a usable image even though today's
+    `local_path`-set invariant makes the explicit status check redundant
+    in practice; checking it anyway is one extra line against the row
+    layout ever changing under a money gate that must fail closed."""
+    if not shot.layers:
+        return None
+    clips: list[GeneratedClipModel] = []
+    for index, layer in enumerate(shot.layers):
+        phash = layer_prompt_hash(
+            shot,
+            layer,
+            layer_index=index,
+            project_uuid=project_uuid,
+            creative_context=creative_context,
+            style=style,
+            frame_aspect=frame_aspect,
+        )
+        clip = await clip_repo.get_by_prompt_hash(phash)
+        if (
+            clip is None
+            or clip.status != "completed"
+            or not clip.local_path
+            or not Path(clip.local_path).exists()
+        ):
+            return None
+        clips.append(clip)
+    return clips
+
+
 async def generate_layer_image_real(
     shot: Shot,
     layer: ShotLayer,

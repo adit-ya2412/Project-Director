@@ -2,6 +2,7 @@ import type {
   GenerateShotImageResult,
   GenerateShotVideoResult,
   MusicUploadResult,
+  OverridePanel,
   Project,
   ProgressResponse,
   ProjectDeletionSummary,
@@ -358,24 +359,22 @@ export function renderDraft(projectId: string): Promise<{
 
 // -- Human corrections --------------------------------------------------
 
-/** P3a: `panel` defaults to `"primary"` so every call site that predates
- * split-screen support keeps posting exactly where it always did — only
- * a caller that explicitly knows about a shot's bottom panel ever passes
- * `"secondary"`. The backend 400s `panel=secondary` on any shot whose
- * `camera.movement !== "split_frame"` (`_OVERRIDE_PANELS`,
- * `app/api/projects.py`), so this is never a silent no-op on the wrong
- * shot — a caller that gets it wrong finds out immediately. */
+/** P3a/P3b: `panel` defaults to `"primary"` so every call site that
+ * predates split-screen / layer support keeps posting exactly where it
+ * always did (no query). Non-primary → `?panel=...` for `secondary` and
+ * `layer:N`. Backend `_parse_override_panel` 400s a panel the shot's
+ * shape cannot accept, so a wrong caller finds out immediately. */
 export function overrideShot(
   projectId: string,
   shotId: string,
   file: File,
   description?: string,
-  panel: "primary" | "secondary" = "primary",
+  panel: OverridePanel = "primary",
 ): Promise<WorkflowTriggerResult> {
   const form = new FormData();
   form.append("file", file);
   if (description) form.append("description", description);
-  const q = panel === "secondary" ? "?panel=secondary" : "";
+  const q = panel === "primary" ? "" : `?panel=${panel}`;
   return request(`/projects/${projectId}/shots/${shotId}/override${q}`, {
     method: "POST",
     body: form,
@@ -510,20 +509,17 @@ export function pollShotVideo(
 // agreed contract regardless — plain <img src=...> URLs, no fetch wrapper
 // needed since these return raw bytes, not JSON.
 
-/** P3a: `panel` defaults to `"primary"`, so the URL every existing caller
- * builds is byte-identical to before — only a caller rendering a
- * `split_frame` shot's bottom panel ever passes `"secondary"`. Still
- * `Cache-Control: no-cache` either way (see `get_shot_asset`'s own
- * docstring) — the querystring makes the two panels distinct URLs, but
- * an override still rebinds the SAME url to different bytes, so the
- * no-cache/revalidate discipline matters exactly as much per-panel as it
- * always has per-shot. */
+/** P3a/P3b: `panel` defaults to `"primary"`, so the URL every existing
+ * caller builds is byte-identical to before (no query). Non-primary →
+ * `?panel=...` for `secondary` and `layer:N`. Still `Cache-Control:
+ * no-cache` either way (see `get_shot_asset`'s own docstring) — an
+ * override rebinds the SAME url to different bytes. */
 export function shotAssetUrl(
   projectId: string,
   shotId: string,
-  panel: "primary" | "secondary" = "primary",
+  panel: OverridePanel = "primary",
 ): string {
-  const q = panel === "secondary" ? "?panel=secondary" : "";
+  const q = panel === "primary" ? "" : `?panel=${panel}`;
   return `${API_BASE}/projects/${projectId}/shots/${shotId}/asset${q}`;
 }
 

@@ -39,6 +39,7 @@ from PIL import Image
 import app.api.projects as projects_module
 from app.api.deps import get_repo, get_timeline_service
 from app.assets.focal import FOCAL_SOURCE_HUMAN, FOCAL_SOURCE_VISION, read_focal_sidecar
+from app.assets.substrate_crop import fit_upload_to_canvas
 from app.core.config import settings
 from app.db.session import get_db
 from app.schemas.timeline import (
@@ -49,6 +50,7 @@ from app.schemas.timeline import (
     Timeline,
     TimelineStatus,
 )
+from app.script.styles import resolve_generation_request_format, resolve_render_format
 from app.workflow.trigger import WorkflowTriggerResult
 
 _PROJECT = "33333333-3333-3333-3333-333333333333"
@@ -58,6 +60,23 @@ def _png_bytes(color: tuple[int, int, int]) -> bytes:
     buffer = io.BytesIO()
     Image.new("RGB", (64, 48), color=color).save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+def _fitted_bytes(content: bytes, timeline: Timeline) -> bytes:
+    """Override persists fitted bytes (gate_panel_overrides.md P1); sidecar
+    keys and vision inputs follow the fitted content_hash, not the raw
+    upload."""
+    frame = resolve_render_format(
+        timeline.metadata.render_style, frame_aspect=timeline.metadata.frame_aspect
+    )
+    cover = resolve_generation_request_format(timeline.metadata.render_style, frame)
+    return fit_upload_to_canvas(
+        content,
+        cover_width=cover.width,
+        cover_height=cover.height,
+        canvas_width=frame.width,
+        canvas_height=frame.height,
+    )
 
 
 class _FakeRepo:
@@ -203,10 +222,10 @@ def make_client(monkeypatch, tmp_path):
     return SimpleNamespace(build=_build, vision_calls=vision_calls, vision_script=vision_script)
 
 
-def _sidecar(project_id: str, tmp_path, content: bytes):
+def _sidecar(project_id: str, tmp_path, fitted: bytes):
     import hashlib
 
-    content_hash = hashlib.sha256(content).hexdigest()
+    content_hash = hashlib.sha256(fitted).hexdigest()
     assets_dir = tmp_path / project_id / "assets"
     return read_focal_sidecar(assets_dir, content_hash), content_hash, assets_dir
 
@@ -217,8 +236,10 @@ def _sidecar(project_id: str, tmp_path, content: bytes):
 def test_upload_with_no_coords_calls_vision_and_persists_it(make_client, tmp_path):
     make = make_client
     client, service, _session, _started = make.build()
+    timeline = service._timeline
     make.vision_script.append((0.2, 0.75))
     content = _png_bytes((1, 2, 3))
+    fitted = _fitted_bytes(content, timeline)
 
     res = client.post(
         f"/projects/{_PROJECT}/shots/sh_01/override",
@@ -228,7 +249,7 @@ def test_upload_with_no_coords_calls_vision_and_persists_it(make_client, tmp_pat
     assert res.status_code == 202, res.text
     assert len(make.vision_calls) == 1
 
-    focal, _hash, _dir = _sidecar(_PROJECT, tmp_path, content)
+    focal, _hash, _dir = _sidecar(_PROJECT, tmp_path, fitted)
     assert focal == (0.2, 0.75)
 
 
@@ -236,16 +257,18 @@ def test_vision_sidecar_records_the_vision_source(make_client, tmp_path):
     import json
 
     make = make_client
-    client, *_ = make.build()
+    client, service, *_ = make.build()
+    timeline = service._timeline
     make.vision_script.append((0.3, 0.4))
     content = _png_bytes((4, 5, 6))
+    fitted = _fitted_bytes(content, timeline)
 
     client.post(
         f"/projects/{_PROJECT}/shots/sh_01/override",
         files={"file": ("a.png", content, "image/png")},
         data={"description": "x"},
     )
-    _focal, content_hash, assets_dir = _sidecar(_PROJECT, tmp_path, content)
+    _focal, content_hash, assets_dir = _sidecar(_PROJECT, tmp_path, fitted)
     payload = json.loads((assets_dir / f"{content_hash}.focal.json").read_text())
     assert payload["focal_source"] == FOCAL_SOURCE_VISION
 
@@ -257,11 +280,13 @@ def test_vision_sidecar_records_the_vision_source(make_client, tmp_path):
 def test_vision_failure_still_succeeds_with_no_sidecar(make_client, tmp_path, failure):
     make = make_client
     client, service, _session, _started = make.build()
+    timeline = service._timeline
     if failure is not None:
         make.vision_script.append(failure)
     # else: leave vision_script empty -> fake returns None, the "no usable
     # answer" case `locate_subject_focal` itself already returns.
     content = _png_bytes((7, 8, 9))
+    fitted = _fitted_bytes(content, timeline)
 
     res = client.post(
         f"/projects/{_PROJECT}/shots/sh_01/override",
@@ -271,7 +296,7 @@ def test_vision_failure_still_succeeds_with_no_sidecar(make_client, tmp_path, fa
     assert res.status_code == 202, res.text  # upload succeeds regardless
     assert len(make.vision_calls) == 1
 
-    focal, _hash, assets_dir = _sidecar(_PROJECT, tmp_path, content)
+    focal, _hash, assets_dir = _sidecar(_PROJECT, tmp_path, fitted)
     assert focal is None  # no sidecar written - render falls back to centre, logged there
     content_hash = _hash
     assert not (assets_dir / f"{content_hash}.focal.json").exists()
@@ -284,7 +309,9 @@ def test_repeat_upload_of_identical_bytes_does_not_recall_vision(make_client, tm
     make = make_client
     content = _png_bytes((11, 22, 33))
 
-    client, *_ = make.build()
+    client, service, *_ = make.build()
+    timeline = service._timeline
+    fitted = _fitted_bytes(content, timeline)
     make.vision_script.append((0.6, 0.6))
     first = client.post(
         f"/projects/{_PROJECT}/shots/sh_01/override",
@@ -303,7 +330,7 @@ def test_repeat_upload_of_identical_bytes_does_not_recall_vision(make_client, tm
     assert second.status_code == 202
     assert len(make.vision_calls) == 1  # NOT called a second time
 
-    focal, _hash, _dir = _sidecar(_PROJECT, tmp_path, content)
+    focal, _hash, _dir = _sidecar(_PROJECT, tmp_path, fitted)
     assert focal == (0.6, 0.6)  # the original vision answer, untouched
 
 
@@ -314,8 +341,10 @@ def test_explicit_coords_are_used_verbatim_and_skip_vision(make_client, tmp_path
     import json
 
     make = make_client
-    client, *_ = make.build()
+    client, service, *_ = make.build()
+    timeline = service._timeline
     content = _png_bytes((44, 55, 66))
+    fitted = _fitted_bytes(content, timeline)
 
     res = client.post(
         f"/projects/{_PROJECT}/shots/sh_01/override",
@@ -325,7 +354,7 @@ def test_explicit_coords_are_used_verbatim_and_skip_vision(make_client, tmp_path
     assert res.status_code == 202, res.text
     assert make.vision_calls == []  # human answer means never asking vision
 
-    focal, content_hash, assets_dir = _sidecar(_PROJECT, tmp_path, content)
+    focal, content_hash, assets_dir = _sidecar(_PROJECT, tmp_path, fitted)
     assert focal == (0.15, 0.9)
     payload = json.loads((assets_dir / f"{content_hash}.focal.json").read_text())
     assert payload["focal_source"] == FOCAL_SOURCE_HUMAN
@@ -335,14 +364,16 @@ def test_explicit_coords_outrank_an_existing_vision_sidecar(make_client, tmp_pat
     make = make_client
     content = _png_bytes((77, 88, 99))
 
-    client, *_ = make.build()
+    client, service, *_ = make.build()
+    timeline = service._timeline
+    fitted = _fitted_bytes(content, timeline)
     make.vision_script.append((0.5, 0.5))
     client.post(
         f"/projects/{_PROJECT}/shots/sh_01/override",
         files={"file": ("e.png", content, "image/png")},
         data={"description": "x"},
     )
-    focal_before, _hash, _dir = _sidecar(_PROJECT, tmp_path, content)
+    focal_before, _hash, _dir = _sidecar(_PROJECT, tmp_path, fitted)
     assert focal_before == (0.5, 0.5)
 
     # A human now corrects the same photo's framing explicitly. Must
@@ -353,7 +384,7 @@ def test_explicit_coords_outrank_an_existing_vision_sidecar(make_client, tmp_pat
         files={"file": ("e-again.png", content, "image/png")},
         data={"description": "x", "focal_x": "0.05", "focal_y": "0.95"},
     )
-    focal_after, _hash, _dir = _sidecar(_PROJECT, tmp_path, content)
+    focal_after, _hash, _dir = _sidecar(_PROJECT, tmp_path, fitted)
     assert focal_after == (0.05, 0.95)
     assert len(make.vision_calls) == 1  # the vision call from the FIRST request only
 
@@ -395,8 +426,10 @@ def test_out_of_range_but_finite_coords_are_clamped_not_rejected(make_client, tm
     new bounds check per this task's own instruction): a value outside
     0..1 is clamped, not refused with a 4xx."""
     make = make_client
-    client, *_ = make.build()
+    client, service, *_ = make.build()
+    timeline = service._timeline
     content = _png_bytes((3, 3, 3))
+    fitted = _fitted_bytes(content, timeline)
 
     res = client.post(
         f"/projects/{_PROJECT}/shots/sh_01/override",
@@ -404,5 +437,5 @@ def test_out_of_range_but_finite_coords_are_clamped_not_rejected(make_client, tm
         data={"description": "x", "focal_x": "1.5", "focal_y": "-0.2"},
     )
     assert res.status_code == 202, res.text
-    focal, _hash, _dir = _sidecar(_PROJECT, tmp_path, content)
+    focal, _hash, _dir = _sidecar(_PROJECT, tmp_path, fitted)
     assert focal == (1.0, 0.0)

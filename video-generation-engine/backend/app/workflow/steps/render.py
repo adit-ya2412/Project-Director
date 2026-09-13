@@ -55,6 +55,7 @@ themselves part of the fingerprint, so the two modes are provably
 different renders even of the identical Timeline content.
 """
 
+import hashlib
 import uuid as uuid_module
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -151,7 +152,18 @@ from app.timeline.acts import act_time_ranges, music_content_hash_for
 from app.timeline.duration import compute_timeline_duration
 from app.workflow.context import RunContext
 from app.workflow.step import StepResult
-from app.workflow.steps.resolve_assets import layer_prompt_hash
+from app.workflow.steps.resolve_assets import resolved_layer_clips
+
+
+def _file_sha256(path: Path) -> str:
+    """Content hash of a resolved layer (or other) file. Kept local rather
+    than importing `slideshow._file_content_hash` — that helper is private
+    to the renderer and this step already owns the layer lookup path."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class RenderStep:
@@ -311,17 +323,21 @@ async def resolve_render_inputs(
     shot_secondary_images: dict[str, Path] = {}
     # illustrated_faceless.md F2b (2026-09-05): `Shot.layers`' resolved-
     # image counterpart to `shot_secondary_images` above. Populated below
-    # by recomputing each layer's `layer_prompt_hash` (the SAME cache key
-    # `ResolveAssetsStep`'s own `generate_layer_image_real`/
-    # `_generate_layer_fake` compute - never a second copy of that
-    # arithmetic, the R1 lesson) and looking the resulting clip up by
-    # content hash - there is no per-layer binding column to read a clip
-    # id FROM (see `layer_prompt_hash`'s own docstring for why), so this
-    # is the one place a layer's resolved path is found, on every render.
-    # A shot whose layer clip is missing (never generated, or generation
-    # failed and was isolated per-shot) simply gets no entry here, which
-    # is exactly what `should_composite_parallax`'s own missing-input
-    # degrade rule already expects.
+    # via `resolved_layer_clips` (resolve_assets.py), which recomputes each
+    # layer's `layer_prompt_hash` (the SAME cache key `ResolveAssetsStep`'s
+    # own `generate_layer_image_real`/`_generate_layer_fake` compute) and
+    # looks the resulting clip up by content hash - there is no per-layer
+    # binding column to read a clip id FROM (see `layer_prompt_hash`'s own
+    # docstring for why). That walk is no longer inlined here - the
+    # approval gate (`_unfilled_shot_ids`, app/api/projects.py,
+    # gate_panel_overrides.md §7.5 addendum) needed the exact same
+    # all-layers-resolved verdict this render step computes, so it was
+    # extracted rather than copied (R1) - a second copy would let the gate
+    # and the renderer disagree about whether a shot is actually ready. A
+    # shot whose layer clip is missing (never generated, generation failed
+    # and was isolated per-shot, or ONLY SOME of its layers resolved) simply
+    # gets no entry here, which is exactly what `should_composite_parallax`'s
+    # own missing-input degrade rule already expects.
     shot_layer_images: dict[str, list[Path]] = {}
     layer_content_hashes: dict[str, list[str]] = {}
     clip_repo = GeneratedClipRepository(ctx.session)
@@ -346,27 +362,28 @@ async def resolve_render_inputs(
         if sec_path is not None:
             shot_secondary_images[shot.id] = sec_path
         if shot.layers:
-            layer_paths: list[Path] = []
-            layer_hashes: list[str] = []
-            for index, layer in enumerate(shot.layers):
-                phash = layer_prompt_hash(
-                    shot,
-                    layer,
-                    layer_index=index,
-                    project_uuid=project_uuid,
-                    creative_context=timeline.creative_context,
-                    style=timeline.metadata.render_style,
-                    frame_aspect=timeline.metadata.frame_aspect,
-                )
-                clip = await clip_repo.get_by_prompt_hash(phash)
-                if clip is None or not clip.local_path or not Path(clip.local_path).exists():
-                    layer_paths = []
-                    break
-                layer_paths.append(Path(clip.local_path))
-                layer_hashes.append(phash)
-            if layer_paths:
+            # The walk itself (recompute `layer_prompt_hash` per layer,
+            # look each up, require ALL of them) lives in `resolved_layer_
+            # clips` (resolve_assets.py) - the approval gate's
+            # `_unfilled_shot_ids` needs the identical verdict, and a
+            # second copy of this walk here would be exactly the R1
+            # mistake that helper's own docstring warns against.
+            clips = await resolved_layer_clips(
+                shot,
+                project_uuid=project_uuid,
+                creative_context=timeline.creative_context,
+                style=timeline.metadata.render_style,
+                frame_aspect=timeline.metadata.frame_aspect,
+                clip_repo=clip_repo,
+            )
+            if clips is not None:
+                layer_paths = [Path(clip.local_path) for clip in clips]
                 shot_layer_images[shot.id] = layer_paths
-                layer_content_hashes[shot.id] = layer_hashes
+                # File bytes, not `phash`: a human override rewrites the
+                # plane under the SAME prompt_hash (gate_panel_overrides.md
+                # §4.1 / P1). Hashing the lookup key would cache-hit the
+                # old film after the bytes changed.
+                layer_content_hashes[shot.id] = [_file_sha256(p) for p in layer_paths]
 
     # OQ-2: resolve subject focals once from asset sidecars (RV2). Missing
     # sidecar → None → centre Ken Burns + logged fallback. Never re-read

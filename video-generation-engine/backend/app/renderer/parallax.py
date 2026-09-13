@@ -772,6 +772,33 @@ def check_keyed_distribution(
         )
 
 
+def guard_subject_plane_bytes(
+    image_bytes: bytes,
+    *,
+    shot_id: str = "",
+    layer_role: str = "",
+) -> str:
+    """Production key-guard sequence for a SUBJECT (or FOREGROUND) plane.
+
+    Sample the key from the delivered bytes, then run fraction + scatter
+    checks. Raises `ParallaxKeyGuardError` on failure; returns the sampled
+    key so render can reuse it without a second sample.
+
+    Render already degrades a bad key minutes later
+    (`slideshow.py` catches this and falls back to flat). The upload gate
+    is where the human can still retry — same sequence, HTTP 400 instead
+    of silent degrade. Callers must fit-then-guard: §7.4 of
+    gate_panel_overrides.md, a top-strip sample of a paper-edged upload
+    reads cream and falsely fails a plate that would key after crop.
+    """
+    subject_key = sample_key_colour(image_bytes)
+    fraction = keyed_fraction(image_bytes, subject_key)
+    check_keyed_fraction(fraction, shot_id=shot_id, layer_role=layer_role)
+    scatter = keyed_scatter_fraction(image_bytes, subject_key)
+    check_keyed_distribution(scatter, shot_id=shot_id, layer_role=layer_role)
+    return subject_key
+
+
 # Role-derived drift, resolved at PLANNING time (illustrated_faceless.md,
 # 2026-09-05). `ShotLayerOutput`'s docstring correctly keeps `drift_x`/
 # `drift_y` off the Shot Planner's structured output - a pixel travel is

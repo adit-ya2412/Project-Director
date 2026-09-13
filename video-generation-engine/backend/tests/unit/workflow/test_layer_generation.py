@@ -139,10 +139,10 @@ def test_layer_prompt_hash_differs_by_prompt_role_and_project():
 
 
 def test_layer_prompt_hash_changes_when_the_layer_prompt_changes():
-    """R2/§4.1: a changed layer is exactly what must change the render
-    fingerprint - `layer_prompt_hash`'s output is what `render.py` feeds
-    into `layer_content_hashes`, so this is the load-bearing sensitivity
-    check for that path."""
+    """R2: a changed layer prompt must change the lookup key
+    `layer_prompt_hash` (what render.py recomputes to find the clip).
+    File-byte hashing for `layer_content_hashes` is covered separately
+    (gate_panel_overrides.md §4.1 / P1) — this pins the lookup key."""
     project_uuid = uuid.uuid4()
     shot = _shot()
     original = layer_prompt_hash(

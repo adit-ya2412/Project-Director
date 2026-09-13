@@ -1,7 +1,8 @@
 # Plan: every image a shot uses is visible and replaceable at the gate
 
-Status, 2026-09-08: **P0 and P3a BUILT** (P3a: commit `6dac690`; P0:
-uncommitted, this session). P1, P2, P3b, P4 still to build. Provider
+Status, 2026-09-12: **P0, P3a, P1, P2, and P3b BUILT** (P3b: this
+session, 2026-09-12; P2: earlier 2026-09-12; P1: earlier 2026-09-12;
+P3a: commit `6dac690`; P0: 2026-09-08). P4 still to build. Provider
 choice settled — see §7.
 
 Section order note: §7 (external sourcing, measured) sits before §6
@@ -469,9 +470,580 @@ bottom-panel clip shows as a still rather than playing; and the video
 thumbnail cache path is keyed on shot alone, so two video-bound panels on one
 split shot would collide.
 
+> **Addendum, 2026-09-13 — the gap above turned out to have TWO independent
+> halves, and only one of them is still open.**
+>
+> The paragraph above was written while `_unfilled_shot_ids` had no notion of
+> layers at all, so "reads only `binding.state`" undersold the blast radius:
+> **a layered (parallax) shot ALSO has no per-layer binding column**
+> (`layer_prompt_hash`'s own docstring, §2), so its binding sits at
+> `awaiting_generation` forever — even once every plane is uploaded or
+> generated. This is not a corner of the split-frame gap above; it is a
+> second, separate hole with the opposite urgency.
+>
+> **Measured live, 2026-09-13, on the user's own 100-shot project
+> `48086fed-02a0-46ba-be58-e2c5cf99db9e`** ("adi shankracharya decoded",
+> timeline v119, `illustrated_risograph` at `frame_aspect=16:9`): the guard
+> reported **11 unfilled shots**, every one `movement=parallax`,
+> `binding.state='awaiting_generation'`. **10 of the 11 already had BOTH
+> layer clips `completed`** — the user had supplied every image in the film
+> and could not approve it. Only 1 (`act_02_sc_03_sh_03`) was genuinely
+> missing a plane (layer 1) and correctly needed to keep blocking.
+>
+> **Fixed this session (permissive, ships without further sign-off — I6
+> already requires blocking a genuinely incomplete shot, and this change can
+> only ever turn a reported-unfilled shot into filled, never the reverse):**
+> `_unfilled_shot_ids` now also checks, for any shot with non-empty
+> `shot.layers`, whether EVERY layer resolves to a `status == "completed"`
+> `GeneratedClip` (`resolved_layer_clips`, extracted into
+> `resolve_assets.py` and shared with `render.py`'s own lookup — R1, one
+> walk, not two that could drift). Gated on `shot.layers` being non-empty,
+> never on `camera.movement == PARALLAX` — `_cap_parallax_layers` leaves 19
+> shots on this same project at `movement=parallax, layers=[]`, rendered as
+> a plain still that still needs its ordinary primary image; those must
+> (and do) keep falling back to `binding.state` unchanged. A shot with even
+> one unresolved plane still blocks, same as before.
+>
+> **Still open, unchanged, needs the user's own say-so before touching it:**
+> the split-frame half this paragraph originally described —
+> `binding.secondary_state` is still never read. That fix is *restrictive*
+> (it would start blocking approvals that pass today, including projects
+> already mid-flight), the opposite direction of risk from the layer fix
+> above, which is why the two halves are being tracked and decided
+> separately rather than bundled. See §6's implementation-log entry for this
+> session for the full account.
+
 ---
 
 ## 6. Implementation log
+
+### Gate layer fix — built 2026-09-13
+
+**Why — a live user was blocked, right now.** The user had supplied every
+image for a 100-shot film (`48086fed-02a0-46ba-be58-e2c5cf99db9e`, "adi
+shankracharya decoded", timeline v119, `illustrated_risograph`,
+`frame_aspect=16:9`) and the approval gate still refused. `_unfilled_shot_
+ids` reads only `binding.state`, and a layer plane has no per-layer binding
+column at all (§2) — uploading or generating one never touches
+`binding.state`, so a fully-supplied layered shot stayed
+`awaiting_generation` forever. See §7.5's addendum (same section, dated the
+same day) for the full before/after account; this entry is the build log.
+
+**Measured, read-only, against the live project (real Postgres, no
+mutation — `session.rollback()`, never `commit()`):**
+
+| | count |
+|---|---|
+| shots reported unfilled by the OLD `binding.state`-only check | 11 |
+| … of those, already had BOTH layer clips `status="completed"` | 10 |
+| … of those, genuinely still missing a layer (`act_02_sc_03_sh_03`, layer 1) | 1 |
+| parallax shots total on this project | 32 |
+| … with `layers=[]` (capped by `_cap_parallax_layers`, renders as a plain still) | 19 |
+| … with non-empty `layers` | 13 |
+
+After the fix: unfilled count is **1** (`act_02_sc_03_sh_03`, correctly
+still blocking), and all 19 empty-layer parallax shots were confirmed
+**not** wrongly cleared (they still fall back to `binding.state`, unchanged).
+
+**Fix.** `_unfilled_shot_ids` (`app/api/projects.py`) is now `async` and,
+for any shot whose OLD check would mark it unfilled, additionally checks —
+only when `shot.layers` is non-empty — whether every layer resolves to a
+completed, on-disk `GeneratedClip`. Gated on `shot.layers`, never on
+`camera.movement == PARALLAX`: the 19 empty-layers shots above prove those
+are two different questions. A shot with even one unresolved layer (missing
+clip, wrong `status`, or a `local_path` file no longer on disk) still
+blocks — never a partial pass, matching `build_two_layer_parallax_filter_
+complex`'s own all-or-nothing `[background, subject]` requirement. Strictly
+permissive: the new path can only remove a shot from `unfilled`, never add
+one, so it cannot let a genuinely incomplete shot through I6's money gate.
+`binding.secondary_state` (the split-frame half of §7.5's original note) is
+untouched — see the §7.5 addendum for why that stays open.
+
+**R1: the per-layer hash-and-lookup walk is not duplicated.** It already
+existed inline inside `render.py`'s `resolve_render_inputs` (recompute
+`layer_prompt_hash` per layer, `GeneratedClipRepository.get_by_prompt_
+hash`, require every one). That walk was extracted verbatim into a new
+`resolved_layer_clips(shot, *, project_uuid, creative_context, style,
+frame_aspect, clip_repo)` in `app/workflow/steps/resolve_assets.py`
+(returns `None` unless every layer resolves, else the ordered list of
+`GeneratedClip`s), and both `render.py` and `_unfilled_shot_ids` now call
+it. Extraction, not a fresh implementation reusing only `layer_prompt_
+hash` — the gate and the renderer must reach the identical verdict about
+which layered shots are ready, or the gate could approve a film the
+renderer then can't composite. One behavioural addition over the old
+inline code: an explicit `clip.status == "completed"` check. Today that is
+redundant (`GeneratedClipModel`'s own docstring: `local_path` is only ever
+set together with `status="completed"`), but a money gate should fail
+closed against that invariant ever changing, not rely on it silently.
+
+**`style`/`frame_aspect` reach the helper the production way.** Both call
+sites in `_unfilled_shot_ids` already had the active `Timeline` in hand
+(`approve_timeline`/`approve_scene` both resolve it before calling this
+helper) and read `timeline.metadata.render_style` /
+`timeline.metadata.frame_aspect` / `timeline.creative_context` /
+`uuid.UUID(timeline.project_id)` — the exact fields `render.py` and every
+existing `layer_prompt_hash` call site in this file already use. No
+default assumed, no guess: the measured project is `16:9`, and a helper
+that silently assumed the 9:16 canvas default would have computed the
+wrong hash and found nothing, reproducing the same bug under a different
+cause.
+
+**Tests.** New `tests/unit/api/test_unfilled_shot_ids_layers.py` (5 cases,
+calling `_unfilled_shot_ids` directly with a monkeypatched
+`GeneratedClipRepository` — same idiom as `test_progress_layer_panels.py`):
+parallax shot with both layer clips completed → filled; one layer missing
+→ still unfilled; a layer clip present but not `status="completed"` → still
+unfilled; `movement=parallax` with `layers=[]` → falls back to
+`binding.state` (unfilled while `awaiting_generation`, filled once
+terminal); a plain non-layer shot → behaviour unchanged (no binding /
+non-terminal / every `_TERMINAL_SHOT_STATES` value). Focused run:
+`pytest tests/unit/api/test_unfilled_shot_ids_layers.py tests/unit/api/
+test_progress_layer_panels.py tests/unit/api/test_progress_secondary_panel.py
+tests/unit/api/test_override_layer.py tests/unit/api/test_override_panel.py
+tests/unit/api/test_focal_override_api.py tests/unit/workflow/
+test_layer_generation.py tests/unit/renderer/test_fingerprint_parallax.py
+tests/unit/assets/test_substrate_crop.py -q` → **90 passed**.
+`tests/unit/timeline/test_shot_layers.py tests/unit/workflow/
+test_render_step.py -q` → **34 passed** (proves the `render.py` extraction
+didn't regress the render step). Full `pytest tests/unit -q`: baseline
+measured fresh this session (branch had moved since the last recorded
+baseline) at **1726 passed, 6 failed** — the same 6 named in §0 (5 in
+`test_sfx_overlays_diegetic.py`, 1 in `test_director_planner.py`); after
+this fix, **1731 passed, 6 failed** — same 6, +5 for the new test file, no
+new failures.
+
+**Re-verification.** No server started, no fal.ai / ElevenLabs / paid
+provider called, no `make test` / seed `--force`. The live project was
+read via a throwaway script (`async_session_factory`, real Postgres,
+`session.rollback()` at the end, `commit()` never called) purely to
+confirm the diagnosis's numbers and the fix's effect — nothing about that
+project was written. **Standing cleanup performed this session** (per the
+recurring instruction, `project_purge_test_projects.md`): 134 leaked
+`*-test`/probe-named projects deleted via `scripts/purge_test_projects.py`
+(the real `delete_project` path, one at a time) — 0 failures; all 38
+human-named films survive untouched, confirmed by a follow-up dry-run
+(`0 leaked, 38 keep`).
+
+**Corrections to the diagnosis handed to this session.** None material —
+every measured number (11 unfilled / 10 already-complete / 1 genuinely
+missing / 32 parallax shots / 19 empty-layer / 13 non-empty) was
+re-verified live against Postgres and held exactly.
+
+**Follow-up correction, same day (2026-09-13): the first pass was
+guard-only, and the UI kept the old rule.** The user restarted their
+backend after the fix above and nothing changed for them — the Approve
+button stayed disabled, and scenes still said "1 still need a picture".
+The coordinator's own read-only check against the live project confirmed
+the *guard* half was right (`_unfilled_shot_ids` now reports 1 unfilled,
+matching the diagnosis, and none of the 19 empty-layer shots were wrongly
+cleared), but found the "is this shot filled" question was still answered
+in **three places that disagreed**:
+
+1. `_unfilled_shot_ids` (the fixed guard) — layer-aware.
+2. `GET /progress`'s own per-scene `unfilled_in_scene` counter
+   (`app/api/projects.py`, `get_progress`) — still `b.state in
+   _TERMINAL_SHOT_STATES` only, driving the "N still need a picture" text
+   on every scene.
+3. The frontend's `isFilled` (`AssetReviewGate.tsx`) — still
+   `TERMINAL_STATES.has(shot.state)`, driving `canApprove` and the global
+   "N still need a picture" banner.
+
+Three independent encodings of one question is exactly the R1 failure
+this codebase keeps warning about — worse than the original bug, because
+the backend guard and the UI now actively disagreed about whether the
+film was ready, rather than both being wrong the same way.
+
+**Corrected shape: one server-side predicate, everything reads it.**
+New `_shot_is_filled(shot, binding, *, timeline, session, clip_repo=None)`
+(`app/api/projects.py`, immediately above `_unfilled_shot_ids`) holds the
+exact logic the first pass put inline in `_unfilled_shot_ids` — terminal
+`binding.state` first, else (only when `shot.layers` is non-empty and a
+`timeline` was supplied) all-layers-resolved via the same
+`resolved_layer_clips` — and is now the ONLY place that question is
+answered:
+
+- `_unfilled_shot_ids` is now a thin loop over `_shot_is_filled`.
+- `_shot_progress_entry` calls it once and adds an explicit `"filled"`
+  key to every shot's payload — `state` is left alone (still the honest
+  raw binding state; the UI still needs it for "still searching"/"headed
+  for generation"/"failed" labelling on the primary panel specifically).
+- `get_progress`'s scene loop calls it per shot to decide
+  `completed_in_scene` vs `unfilled_in_scene` (`b.state == "failed"` still
+  separately drives `failed_in_scene`, unchanged), sharing one
+  `GeneratedClipRepository` across the whole request the same lazy-once
+  way the guard already did.
+- The frontend's `isFilled(shot)` now returns `shot.filled` directly — no
+  re-derivation from `state` or from `layers` (a frontend copy would have
+  been a FOURTH encoding). Renamed the OLD `isFilled` behaviour (raw
+  primary-binding-state check) to `isPrimaryFilled`, kept byte-for-byte,
+  because it turned out to still be needed: `ShotCard`'s fallback-image
+  section for a parallax shot (badges, "Replace fallback" vs "Upload
+  fallback", and disabling "Generate video" — which needs the PRIMARY
+  image as its source frame, not the planes) reads the PRIMARY panel's
+  own fill state, which is a genuinely different question from "can this
+  shot be approved" and must not collapse into it. `isPanelFilled`'s
+  primary-panel fallback and the plain-shot override-dialog copy were
+  repointed to `isPrimaryFilled` for the same reason. This is the one
+  deliberate departure from "just make isFilled read the field" as
+  literally proposed — argued for above rather than applied silently,
+  since collapsing the two meanings would have let a layered shot's
+  fallback panel wrongly claim to have an image, and let "Generate video"
+  enable before a fallback frame actually exists.
+
+**A12 trap, addressed directly.** New
+`tests/unit/api/test_progress_filled_field.py` calls the real
+`get_progress` endpoint function (fakes for its `Depends(...)` params,
+same idiom `test_override_layer.py` uses) and asserts `"filled" in
+shots_by_id[shot_id]` for every shot in the payload dict — not merely
+that the value looks right — plus the scene-level counts: a fully-resolved
+layered shot moves from `unfilled_shots` to `completed_shots` while its
+own `state` stays `awaiting_generation`; a partially-resolved one stays
+unfilled; an empty-layers parallax shot is unaffected; a plain shot is
+unaffected.
+
+**Live re-verification (read-only, second pass).** Against the same
+project (`48086fed-02a0-46ba-be58-e2c5cf99db9e`, v119), calling the real
+`get_progress` function directly (real repositories, not fakes;
+`session.rollback()`, never `commit()`): **27 scenes, `sum(unfilled_shots)
+== 1`, `sum(completed_shots) == 99`**, the one remaining unfilled scene is
+`act_02_sc_03` (`unfilled=1`) containing exactly `act_02_sc_03_sh_03` —
+matching `_unfilled_shot_ids` exactly (`PAYLOAD AND GUARD AGREE: True`).
+All 100 shot entries carry the `filled` key (0 missing). Ten scenes that
+previously showed "1 still needs a picture" now show 0.
+
+**Tests.** `pytest tests/unit/api -q`: **69 passed** (adds
+`test_progress_filled_field.py`'s 3 cases to the existing API suite).
+Full `pytest tests/unit -q`: **1734 passed, 6 failed** — same 6
+pre-existing failures, no new ones (1731 → 1734, +3). `npx tsc --noEmit`
+in `frontend/`: clean.
+
+**Standing cleanup, second pass.** A follow-up `--dry-run` found 201
+newly-leaked `*-test` projects in the shared dev Postgres (concurrent
+activity elsewhere in the same DB, not this session's own test runs,
+which are fakes-only) — purged via `scripts/purge_test_projects.py`, 0
+failures, all 38 human-named films (including the live project) confirmed
+untouched by a following dry-run (`0 leaked, 38 keep`).
+
+**Re-verification.** No server started, no fal.ai / ElevenLabs / paid
+provider called, no `make test` / seed `--force`. The `split_frame` /
+`binding.secondary_state` half of §7.5 remains untouched — still
+restrictive, still needs the user's own sign-off.
+
+### P3b — built 2026-09-12
+
+**Why.** P1 made `panel=layer:N` writable and GET-able, but `/progress`
+never said a shot had planes — the gate had nothing to render two
+upload slots from. Same A12 lesson as P3a's `secondary`: inventing a
+frontend field with no backend counterpart is invisible to TypeScript.
+`camera_movement` already existed; **layers did not**. Without emitting
+`layers` from `_shot_progress_entry`, a parallax shot's 2 planes stay
+fal.ai-only and the film still changes medium mid-shot.
+
+**Backend payload (A12).** `_shot_progress_entry` always emits `layers`:
+`None` when `shot.layers` is empty or `timeline` is absent (kwarg
+defaults `None` so older tests still run); otherwise a list in
+`Shot.layers` index order. Each entry:
+
+```
+{index, role, prompt, state, last_error, asset: null, clip}
+```
+
+`prompt` is `layer_styled_prompt(..., frame=resolve_render_format(
+style, frame_aspect))` — the string generation sends, which the user
+copies into Grok — never raw `layer.prompt`. Clip lookup is the SAME
+path render.py uses: `layer_prompt_hash` +
+`GeneratedClipRepository.get_by_prompt_hash` (no binding column, §2).
+`state`: clip.status completed→`"generated"`, failed→`"failed"`,
+missing→`None`. `clip` dict matches `_resolved_media_detail`'s clip
+half; `asset` stays null (layers are clips). Existence of the list
+(`shot.layers != null`) is the frontend's single signal for plane
+slots, matching `shot.secondary != null`. Both callers (`get_progress`
+~3210, `get_scene_shots` ~3308) now pass `timeline=timeline`.
+
+**Frontend slots + collapsed fallback.** `ShotLayerPanel` +
+`OverridePanel` in `lib/types.ts`; `overrideShot` / `shotAssetUrl`
+default `"primary"` (no query) and append `?panel=` for non-primary
+(`secondary` and `layer:N`). When `shot.layers != null` only:
+`LayerPanelBlock` per plane (role label from `role`, copyable
+`layer_styled_prompt` via `CopyButton`, upload posting that panel);
+primary is **not** the lead action — it lives in a collapsed native
+`<details>` summarised **"Fallback image — used only if a plane
+fails"** (not `Disclosure.tsx` — that is monospace technical-dump
+styling, wrong for a picture). Generate / generate-video stay inside
+the disclosure (no `panel` on those endpoints). Non-parallax
+`ShotCard` body (including split_frame) stays the P3a shape. One line
+of §5.3 coherence copy: do not mix providers inside one film
+(advising, not enforcing). Dialog title/toast name the plane when
+layers are set; non-parallax dialog text unchanged. `ImageLightbox`
+resolves `shot.layers[i]`; layers are stills (never playable via
+`/clip`).
+
+**asset-source.** `clip.provider === "human_override"` → `"uploaded"`
+before the generic clip→`"generated"` branch. P1 stores layer
+overrides as clips, not assets; without this a hand-supplied plane
+badges as AI.
+
+**Tests / checks.**
+- `tests/unit/api/test_progress_layer_panels.py` (new): plain/split →
+  `layers is None`; parallax 2-list with `layer_styled_prompt`
+  equality (call the function, no hardcoded string); completed
+  layer:1 fills that entry only; no-timeline → `layers is None`.
+- `test_progress_secondary_panel.py` updated only to expect
+  `"layers": None` on non-layer shots.
+- Focused run (from `backend/`, repo-root `.venv`):
+  `pytest tests/unit/api/test_progress_layer_panels.py
+  tests/unit/api/test_progress_secondary_panel.py
+  tests/unit/api/test_override_layer.py -q --tb=short` → **25
+  passed**.
+- From `frontend/`: `npx tsc --noEmit` clean; `npx oxlint` on the
+  five touched files → **0 warnings, 0 errors**.
+
+**Corrections to the brief.** None material. `timeline` is an optional
+kwarg (default `None` → `layers=None`) rather than required, so
+existing unit callers keep working; production callers pass it.
+
+**Found-not-fixed leftovers** (explicitly out of this slice): P4 lock
+layers; `_unfilled_shot_ids` still ignores `secondary_state` and
+layers; `GET /clip` still has no `panel`. Do not fix those here.
+
+**Re-verification.** No server started, no fal.ai / ElevenLabs /
+Gemini / Grok / paid provider called, no `make test` / seed
+`--force`, no shared-Postgres test projects created (fakes only).
+
+**Orchestrator review (grok-4.6, 2026-09-12).** Implemented by a
+`grok-4.5` subagent (`01a095ee-31a4-79a3-87e8-54f41bf94a19`). Brief
+held: A12 payload first (`layers` on `_shot_progress_entry` with
+`layer_styled_prompt` + hash lookup), two plane slots posting
+`layer:0`/`layer:1`, primary collapsed as fallback, `human_override`
+clips badge as uploaded, non-parallax card including split_frame
+kept. Re-ran: **25 passed**, `tsc --noEmit` clean, oxlint 0/0. No
+browser in this session — refresh the gate on a parallax project
+(e.g. The City Rats) to see the slots. Next slice is **P4** (lock
+`Shot.layers` so a re-plan cannot orphan an uploaded plane).
+
+### P2 — built 2026-09-12
+
+**Why.** Render already runs `sample_key_colour` → `keyed_fraction` →
+`check_keyed_fraction` → `keyed_scatter_fraction` →
+`check_keyed_distribution` on a SUBJECT plane and, on
+`ParallaxKeyGuardError`, degrades that shot to flat
+(`slideshow.py` ~793). An uploaded plane that fails therefore composites
+wrong minutes later, quietly. The gate is where the human can still
+retry — same production sequence, HTTP 400 with the measured fraction
+in `detail`, no lock and no clip write.
+
+**Backend.** New `guard_subject_plane_bytes(image_bytes, *, shot_id="",
+layer_role="")` in `app/renderer/parallax.py` runs that exact five-call
+sequence and returns the sampled key (so render does not re-sample).
+`override_shot_asset` (`app/api/projects.py`) calls it **after**
+`fit_upload_to_canvas` and **before** `append_version`, only when
+`panel_kind == "layer"` and `shot.layers[layer_index].role` is
+`SUBJECT` or `FOREGROUND` (FOREGROUND treated like subject if it ever
+appears; today F2 is BACKGROUND+SUBJECT only). BACKGROUND (`layer:0`)
+and primary/secondary are unguarded — background is unkeyed; primary is
+the flat fallback. On `ParallaxKeyGuardError`: HTTP 400,
+`detail=str(exc)` (messages already distinguish zero / too-low /
+ate-subject / scatter and include the measured fraction). Reject-before-
+lock mirrors the video-on-layer 400: no `append_version`, no clip write,
+no binding change.
+
+**Fit-then-guard order is load-bearing (§7.4).** `sample_key_colour`
+reads a 24px top strip. A paper-edged upload samples cream and falsely
+fails a plate that keys after the P1 cover-then-crop. Guard runs on
+fitted bytes only.
+
+**R1 extract, not a second implementation.** `slideshow.py`'s existing
+try-block now calls `guard_subject_plane_bytes` instead of inlining the
+five calls. Degrade-on-failure behaviour is unchanged: catch
+`(ParallaxKeyGuardError, OSError, ValueError)`, log
+`render.parallax_guard_failed_degrading`, set `parallax=False`.
+
+**Thresholds.** Shipped Seedream constants unchanged
+(`_KEYED_FRACTION_MIN`/`_MAX` 0.15/0.95, `_SCATTER_FRACTION_MAX`
+0.0007). Not retuned this slice.
+
+**Provider sample honesty (done-when §6 / §7.1).** User halted provider
+probing 2026-09-07. Quoting §7.1 as the measured distribution we have:
+**Grok 9/10 pass** on these exact guards (keyed fraction 0.15–0.95,
+scatter < 0.0007); Gemini key column is empty / **still unmeasured**
+(halt). No new paid samples were generated this session. Ship Seedream
+constants; do not invent Gemini numbers.
+
+**P1 test fixture correction.** P1's `test_override_layer.py` uploaded
+solid-colour PNGs to `layer:1`. Those are fraction-0 under the new
+guard. Layer:1 uploads in that file are now subject-like plates (flat
+magenta field + figure in the lower portion). `layer:0` BACKGROUND
+stays unguarded (solid / gradient still 202).
+
+**Tests.** Extended `tests/unit/api/test_override_layer.py`:
+- gradient-magenta SUBJECT → 400, `detail` equals
+  `str(ParallaxKeyGuardError)` from `guard_subject_plane_bytes` on the
+  same fitted bytes (measured fraction in the message); no lock, no clip;
+- clean subject-like → 202, clip under `layer_prompt_hash`, canvas-sized;
+- gradient on `layer:0` BACKGROUND → 202;
+- primary solid colour → 202 (guard is not for primary);
+- solid non-magenta SUBJECT → 400, `append_calls == []`, empty clip repo;
+- existing P1 layer:1 cases updated to keyable plates.
+
+Focused run (from `backend/`, repo-root `.venv`):
+`pytest tests/unit/api/test_override_layer.py
+tests/unit/renderer/test_parallax.py
+tests/unit/api/test_override_panel.py
+tests/unit/api/test_focal_override_api.py
+tests/unit/renderer/test_fingerprint_parallax.py -q --tb=short`
+→ **105 passed**. Did not run full `pytest tests/unit` / `make test`;
+the 6 pre-existing unit failures named in §0 were left alone.
+
+**Corrections to the brief.** None material. The brief already required
+fit-then-guard, SUBJECT-only, reject-before-lock, and the R1 extract;
+all shipped as specified. Gemini measurement was acknowledged as halted
+rather than inventing numbers.
+
+**Found-not-fixed leftovers** (explicitly out of this slice): P3b
+parallax gate UI; P4 lock layers; Gemini still unmeasured; thresholds
+not retuned; `_unfilled_shot_ids` still ignores `secondary_state` and
+layers; `GET /clip` still has no `panel`.
+
+**Re-verification.** No server started, no fal.ai / ElevenLabs / Gemini
+/ Grok / paid provider called, no `make test` / seed `--force`, Postgres
+unused (fakes only).
+
+**Orchestrator review (grok-4.6, 2026-09-12).** Implemented by a
+`grok-4.5` subagent (`01a095bb-cba2-7631-a3cd-84871b49d054`). Brief
+held: fit-then-guard, SUBJECT/FOREGROUND only, reject before lock,
+shared helper with slideshow, Seedream thresholds untouched, P1
+layer:1 fixtures switched to keyable plates. Re-ran the focused suite:
+**105 passed**. Gemini remains unmeasured (halt 2026-09-07); Grok 9/10
+from §7.1 is what §6 records. Next slice is P3b (parallax slots at the
+gate).
+
+### P1 — built 2026-09-12
+
+**Backend.** `_OVERRIDE_PANELS` stays `frozenset({"primary",
+"secondary"})` — membership-testable as the brief required. New
+`_parse_override_panel` (shared by `override_shot_asset` and
+`get_shot_asset`) accepts those two plus `layer:<int>` via
+`^layer:(\d+)$`. Role names (`background`/`subject`) are 400 with a
+message listing the allowed forms. Shape checks stay at the call site:
+`secondary` still requires `SPLIT_FRAME`; `layer:N` requires
+`0 <= N < len(shot.layers)` (a shot with no layers, or `layer:2` on a
+2-layer shot, is 400).
+
+`panel=layer:N` does **not** call `apply_override_to_binding` (no layer
+columns; that helper now raises if handed anything outside
+`_OVERRIDE_PANELS` so a future caller cannot silently fall through to
+PRIMARY). The shot is still `asset_locked` via the existing
+`append_version` path (A25, shot-wide). Bytes land as a completed
+`GeneratedClip` under the SAME `layer_prompt_hash(...)` call
+`render.py` uses, at `storage/{project}/clips/{prompt_hash}.{ext}` —
+the path shape `generate_layer_image_real` already writes. Provider/
+model are `human_override`, `cost_cents=0`. Video on a layer is 400
+(parallax planes are stills). Focal/vision is skipped for layer panels
+(Ken Burns does not aim keyed planes).
+
+**Replace-in-place.** `prompt_hash` is UNIQUE globally. If a fal.ai row
+already sits under that hash, the file is overwritten and the existing
+row is updated (`local_path`, `status="completed"`,
+`provider`/`model_id="human_override"`, `cost_cents=0`, `error=None`) —
+never inserted (unique collision). Safe as a human override of THIS
+project's plane because real-mode `layer_prompt_hash` still folds
+`_layer_seed(_project_seed(project_uuid), layer_index)` — re-verified
+this session by reading the function body. A hash that dropped the
+project seed would turn the overwrite into cross-project cache poison
+(§4.3); that comment is in the code, not only here. DRY_RUN hashes
+remain unscoped (§4.2); fine for unit tests.
+
+**Fit policy (P1 CORRECTION / §4.4).** New
+`fit_upload_to_canvas` in `app/assets/substrate_crop.py`: scale to COVER
+a caller-supplied cover size (LANCZOS), then `center_crop_to_canvas`.
+Cover comes from `resolve_generation_request_format` at every use site
+— never `substrate_crop_oversize_fraction` directly (R1). Applied to
+EVERY still upload (primary, secondary, AND layers) after image
+validation and before content_hash/store, so persisted bytes are the
+fitted ones. Videos skip fit. This **changes shipped primary/secondary
+upload bytes**. Bare centre-crop on a Qwen 1536×2688 was the wrong
+policy (shirt-only window, 2/5 keyed); cover-then-crop keyed 5/5.
+
+**Fingerprint (§4.1).** `resolve_render_inputs` still looks layers up via
+`layer_prompt_hash` + `get_by_prompt_hash` (no second lookup path). What
+it puts in `layer_content_hashes` is now `sha256` of the clip **file
+bytes** (`_file_sha256` local to `render.py`), not the prompt_hash
+string. A human overwrite under the same hash therefore misses the
+whole-timeline render cache instead of serving the old film.
+
+**GET `/shots/{id}/asset?panel=layer:N`.** Resolves via the same
+`layer_prompt_hash` + clip repo path; 404 if no clip yet; 400 if the
+shot has no such layer. Layers are stills — video-thumbnail branch
+skipped.
+
+**Tests.**
+- `tests/unit/assets/test_substrate_crop.py` — +5 fit tests (canvas
+  size; scale-vs-window on a Qwen-shaped source; cover is a caller
+  input; deterministic; small image upscales rather than raising).
+- `tests/unit/api/test_override_layer.py` (new) — done-when
+  (`layer:1` → render lookup resolves canvas-sized clip, binding
+  untouched); `layer:0`≠`layer:1`; no-layers / out-of-range / role
+  names / video-on-layer → 400; primary on parallax still binds;
+  replace-in-place; GET `panel=layer:1`; primary upload is
+  canvas-sized; file-bytes hash helper.
+- `tests/unit/api/test_focal_override_api.py` — sidecar lookups now key
+  on fitted bytes so A13 still holds after the upload-path fit.
+- `tests/unit/api/test_override_panel.py` — unchanged, still passes.
+- `tests/unit/workflow/test_layer_generation.py` — docstring corrected
+  (lookup key vs fingerprint bytes); still passes.
+
+Focused run:
+`pytest tests/unit/assets/test_substrate_crop.py
+tests/unit/api/test_override_layer.py
+tests/unit/api/test_override_panel.py
+tests/unit/api/test_focal_override_api.py
+tests/unit/workflow/test_layer_generation.py -q` → **47 passed**.
+`tests/unit/renderer/test_fingerprint_parallax.py` → **23 passed**.
+Full `pytest tests/unit -q`: **1715 passed, 6 failed** — same 6
+pre-existing failures (5 in `test_sfx_overlays_diegetic.py`, 1 in
+`test_director_planner.py`). Pass count is above the P0 log's 1238
+baseline because the suite has grown since; no new failures from this
+slice.
+
+**Corrections to the brief.** None material — the P1 CORRECTION (do not
+bare-`center_crop` uploads) was already in the plan and is what shipped.
+`apply_override_to_binding` gained an explicit reject for non-panel
+values rather than only being avoided by the layer branch.
+
+**Found-not-fixed leftovers** (explicitly out of this slice): P2 key
+guard at upload; P3b parallax gate UI; P4 lock layers;
+`_unfilled_shot_ids` still ignores `secondary_state` and layers;
+`GET /clip` still has no `panel`; video thumbnail cache still keyed on
+shot alone. This slice does **not** add gate UI (P3b).
+
+**Re-verification.** Real-mode `layer_prompt_hash` still project-scopes
+via `_layer_seed(_project_seed(str(project_uuid)), layer_index)` —
+§2 holds. No server started, no fal.ai / ElevenLabs / paid provider
+called, no `make test` / seed `--force`, Postgres unused (fakes only).
+
+**Orchestrator review (grok-4.6, 2026-09-12).** Implemented by a
+`grok-4.5` subagent (`01a09524-a8c3-76c1-867e-d4b7796d63f7`). Brief
+held: parser is index-form, layers write `GeneratedClip` not binding,
+fit uses `resolve_generation_request_format` (R1), replace-in-place
+because `prompt_hash` is unique, fingerprint hashes file bytes so an
+overwrite misses the whole-timeline cache, GET `panel=layer:N` is in
+so P3b is not blocked on a second backend slice.
+
+One correction after review: `fit_upload_to_canvas` used
+`max(cover, ceil(dim * scale))` independently per axis, which can
+stretch a near-cover float undershoot. Replaced with a uniform extra
+scale; added `test_fit_does_not_stretch_one_axis_to_cover` and
+`test_layer_panel_does_not_fall_through_to_primary`. Focused re-run
+after that: **72 passed** (the implementer's 70 plus those two).
+
+The §4.1 fingerprint test in `test_override_layer.py` pins
+`_file_sha256` itself rather than `resolve_render_inputs`; the wiring
+is the comment + assignment at `render.py` ~379-383. Acceptable for
+this slice; a payload-level test of `resolve_render_inputs` would be
+stronger if this plan grows a follow-up.
+
+P3b is the next UI slice. P2 (key at upload) and P4 (lock layers)
+remain backend.
 
 ### P3a — built 2026-09-06
 

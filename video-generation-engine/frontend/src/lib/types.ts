@@ -290,6 +290,26 @@ export interface ShotSecondaryPanel {
   clip: ShotClipDetail | null;
 }
 
+/** P3b: one parallax plane on `/progress`. `null` for `ShotProgress.layers`
+ * means the shot has no plane slots (matching `secondary`); a list means
+ * render one upload slot per entry posting `panel=layer:${index}`.
+ * `prompt` is already `layer_styled_prompt` — copy it, do not restyle.
+ * Layers are clips not assets (`asset` stays null; P1 stores overrides
+ * as `GeneratedClip` under `layer_prompt_hash`). */
+export interface ShotLayerPanel {
+  index: number;
+  role: string;
+  prompt: string;
+  state: ShotBindingState | null;
+  last_error: string | null;
+  asset: ShotAssetDetail | null;
+  clip: ShotClipDetail | null;
+}
+
+/** Shared by api + gate: primary/secondary plus index-form layer planes
+ * (`layer:0` / `layer:1`). Backend `_parse_override_panel` accepts these. */
+export type OverridePanel = "primary" | "secondary" | `layer:${number}`;
+
 export interface ShotProgress {
   shot_id: string;
   scene_id?: string;
@@ -310,6 +330,22 @@ export interface ShotProgress {
   // even say a shot was `split_frame`.
   camera_movement: string;
   secondary: ShotSecondaryPanel | null;
+  // P3b: `null` when the shot has no planes; a list (index order) when
+  // it does. Existence of the list is the gate's single signal for
+  // plane slots — same idiom as `secondary != null`.
+  layers: ShotLayerPanel[] | null;
+  // gate_panel_overrides.md §7.5 addendum, 2026-09-13 CORRECTION: "can
+  // this shot be approved", computed server-side by the SAME predicate
+  // the approval guard uses (`_shot_is_filled`, app/api/projects.py) -
+  // never re-derive this from `state`/`layers` here, that would be a
+  // fourth copy of the same question (the first correction already
+  // found three disagreeing). `state` above stays the honest raw
+  // binding state (still used for "still searching"/"headed for
+  // generation" labelling on the primary panel) - a layered shot with
+  // every plane resolved can report `filled: true` while `state` still
+  // reads `awaiting_generation` forever, because there is no per-layer
+  // binding column (§2) for it to ever change.
+  filled: boolean;
 }
 
 /** F3: frontend rendering decision only. The backend always uses
