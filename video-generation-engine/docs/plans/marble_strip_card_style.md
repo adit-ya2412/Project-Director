@@ -1,6 +1,12 @@
 # marble_strip — Letterboxed Card Reel (working name)
 
-**Status:** PLAN ONLY. No code written, no spike run.
+**Status:** PLAN ONLY, and **DEFERRED as of 2026-09-13.** This plan was
+built off one supplied reference reel. On seeing it worked through, the
+user's actual want turned out to be a different thing —
+**`annotated_stills.md`**, marks and leader lines on a still — which is
+picture-led, composes onto existing styles instead of forking one, and
+is cheaper. Build that first. Nothing below is wrong; it is answering a
+question the user did not ask.
 **Updated 2026-09-13** twice: **§2.5** records channel direction
 (historical + scientific, long form 5-10 min and short 40-50s) and
 revises M1/M3/M4/M7; **§6.1** works every remaining open question

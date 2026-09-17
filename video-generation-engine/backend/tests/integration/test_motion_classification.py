@@ -3,12 +3,11 @@ ffprobe subprocess (A1) - the Pillow-then-ffprobe rule only means
 anything if it is checked against genuine media, not fabricated bytes.
 """
 
-import subprocess
-
 from PIL import Image
 
 from app.core.config import settings
 from app.renderer.motion import MediaKind, probe_media
+from tests.media_fixtures import make_real_clip
 
 
 def _make_still(path, color=(10, 20, 30)) -> None:
@@ -26,19 +25,11 @@ def _make_real_clip(path, duration_s: float = 2.0) -> None:
     """A genuine, short, decodable h264 clip via ffmpeg's own `testsrc`
     source - stands in for a downloaded Kling clip without any network
     call or paid API, same idiom the Ken Burns integration tests already
-    use for real still images."""
-    args = [
-        settings.ffmpeg_binary,
-        "-y",
-        "-f",
-        "lavfi",
-        "-i",
-        f"testsrc=duration={duration_s}:size=64x64:rate=24",
-        "-pix_fmt",
-        "yuv420p",
-        str(path),
-    ]
-    subprocess.run(args, capture_output=True, check=True)
+    use for real still images. Thin wrapper over the shared
+    `tests/media_fixtures.py::make_real_clip` (lifted there,
+    docs/plans/baked_in_letterbox.md §7, so `tests/unit/assets/
+    test_letterbox_crop.py` can build the same kind of fixture)."""
+    make_real_clip(path, duration_s=duration_s, width=64, height=64, rate=24)
 
 
 async def test_a_real_png_classifies_as_still(tmp_path):

@@ -435,6 +435,19 @@ class Settings(BaseSettings):
     watermark_margin_fraction: float = 0.03
     watermark_opacity: float = 0.65
 
+    # Baked-in letterbox stripping (docs/plans/baked_in_letterbox.md) - some
+    # ingested video files have pillarbox/letterbox bars burned into their
+    # actual pixels (a vertical phone clip exported into a landscape
+    # container), which the renderer's own contain-fit then pads AGAIN,
+    # marooning the picture in a black frame ("tunnel vision"; measured 5/21
+    # assets on a real project, ~68.4% dead black each - see the plan's §1).
+    # `app/assets/letterbox_crop.py::strip_baked_in_letterbox` detects and
+    # crops this ONCE at ingest, before the bytes are hashed. Same shape as
+    # `watermark_enabled` above: a kill switch for the rare case cropdetect
+    # misbehaves on a real upload after this ships, not a per-call option -
+    # `False` must make every ingest call site a byte-identical no-op.
+    letterbox_crop_enabled: bool = True
+
     # --- Creative constraints (D7) ---
     max_video_duration_s: float = 90.0
     max_shots_per_project: int = 40

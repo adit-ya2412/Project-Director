@@ -861,12 +861,23 @@ async def _encode_or_reuse_shot_stream(
         )
     elif split:
         assert secondary_src is not None
+        assert secondary_probe is not None
         short_top = f"{run_stem}_s{index:03d}_top{src.suffix.lower() or '.png'}"
         short_bot = f"{run_stem}_s{index:03d}_bot{secondary_src.suffix.lower() or '.png'}"
         stage_short_input(src, work_dir / short_top)
         stage_short_input(secondary_src, work_dir / short_bot)
-        args += ["-framerate", str(settings.fps), "-i", short_top]
-        args += ["-framerate", str(settings.fps), "-i", short_bot]
+        # Per-panel input shape mirrors the plain (non-split) dispatch
+        # below: a STILL panel is a single-decode `-framerate` input, a
+        # MOTION panel is read at its own real rate/duration (`-i`, no
+        # `-framerate` override).
+        if probe.kind is MediaKind.STILL:
+            args += ["-framerate", str(settings.fps), "-i", short_top]
+        else:
+            args += ["-i", short_top]
+        if secondary_probe.kind is MediaKind.STILL:
+            args += ["-framerate", str(settings.fps), "-i", short_bot]
+        else:
+            args += ["-i", short_bot]
         graph = build_split_filter(
             0,
             1,
@@ -876,6 +887,11 @@ async def _encode_or_reuse_shot_stream(
             pixel_format=settings.pixel_format,
             label="vout",
             hold_s=hold_s,
+            top_kind=probe.kind,
+            bot_kind=secondary_probe.kind,
+            top_duration_s=probe.duration_s,
+            bot_duration_s=secondary_probe.duration_s,
+            target_duration_s=shot.duration_s,
         )
     else:
         short = short_input_name(index, src, probe.kind, run_stem=run_stem)
@@ -1238,15 +1254,35 @@ async def _render_run(
     layers = shot_layer_images or {}
     layer_probe_map = layer_probes or {}
     layer_hashes = layer_content_hashes or {}
-    split_in_run = any(
-        should_composite_split(
+    split_in_run = False
+    for shot in run:
+        secondary_path = secondaries.get(shot.id)
+        bot_kind = sec_probes[shot.id].kind if shot.id in sec_probes else None
+        if should_composite_split(
             shot.camera.movement,
-            secondary_path=secondaries.get(shot.id),
+            secondary_path=secondary_path,
             top_kind=media_probes[shot.id].kind,
-            bot_kind=sec_probes[shot.id].kind if shot.id in sec_probes else None,
-        )
-        for shot in run
-    )
+            bot_kind=bot_kind,
+        ):
+            split_in_run = True
+        elif shot.camera.movement == CameraMovement.SPLIT_FRAME:
+            # Planned as a split shot but not compositing - today this
+            # can only mean a genuinely missing secondary (no resolved
+            # path, or no probe for it); STILL/MOTION on either panel no
+            # longer disqualifies a split. Silent before this log existed
+            # - the shot rendered as a full-frame single panel with no
+            # error anywhere (the bug this warning is here to surface).
+            logger.warning(
+                "render.split_frame_not_compositing",
+                extra={
+                    "shot_id": shot.id,
+                    "reason": (
+                        "missing_secondary_path"
+                        if secondary_path is None
+                        else "missing_secondary_probe"
+                    ),
+                },
+            )
     # illustrated_faceless.md §2.2/F2a: same "forces the per-shot cached
     # path" shape as `split_in_run` immediately above - the plain
     # single-pass batch path below (M8 step 5) has no parallax support,
@@ -1574,10 +1610,14 @@ async def render_timeline(
     `shot_layer_images` (illustrated_faceless.md §2.2/F2a) is `Shot.
     layers`' resolved-image counterpart to `shot_secondary_images` -
     ordered per shot to match `Shot.layers` (background then subject).
-    Same degrade rule as the secondary image: a shot whose pair is
+    Parallax still degrades on a motion layer: a shot whose pair is
     missing, or whose PAIR includes a motion clip, is skipped here and
     falls through to the plain single-image path (`should_composite_
-    parallax` re-checks the same facts at dispatch time)."""
+    parallax` re-checks the same facts at dispatch time) - a flat
+    illustration has no object inside it to animate, so there is nothing
+    for a "MOTION layer" to mean. `shot_secondary_images` (split-frame)
+    no longer shares that restriction (2026-09-15): a MOTION secondary is
+    resolved the same way the primary panel already is, just below."""
     work_dir.mkdir(parents=True, exist_ok=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1617,11 +1657,19 @@ async def render_timeline(
     secondary_probes: dict[str, MediaProbe] = {}
     for shot_id, path in (shot_secondary_images or {}).items():
         probe = await probe_media(path, ffprobe_binary=settings.ffprobe_binary)
-        if probe.kind is MediaKind.MOTION:
-            continue
         secondary_probes[shot_id] = probe
-        resolved_secondary[shot_id] = await ensure_still_image(
-            path, shot_id=f"{shot_id}__split", work_dir=work_dir, settings=settings
+        # Mirrors the primary panel's own resolution immediately above: a
+        # MOTION secondary is left untouched (fitted to the shot's
+        # duration at dispatch time, `_encode_or_reuse_shot_stream`/
+        # `build_split_filter`), not skipped - skipping here used to be
+        # indistinguishable from a genuinely missing secondary, which is
+        # exactly how a MOTION secondary panel silently disappeared.
+        resolved_secondary[shot_id] = (
+            path
+            if probe.kind is MediaKind.MOTION
+            else await ensure_still_image(
+                path, shot_id=f"{shot_id}__split", work_dir=work_dir, settings=settings
+            )
         )
 
     # illustrated_faceless.md §2.2/F2a: same shape as the secondary-image

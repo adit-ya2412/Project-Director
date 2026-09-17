@@ -102,6 +102,7 @@ from app.assets.focal import (
     write_focal_sidecar,
 )
 from app.assets.focal_check import locate_subject_focal
+from app.assets.letterbox_crop import strip_baked_in_letterbox
 from app.assets.music_upload import music_upload_warnings
 from app.assets.prompt_export import build_prompt_export_entries, render_prompt_export_text
 from app.assets.sfx_levels import measure_peak_dbfs
@@ -2052,6 +2053,20 @@ async def override_shot_asset(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         ext, _width, _height = validate_and_identify_image(content)
+    elif media_type == "video":
+        # docs/plans/baked_in_letterbox.md §5.2: strip a baked-in pillarbox
+        # HERE, immediately after `media_type` is decided and before either
+        # downstream write, not at either write site - `content` is the one
+        # local both the layer-clip write (~line 2142) and the plain-asset
+        # write (~line 2184) consume, and both derive their persisted hash
+        # from these same bytes, so correcting them once here is what keeps
+        # every hash correct from birth on both paths.
+        if settings.letterbox_crop_enabled:
+            content = await strip_baked_in_letterbox(
+                content,
+                ffmpeg_binary=settings.ffmpeg_binary,
+                ffprobe_binary=settings.ffprobe_binary,
+            )
 
     # gate_panel_overrides.md P2: reject a SUBJECT plane that will not
     # chroma-key, at upload. Render already degrades the same failure

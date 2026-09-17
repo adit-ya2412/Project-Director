@@ -4,6 +4,8 @@ import { DEFAULT_EMPHASIS_PROPS, Emphasis, type EmphasisProps } from "./Emphasis
 import { EmphasisOverlay } from "./EmphasisOverlay";
 import { DirectedHook } from "./DirectedHook";
 import { SuvRetention } from "./SuvRetention";
+import { AnnotationSpike } from "./AnnotationSpike";
+import { AnnotationFast } from "./AnnotationFast";
 
 // 7.2s at 30fps = 216 frames, matching the V0/V1 test clip exactly.
 export const RemotionRoot: React.FC = () => {
@@ -49,6 +51,24 @@ export const RemotionRoot: React.FC = () => {
         id="SuvRetention"
         component={SuvRetention}
         durationInFrames={210}
+        fps={30}
+        width={720}
+        height={1280}
+      />
+      {/* SPIKE — annotated stills (docs/plans/annotated_stills.md). Dev
+          harness only; delete once N5/N7 land a props-driven device. */}
+      <Composition
+        id="AnnotationSpike"
+        component={AnnotationSpike}
+        durationInFrames={300}
+        fps={30}
+        width={720}
+        height={1280}
+      />
+      <Composition
+        id="AnnotationFast"
+        component={AnnotationFast}
+        durationInFrames={171}
         fps={30}
         width={720}
         height={1280}

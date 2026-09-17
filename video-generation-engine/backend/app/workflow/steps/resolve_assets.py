@@ -121,6 +121,7 @@ from app.assets.cost import budget_cap_cents_for, check_budget, total_project_sp
 from app.assets.depiction_check import check_candidate_plausibility
 from app.assets.focal import persist_vision_focal
 from app.assets.focal_check import locate_subject_focal
+from app.assets.letterbox_crop import strip_baked_in_letterbox
 from app.assets.ranking import rank_candidates, reuse_gaps_s, reuse_window_s
 from app.assets.relevance import candidate_relevance, passes_relevance_gate
 from app.assets.substrate_crop import center_crop_to_canvas
@@ -915,8 +916,20 @@ async def poll_video_job(
         return in_flight
 
     assert status.content is not None
+    content = status.content
+    # docs/plans/baked_in_letterbox.md §5.3: lowest-priority call site (a
+    # model generating to a requested canvas is far less likely to emit
+    # bars than third-party footage is) but no hash-ordering hazard at all
+    # here - `prompt_hash` describes the REQUEST, never the output pixels -
+    # so this is a plain wrap of the bytes before they are written.
+    if settings.letterbox_crop_enabled:
+        content = await strip_baked_in_letterbox(
+            content,
+            ffmpeg_binary=settings.ffmpeg_binary,
+            ffprobe_binary=settings.ffprobe_binary,
+        )
     path = project_dir / "clips" / f"{in_flight.prompt_hash}.mp4"
-    path.write_bytes(status.content)
+    path.write_bytes(content)
     await clip_repo.mark_completed(
         in_flight, local_path=str(path), duration_s=shot.duration_s, cost_cents=in_flight.cost_cents
     )
@@ -1694,9 +1707,23 @@ class ResolveAssetsStep:
             fetched_candidates: list[tuple[AssetCandidate, str, bytes, str]] = []
             for candidate in relevant[:_CANDIDATES_TO_FETCH_PER_RUNG]:
                 fetched = await provider.fetch(candidate)
-                content_hash = hashlib.sha256(fetched.content).hexdigest()
+                fetched_content = fetched.content
+                # docs/plans/baked_in_letterbox.md §5.1: strip a baked-in
+                # pillarbox BEFORE the hash below is taken - `fetched.
+                # content` is read in exactly two places, this hash and the
+                # tuple appended just below, so correcting it here makes
+                # ranking, reuse-penalty tracking, dedup and the eventual
+                # `asset_repo.insert` all agree on one hash for the
+                # corrected bytes.
+                if settings.letterbox_crop_enabled and candidate.media_kind == "video":
+                    fetched_content = await strip_baked_in_letterbox(
+                        fetched_content,
+                        ffmpeg_binary=settings.ffmpeg_binary,
+                        ffprobe_binary=settings.ffprobe_binary,
+                    )
+                content_hash = hashlib.sha256(fetched_content).hexdigest()
                 fetched_candidates.append(
-                    (candidate, content_hash, fetched.content, fetched.attribution)
+                    (candidate, content_hash, fetched_content, fetched.attribution)
                 )
 
             seen_hashes: set[str] = set()
