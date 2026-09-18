@@ -128,7 +128,7 @@ from app.models.script import ScriptModel
 from app.models.shot_binding import ShotBindingModel
 from app.models.timeline_version import TimelineVersionModel
 from app.models.workflow import WorkflowRunModel, WorkflowStepAttemptModel
-from app.providers.elevenlabs import compute_narration_content_hash
+from app.timeline.narration_key import narration_content_hash_for_scene
 from app.schemas.project_deletion import (
     GeneratedClipDependency,
     NarrationDependency,
@@ -277,11 +277,9 @@ async def _narration_dependencies(
         speed = resolve_narration_speed(timeline.metadata.render_style)
         other_project = projects_by_id[other_project_id]
         for scene in timeline.scenes:
-            content_hash = compute_narration_content_hash(
-                text=scene.narration_text,
+            content_hash = narration_content_hash_for_scene(
+                scene,
                 voice_id=voice_id,
-                model=settings.elevenlabs_model,
-                output_format=settings.elevenlabs_output_format,
                 speed=speed,
                 language_code=language_code,
             )

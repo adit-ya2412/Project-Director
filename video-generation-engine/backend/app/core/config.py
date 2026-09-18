@@ -93,6 +93,24 @@ class Settings(BaseSettings):
     # marked failed and surfaced to a human (A14) rather than looped.
     max_generation_attempts_per_shot: int = 3
 
+    # Hard cap on SEARCH attempts per shot, same shape as the generation
+    # cap above and for the same reason: a bound, not a loop.
+    #
+    # A `TransientError` in the search pass deliberately leaves the
+    # binding `pending` so a future run can retry it. Nothing read
+    # `attempts`, so "a future run" meant "every run, forever" - and
+    # `ResolveAssetsStep(search).is_satisfied` is False while ANY binding
+    # is `pending`, so one permanently-unresolvable shot re-ran the whole
+    # free search pass on every engine resume, including resumes
+    # triggered by unrelated human corrections (a narration tone edit, a
+    # voice retry). There is no query cache in front of the providers, so
+    # each of those was real Pexels/Wikimedia/Commons traffic plus two
+    # billed OpenAI calls per fresh candidate.
+    #
+    # Measured 2026-09-17 on project c2b422f5: 3 bindings sat `pending`
+    # across five consecutive version bumps, re-searching each time.
+    max_search_attempts_per_shot: int = 3
+
     # --- fal.ai: image (rung 6) + video (rung 5) generation (M7+) ---
     # Model ids are a config value, never hardcoded in a provider class —
     # swapping models is the reason media generation routes through an

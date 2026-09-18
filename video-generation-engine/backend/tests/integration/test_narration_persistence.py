@@ -67,16 +67,23 @@ async def _synthesize_and_persist_if_missing(
     scene_id: str,
     request: NarrationRequest,
     provider: ElevenLabsNarrationProvider,
+    tone: str | None = None,
 ) -> None:
     """Stands in for the (not-yet-built) workflow step: check the cache
     before paying for a synthesis call, exactly per D3/ladder-rung-0
-    discipline."""
+    discipline.
+
+    `tone` (narration_tone_tags.md) mirrors how `NarrationStep` actually
+    calls `compute_narration_content_hash` (`workflow/steps/narration.py:308-315`):
+    passed alongside the request fields but never folded into
+    `request.text` itself - tags stay out of `narration_text` by design."""
     content_hash = compute_narration_content_hash(
         text=request.text,
         voice_id=request.voice_id,
         model=request.model,
         output_format=request.output_format,
         speed=request.speed,
+        tone=tone,
     )
     async with async_session_factory() as session:
         repo = NarrationRepository(session)
@@ -231,3 +238,92 @@ async def test_different_speed_is_a_cache_miss_and_calls_the_provider_again(
         project_id=project_id, scene_id="sc_04", request=request_b, provider=provider
     )
     assert call_count[0] == 2
+
+
+async def test_different_narration_tone_is_a_cache_miss_and_calls_the_provider_again(
+    project_id, monkeypatch
+):
+    """narration_tone_tags.md Phase 2: `Scene.narration_tone` never touches
+    `narration_text` (tags are prefixed only at TTS request-build time and
+    stripped back out of the alignment), so `compute_narration_content_hash`
+    must take `tone` as an explicit input or a tone-only edit would hash
+    identically to the untoned take and silently serve back the old,
+    untagged performance from cache."""
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "fake-key")
+    call_count = [0]
+    provider = ElevenLabsNarrationProvider(transport=_counting_transport(call_count))
+
+    # `content_hash` dedup is GLOBAL across the whole `narration` table
+    # (narration_repository.py:1), so unlike the other tests in this file this
+    # one salts its text with a fresh uuid rather than reusing `_SCENE_TEXT` -
+    # that keeps its hash from ever colliding with a row any other test or any
+    # prior run left behind, without touching the shared DB's existing rows.
+    scene_text = f"{_SCENE_TEXT} [{uuid_module.uuid4()}]"
+
+    # Same request in every other respect - text, voice, model, format, speed.
+    request = NarrationRequest(
+        text=scene_text,
+        voice_id="voice_abc",
+        model="eleven_multilingual_v2",
+        output_format="mp3_44100_128",
+        scene_id="sc_05",
+    )
+
+    await _synthesize_and_persist_if_missing(
+        project_id=project_id,
+        scene_id="sc_05",
+        request=request,
+        provider=provider,
+        tone=None,
+    )
+    assert call_count[0] == 1
+
+    # Tone-only change -> different hash -> not a cache hit.
+    await _synthesize_and_persist_if_missing(
+        project_id=project_id,
+        scene_id="sc_05",
+        request=request,
+        provider=provider,
+        tone="excited",
+    )
+    assert call_count[0] == 2  # different narration_tone -> different hash -> cache miss
+
+    content_hash_untoned = compute_narration_content_hash(
+        text=request.text,
+        voice_id=request.voice_id,
+        model=request.model,
+        output_format=request.output_format,
+        speed=request.speed,
+        tone=None,
+    )
+    content_hash_toned = compute_narration_content_hash(
+        text=request.text,
+        voice_id=request.voice_id,
+        model=request.model,
+        output_format=request.output_format,
+        speed=request.speed,
+        tone="excited",
+    )
+    assert content_hash_untoned != content_hash_toned
+
+    async with async_session_factory() as session:
+        repo = NarrationRepository(session)
+        row_untoned = await repo.get_by_content_hash(content_hash_untoned)
+        row_toned = await repo.get_by_content_hash(content_hash_toned)
+
+    assert row_untoned is not None
+    assert row_toned is not None
+    assert row_untoned.content_hash != row_toned.content_hash
+    # Tags never touch narration_text - both rows persist the same clean text.
+    assert row_untoned.text == scene_text
+    assert row_toned.text == scene_text
+
+    # Re-running with the SAME tone is a cache hit - no third provider call.
+    await _synthesize_and_persist_if_missing(
+        project_id=project_id,
+        scene_id="sc_05",
+        request=request,
+        provider=provider,
+        tone="excited",
+    )
+    assert call_count[0] == 2  # same tone as before -> cache hit, no third call

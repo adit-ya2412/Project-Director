@@ -74,7 +74,7 @@ from app.core.errors import EngineError, PermanentError, TransientError
 from app.models.asset import AssetModel
 from app.models.generated_clip import GeneratedClipModel
 from app.models.narration import NarrationModel
-from app.providers.elevenlabs import compute_narration_content_hash
+from app.timeline.narration_key import narration_content_hash_for_scene
 from app.renderer.audio import mux_narration
 from app.renderer.caption_placement import (
     apply_caption_placements,
@@ -1171,11 +1171,9 @@ async def _resolve_narration_rows(
     rows: list[NarrationModel] = []
     speed = resolve_narration_speed(timeline.metadata.render_style)
     for scene in timeline.scenes:
-        content_hash = compute_narration_content_hash(
-            text=scene.narration_text,
+        content_hash = narration_content_hash_for_scene(
+            scene,
             voice_id=voice_id,
-            model=settings.elevenlabs_model,
-            output_format=settings.elevenlabs_output_format,
             speed=speed,
             language_code=language_code,
         )

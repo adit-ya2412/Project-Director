@@ -58,11 +58,81 @@ NARRATION_BATCH_JOINER = "\n"
 _ZERO_ADVANCE_EPS = 1e-9
 
 
+def tone_prefix(tone: str | None) -> str:
+    """The eleven_v3 audio tag that steers one scene's delivery.
+
+    Measured 2026-09-17 (docs/plans/narration_tone_tags.md, Phase 0/1c):
+    the provider echoes this prefix back verbatim in the alignment's
+    character array but never speaks it - it occupies a 0.03-0.6s
+    marker instead. So it must be included in the joined request text
+    (or the text-equality check below fails), and stripped back out of
+    every per-scene alignment (or every `Shot.narration_span` offset
+    shifts by its length).
+    """
+    return f"[{tone}] " if tone else ""
+
+
 @dataclass(frozen=True)
 class NarrationBatchMember:
     scene_id: str
     content_hash: str
     text: str
+    tone: str | None = None
+
+    @property
+    def tts_text(self) -> str:
+        """What is actually sent to the provider: `text` plus any tag."""
+        return f"{tone_prefix(self.tone)}{self.text}"
+
+    @property
+    def tone_prefix_len(self) -> int:
+        return len(tone_prefix(self.tone))
+
+
+def strip_tone_prefix(alignment: dict, prefix_len: int) -> dict:
+    """Drop the leading audio-tag characters from one scene's alignment,
+    ABSORBING their time into the first character that survives.
+
+    The absorption is the whole point, and leaving it out was a real bug
+    (2026-09-17, caught on a rendered draft: "the voice is slow while the
+    video is fast"). Dropping the tag's entries without absorbing their
+    time leaves `character_start_times_seconds[0]` at the tag's END -
+    0.05s to 0.34s in, measured across eight scenes - while the scene's
+    audio file still begins at 0. `narration_fit._spoken_durations_for_
+    scene` then derives the scene's span as `scene_end - start[0]`, so
+    the timeline allocates LESS video than the audio actually runs, on
+    every toned scene, and the error accumulates: ~1.24s of A/V drift
+    over one 60-second reel.
+
+    So the surviving times are left alone except for the first `start`,
+    which is pulled back to where the tag began. That restores the
+    invariant every consumer assumes - a scene's alignment starts at the
+    same instant its audio file does - and keeps the total honest.
+
+    This is the same trade `split_batched_alignment` already makes for
+    the joiner, which is "excluded from each scene's alignment and
+    absorbed into the previous scene's last-character end time" rather
+    than dropped. Cost is identical in shape: the first word's caption
+    can appear up to a third of a second early, which is bounded and
+    local, against cumulative drift, which is neither.
+    """
+    if prefix_len <= 0:
+        return alignment
+    chars = list(alignment["characters"])
+    starts = list(alignment["character_start_times_seconds"])
+    ends = list(alignment["character_end_times_seconds"])
+    if prefix_len >= len(chars):
+        raise PermanentError(
+            f"tone tag prefix ({prefix_len} chars) covers the whole alignment "
+            f"({len(chars)} chars) - nothing would be left to speak"
+        )
+    kept_starts = starts[prefix_len:]
+    kept_starts[0] = starts[0]
+    return {
+        "characters": chars[prefix_len:],
+        "character_start_times_seconds": kept_starts,
+        "character_end_times_seconds": ends[prefix_len:],
+    }
 
 
 @dataclass(frozen=True)
@@ -86,7 +156,14 @@ def join_batch_text(
     members: Sequence[NarrationBatchMember],
     joiner: str = NARRATION_BATCH_JOINER,
 ) -> str:
-    return joiner.join(member.text for member in members)
+    """The exact request text, tone tags included.
+
+    Tags belong here and nowhere else: `narration_text` stays clean so
+    captions and `narration_span` never see them, but the provider must
+    receive them, and `split_batched_alignment` must rebuild the same
+    string to pass its equality check.
+    """
+    return joiner.join(member.tts_text for member in members)
 
 
 def plan_tts_batches(
@@ -126,10 +203,10 @@ def plan_tts_batches(
             continue
         if member.content_hash in queued:
             continue
-        extra = len(member.text) + (len(joiner) if current else 0)
+        extra = len(member.tts_text) + (len(joiner) if current else 0)
         if current and current_len + extra > max_characters:
             flush()
-            extra = len(member.text)
+            extra = len(member.tts_text)
         current.append(member)
         queued.add(member.content_hash)
         current_len += extra
@@ -261,7 +338,10 @@ def split_batched_alignment(
     cursor = 0
     n_members = len(members)
     for index, member in enumerate(members):
-        n = len(member.text)
+        # Slice on the TAGGED length - that is what the provider was
+        # asked about and what the returned arrays are indexed by. The
+        # tag is stripped back off once this piece is rebased, below.
+        n = len(member.tts_text)
         piece_chars = chars[cursor : cursor + n]
         piece_starts = starts[cursor : cursor + n]
         piece_ends = ends[cursor : cursor + n]
@@ -298,16 +378,23 @@ def split_batched_alignment(
         rebased_starts = [t - audio_start for t in piece_starts]
         rebased_ends = [t - audio_start for t in piece_ends]
         rebased_ends[-1] = last_end_abs - audio_start
+        # The tag's own marker time stays inside this scene's audio
+        # window (`audio_start` is the tag's start, not the first spoken
+        # character's) - it is heard as a beat before the tone change.
+        # Only the characters go; the surviving times are untouched.
         slices.append(
             SceneNarrationSlice(
                 scene_id=member.scene_id,
                 content_hash=member.content_hash,
                 text=member.text,
-                alignment={
-                    "characters": piece_chars,
-                    "character_start_times_seconds": rebased_starts,
-                    "character_end_times_seconds": rebased_ends,
-                },
+                alignment=strip_tone_prefix(
+                    {
+                        "characters": piece_chars,
+                        "character_start_times_seconds": rebased_starts,
+                        "character_end_times_seconds": rebased_ends,
+                    },
+                    member.tone_prefix_len,
+                ),
                 audio_start_s=audio_start,
                 audio_end_s=audio_end,
             )

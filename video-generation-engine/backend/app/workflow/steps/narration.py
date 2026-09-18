@@ -112,7 +112,6 @@ from app.providers.base import NarrationProvider, NarrationRequest
 from app.providers.elevenlabs import (
     ElevenLabsNarrationProvider,
     canonical_narration_speed,
-    compute_narration_content_hash,
     tts_request_character_limit,
 )
 from app.providers.fakes.narration import FakeNarrationProvider
@@ -130,7 +129,9 @@ from app.timeline.narration_batch import (
     plan_tts_batches,
     reject_truncated_alignment,
     split_batched_alignment,
+    strip_tone_prefix,
 )
+from app.timeline.narration_key import narration_content_hash_for_scene
 from app.timeline.narration_fit import (
     SceneAlignment,
     reconcile_timeline_durations,
@@ -305,11 +306,9 @@ class NarrationStep:
         cents_per_char = settings.elevenlabs_cost_cents_per_character
 
         for scene in timeline.scenes:
-            content_hash = compute_narration_content_hash(
-                text=scene.narration_text,
+            content_hash = narration_content_hash_for_scene(
+                scene,
                 voice_id=voice_id,
-                model=settings.elevenlabs_model,
-                output_format=settings.elevenlabs_output_format,
                 speed=speed,
                 language_code=language_code,
             )
@@ -319,6 +318,7 @@ class NarrationStep:
                     scene_id=scene.id,
                     content_hash=content_hash,
                     text=scene.narration_text,
+                    tone=scene.narration_tone,
                 )
             )
             if content_hash in cached_hashes:
@@ -456,12 +456,19 @@ class NarrationStep:
                     # A genuine, single ElevenLabs response - real MP3
                     # bytes (or DRY_RUN's fake stand-in), never re-encoded.
                     member = job.members[0]
+                    # The solo path never reaches `split_batched_alignment`,
+                    # so it must strip its own tone tag - otherwise this
+                    # scene's alignment is longer than its `narration_text`
+                    # and every `narration_span` offset in it is wrong.
+                    # Stripped AFTER `reject_truncated_alignment` above,
+                    # which wants the response exactly as it arrived.
+                    alignment = strip_tone_prefix(alignment, member.tone_prefix_len)
                     await _persist_slice(
                         member=member,
                         content=content,
                         alignment=alignment,
-                        character_count=len(member.text),
-                        cost_cents=round(len(member.text) * cents_per_char),
+                        character_count=len(member.tts_text),
+                        cost_cents=round(len(member.tts_text) * cents_per_char),
                         extension=".mp3",
                     )
                     return {member.content_hash: alignment}
@@ -486,17 +493,19 @@ class NarrationStep:
                         )
                     pieces.append((sl, piece))
                 persisted: dict[str, dict] = {}
-                for sl, piece in pieces:
+                # `split_batched_alignment` returns one slice per member,
+                # in order. Reusing the original member (rather than
+                # rebuilding one from the slice) keeps its `tone`, which
+                # the billed character count needs - the provider charges
+                # for the tag it was sent. `sl.alignment` already has that
+                # tag stripped back out.
+                for (sl, piece), member in zip(pieces, job.members, strict=True):
                     await _persist_slice(
-                        member=NarrationBatchMember(
-                            scene_id=sl.scene_id,
-                            content_hash=sl.content_hash,
-                            text=sl.text,
-                        ),
+                        member=member,
                         content=piece,
                         alignment=sl.alignment,
-                        character_count=len(sl.text),
-                        cost_cents=round(len(sl.text) * cents_per_char),
+                        character_count=len(member.tts_text),
+                        cost_cents=round(len(member.tts_text) * cents_per_char),
                         extension=".wav",
                     )
                     persisted[sl.content_hash] = sl.alignment

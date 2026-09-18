@@ -44,6 +44,7 @@ import { CAMERA_LABEL, TRANSITION_LABEL } from "@/lib/styles";
 import { AssetSourceBadge } from "@/components/AssetSourceBadge";
 import { CopyButton } from "@/components/CopyButton";
 import { ResolutionWarningBadge } from "@/components/ResolutionWarning";
+import { NarrationTonePanel } from "@/components/NarrationTonePanel";
 import { computeResolutionWarning, frameAspectClass } from "@/lib/resolution";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -1492,6 +1493,8 @@ export function AssetReviewGate() {
           </span>
         </Card>
       )}
+
+      <NarrationTonePanel projectId={projectId ?? ""} timeline={timeline} />
 
       {grouped ? (
         <ul className="space-y-3">

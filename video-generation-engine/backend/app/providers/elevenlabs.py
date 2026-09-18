@@ -133,6 +133,7 @@ def compute_narration_content_hash(
     output_format: str,
     speed: float = _DEFAULT_SPEED,
     language_code: str | None = None,
+    tone: str | None = None,
 ) -> str:
     """The cache key for a synthesis request - also the `{content_hash}`
     half of the D3 storage path `{project}/narration/{content_hash}.mp3`.
@@ -154,6 +155,16 @@ def compute_narration_content_hash(
     omitted from the digest so every pre-existing row (synthesised
     before this field existed) stays a cache hit, and only a project
     that actually sets a language hint pays for a fresh call.
+
+    `tone` (2026-09-17, docs/plans/narration_tone_tags.md) is the
+    eleven_v3 audio tag prefixed to this scene's text at request time.
+    It MUST be here even though it never appears in `text`: the whole
+    design keeps tags out of `narration_text` so captions and
+    `narration_span` stay clean, which means a tone-only edit changes
+    nothing this digest would otherwise see. Without it, changing a
+    scene's tone re-runs NarrationStep, cache-hits on the unchanged
+    hash, and silently serves back the old untagged performance. Same
+    omit-when-absent convention, so every pre-tone row stays a hit.
     """
     digest_input = f"{text}|{voice_id}|{model}|{output_format}"
     canonical = canonical_narration_speed(speed)
@@ -161,6 +172,8 @@ def compute_narration_content_hash(
         digest_input += f"|{canonical:.3f}"
     if language_code:
         digest_input += f"|{language_code}"
+    if tone:
+        digest_input += f"|tone={tone}"
     return hashlib.sha256(digest_input.encode()).hexdigest()
 
 

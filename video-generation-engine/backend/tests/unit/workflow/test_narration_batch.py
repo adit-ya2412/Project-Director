@@ -19,6 +19,7 @@ from app.timeline.narration_batch import (
     plan_tts_batches,
     reject_truncated_alignment,
     split_batched_alignment,
+    strip_tone_prefix,
 )
 
 
@@ -367,3 +368,118 @@ async def test_slice_wav_sum_of_consecutive_slices_matches_source(tmp_path: Path
 async def test_slice_wav_rejects_non_positive_window():
     with pytest.raises(PermanentError, match="non-positive"):
         await slice_wav(b"not-even-mp3", 1.0, 1.0, ffmpeg_binary=settings.ffmpeg_binary)
+
+
+# --- narration_tone_tags.md: eleven_v3 delivery tags -----------------
+#
+# The provider echoes an audio tag back in the alignment's character
+# array but never speaks it. So the tag must be IN the joined request
+# text (or the equality check rejects the response) and OUT of every
+# per-scene alignment (or every `Shot.narration_span` offset shifts).
+
+
+def _toned(scene_id: str, text: str, tone: str) -> NarrationBatchMember:
+    return NarrationBatchMember(
+        scene_id=scene_id, content_hash=f"hash-{scene_id}", text=text, tone=tone
+    )
+
+
+def test_tone_tag_is_sent_but_never_lands_in_narration_text():
+    member = _toned("sc_01", "Hello", "excited")
+    assert member.tts_text == "[excited] Hello"
+    assert member.text == "Hello"
+    assert join_batch_text([member]) == "[excited] Hello"
+
+
+def test_untoned_member_is_byte_identical_to_before():
+    member = _member("sc_01", "Hello")
+    assert member.tts_text == "Hello"
+    assert member.tone_prefix_len == 0
+    assert join_batch_text([member]) == "Hello"
+
+
+def test_batch_char_cap_counts_the_tag():
+    # "[excited] " is 10 chars, so these two 5-char scenes are 30 with
+    # the joiner and must split under a 25 cap.
+    members = [_toned("sc_01", "Hello", "excited"), _toned("sc_02", "World", "excited")]
+    batches = plan_tts_batches(members, cached_hashes=set(), max_characters=25)
+    assert [[m.scene_id for m in b] for b in batches] == [["sc_01"], ["sc_02"]]
+
+
+def test_split_strips_the_tag_and_leaves_surviving_times_untouched():
+    members = [_toned("sc_01", "Hello", "excited"), _member("sc_02", "World")]
+    sent = join_batch_text(members)
+    assert sent == "[excited] Hello\nWorld"
+    slices = split_batched_alignment(_uniform_alignment(sent), members)
+
+    first = slices[0]
+    # The character stream is back to the clean narration_text, so the
+    # 1:1 contract every narration_span consumer assumes still holds.
+    assert "".join(first.alignment["characters"]) == "Hello"
+    assert first.text == "Hello"
+    # The tag's marker time is ABSORBED into the first surviving
+    # character rather than dropped: the scene's alignment must begin at
+    # the same instant its audio file does, or narration_fit derives a
+    # span shorter than the audio and the render drifts.
+    assert first.alignment["character_start_times_seconds"][0] == pytest.approx(0.0)
+    assert first.audio_start_s == pytest.approx(0.0)
+    # Absorption moves ONLY that first start. "e" (the second surviving
+    # character) is still where the provider put it: 11 chars in at
+    # 10 chars/sec.
+    assert first.alignment["character_start_times_seconds"][1] == pytest.approx(1.1)
+    assert first.alignment["character_end_times_seconds"][0] == pytest.approx(1.1)
+
+    second = slices[1]
+    assert "".join(second.alignment["characters"]) == "World"
+
+
+def test_split_rejects_a_response_that_dropped_the_tag():
+    # If the provider ever stops echoing tags, the text-equality check
+    # must fail loudly rather than silently mis-slicing every scene.
+    members = [_toned("sc_01", "Hello", "excited"), _member("sc_02", "World")]
+    with pytest.raises(PermanentError, match="does not match the joined request text"):
+        split_batched_alignment(_uniform_alignment("Hello\nWorld"), members)
+
+
+def test_every_scene_may_carry_its_own_tone():
+    members = [_toned("sc_01", "Hello", "excited"), _toned("sc_02", "World", "curious")]
+    sent = join_batch_text(members)
+    assert sent == "[excited] Hello\n[curious] World"
+    slices = split_batched_alignment(_uniform_alignment(sent), members)
+    assert ["".join(s.alignment["characters"]) for s in slices] == ["Hello", "World"]
+
+
+def test_strip_tone_prefix_absorbs_rather_than_drops():
+    """The 2026-09-17 render bug, isolated.
+
+    Dropping the tag's entries without absorbing their time left a
+    scene's alignment starting AFTER its audio file did. narration_fit
+    derives a scene's span as `scene_end - start[0]`, so every toned
+    scene claimed less video than its audio ran, and the error
+    accumulated across the reel - heard as the voice lagging further
+    behind the picture.
+    """
+    alignment = _uniform_alignment("[excited] Hello")
+    stripped = strip_tone_prefix(alignment, len("[excited] "))
+
+    assert "".join(stripped["characters"]) == "Hello"
+    # The invariant that was broken: starts where the audio starts.
+    assert stripped["character_start_times_seconds"][0] == pytest.approx(0.0)
+    # Total span is preserved, so no drift accumulates.
+    assert stripped["character_end_times_seconds"][-1] == pytest.approx(
+        alignment["character_end_times_seconds"][-1]
+    )
+    # Nothing else moved.
+    assert stripped["character_start_times_seconds"][1:] == pytest.approx(
+        alignment["character_start_times_seconds"][len("[excited] ") + 1 :]
+    )
+
+
+def test_strip_tone_prefix_is_a_no_op_without_a_tone():
+    alignment = _uniform_alignment("Hello")
+    assert strip_tone_prefix(alignment, 0) is alignment
+
+
+def test_strip_tone_prefix_rejects_a_prefix_that_eats_everything():
+    with pytest.raises(PermanentError, match="covers the whole alignment"):
+        strip_tone_prefix(_uniform_alignment("[excited] "), len("[excited] "))

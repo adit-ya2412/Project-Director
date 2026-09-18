@@ -161,7 +161,40 @@ export interface Scene {
   duration_s: number;
   shots: Shot[];
   act_id?: string | null;
+  // The eleven_v3 delivery tag steering this scene's read, stored bare
+  // ("excited", not "[excited]"). null = the voice's default read.
+  // Set at the approval gate; never part of narration_text.
+  // (backend/app/schemas/timeline.py Scene.narration_tone)
+  narration_tone?: string | null;
 }
+
+// Mirrors NARRATION_TONES in backend/app/schemas/timeline.py. Hand-copied
+// like CameraMovement and TransitionType below — there is no GET for it.
+//
+// Keep it in step with the backend: an unsupported tag is absorbed
+// silently by the provider (no error, never spoken, but it still
+// perturbs the read), so a value that drifts out of this list fails
+// invisibly rather than loudly. The backend rejects unknown tones with a
+// 422 — this list exists so the user never gets that far.
+//
+// Ordered for the picker, not alphabetically: the two that carry a whole
+// reel's open and body first, then the rest.
+export const NARRATION_TONES = [
+  "excited",
+  "curious",
+  "thoughtful",
+  "surprised",
+  "happy",
+  "sad",
+  "angry",
+  "annoyed",
+  "appalled",
+  "sarcastic",
+  "mischievously",
+  "whispers",
+] as const;
+
+export type NarrationTone = (typeof NARRATION_TONES)[number];
 
 // `punch_in` was missing here until 2026-08-26 (ui_style_feature_coverage.md
 // §2.3) — a real drift found by cross-checking against the backend enum

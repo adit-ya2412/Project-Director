@@ -154,6 +154,7 @@ from app.schemas.script_preflight import (
     StyleSuitabilityOut,
 )
 from app.schemas.timeline import (
+    NARRATION_TONES,
     CameraMovement,
     LayerRole,
     MusicTrackSelection,
@@ -643,6 +644,15 @@ class RetryMusicSelectionRequest(BaseModel):
     # unchanged terms against an unfixed vocabulary problem finds nothing
     # new.
     search_terms: list[str] | None = None
+
+
+class SetSceneTonesRequest(BaseModel):
+    # narration_tone_tags.md Phase 3. Scene ids to apply one tone to -
+    # the "club a run of scenes together" gesture. `tone=None` clears it
+    # back to the voice's default read, which is why this is not a bare
+    # required string.
+    scene_ids: list[str]
+    tone: str | None = None
 
 
 class RetryNarrationVoiceRequest(BaseModel):
@@ -3227,6 +3237,117 @@ async def retry_narration_voice(
         background_tasks=background_tasks,
         transform=_set_voice,
         owns=frozenset({"metadata"}),
+    )
+
+
+@router.post(
+    "/{project_id}/scenes/narration-tone",
+    status_code=202,
+    response_model=WorkflowTriggerResult,
+)
+async def set_scene_narration_tones(
+    project_id: str,
+    body: SetSceneTonesRequest,
+    background_tasks: BackgroundTasks,
+    repo: ProjectRepository = Depends(get_repo),
+    timeline_service: TimelineService = Depends(get_timeline_service),
+    session: AsyncSession = Depends(get_db),
+) -> WorkflowTriggerResult:
+    """Set one eleven_v3 delivery tone across a group of scenes, at the
+    approval gate, and re-narrate just those scenes
+    (docs/plans/narration_tone_tags.md Phase 3).
+
+    **Why the gate and not the script.** `NarrationStep` runs at step 7
+    and `AwaitApprovalStep` at step 8, so by the time this is callable
+    the first narration pass already exists and has been heard. Tone is
+    chosen against real audio rather than guessed before any exists.
+    Authoring tags inline in the submitted script was designed and
+    rejected: it needs marker-stripping before both the Director prompt
+    and the scene slicer, and has no answer for a marker that lands
+    mid-scene, since scene boundaries are LLM-chosen from fragment
+    ranges and one per-scene field cannot hold two tones.
+
+    **Why it refuses after approval.** Paid generation (rung 6) is step
+    9, and a generated clip's `duration_s` is baked into its fal.ai
+    request but is NOT part of `_carry_forward_bindings`' equality check
+    - so a clip is never regenerated when only duration moves. Tone moves
+    duration by ~17% (measured: 75.3s -> 62.0s on the same script), and
+    `_motion_filter` would absorb that by trimming the clip or freezing
+    its last frame. Refusing here removes that failure by construction
+    instead of cleaning up after it. The same hole is still reachable
+    through `retry_narration_voice`, which has no such guard - that is a
+    known, separately-tracked defect, not something this endpoint
+    introduces.
+
+    **Why a group and not one scene.** `plan_tts_batches` refuses to
+    batch a lone cache miss with anything (RV-Q13), so a single retoned
+    scene is synthesised ALONE and picks up a fresh performance at both
+    its joins. Applying a tone across a contiguous run keeps those scenes
+    in one request, sharing one performance. Scattered ids are allowed -
+    sometimes one scene genuinely is the odd one out - but the caller is
+    told when it is about to buy that seam.
+
+    Tone is validated by `Scene.narration_tone` against `NARRATION_TONES`
+    rather than here: an unsupported tag is absorbed silently by the
+    provider (no error, not spoken, but it still perturbs the read), so a
+    typo would otherwise be invisible all the way to the ear.
+    """
+    await _get_project_or_404(project_id, repo)
+    active = await timeline_service.get_active(project_id)
+    if active is None:
+        raise HTTPException(status_code=400, detail="no timeline to set narration tone on yet")
+    if active.status == TimelineStatus.APPROVED:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "this timeline is already approved; narration tone changes shot "
+                "durations, and generated clips are not regenerated when only "
+                "duration moves. Set tone before approving."
+            ),
+        )
+    if not body.scene_ids:
+        raise HTTPException(status_code=400, detail="scene_ids must not be empty")
+
+    # Checked HERE, not left to `Scene._known_tone`: these models do not
+    # set `validate_assignment`, so a field validator does not fire on
+    # plain attribute assignment inside the transform below. The model
+    # validator still guards construction and deserialisation; this
+    # guards the write path, and it is the one that matters - an
+    # unsupported tag reaches the provider, is absorbed without error,
+    # is never spoken, and still perturbs the read.
+    tone = body.tone.strip().lower() if body.tone else None
+    if tone is not None and tone not in NARRATION_TONES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"unknown narration tone {body.tone!r}; expected one of "
+                f"{', '.join(sorted(NARRATION_TONES))}"
+            ),
+        )
+
+    known = {scene.id for scene in active.scenes}
+    unknown = [scene_id for scene_id in body.scene_ids if scene_id not in known]
+    if unknown:
+        raise HTTPException(
+            status_code=404, detail=f"unknown scene id(s): {', '.join(sorted(unknown))}"
+        )
+
+    targets = set(body.scene_ids)
+
+    def _set_tone(base: Timeline) -> Timeline:
+        for scene in base.scenes:
+            if scene.id in targets:
+                scene.narration_tone = tone
+        return base
+
+    return await _resume_after_human_correction(
+        project_id,
+        active,
+        timeline_service=timeline_service,
+        session=session,
+        background_tasks=background_tasks,
+        transform=_set_tone,
+        owns=frozenset({"scenes"}),
     )
 
 

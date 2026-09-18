@@ -706,6 +706,47 @@ class Shot(BaseModel):
         return self
 
 
+# narration_tone_tags.md: the eleven_v3 audio tags a scene may carry.
+#
+# Verified 2026-09-17 against ElevenLabs' own documentation
+# (elevenlabs.io/docs/overview/capabilities/text-to-speech/best-practices).
+# `serious` was in an earlier draft of this list and is NOT documented -
+# it was removed. That mattered: Phase 1c measured `[serious]` shifting
+# the read 15.4%, the largest delta of any tag probed, which looked like
+# proof it worked. The deliberately-invented `[dramatic]` shifted it 5.8%
+# on the same line. Bracketed text perturbs delivery whether or not the
+# tag is real, so measured effect is not evidence of support and this
+# list must stay tied to the docs.
+#
+# DELIVERY TONES ONLY, which is narrower than what the docs list. The
+# published set also includes one-shot vocal sounds ([laughs], [sighs],
+# [clears throat]), sound effects ([gunshot], [applause]) and pauses
+# ([short pause]). Those are performances at a moment, not a manner of
+# speaking that holds across a scene - prefixing [laughs] to a scene
+# inserts a laugh, it does not make the scene laughing. This field
+# colours a whole scene's read, so it takes only the tags that can.
+#
+# The docs note "there are likely many more effective tags beyond this
+# list", so additions are expected - but each wants checking against the
+# docs rather than against how it sounds, for the reason above.
+NARRATION_TONES: frozenset[str] = frozenset(
+    {
+        "excited",
+        "curious",
+        "sarcastic",
+        "mischievously",
+        "happy",
+        "sad",
+        "angry",
+        "annoyed",
+        "appalled",
+        "thoughtful",
+        "surprised",
+        "whispers",
+    }
+)
+
+
 class Scene(BaseModel):
     id: str
     order: int
@@ -742,6 +783,37 @@ class Scene(BaseModel):
     # `app/renderer/captions.py` at read time, never trusted from
     # storage alone.
     caption_word_groups: list[int] | None = None
+    # narration_tone_tags.md: the eleven_v3 audio tag steering THIS
+    # scene's delivery, stored bare (`excited`, not `[excited]`). None =
+    # the voice's default read, i.e. every timeline predating this field.
+    # Set per scene at the approval gate, after the first narration pass
+    # has been heard, and refused once a timeline is approved.
+    #
+    # NOT named `tone`: `CreativeContext.tone` below is a project-wide
+    # planning concept and the collision would be permanent.
+    #
+    # Deliberately NEVER written into `narration_text`. The tag is
+    # prefixed only when the TTS request is built
+    # (`timeline/narration_batch.py`) and stripped back out of the
+    # returned alignment, so captions and `Shot.narration_span` keep the
+    # clean 1:1 character contract they already depend on. It IS part of
+    # the narration cache key - see `compute_narration_content_hash`.
+    narration_tone: str | None = None
+
+    @field_validator("narration_tone")
+    @classmethod
+    def _known_tone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        tone = value.strip().lower()
+        if tone not in NARRATION_TONES:
+            raise ValueError(
+                f"unknown narration tone {value!r}; expected one of "
+                f"{', '.join(sorted(NARRATION_TONES))}. An unsupported tag is "
+                "absorbed silently by eleven_v3 - no error, not spoken, but it "
+                "still perturbs the read - so a typo here would be invisible."
+            )
+        return tone
 
 
 # retention_fast_kinetic_text.md K5: `#` + 6 hex digits. Empty string is

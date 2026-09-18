@@ -442,3 +442,25 @@ async def test_fake_provider_scales_alignment_with_speed():
     slow_end = slow.alignment["character_end_times_seconds"][-1]
     fast_end = fast.alignment["character_end_times_seconds"][-1]
     assert slow_end / fast_end == pytest.approx(1.2)
+
+
+def test_tone_is_part_of_the_content_hash():
+    """narration_tone_tags.md: the load-bearing cache change.
+
+    Tone deliberately never appears in `narration_text`, so nothing else
+    in this digest can see it. Without an explicit `tone` input, changing
+    a scene's tone re-runs NarrationStep, hits the unchanged hash, and
+    silently serves back the old untagged performance.
+    """
+    base = dict(text="hello", voice_id="v1", model="m1", output_format="o1")
+    untoned = compute_narration_content_hash(**base)
+
+    # Absent tone keeps the pre-tone key, so every row narrated before
+    # this field existed stays a cache hit and nothing re-synthesises.
+    assert untoned == compute_narration_content_hash(**base, tone=None)
+
+    excited = compute_narration_content_hash(**base, tone="excited")
+    curious = compute_narration_content_hash(**base, tone="curious")
+    assert excited != untoned
+    assert excited != curious
+    assert excited == compute_narration_content_hash(**base, tone="excited")

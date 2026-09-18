@@ -260,6 +260,20 @@ export function useRetryNarration(projectId: string) {
   });
 }
 
+export function useSetSceneNarrationTones(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      sceneIds,
+      tone,
+    }: {
+      sceneIds: string[];
+      tone: string | null;
+    }) => api.setSceneNarrationTones(projectId, sceneIds, tone),
+    onSettled: () => invalidateAfterTrigger(qc, projectId),
+  });
+}
+
 /** Not a workflow trigger — POST /grade only records the override.
  * Caller still has to hit re-render to see it. */
 export function useSetGrade(projectId: string) {

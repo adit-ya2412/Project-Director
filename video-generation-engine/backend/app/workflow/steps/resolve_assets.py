@@ -180,6 +180,36 @@ from app.workflow.step import StepResult
 
 logger = get_logger(__name__)
 
+
+def search_attempts_exhausted(*, attempts: int, generation_permitted: bool) -> bool:
+    """Has the SEARCH pass retried this shot enough to give up on it?
+
+    A `TransientError` leaves a binding `pending` so a later run can try
+    again. That was unbounded until 2026-09-17: `attempts` was written
+    and read by nothing, `is_satisfied` is False while ANY binding is
+    `pending`, and `carry_forward` copies `pending` onto every new
+    timeline version - so one unresolvable shot re-ran the whole free
+    search pass on every engine resume, forever, including resumes fired
+    by unrelated human corrections. With no query cache in front of the
+    providers, each of those was real Pexels/Wikimedia/Commons traffic
+    plus two billed OpenAI calls per fresh candidate.
+
+    Returning True marks the binding `failed`, which is terminal - the
+    loop stops, and the review gate's existing per-scene "Regenerate
+    failed" control is already wired to exactly that state, so the human
+    gets a real error to act on instead of silence.
+
+    The generation pass is deliberately exempt. It parks a binding on
+    `pending` while a fal.ai video job is in flight, setting that state
+    directly rather than through the transient handler (so `attempts`
+    never climbs there) - capping it would be a different decision about
+    a different lifecycle, and is not the failure that was measured.
+    """
+    if generation_permitted:
+        return False
+    return attempts >= settings.max_search_attempts_per_shot
+
+
 _SEARCH_STRATEGIES = frozenset(
     {
         AssetStrategy.PROJECT_ASSETS,
@@ -1495,8 +1525,35 @@ class ResolveAssetsStep:
                 # Leave state as "pending" (not terminal) - eligible for
                 # another attempt on a future run, without failing the
                 # whole step over one shot.
+                #
+                # Bounded since 2026-09-17. `attempts` was incremented
+                # here and read by nothing, so "a future run" meant every
+                # run forever: `is_satisfied` is False while ANY binding
+                # is `pending`, `carry_forward` copies `pending` onto each
+                # new timeline version, and the providers have no query
+                # cache - so one unresolvable shot re-ran the entire free
+                # search pass, plus two billed OpenAI calls per fresh
+                # candidate, on every unrelated resume (a narration tone
+                # edit, a voice retry). Giving up is the honest outcome:
+                # `failed` is terminal, so the loop stops, and the review
+                # gate already renders a per-scene "Regenerate failed"
+                # control for exactly this state - the human gets a real
+                # error to act on instead of silent retrying.
                 binding.last_error = str(exc)
                 binding.attempts += 1
+                if search_attempts_exhausted(
+                    attempts=binding.attempts,
+                    generation_permitted=self._generation_permitted,
+                ):
+                    binding.state = "failed"
+                    logger.warning(
+                        "resolve_assets.search_attempts_exhausted",
+                        extra={
+                            "shot_id": shot.id,
+                            "attempts": binding.attempts,
+                            "error": str(exc),
+                        },
+                    )
             except Exception as exc:  # noqa: BLE001 - per-shot isolation (Principle 10)
                 binding.state = "failed"
                 binding.last_error = str(exc)

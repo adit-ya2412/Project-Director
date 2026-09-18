@@ -421,6 +421,27 @@ export function retryNarration(
   });
 }
 
+/** Apply one delivery tone across a group of scenes and re-narrate just
+ * those (narration_tone_tags.md Phase 3). `tone: null` clears it back to
+ * the voice's default read.
+ *
+ * 409 once the timeline is approved: tone changes shot durations by
+ * ~17%, and generated clips are not regenerated when only duration
+ * moves, so the backend refuses rather than leaving motion choreographed
+ * for a length that shifted. Its `detail` is a full sentence meant to be
+ * shown verbatim.
+ */
+export function setSceneNarrationTones(
+  projectId: string,
+  sceneIds: string[],
+  tone: string | null,
+): Promise<WorkflowTriggerResult> {
+  return request(`/projects/${projectId}/scenes/narration-tone`, {
+    method: "POST",
+    body: JSON.stringify({ scene_ids: sceneIds, tone }),
+  });
+}
+
 /** C3f: replace one SFX kind's clip, or disable it (`enabled=false`,
  * no file). Exactly one of those two operations per call — the backend
  * 400s if both or neither are sent. */
